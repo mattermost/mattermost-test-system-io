@@ -1,0 +1,52 @@
+[package]
+name = "rust-report-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+description = "API server for uploading and viewing test reports"
+license = "MIT"
+
+[dependencies]
+# Web framework
+actix-web = "4.12.1"
+actix-multipart = "0.7.2"
+actix-files = "0.6.9"
+actix-cors = "0.7.1"
+
+# Async runtime (via actix)
+tokio = { version = "1.48.0", features = ["full"] }
+
+# Database (SQLite)
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+
+# Serialization
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+
+# Error handling
+thiserror = "2.0.17"
+anyhow = "1.0.98"
+
+# Logging/tracing
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-actix-web = "0.7.19"
+
+# Utilities
+uuid = { version = "1.18.1", features = ["v7", "serde"] }
+chrono = { version = "0.4.41", features = ["serde"] }
+dotenvy = "0.15.7"
+futures-util = "0.3.31"
+mime_guess = "2.0.5"
+flate2 = "1.1.1"
+tar = "0.4.44"
+num_cpus = "1.16.0"
+
+[dev-dependencies]
+actix-rt = "2.10.0"
+tokio-test = "0.4.4"
+tempfile = "3.20.0"
+
+[[bin]]
+name = "server"
+path = "src/main.rs"

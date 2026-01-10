@@ -1,0 +1,56 @@
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+
+# Node.js
+node_modules/
+apps/web/dist/
+apps/web/coverage/
+*.log
+*.tsbuildinfo
+.npm/
+.pnpm-debug.log*
+
+# npm
+package-lock.json
+
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data directories (runtime)
+data/files/
+data/backups/
+
+# Keep data directory structure
+!data/.gitkeep
+
+# Test output
+*.profraw
+
+# data
+apps/server/data/
+
+# seed
+seed/
+
+#claude
+.claude/commands
+
+# specify
+.specify/
+specs/

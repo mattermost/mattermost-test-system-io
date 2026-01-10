@@ -1,0 +1,63 @@
+# ==============================================================================
+# Docker Build Context Exclusions
+# ==============================================================================
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Documentation
+*.md
+!README.md
+docs/
+specs/
+
+# Local environment
+.env
+.env.local
+.env.*.local
+
+# Rust build artifacts (use fresh build in container)
+apps/server/target/
+**/*.rs.bk
+
+# Node.js (use fresh install in container)
+apps/web/node_modules/
+apps/web/dist/
+apps/web/coverage/
+apps/web/.env
+
+# Runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Test files (not needed in production)
+**/tests/
+**/*.test.*
+**/*.spec.*
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Docker (avoid recursive copy)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Seed data (not for production)
+seed/
+
+# Claude/AI context files
+.claude/
+.specify/
+CLAUDE.md

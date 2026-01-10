@@ -1,0 +1,118 @@
+//! Domain error types for the Rust Report Server.
+//!
+//! Uses thiserror for ergonomic error handling with automatic Display implementations.
+
+use actix_web::{HttpResponse, ResponseError};
+use std::fmt;
+
+/// Application-level errors.
+#[derive(Debug, thiserror::Error)]
+pub enum AppError {
+    /// Database operation failed
+    #[error("Database error: {0}")]
+    Database(String),
+
+    /// File system operation failed
+    #[error("File system error: {0}")]
+    FileSystem(String),
+
+    /// Resource not found
+    #[error("{0} not found")]
+    NotFound(String),
+
+    /// Invalid input data
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    /// Authentication failed
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
+    /// File too large
+    #[error("File too large: {0}")]
+    PayloadTooLarge(String),
+
+    /// Extraction failed
+    #[error("Extraction failed: {0}")]
+    ExtractionFailed(String),
+}
+
+impl ResponseError for AppError {
+    fn error_response(&self) -> HttpResponse {
+        let (status, error_code) = match self {
+            AppError::Database(_) => (
+                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "DATABASE_ERROR",
+            ),
+            AppError::FileSystem(_) => (
+                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "FILESYSTEM_ERROR",
+            ),
+            AppError::NotFound(_) => (actix_web::http::StatusCode::NOT_FOUND, "NOT_FOUND"),
+            AppError::InvalidInput(_) => {
+                (actix_web::http::StatusCode::BAD_REQUEST, "INVALID_INPUT")
+            }
+            AppError::Unauthorized(_) => {
+                (actix_web::http::StatusCode::UNAUTHORIZED, "UNAUTHORIZED")
+            }
+            AppError::PayloadTooLarge(_) => (
+                actix_web::http::StatusCode::PAYLOAD_TOO_LARGE,
+                "PAYLOAD_TOO_LARGE",
+            ),
+            AppError::ExtractionFailed(_) => (
+                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "EXTRACTION_FAILED",
+            ),
+        };
+
+        HttpResponse::build(status).json(ErrorResponse {
+            error: error_code.to_string(),
+            message: self.to_string(),
+            details: None,
+        })
+    }
+}
+
+/// Error response body matching OpenAPI schema.
+#[derive(Debug, serde::Serialize)]
+pub struct ErrorResponse {
+    pub error: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+impl fmt::Display for ErrorResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.error, self.message)
+    }
+}
+
+/// Convenience type alias for Results with AppError.
+pub type AppResult<T> = Result<T, AppError>;
+
+// Conversion implementations for common error types
+
+impl From<std::io::Error> for AppError {
+    fn from(err: std::io::Error) -> Self {
+        AppError::FileSystem(err.to_string())
+    }
+}
+
+impl From<serde_json::Error> for AppError {
+    fn from(err: serde_json::Error) -> Self {
+        AppError::InvalidInput(format!("JSON parsing error: {}", err))
+    }
+}
+
+impl From<rusqlite::Error> for AppError {
+    fn from(err: rusqlite::Error) -> Self {
+        AppError::Database(err.to_string())
+    }
+}
+
+impl From<uuid::Error> for AppError {
+    fn from(err: uuid::Error) -> Self {
+        AppError::InvalidInput(format!("Invalid UUID: {}", err))
+    }
+}

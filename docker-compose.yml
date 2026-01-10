@@ -1,0 +1,63 @@
+# ==============================================================================
+# Rust Report Viewer - Docker Compose
+# ==============================================================================
+# Production deployment configuration
+#
+# Usage:
+#   docker compose up -d          # Start in background
+#   docker compose logs -f        # View logs
+#   docker compose down           # Stop and remove
+#   docker compose down -v        # Stop and remove with volumes
+# ==============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rust-report-viewer:latest
+    container_name: rust-report-viewer
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - RUST_ENV=production
+      - RRV_HOST=0.0.0.0
+      - RRV_PORT=8080
+      - RRV_DATABASE_URL=file:/app/data/reports.db
+      - RRV_DATA_DIR=/app/data/files
+      - RRV_BACKUP_DIR=/app/data/backups
+      - RRV_STATIC_DIR=/app/static
+      - RRV_API_KEY=${RRV_API_KEY:?RRV_API_KEY is required}
+      - RUST_LOG=${RUST_LOG:-info,actix_web=info}
+    volumes:
+      # Persist data across container restarts
+      - report_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "app.name=rust-report-viewer"
+      - "app.description=Test report storage and viewer"
+
+volumes:
+  report_data:
+    driver: local
+
+# ==============================================================================
+# Optional: Development override (docker-compose.dev.yml)
+# ==============================================================================
+# Create docker-compose.dev.yml for development-specific settings:
+#
+# services:
+#   app:
+#     build:
+#       target: backend-builder  # Stop at builder stage for debugging
+#     environment:
+#       - RUST_LOG=debug
+#     volumes:
+#       - ./data:/app/data  # Use local data directory
+# ==============================================================================

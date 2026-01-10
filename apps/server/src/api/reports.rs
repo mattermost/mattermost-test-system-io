@@ -1,0 +1,188 @@
+//! Report API endpoints.
+
+use actix_web::{get, web, HttpResponse};
+use serde::Serialize;
+use uuid::Uuid;
+
+use crate::db::{queries, DbPool};
+use crate::error::{AppError, AppResult};
+use crate::models::{
+    Pagination, PaginationParams, ReportDetail, ReportSummary, TestSpecListResponse,
+    TestSuiteListResponse,
+};
+
+/// Report list response.
+#[derive(Serialize)]
+pub struct ReportListResponse {
+    pub reports: Vec<ReportSummary>,
+    pub pagination: Pagination,
+}
+
+/// Configure report routes.
+/// Note: More specific routes must be registered before generic ones.
+pub fn configure_report_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(list_reports)
+        // Specific paths first
+        .service(get_report_html)
+        .service(get_report_data_file)
+        .service(get_suite_specs)
+        .service(get_report_suites)
+        // Generic paths last
+        .service(get_report);
+}
+
+/// List all reports with pagination.
+///
+/// GET /reports?page=1&limit=20
+#[get("/reports")]
+async fn list_reports(
+    pool: web::Data<DbPool>,
+    query: web::Query<PaginationParams>,
+) -> AppResult<HttpResponse> {
+    let conn = pool.connection();
+    let (reports, pagination) = queries::list_reports(&conn, &query)?;
+
+    Ok(HttpResponse::Ok().json(ReportListResponse {
+        reports,
+        pagination,
+    }))
+}
+
+/// Get report details by ID.
+///
+/// GET /reports/{id}
+#[get("/reports/{id}")]
+async fn get_report(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    data_dir: web::Data<std::path::PathBuf>,
+) -> AppResult<HttpResponse> {
+    let id = Uuid::parse_str(&path.into_inner())?;
+    let conn = pool.connection();
+
+    let report = queries::get_active_report_by_id(&conn, id)?
+        .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
+
+    let stats = queries::get_report_stats(&conn, id)?;
+
+    // Check if files exist on disk
+    let report_dir = data_dir.join(&report.file_path);
+    let has_files = report_dir.exists() && report_dir.join("index.html").exists();
+
+    let mut detail: ReportDetail = report.into();
+    detail.stats = stats;
+    detail.has_files = has_files;
+
+    Ok(HttpResponse::Ok().json(detail))
+}
+
+/// Get HTML report for viewing.
+///
+/// GET /reports/{id}/html
+#[get("/reports/{id}/html")]
+async fn get_report_html(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+    data_dir: web::Data<std::path::PathBuf>,
+) -> AppResult<HttpResponse> {
+    let id = Uuid::parse_str(&path.into_inner())?;
+
+    // Get file path from database, then drop connection before async file read
+    let html_path = {
+        let conn = pool.connection();
+        let report = queries::get_active_report_by_id(&conn, id)?
+            .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
+        data_dir.join(&report.file_path).join("index.html")
+    };
+
+    if !html_path.exists() {
+        return Err(AppError::NotFound("HTML report file".to_string()));
+    }
+
+    let content = tokio::fs::read_to_string(&html_path).await?;
+
+    Ok(HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(content))
+}
+
+/// Get a file from the report's data directory (screenshots, traces, etc.).
+///
+/// GET /reports/{id}/data/{filename}
+#[get("/reports/{id}/data/{filename:.*}")]
+async fn get_report_data_file(
+    pool: web::Data<DbPool>,
+    path: web::Path<(String, String)>,
+    data_dir: web::Data<std::path::PathBuf>,
+) -> AppResult<HttpResponse> {
+    let (id_str, filename) = path.into_inner();
+    let id = Uuid::parse_str(&id_str)?;
+
+    // Validate filename to prevent path traversal
+    if filename.contains("..") || filename.starts_with('/') {
+        return Err(AppError::InvalidInput("Invalid filename".to_string()));
+    }
+
+    // Get report path from database, then drop connection before async file read
+    let report_path = {
+        let conn = pool.connection();
+        let report = queries::get_active_report_by_id(&conn, id)?
+            .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
+        data_dir.join(&report.file_path)
+    };
+
+    // Files in data/ subdirectory (screenshots, traces, etc.)
+    let file_path = report_path.join("data").join(&filename);
+
+    if !file_path.exists() {
+        return Err(AppError::NotFound(format!("Data file {}", filename)));
+    }
+
+    let content = tokio::fs::read(&file_path).await?;
+    let content_type = mime_guess::from_path(&filename)
+        .first_or_octet_stream()
+        .to_string();
+
+    Ok(HttpResponse::Ok().content_type(content_type).body(content))
+}
+
+/// Get test suites for a report.
+///
+/// GET /reports/{id}/suites
+#[get("/reports/{id}/suites")]
+async fn get_report_suites(
+    pool: web::Data<DbPool>,
+    path: web::Path<String>,
+) -> AppResult<HttpResponse> {
+    let id = Uuid::parse_str(&path.into_inner())?;
+    let conn = pool.connection();
+
+    // Verify report exists
+    let _ = queries::get_active_report_by_id(&conn, id)?
+        .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
+
+    let suites = queries::get_test_suites(&conn, id)?;
+
+    Ok(HttpResponse::Ok().json(TestSuiteListResponse { suites }))
+}
+
+/// Get test specs with results for a suite.
+///
+/// GET /reports/{id}/suites/{suite_id}/specs
+#[get("/reports/{id}/suites/{suite_id}/specs")]
+async fn get_suite_specs(
+    pool: web::Data<DbPool>,
+    path: web::Path<(String, i64)>,
+) -> AppResult<HttpResponse> {
+    let (report_id_str, suite_id) = path.into_inner();
+    let report_id = Uuid::parse_str(&report_id_str)?;
+    let conn = pool.connection();
+
+    // Verify report exists
+    let _ = queries::get_active_report_by_id(&conn, report_id)?
+        .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
+
+    let specs = queries::get_suite_specs_with_results(&conn, suite_id)?;
+
+    Ok(HttpResponse::Ok().json(TestSpecListResponse { specs }))
+}

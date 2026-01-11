@@ -210,6 +210,96 @@ describe('ReportPage', () => {
     expect(screen.getByText('Invalid JSON format')).toBeInTheDocument();
   });
 
+  it('renders Cypress report details with framework indicator', () => {
+    vi.mocked(useReport).mockReturnValue({
+      data: {
+        id: mockReportId,
+        created_at: '2026-01-10T14:00:00Z',
+        extraction_status: 'completed' as const,
+        file_path: mockReportId,
+        framework: 'cypress',
+        framework_version: '13.7.0',
+        has_files: true,
+        stats: {
+          start_time: '2026-01-10T13:30:00Z',
+          duration_ms: 45000,
+          expected: 25,
+          skipped: 3,
+          unexpected: 2,
+          flaky: 0,
+        },
+      },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useReport>);
+
+    render(<ReportPage />, { wrapper: createWrapper(mockReportId) });
+
+    expect(screen.getByText('Report Details')).toBeInTheDocument();
+    // Framework info - Cypress with version (capitalized)
+    expect(screen.getByText(/Cypress v13\.7\.0/)).toBeInTheDocument();
+    // Tabs should be present
+    expect(screen.getByRole('button', { name: 'Test Results' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'HTML Report' })).toBeInTheDocument();
+  });
+
+  it('renders Cypress report with test suites', () => {
+    vi.mocked(useReport).mockReturnValue({
+      data: {
+        id: mockReportId,
+        created_at: '2026-01-10T14:00:00Z',
+        extraction_status: 'completed' as const,
+        file_path: mockReportId,
+        framework: 'cypress',
+        framework_version: '13.7.0',
+        has_files: true,
+        stats: {
+          start_time: '2026-01-10T13:30:00Z',
+          duration_ms: 45000,
+          expected: 8,
+          skipped: 1,
+          unexpected: 1,
+          flaky: 0,
+        },
+      },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useReport>);
+
+    vi.mocked(useReportSuites).mockReturnValue({
+      data: {
+        suites: [
+          {
+            id: 1,
+            title: 'Login Flow',
+            file_path: 'cypress/e2e/login.cy.ts',
+            specs_count: 5,
+            passed_count: 4,
+            failed_count: 1,
+          },
+          {
+            id: 2,
+            title: 'Dashboard',
+            file_path: 'cypress/e2e/dashboard.cy.ts',
+            specs_count: 5,
+            passed_count: 4,
+            failed_count: 0,
+            skipped_count: 1,
+          },
+        ],
+      },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useReportSuites>);
+
+    render(<ReportPage />, { wrapper: createWrapper(mockReportId) });
+
+    // Test suites section should be visible
+    expect(screen.getByText('Test Suites (2)')).toBeInTheDocument();
+    expect(screen.getByText('Login Flow')).toBeInTheDocument();
+    expect(screen.getByText('Dashboard')).toBeInTheDocument();
+  });
+
   it('shows test suites from database', () => {
     vi.mocked(useReport).mockReturnValue({
       data: {

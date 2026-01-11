@@ -55,4 +55,42 @@ mod tests {
         // 2. Upload valid report
         // 3. Verify files exist at DATA_DIR/{report_id}/
     }
+
+    // === Cypress Report Upload Tests ===
+
+    /// Test Cypress file upload with framework auto-detection.
+    #[test]
+    fn test_cypress_upload_auto_detects_framework() {
+        // TODO: Implement when test infrastructure is set up
+        // This test should:
+        // 1. Start test server
+        // 2. Upload all.json and mochawesome.html (Cypress report files)
+        // 3. Assert 201 Created response
+        // 4. Verify response contains framework: "cypress"
+        // 5. Verify files_accepted contains "all.json", "mochawesome.html"
+        // 6. Verify files_rejected is empty
+    }
+
+    /// Test video file rejection during Cypress upload.
+    #[test]
+    fn test_cypress_upload_rejects_video_files() {
+        // TODO: Implement when test infrastructure is set up
+        // This test should:
+        // 1. Start test server
+        // 2. Upload all.json, screenshots/test.png, and videos/test.mp4
+        // 3. Assert 201 Created response (upload succeeds)
+        // 4. Verify files_accepted contains "all.json", "screenshots/test.png"
+        // 5. Verify files_rejected contains {"file": "videos/test.mp4", "reason": "video files not supported"}
+    }
+
+    /// Test explicit framework parameter overrides auto-detection.
+    #[test]
+    fn test_cypress_upload_explicit_framework_override() {
+        // TODO: Implement when test infrastructure is set up
+        // This test should:
+        // 1. Start test server
+        // 2. Upload index.html (Playwright pattern) with framework=cypress, framework_version=13.17.0
+        // 3. Assert 201 Created response
+        // 4. Verify response contains framework: "cypress", framework_version: "13.17.0"
+    }
 }

@@ -24,6 +24,8 @@ pub fn configure_report_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(list_reports)
         // Specific paths first
         .service(get_report_html)
+        .service(get_report_assets)
+        .service(get_report_screenshots)
         .service(get_report_data_file)
         .service(get_suite_specs)
         .service(get_report_suites)
@@ -66,8 +68,10 @@ async fn get_report(
     let stats = queries::get_report_stats(&conn, id)?;
 
     // Check if files exist on disk
+    // Support both Playwright (index.html) and Cypress (mochawesome.html) reports
     let report_dir = data_dir.join(&report.file_path);
-    let has_files = report_dir.exists() && report_dir.join("index.html").exists();
+    let has_files = report_dir.exists()
+        && (report_dir.join("index.html").exists() || report_dir.join("mochawesome.html").exists());
 
     let mut detail: ReportDetail = report.into();
     detail.stats = stats;
@@ -79,6 +83,10 @@ async fn get_report(
 /// Get HTML report for viewing.
 ///
 /// GET /reports/{id}/html
+///
+/// Serves different HTML files based on framework:
+/// - Playwright: index.html
+/// - Cypress: mochawesome.html (fallback to index.html if not found)
 #[get("/reports/{id}/html")]
 async fn get_report_html(
     pool: web::Data<DbPool>,
@@ -87,12 +95,26 @@ async fn get_report_html(
 ) -> AppResult<HttpResponse> {
     let id = Uuid::parse_str(&path.into_inner())?;
 
-    // Get file path from database, then drop connection before async file read
-    let html_path = {
+    // Get file path and framework from database, then drop connection before async file read
+    let (report_dir, framework) = {
         let conn = pool.connection();
         let report = queries::get_active_report_by_id(&conn, id)?
             .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
-        data_dir.join(&report.file_path).join("index.html")
+        (data_dir.join(&report.file_path), report.framework.clone())
+    };
+
+    // Determine HTML file based on framework
+    let html_path = if framework.as_deref() == Some("cypress") {
+        // For Cypress, prefer mochawesome.html, fallback to index.html
+        let mochawesome_path = report_dir.join("mochawesome.html");
+        if mochawesome_path.exists() {
+            mochawesome_path
+        } else {
+            report_dir.join("index.html")
+        }
+    } else {
+        // For Playwright and unknown frameworks, use index.html
+        report_dir.join("index.html")
     };
 
     if !html_path.exists() {
@@ -106,9 +128,97 @@ async fn get_report_html(
         .body(content))
 }
 
+/// Get asset files for HTML report (CSS, JS, fonts).
+///
+/// GET /reports/{id}/assets/{filename}
+///
+/// Serves files from the assets/ directory for mochawesome HTML reports.
+#[get("/reports/{id}/assets/{filename:.*}")]
+async fn get_report_assets(
+    pool: web::Data<DbPool>,
+    path: web::Path<(String, String)>,
+    data_dir: web::Data<std::path::PathBuf>,
+) -> AppResult<HttpResponse> {
+    let (id_str, filename) = path.into_inner();
+    let id = Uuid::parse_str(&id_str)?;
+
+    // Validate filename to prevent path traversal
+    if filename.contains("..") || filename.starts_with('/') {
+        return Err(AppError::InvalidInput("Invalid filename".to_string()));
+    }
+
+    // Get report path from database, then drop connection before async file read
+    let report_path = {
+        let conn = pool.connection();
+        let report = queries::get_active_report_by_id(&conn, id)?
+            .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
+        data_dir.join(&report.file_path)
+    };
+
+    let file_path = report_path.join("assets").join(&filename);
+
+    if !file_path.exists() {
+        return Err(AppError::NotFound(format!("Asset file {}", filename)));
+    }
+
+    let content = tokio::fs::read(&file_path).await?;
+    let content_type = mime_guess::from_path(&filename)
+        .first_or_octet_stream()
+        .to_string();
+
+    Ok(HttpResponse::Ok().content_type(content_type).body(content))
+}
+
+/// Get screenshot files for Cypress reports.
+///
+/// GET /reports/{id}/screenshots/{filepath}
+///
+/// Serves files from the screenshots/ directory for Cypress HTML reports.
+/// Supports nested paths like screenshots/spec_file/screenshot.png
+#[get("/reports/{id}/screenshots/{filepath:.*}")]
+async fn get_report_screenshots(
+    pool: web::Data<DbPool>,
+    path: web::Path<(String, String)>,
+    data_dir: web::Data<std::path::PathBuf>,
+) -> AppResult<HttpResponse> {
+    let (id_str, filepath) = path.into_inner();
+    let id = Uuid::parse_str(&id_str)?;
+
+    // Validate filepath to prevent path traversal
+    if filepath.contains("..") || filepath.starts_with('/') {
+        return Err(AppError::InvalidInput("Invalid filepath".to_string()));
+    }
+
+    // Get report path from database, then drop connection before async file read
+    let report_path = {
+        let conn = pool.connection();
+        let report = queries::get_active_report_by_id(&conn, id)?
+            .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
+        data_dir.join(&report.file_path)
+    };
+
+    let file_path = report_path.join("screenshots").join(&filepath);
+
+    if !file_path.exists() {
+        return Err(AppError::NotFound(format!("Screenshot file {}", filepath)));
+    }
+
+    let content = tokio::fs::read(&file_path).await?;
+    let content_type = mime_guess::from_path(&filepath)
+        .first_or_octet_stream()
+        .to_string();
+
+    Ok(HttpResponse::Ok().content_type(content_type).body(content))
+}
+
 /// Get a file from the report's data directory (screenshots, traces, etc.).
 ///
 /// GET /reports/{id}/data/{filename}
+///
+/// Searches multiple directories for the file:
+/// - Playwright: data/ subdirectory
+/// - Cypress: screenshots/ subdirectory
+/// - Fallback: root report directory
 #[get("/reports/{id}/data/{filename:.*}")]
 async fn get_report_data_file(
     pool: web::Data<DbPool>,
@@ -131,14 +241,22 @@ async fn get_report_data_file(
         data_dir.join(&report.file_path)
     };
 
-    // Files in data/ subdirectory (screenshots, traces, etc.)
-    let file_path = report_path.join("data").join(&filename);
+    // Search multiple directories for the file:
+    // 1. data/ (Playwright screenshots, traces)
+    // 2. screenshots/ (Cypress screenshots)
+    // 3. root report directory (fallback)
+    let search_paths = [
+        report_path.join("data").join(&filename),
+        report_path.join("screenshots").join(&filename),
+        report_path.join(&filename),
+    ];
 
-    if !file_path.exists() {
-        return Err(AppError::NotFound(format!("Data file {}", filename)));
-    }
+    let file_path = search_paths
+        .iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| AppError::NotFound(format!("Data file {}", filename)))?;
 
-    let content = tokio::fs::read(&file_path).await?;
+    let content = tokio::fs::read(file_path).await?;
     let content_type = mime_guess::from_path(&filename)
         .first_or_octet_stream()
         .to_string();

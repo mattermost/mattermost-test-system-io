@@ -99,19 +99,3 @@ export interface TestSpec {
 export interface TestSpecListResponse {
   specs: TestSpec[];
 }
-
-export interface ErrorResponse {
-  error: string;
-  message: string;
-  details?: unknown;
-}
-
-export interface HealthResponse {
-  status: "healthy";
-  timestamp: string;
-}
-
-export interface ReadyResponse {
-  status: "ready";
-  database: "connected";
-}

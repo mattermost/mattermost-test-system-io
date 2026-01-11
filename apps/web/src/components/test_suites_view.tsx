@@ -311,11 +311,19 @@ function SuiteRow({
       : "text-green-500";
 
   return (
-    <div>
+    <div
+      className={`-mx-2 px-2 rounded-lg transition-colors ${
+        isExpanded ? "bg-blue-50 dark:bg-blue-900/20" : ""
+      }`}
+    >
       <button
         type="button"
         onClick={onToggle}
-        className="w-full cursor-pointer py-2.5 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50"
+        className={`w-full cursor-pointer py-2.5 text-left transition-colors ${
+          isExpanded
+            ? "hover:bg-blue-100/50 dark:hover:bg-blue-900/30"
+            : "hover:bg-gray-50 dark:hover:bg-gray-700/50"
+        }`}
       >
         <div className="flex items-center justify-between">
           <div className="flex min-w-0 items-center gap-2">
@@ -380,8 +388,12 @@ function SuiteRow({
             </div>
           ) : filteredSpecs.length > 0 ? (
             <div className="space-y-2 py-2">
-              {filteredSpecs.map((spec) => (
-                <SpecRow key={spec.id} spec={spec} />
+              {filteredSpecs.map((spec, specIndex) => (
+                <SpecRow
+                  key={spec.id}
+                  spec={spec}
+                  rowLabel={`${rowNumber}.${specIndex + 1}`}
+                />
               ))}
             </div>
           ) : (
@@ -399,12 +411,13 @@ function SuiteRow({
 
 interface SpecRowProps {
   spec: TestSpec;
+  rowLabel: string;
 }
 
-function SpecRow({ spec }: SpecRowProps) {
+function SpecRow({ spec, rowLabel }: SpecRowProps) {
   const latestResult = spec.results[spec.results.length - 1];
 
-  // Determine icon based on actual status, not just spec.ok
+  // Determine status icon based on actual status
   const isSkipped = latestResult?.status === "skipped";
   const isFlaky = spec.ok && spec.results.some((r) => r.status === "failed");
 
@@ -425,13 +438,15 @@ function SpecRow({ spec }: SpecRowProps) {
   return (
     <div className="text-sm">
       <div className="flex items-center gap-2 py-1">
+        <span className="w-10 text-xs font-medium text-gray-400 dark:text-gray-500 flex-shrink-0 text-right">
+          {rowLabel}
+        </span>
         <StatusIcon className={`h-3.5 w-3.5 flex-shrink-0 ${statusColor}`} />
         <span className="flex-1 truncate text-gray-900 dark:text-gray-100">
           {spec.title}
         </span>
         {latestResult && (
           <>
-            <StatusBadge status={latestResult.status} />
             <span className="text-xs text-gray-600 dark:text-gray-400">
               {latestResult.project_name}
             </span>
@@ -448,11 +463,16 @@ function SpecRow({ spec }: SpecRowProps) {
         )}
       </div>
       {spec.results.some((r) => r.errors_json) && (
-        <div className="ml-5 mt-1">
+        <div className="ml-5 mt-1 space-y-1">
           {spec.results
             .filter((r) => r.errors_json)
             .map((r, idx) => (
-              <ErrorDisplay key={idx} errorsJson={r.errors_json!} />
+              <ErrorDisplay
+                key={idx}
+                errorsJson={r.errors_json!}
+                attempt={r.retry + 1}
+                totalAttempts={spec.results.length}
+              />
             ))}
         </div>
       )}
@@ -460,52 +480,102 @@ function SpecRow({ spec }: SpecRowProps) {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    passed:
-      "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
-    failed: "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300",
-    skipped: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300",
-    timedOut:
-      "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300",
-  };
-
-  return (
-    <span
-      className={`rounded px-1.5 py-0.5 text-xs font-medium ${colors[status] || colors.failed}`}
-    >
-      {status}
-    </span>
-  );
+interface ErrorInfo {
+  message?: string;
+  estack?: string;
+  diff?: string | null;
 }
 
-function ErrorDisplay({ errorsJson }: { errorsJson: string }) {
-  let errors: { message?: string }[] | null = null;
+interface ErrorDisplayProps {
+  errorsJson: string;
+  attempt: number;
+  totalAttempts: number;
+}
+
+function ErrorDisplay({
+  errorsJson,
+  attempt,
+  totalAttempts,
+}: ErrorDisplayProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  let errors: ErrorInfo[] = [];
+
   try {
     const parsed = JSON.parse(errorsJson);
     if (Array.isArray(parsed) && parsed.length > 0) {
+      // Playwright format: array of error objects
       errors = parsed;
+    } else if (parsed && typeof parsed === "object" && parsed.message) {
+      // Cypress format: single error object with message and estack
+      errors = [parsed];
     }
   } catch {
-    // Invalid JSON, errors stays null
+    // Invalid JSON, errors stays empty
   }
 
-  if (!errors) return null;
+  if (errors.length === 0) return null;
+
+  // Extract file location from stack trace (for Cypress)
+  const extractLocation = (estack?: string): string | null => {
+    if (!estack) return null;
+    // Match patterns like "at Context.eval (webpack://cypress/./tests/.../file.js:77:49)"
+    // or "at file.js:77:49"
+    const match = estack.match(/at\s+(?:[\w.]+\s+)?\(?(.+?):(\d+):(\d+)\)?/);
+    if (match && match[1] && match[2] && match[3]) {
+      const filePath = match[1];
+      const line = match[2];
+      const col = match[3];
+      // Simplify webpack paths
+      const simplePath = filePath.replace(/^webpack:\/\/[^/]+\/\.\//, "");
+      return `${simplePath}:${line}:${col}`;
+    }
+    return null;
+  };
+
+  const showAttempt = totalAttempts > 1;
 
   return (
     <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs dark:border-red-800 dark:bg-red-900/20">
-      <p className="mb-1 font-medium text-red-800 dark:text-red-300 flex items-center gap-1">
-        <XCircle className="h-3 w-3" />
-        Error
-      </p>
-      {errors.map((error: { message?: string }, idx: number) => (
-        <pre
-          key={idx}
-          className="overflow-x-auto whitespace-pre-wrap text-red-700 dark:text-red-400"
-        >
-          {error.message || JSON.stringify(error, null, 2)}
-        </pre>
-      ))}
+      {showAttempt && (
+        <p className="mb-1 text-red-600 dark:text-red-400 font-medium flex items-center gap-1">
+          <RotateCcw className="h-3 w-3" />
+          Attempt {attempt} of {totalAttempts}
+        </p>
+      )}
+      {errors.map((error, idx) => {
+        const location = extractLocation(error.estack);
+        return (
+          <div key={idx} className="space-y-1">
+            <p className="font-medium text-red-800 dark:text-red-300 flex items-center gap-1">
+              <XCircle className="h-3 w-3 flex-shrink-0" />
+              <span className="break-all">
+                {error.message || "Unknown error"}
+              </span>
+            </p>
+            {location && (
+              <p className="ml-4 font-mono text-red-600 dark:text-red-400">
+                at {location}
+              </p>
+            )}
+            {error.estack && (
+              <div className="ml-4">
+                <button
+                  type="button"
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 underline"
+                >
+                  {isExpanded ? "Hide stack trace" : "Show stack trace"}
+                </button>
+                {isExpanded && (
+                  <pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-900/30 p-2 rounded">
+                    {error.estack}
+                  </pre>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

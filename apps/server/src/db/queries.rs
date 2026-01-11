@@ -167,6 +167,22 @@ pub fn mark_report_files_deleted(conn: &Connection, id: Uuid) -> AppResult<()> {
     Ok(())
 }
 
+/// Update report framework and version.
+pub fn update_report_framework(
+    conn: &Connection,
+    id: Uuid,
+    framework: &str,
+    framework_version: &Option<String>,
+) -> AppResult<()> {
+    conn.execute(
+        "UPDATE reports SET framework = ?1, framework_version = ?2 WHERE id = ?3",
+        params![framework, framework_version.as_deref(), id.to_string(),],
+    )
+    .map_err(|e| AppError::Database(format!("Failed to update framework: {}", e)))?;
+
+    Ok(())
+}
+
 // ============================================================================
 // Report Stats Queries
 // ============================================================================
@@ -245,7 +261,20 @@ pub fn get_test_suites(conn: &Connection, report_id: Uuid) -> AppResult<Vec<Test
             "SELECT ts.id, ts.report_id, ts.title, ts.file_path,
                     COUNT(DISTINCT tsp.id) as specs_count,
                     SUM(CASE WHEN tsp.ok = 1 THEN 1 ELSE 0 END) as passed_count,
-                    SUM(CASE WHEN tsp.ok = 0 THEN 1 ELSE 0 END) as failed_count,
+                    -- Failed: ok=0 AND final result is NOT skipped
+                    (SELECT COUNT(DISTINCT tsp_f.id)
+                     FROM test_specs tsp_f
+                     WHERE tsp_f.suite_id = ts.id
+                       AND tsp_f.ok = 0
+                       AND NOT EXISTS (
+                           SELECT 1 FROM test_results tr_f
+                           WHERE tr_f.spec_id = tsp_f.id
+                             AND tr_f.status = 'skipped'
+                             AND tr_f.retry = (
+                                 SELECT MAX(tr_f2.retry) FROM test_results tr_f2 WHERE tr_f2.spec_id = tsp_f.id
+                             )
+                       )
+                    ) as failed_count,
                     -- Flaky: ok=1 but has at least one failed result
                     (SELECT COUNT(DISTINCT tsp2.id)
                      FROM test_specs tsp2

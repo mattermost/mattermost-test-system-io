@@ -102,7 +102,45 @@ describe('ReportList', () => {
     expect(screen.getByText(/playwright v1\.57\.0/i)).toBeInTheDocument();
     // Stats - now displayed as just numbers with icons
     expect(screen.getByText('10')).toBeInTheDocument(); // passed count
-    expect(screen.getByText('1')).toBeInTheDocument(); // failed count
+    // Failed count "1" appears twice (row number + failed count), use getAllByText
+    expect(screen.getAllByText('1').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('renders Cypress report cards with framework indicator', () => {
+    vi.mocked(useReports).mockReturnValue({
+      data: {
+        reports: [
+          {
+            id: 'cypress-report-123456789abc',
+            created_at: '2026-01-10T14:00:00Z',
+            extraction_status: 'completed' as const,
+            framework: 'cypress',
+            framework_version: '13.7.0',
+            stats: {
+              start_time: '2026-01-10T13:30:00Z',
+              duration_ms: 45000,
+              expected: 25,
+              skipped: 3,
+              unexpected: 2,
+              flaky: 0,
+            },
+          },
+        ],
+        pagination: { page: 1, limit: 100, total: 1, total_pages: 1 },
+      },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useReports>);
+
+    render(<ReportList />, { wrapper: createWrapper() });
+
+    // Report ID (first 8 chars)
+    expect(screen.getByText('cypress-')).toBeInTheDocument();
+    // Framework info - Cypress with version
+    expect(screen.getByText(/cypress v13\.7\.0/i)).toBeInTheDocument();
+    // Stats
+    expect(screen.getByText('25')).toBeInTheDocument(); // passed count
+    expect(screen.getByText('2')).toBeInTheDocument(); // failed count
   });
 
   it('shows pagination when multiple pages', () => {

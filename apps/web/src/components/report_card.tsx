@@ -19,9 +19,10 @@ import type { ReportSummary } from "../types";
 
 interface ReportCardProps {
   report: ReportSummary;
+  rowNumber?: number;
 }
 
-export function ReportCard({ report }: ReportCardProps) {
+export function ReportCard({ report, rowNumber }: ReportCardProps) {
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleDateString(undefined, {
@@ -71,6 +72,13 @@ export function ReportCard({ report }: ReportCardProps) {
       to={`/reports/${report.id}`}
       className="group flex items-center gap-4 rounded-lg border border-gray-200 bg-white px-4 py-3 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700/50"
     >
+      {/* Row Number */}
+      {rowNumber !== undefined && (
+        <span className="w-8 text-right text-xs font-medium text-gray-400 dark:text-gray-500">
+          {rowNumber}
+        </span>
+      )}
+
       {/* Status Icon */}
       {statusIcon}
 

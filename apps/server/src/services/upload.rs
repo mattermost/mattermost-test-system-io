@@ -18,11 +18,58 @@ use crate::services::extraction;
 /// Maximum file size (500MB)
 const MAX_FILE_SIZE: usize = 500 * 1024 * 1024;
 
-/// Required file for a valid report
-const REQUIRED_FILES: &[&str] = &["index.html"];
-
 /// Optional but expected files
 const EXPECTED_FILES: &[&str] = &["results.json", "results.xml"];
+
+/// Video file extensions that are rejected during upload.
+const VIDEO_EXTENSIONS: &[&str] = &[".mp4", ".webm", ".avi", ".mov", ".mkv"];
+
+/// Check if a filename is a video file that should be rejected.
+fn is_video_file(filename: &str) -> bool {
+    let filename_lower = filename.to_lowercase();
+    VIDEO_EXTENSIONS
+        .iter()
+        .any(|ext| filename_lower.ends_with(ext))
+}
+
+/// Detect the test framework based on uploaded files.
+///
+/// Returns (framework, framework_version) tuple.
+/// - If explicit parameters are provided, uses those.
+/// - Otherwise auto-detects: all.json/mochawesome.json = Cypress, results.json = Playwright.
+/// - Falls back to "unknown" if no pattern matches.
+fn detect_framework(
+    files: &[String],
+    explicit_framework: Option<&str>,
+    explicit_version: Option<&str>,
+) -> (String, Option<String>) {
+    // Use explicit parameters if provided
+    if let Some(fw) = explicit_framework {
+        return (fw.to_string(), explicit_version.map(|v| v.to_string()));
+    }
+
+    // Auto-detect by file presence
+    let has_cypress_json = files
+        .iter()
+        .any(|f| f == "all.json" || f == "mochawesome.json");
+    let has_playwright_json = files.iter().any(|f| f == "results.json");
+
+    if has_cypress_json {
+        return ("cypress".to_string(), None);
+    }
+    if has_playwright_json {
+        return ("playwright".to_string(), None);
+    }
+
+    ("unknown".to_string(), None)
+}
+
+/// A file that was rejected during upload.
+#[derive(Debug, Clone, Serialize)]
+pub struct RejectedFile {
+    pub file: String,
+    pub reason: String,
+}
 
 /// Upload response.
 #[derive(Serialize)]
@@ -32,6 +79,12 @@ pub struct UploadResponse {
     pub files_count: usize,
     pub extraction_status: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framework: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framework_version: Option<String>,
+    pub files_accepted: Vec<String>,
+    pub files_rejected: Vec<RejectedFile>,
 }
 
 /// Configure upload routes.
@@ -44,6 +97,15 @@ pub fn configure_upload_routes(cfg: &mut web::ServiceConfig) {
 /// POST /reports
 /// Content-Type: multipart/form-data
 /// X-API-Key: <api-key>
+///
+/// Supports both Playwright and Cypress reports:
+/// - Playwright: requires index.html, optionally results.json
+/// - Cypress: requires all.json or mochawesome.json, optionally mochawesome.html
+///
+/// Optional form fields:
+/// - framework: explicit framework type ("playwright" or "cypress")
+/// - framework_version: framework version string
+/// - github_context: JSON-encoded GitHub context metadata
 #[post("/reports")]
 async fn upload_report(
     req: HttpRequest,
@@ -81,9 +143,14 @@ async fn upload_report(
 
     info!("Processing upload for report {}", report_id);
 
-    // Process uploaded files
-    let mut uploaded_files: Vec<String> = Vec::new();
+    // Track uploaded files and rejected files
+    let mut files_accepted: Vec<String> = Vec::new();
+    let mut files_rejected: Vec<RejectedFile> = Vec::new();
     let mut total_size: usize = 0;
+
+    // Track optional form fields for framework detection
+    let mut explicit_framework: Option<String> = None;
+    let mut explicit_framework_version: Option<String> = None;
 
     while let Some(item) = payload.next().await {
         let mut field =
@@ -93,10 +160,11 @@ async fn upload_report(
             .content_disposition()
             .ok_or_else(|| AppError::InvalidInput("Missing content disposition".to_string()))?;
 
-        // Check for github_context form field (non-file field)
+        // Check for form fields (non-file fields)
         let field_name = content_disposition.get_name();
+
+        // Handle github_context field
         if field_name == Some("github_context") {
-            // Read the JSON content
             let mut json_data = Vec::new();
             while let Some(chunk) = field.next().await {
                 let data =
@@ -104,7 +172,6 @@ async fn upload_report(
                 json_data.extend_from_slice(&data);
             }
 
-            // Parse as GitHubContext
             if !json_data.is_empty() {
                 match serde_json::from_slice::<GitHubContext>(&json_data) {
                     Ok(ctx) if !ctx.is_empty() => {
@@ -116,13 +183,55 @@ async fn upload_report(
                     }
                     Err(e) => {
                         warn!("Invalid github_context JSON: {}", e);
-                        // Don't fail the upload, just log and continue
                     }
                 }
             }
             continue;
         }
 
+        // Handle framework field
+        if field_name == Some("framework") {
+            let mut data = Vec::new();
+            while let Some(chunk) = field.next().await {
+                let chunk_data =
+                    chunk.map_err(|e| AppError::InvalidInput(format!("Read error: {}", e)))?;
+                data.extend_from_slice(&chunk_data);
+            }
+            if let Ok(value) = String::from_utf8(data) {
+                let value = value.trim().to_string();
+                if !value.is_empty() {
+                    info!(
+                        "Received explicit framework: {} for report {}",
+                        value, report_id
+                    );
+                    explicit_framework = Some(value);
+                }
+            }
+            continue;
+        }
+
+        // Handle framework_version field
+        if field_name == Some("framework_version") {
+            let mut data = Vec::new();
+            while let Some(chunk) = field.next().await {
+                let chunk_data =
+                    chunk.map_err(|e| AppError::InvalidInput(format!("Read error: {}", e)))?;
+                data.extend_from_slice(&chunk_data);
+            }
+            if let Ok(value) = String::from_utf8(data) {
+                let value = value.trim().to_string();
+                if !value.is_empty() {
+                    info!(
+                        "Received explicit framework_version: {} for report {}",
+                        value, report_id
+                    );
+                    explicit_framework_version = Some(value);
+                }
+            }
+            continue;
+        }
+
+        // Process file uploads
         let filename = content_disposition
             .get_filename()
             .ok_or_else(|| AppError::InvalidInput("Missing filename".to_string()))?
@@ -138,6 +247,23 @@ async fn upload_report(
                 "Invalid filename: {}",
                 filename
             )));
+        }
+
+        // Check if this is a video file - reject it
+        if is_video_file(&filename) {
+            // Drain the field content but don't save
+            while let Some(chunk) = field.next().await {
+                let _ = chunk;
+            }
+            warn!(
+                "Rejecting video file: {} for report {}",
+                filename, report_id
+            );
+            files_rejected.push(RejectedFile {
+                file: filename,
+                reason: "video files not supported".to_string(),
+            });
+            continue;
         }
 
         let filepath = report_dir.join(&filename);
@@ -185,27 +311,51 @@ async fn upload_report(
             "Saved file {} ({} bytes) for report {}",
             filename, file_size, report_id
         );
-        uploaded_files.push(filename.to_string());
+        files_accepted.push(filename.to_string());
     }
 
-    // Validate required files
-    for required in REQUIRED_FILES {
-        if !uploaded_files.iter().any(|f| f == *required) {
-            cleanup_on_error(&report_dir).await;
-            return Err(AppError::InvalidInput(format!(
-                "Missing required file: {}",
-                required
-            )));
-        }
+    // Detect framework based on uploaded files
+    let (framework, mut framework_version) = detect_framework(
+        &files_accepted,
+        explicit_framework.as_deref(),
+        explicit_framework_version.as_deref(),
+    );
+
+    info!(
+        "Detected framework: {} (version: {:?}) for report {}",
+        framework, framework_version, report_id
+    );
+
+    // Update report with framework info
+    report.framework = Some(framework.clone());
+    report.framework_version = framework_version.clone();
+
+    // Validate required files based on framework
+    let is_cypress = framework == "cypress";
+    let has_playwright_html = files_accepted.iter().any(|f| f == "index.html");
+    let has_cypress_json = files_accepted
+        .iter()
+        .any(|f| f == "all.json" || f == "mochawesome.json");
+
+    // For Playwright, require index.html. For Cypress, require all.json or mochawesome.json.
+    // For unknown framework, require at least one recognized pattern.
+    if !is_cypress && !has_playwright_html && !has_cypress_json {
+        cleanup_on_error(&report_dir).await;
+        return Err(AppError::InvalidInput(
+            "Missing required file: index.html (Playwright) or all.json/mochawesome.json (Cypress)"
+                .to_string(),
+        ));
     }
 
-    // Warn about missing expected files
-    for expected in EXPECTED_FILES {
-        if !uploaded_files.iter().any(|f| f == *expected) {
-            warn!(
-                "Report {} is missing expected file: {}",
-                report_id, expected
-            );
+    // Warn about missing expected files for Playwright
+    if !is_cypress {
+        for expected in EXPECTED_FILES {
+            if !files_accepted.iter().any(|f| f == *expected) {
+                warn!(
+                    "Report {} is missing expected file: {}",
+                    report_id, expected
+                );
+            }
         }
     }
 
@@ -221,31 +371,71 @@ async fn upload_report(
     })?;
 
     info!(
-        "Report {} created with {} files",
+        "Report {} created with {} files ({} rejected)",
         report_id,
-        uploaded_files.len()
+        files_accepted.len(),
+        files_rejected.len()
     );
 
-    // Trigger extraction if results.json exists
-    let has_results_json = uploaded_files.iter().any(|f| f == "results.json");
-    let extraction_status = if has_results_json {
-        let results_path = report_dir.join("results.json");
-        match extraction::extract_results(&conn, report_id, &results_path) {
-            Ok(_) => {
-                info!("Extraction completed for report {}", report_id);
+    // Trigger extraction based on framework
+    let extraction_status = if is_cypress {
+        // Cypress extraction
+        let json_path = if files_accepted.iter().any(|f| f == "all.json") {
+            report_dir.join("all.json")
+        } else {
+            report_dir.join("mochawesome.json")
+        };
+
+        match crate::services::cypress_extraction::extract_cypress_results(
+            &conn, report_id, &json_path,
+        ) {
+            Ok(version) => {
+                // Update framework version if extracted from JSON
+                if framework_version.is_none() && version.is_some() {
+                    framework_version = version;
+                    // Update in database
+                    if let Err(e) = queries::update_report_framework(
+                        &conn,
+                        report_id,
+                        &framework,
+                        &framework_version,
+                    ) {
+                        warn!("Failed to update framework version: {}", e);
+                    }
+                }
+                info!("Cypress extraction completed for report {}", report_id);
                 "completed"
             }
             Err(e) => {
-                warn!("Extraction failed for report {}: {}", report_id, e);
+                warn!("Cypress extraction failed for report {}: {}", report_id, e);
                 "failed"
             }
         }
     } else {
-        warn!(
-            "No results.json found, skipping extraction for report {}",
-            report_id
-        );
-        "pending"
+        // Playwright extraction
+        let has_results_json = files_accepted.iter().any(|f| f == "results.json");
+        if has_results_json {
+            let results_path = report_dir.join("results.json");
+            match extraction::extract_results(&conn, report_id, &results_path) {
+                Ok(_) => {
+                    info!("Playwright extraction completed for report {}", report_id);
+                    "completed"
+                }
+                Err(e) => {
+                    warn!(
+                        "Playwright extraction failed for report {}: {}",
+                        report_id, e
+                    );
+                    "failed"
+                }
+            }
+        } else {
+            warn!(
+                "No results.json found, skipping extraction for report {}",
+                report_id
+            );
+            "pending"
+        }
     };
 
     // Drop connection to release the lock
@@ -254,15 +444,19 @@ async fn upload_report(
     Ok(HttpResponse::Created().json(UploadResponse {
         id: report_id,
         created_at: report.created_at.to_rfc3339(),
-        files_count: uploaded_files.len(),
+        files_count: files_accepted.len(),
         extraction_status: extraction_status.to_string(),
         message: if extraction_status == "completed" {
             "Report uploaded and extracted successfully".to_string()
         } else if extraction_status == "failed" {
             "Report uploaded but extraction failed".to_string()
         } else {
-            "Report uploaded, extraction skipped (no results.json)".to_string()
+            "Report uploaded, extraction pending".to_string()
         },
+        framework: Some(framework),
+        framework_version,
+        files_accepted,
+        files_rejected,
     }))
 }
 

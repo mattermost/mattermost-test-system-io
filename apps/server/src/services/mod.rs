@@ -1,6 +1,7 @@
 //! Business logic services.
 
 pub mod cleanup;
+pub mod cypress_extraction;
 pub mod extraction;
 pub mod upload;
 

@@ -40,8 +40,12 @@ export function ReportList() {
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        {reports.map((report) => (
-          <ReportCard key={report.id} report={report} />
+        {reports.map((report, index) => (
+          <ReportCard
+            key={report.id}
+            report={report}
+            rowNumber={(page - 1) * limit + index + 1}
+          />
         ))}
       </div>
 

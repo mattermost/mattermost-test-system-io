@@ -3,8 +3,6 @@ import type {
   ReportListResponse,
   ReportDetail,
   TestSuiteListResponse,
-  HealthResponse,
-  ReadyResponse,
 } from "../types";
 
 const API_URL = import.meta.env.VITE_API_URL || "/api/v1";
@@ -59,16 +57,6 @@ export async function fetchReportSuites(
   return handleResponse<TestSuiteListResponse>(response);
 }
 
-export async function checkHealth(): Promise<HealthResponse> {
-  const response = await fetch(`${API_URL}/health`);
-  return handleResponse<HealthResponse>(response);
-}
-
-export async function checkReady(): Promise<ReadyResponse> {
-  const response = await fetch(`${API_URL}/ready`);
-  return handleResponse<ReadyResponse>(response);
-}
-
 // Get URL for HTML report viewer
 export function getReportHtmlUrl(id: string): string {
   return `${API_URL}/reports/${id}/html`;
@@ -95,21 +83,5 @@ export function useReportSuites(id: string) {
     queryKey: ["report", id, "suites"],
     queryFn: () => fetchReportSuites(id),
     enabled: !!id,
-  });
-}
-
-export function useHealth() {
-  return useQuery({
-    queryKey: ["health"],
-    queryFn: checkHealth,
-    refetchInterval: 30000,
-  });
-}
-
-export function useReady() {
-  return useQuery({
-    queryKey: ["ready"],
-    queryFn: checkReady,
-    refetchInterval: 30000,
   });
 }

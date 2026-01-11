@@ -79,4 +79,42 @@ mod tests {
         // 3. Assert upload succeeds
         // 4. Assert extraction_status is "pending"
     }
+
+    // === Cypress Extraction Tests ===
+
+    /// Test Cypress mochawesome JSON extraction with stats mapping.
+    #[test]
+    fn test_cypress_extraction_stats_mapping() {
+        // TODO: Implement when test infrastructure is set up
+        // This test should:
+        // 1. Start test server
+        // 2. Upload Cypress report with known all.json content
+        // 3. Query database for report_stats
+        // 4. Verify mapping: passes→expected, failures→unexpected, pending+skipped→skipped, flaky=0
+        // 5. Verify duration and start_time are correctly parsed
+    }
+
+    /// Test Cypress nested suite extraction.
+    #[test]
+    fn test_cypress_extraction_nested_suites() {
+        // TODO: Implement when test infrastructure is set up
+        // This test should:
+        // 1. Start test server
+        // 2. Upload Cypress report with nested describe blocks
+        // 3. Query database for test_suites
+        // 4. Verify all suites (including nested) are extracted
+        // 5. Verify suite titles and file paths are correct
+    }
+
+    /// Test Cypress extraction failure handling and rollback.
+    #[test]
+    fn test_cypress_extraction_failure_rollback() {
+        // TODO: Implement when test infrastructure is set up
+        // This test should:
+        // 1. Start test server
+        // 2. Upload Cypress report with malformed all.json
+        // 3. Assert extraction_status is "failed"
+        // 4. Verify no partial data in database (stats, suites, specs, results)
+        // 5. Verify error_message is set with meaningful description
+    }
 }

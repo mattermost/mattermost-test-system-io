@@ -254,7 +254,7 @@ fn process_mochawesome_test(
         suite_id,
         title: test.title.clone(),
         ok,
-        spec_id: test.uuid.clone(),
+        full_title: test.full_title.clone(), // Full title including describe blocks
         file_path: file_path.to_string(),
         line: 0,   // Mochawesome doesn't provide line numbers
         column: 0, // Mochawesome doesn't provide column numbers

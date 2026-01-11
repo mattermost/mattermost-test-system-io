@@ -17,8 +17,8 @@ pub struct TestSpec {
     pub title: String,
     /// Whether the test passed (ok = true)
     pub ok: bool,
-    /// Playwright's spec ID
-    pub spec_id: String,
+    /// Full title including suite/describe blocks
+    pub full_title: String,
     /// Path to test file
     pub file_path: String,
     /// Line number in file
@@ -33,7 +33,7 @@ impl TestSpec {
         suite_id: i64,
         title: String,
         ok: bool,
-        spec_id: String,
+        full_title: String,
         file_path: String,
         line: i32,
         column: i32,
@@ -43,12 +43,19 @@ impl TestSpec {
             suite_id,
             title,
             ok,
-            spec_id,
+            full_title,
             file_path,
             line,
             column,
         }
     }
+}
+
+/// Screenshot info for API response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenshotInfo {
+    pub file_path: String,
+    pub screenshot_type: String,
 }
 
 /// Test spec with its results for API response.
@@ -57,11 +64,13 @@ pub struct TestSpecWithResults {
     pub id: i64,
     pub title: String,
     pub ok: bool,
-    pub spec_id: String,
+    pub full_title: String,
     pub file_path: String,
     pub line: i32,
     pub column: i32,
     pub results: Vec<TestResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screenshots: Option<Vec<ScreenshotInfo>>,
 }
 
 /// Response for test spec list with results.

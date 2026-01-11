@@ -6,6 +6,30 @@ use uuid::Uuid;
 
 use super::github_context::GitHubContext;
 
+/// Detox platform (iOS or Android).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DetoxPlatform {
+    Ios,
+    Android,
+}
+
+impl DetoxPlatform {
+    /// Convert to string representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ios => "ios",
+            Self::Android => "android",
+        }
+    }
+}
+
+impl std::fmt::Display for DetoxPlatform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Extraction status for a report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -61,6 +85,9 @@ pub struct Report {
     pub framework: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub framework_version: Option<String>,
+    /// Platform for Detox reports (ios/android)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
     /// Error message if extraction failed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
@@ -87,6 +114,7 @@ impl Report {
             file_path: id.to_string(),
             framework: None,
             framework_version: None,
+            platform: None,
             error_message: None,
             has_files: true,
             files_deleted_at: None,
@@ -105,6 +133,9 @@ pub struct ReportSummary {
     pub framework: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub framework_version: Option<String>,
+    /// Platform for Detox reports (ios/android)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<super::report_stats::ReportStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -119,6 +150,7 @@ impl From<Report> for ReportSummary {
             extraction_status: report.extraction_status,
             framework: report.framework,
             framework_version: report.framework_version,
+            platform: report.platform,
             stats: None,
             github_context: report.github_context,
         }

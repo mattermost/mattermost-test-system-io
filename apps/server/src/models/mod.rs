@@ -1,5 +1,7 @@
 //! Domain models for the Rust Report Viewer.
 
+pub mod detox_job;
+pub mod detox_screenshot;
 pub mod github_context;
 pub mod report;
 pub mod report_stats;
@@ -8,11 +10,13 @@ pub mod test_spec;
 pub mod test_suite;
 
 // Re-export commonly used types
+pub use detox_job::DetoxJob;
+pub use detox_screenshot::{DetoxScreenshot, ScreenshotType};
 pub use github_context::GitHubContext;
-pub use report::{ExtractionStatus, Report, ReportDetail, ReportSummary};
+pub use report::{DetoxPlatform, ExtractionStatus, Report, ReportDetail, ReportSummary};
 pub use report_stats::ReportStats;
 pub use test_result::{TestResult, TestStatus};
-pub use test_spec::{TestSpec, TestSpecListResponse, TestSpecWithResults};
+pub use test_spec::{ScreenshotInfo, TestSpec, TestSpecListResponse, TestSpecWithResults};
 pub use test_suite::{TestSuite, TestSuiteListResponse};
 
 /// Pagination parameters.

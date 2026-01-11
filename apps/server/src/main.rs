@@ -16,6 +16,7 @@ use std::sync::Arc;
 use actix_cors::Cors;
 use actix_files::{Files, NamedFile};
 use actix_web::{http::header, web, App, HttpRequest, HttpServer, Result as ActixResult};
+use tokio::sync::Semaphore;
 use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -155,8 +156,19 @@ async fn main() -> std::io::Result<()> {
     let api_key = config.api_key.clone();
     let data_dir = config.data_dir.clone();
     let max_upload_size = config.max_upload_size;
+    let max_concurrent_uploads = config.max_concurrent_uploads;
     let static_dir = config.static_dir.clone();
     let is_development = config.is_development();
+
+    // Create upload semaphore to limit concurrent uploads
+    // This bounds memory usage: max_concurrent_uploads × max_upload_size
+    let upload_semaphore = Arc::new(Semaphore::new(max_concurrent_uploads));
+    info!(
+        "Upload limits: {}MB max size, {} concurrent uploads ({}MB peak memory)",
+        max_upload_size / 1024 / 1024,
+        max_concurrent_uploads,
+        (max_upload_size * max_concurrent_uploads) / 1024 / 1024
+    );
 
     if static_dir.is_some() {
         info!("Static file serving enabled from {:?}", static_dir);
@@ -215,12 +227,17 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(data_dir.clone()))
             .app_data(web::Data::new(api_key.clone()))
-            .app_data(web::PayloadConfig::new(max_upload_size))
+            .app_data(web::Data::new(max_upload_size))
+            .app_data(web::Data::new(upload_semaphore.clone()))
+            // Allow 10x max_upload_size at HTTP layer - actual limit enforced in streaming code
+            // This prevents ECONNRESET when clients send large uploads with many optional files
+            .app_data(web::PayloadConfig::new(max_upload_size * 10))
             // Configure API routes
             .service(
                 web::scope("/api/v1")
                     .configure(api::configure_health_routes)
                     .configure(api::configure_report_routes)
+                    .configure(api::configure_detox_routes)
                     .configure(services::configure_upload_routes),
             );
 

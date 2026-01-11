@@ -28,13 +28,24 @@ pub enum AppError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
-    /// File too large
-    #[error("File too large: {0}")]
-    PayloadTooLarge(String),
+    /// File too large with details
+    #[error("Payload too large: {message}")]
+    PayloadTooLarge {
+        message: String,
+        details: serde_json::Value,
+    },
 
     /// Extraction failed
     #[error("Extraction failed: {0}")]
     ExtractionFailed(String),
+
+    /// Detox job not found
+    #[error("Detox job not found: {0}")]
+    DetoxJobNotFound(String),
+
+    /// Service temporarily unavailable (e.g., too many concurrent requests)
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
 }
 
 impl ResponseError for AppError {
@@ -55,7 +66,7 @@ impl ResponseError for AppError {
             AppError::Unauthorized(_) => {
                 (actix_web::http::StatusCode::UNAUTHORIZED, "UNAUTHORIZED")
             }
-            AppError::PayloadTooLarge(_) => (
+            AppError::PayloadTooLarge { .. } => (
                 actix_web::http::StatusCode::PAYLOAD_TOO_LARGE,
                 "PAYLOAD_TOO_LARGE",
             ),
@@ -63,12 +74,26 @@ impl ResponseError for AppError {
                 actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "EXTRACTION_FAILED",
             ),
+            AppError::DetoxJobNotFound(_) => (
+                actix_web::http::StatusCode::NOT_FOUND,
+                "DETOX_JOB_NOT_FOUND",
+            ),
+            AppError::ServiceUnavailable(_) => (
+                actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+            ),
+        };
+
+        // Extract details if present
+        let details = match self {
+            AppError::PayloadTooLarge { details, .. } => Some(details.clone()),
+            _ => None,
         };
 
         HttpResponse::build(status).json(ErrorResponse {
             error: error_code.to_string(),
             message: self.to_string(),
-            details: None,
+            details,
         })
     }
 }

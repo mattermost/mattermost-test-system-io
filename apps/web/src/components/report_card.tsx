@@ -99,6 +99,7 @@ export function ReportCard({ report, rowNumber }: ReportCardProps) {
             <FlaskConical className="h-3 w-3 flex-shrink-0" />
             <span className="truncate">
               {report.framework}
+              {report.platform && ` (${report.platform})`}
               {report.framework_version && ` v${report.framework_version}`}
             </span>
           </div>

@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    ExtractionStatus, GitHubContext, Pagination, PaginationParams, Report, ReportStats,
-    ReportSummary, TestResult, TestSpec, TestSuite,
+    DetoxJob, DetoxScreenshot, ExtractionStatus, GitHubContext, Pagination, PaginationParams,
+    Report, ReportStats, ReportSummary, ScreenshotType, TestResult, TestSpec, TestSuite,
 };
 
 // ============================================================================
@@ -17,8 +17,8 @@ use crate::models::{
 /// Insert a new report.
 pub fn insert_report(conn: &Connection, report: &Report) -> AppResult<()> {
     conn.execute(
-        "INSERT INTO reports (id, created_at, deleted_at, extraction_status, file_path, framework, framework_version, error_message, has_files, files_deleted_at, github_context)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO reports (id, created_at, deleted_at, extraction_status, file_path, framework, framework_version, platform, error_message, has_files, files_deleted_at, github_context)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             report.id.to_string(),
             report.created_at.to_rfc3339(),
@@ -27,6 +27,7 @@ pub fn insert_report(conn: &Connection, report: &Report) -> AppResult<()> {
             report.file_path.as_str(),
             report.framework.as_deref(),
             report.framework_version.as_deref(),
+            report.platform.as_deref(),
             report.error_message.as_deref(),
             report.has_files as i32,
             report.files_deleted_at.map(|dt| dt.to_rfc3339()),
@@ -42,7 +43,7 @@ pub fn insert_report(conn: &Connection, report: &Report) -> AppResult<()> {
 pub fn get_active_report_by_id(conn: &Connection, id: Uuid) -> AppResult<Option<Report>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, created_at, deleted_at, extraction_status, file_path, framework, framework_version, error_message, has_files, files_deleted_at, github_context
+            "SELECT id, created_at, deleted_at, extraction_status, file_path, framework, framework_version, platform, error_message, has_files, files_deleted_at, github_context
              FROM reports WHERE id = ?1 AND deleted_at IS NULL",
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -56,10 +57,11 @@ pub fn get_active_report_by_id(conn: &Connection, id: Uuid) -> AppResult<Option<
             file_path: row.get(4)?,
             framework: row.get(5)?,
             framework_version: row.get(6)?,
-            error_message: row.get(7)?,
-            has_files: row.get(8)?,
-            files_deleted_at: row.get(9)?,
-            github_context: row.get(10)?,
+            platform: row.get(7)?,
+            error_message: row.get(8)?,
+            has_files: row.get(9)?,
+            files_deleted_at: row.get(10)?,
+            github_context: row.get(11)?,
         })
     });
 
@@ -87,10 +89,11 @@ pub fn list_reports(
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-    // Get reports with stats
+    // Get reports with stats and platform
     let mut stmt = conn
         .prepare(
             "SELECT r.id, r.created_at, r.extraction_status, r.framework, r.framework_version,
+                    r.platform,
                     s.start_time, s.duration_ms, s.expected, s.skipped, s.unexpected, s.flaky,
                     r.github_context
              FROM reports r
@@ -109,13 +112,14 @@ pub fn list_reports(
                 extraction_status: row.get(2)?,
                 framework: row.get(3)?,
                 framework_version: row.get(4)?,
-                start_time: row.get(5)?,
-                duration_ms: row.get(6)?,
-                expected: row.get(7)?,
-                skipped: row.get(8)?,
-                unexpected: row.get(9)?,
-                flaky: row.get(10)?,
-                github_context: row.get(11)?,
+                platform: row.get(5)?,
+                start_time: row.get(6)?,
+                duration_ms: row.get(7)?,
+                expected: row.get(8)?,
+                skipped: row.get(9)?,
+                unexpected: row.get(10)?,
+                flaky: row.get(11)?,
+                github_context: row.get(12)?,
             })
         })
         .map_err(|e| AppError::Database(e.to_string()))?
@@ -163,22 +167,6 @@ pub fn mark_report_files_deleted(conn: &Connection, id: Uuid) -> AppResult<()> {
         params![Utc::now().to_rfc3339(), id.to_string(),],
     )
     .map_err(|e| AppError::Database(format!("Failed to mark files deleted: {}", e)))?;
-
-    Ok(())
-}
-
-/// Update report framework and version.
-pub fn update_report_framework(
-    conn: &Connection,
-    id: Uuid,
-    framework: &str,
-    framework_version: &Option<String>,
-) -> AppResult<()> {
-    conn.execute(
-        "UPDATE reports SET framework = ?1, framework_version = ?2 WHERE id = ?3",
-        params![framework, framework_version.as_deref(), id.to_string(),],
-    )
-    .map_err(|e| AppError::Database(format!("Failed to update framework: {}", e)))?;
 
     Ok(())
 }
@@ -345,7 +333,7 @@ pub fn get_suite_specs_with_results(
     // First get all specs for the suite
     let mut spec_stmt = conn
         .prepare(
-            "SELECT id, title, ok, spec_id, file_path, line, col
+            "SELECT id, title, ok, full_title, file_path, line, col
              FROM test_specs
              WHERE suite_id = ?1
              ORDER BY id",
@@ -380,7 +368,7 @@ pub fn get_suite_specs_with_results(
 
     let mut result_specs = Vec::new();
 
-    for (id, title, ok, spec_id, file_path, line, column) in specs {
+    for (id, title, ok, full_title, file_path, line, column) in specs {
         let results: Vec<TestResult> = result_stmt
             .query_map(params![id], |row| {
                 let status_str: String = row.get(1)?;
@@ -417,11 +405,12 @@ pub fn get_suite_specs_with_results(
             id,
             title,
             ok,
-            spec_id,
+            full_title,
             file_path,
             line,
             column,
             results,
+            screenshots: None,
         });
     }
 
@@ -431,13 +420,13 @@ pub fn get_suite_specs_with_results(
 /// Insert a test spec.
 pub fn insert_test_spec(conn: &Connection, spec: &TestSpec) -> AppResult<i64> {
     conn.execute(
-        "INSERT INTO test_specs (suite_id, title, ok, spec_id, file_path, line, col)
+        "INSERT INTO test_specs (suite_id, title, ok, full_title, file_path, line, col)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             spec.suite_id,
             spec.title.as_str(),
             spec.ok as i32,
-            spec.spec_id.as_str(),
+            spec.full_title.as_str(),
             spec.file_path.as_str(),
             spec.line,
             spec.column,
@@ -485,6 +474,7 @@ struct ReportRow {
     file_path: String,
     framework: Option<String>,
     framework_version: Option<String>,
+    platform: Option<String>,
     error_message: Option<String>,
     has_files: i32,
     files_deleted_at: Option<String>,
@@ -497,6 +487,7 @@ struct ReportSummaryRow {
     extraction_status: String,
     framework: Option<String>,
     framework_version: Option<String>,
+    platform: Option<String>,
     start_time: Option<String>,
     duration_ms: Option<i64>,
     expected: Option<i32>,
@@ -545,6 +536,7 @@ fn row_to_report(row: ReportRow) -> AppResult<Report> {
         file_path: row.file_path,
         framework: row.framework,
         framework_version: row.framework_version,
+        platform: row.platform,
         error_message: row.error_message,
         has_files: row.has_files != 0,
         files_deleted_at,
@@ -588,6 +580,7 @@ fn row_to_report_summary(row: ReportSummaryRow) -> AppResult<ReportSummary> {
         extraction_status,
         framework: row.framework,
         framework_version: row.framework_version,
+        platform: row.platform,
         stats,
         github_context,
     })
@@ -609,4 +602,361 @@ fn row_to_stats(row: StatsRow) -> AppResult<ReportStats> {
         unexpected: row.unexpected,
         flaky: row.flaky,
     })
+}
+
+// ============================================================================
+// Detox Job Queries (T007)
+// ============================================================================
+
+/// Insert a new Detox job.
+pub fn insert_detox_job(conn: &Connection, job: &DetoxJob) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO detox_jobs (id, report_id, job_name, created_at, tests_count, passed_count, failed_count, skipped_count, duration_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            job.id.to_string(),
+            job.report_id.to_string(),
+            job.job_name.as_str(),
+            job.created_at.to_rfc3339(),
+            job.tests_count,
+            job.passed_count,
+            job.failed_count,
+            job.skipped_count,
+            job.duration_ms,
+        ],
+    )
+    .map_err(|e| AppError::Database(format!("Failed to insert detox job: {}", e)))?;
+
+    Ok(())
+}
+
+/// Get Detox job by ID.
+pub fn get_detox_job_by_id(conn: &Connection, id: Uuid) -> AppResult<Option<DetoxJob>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, report_id, job_name, created_at, tests_count, passed_count, failed_count, skipped_count, duration_ms
+             FROM detox_jobs WHERE id = ?1",
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let result = stmt.query_row(params![id.to_string()], row_to_detox_job);
+
+    match result {
+        Ok(job) => Ok(Some(job?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(AppError::Database(e.to_string())),
+    }
+}
+
+/// Get Detox jobs by report ID.
+pub fn get_detox_jobs_by_report_id(conn: &Connection, report_id: Uuid) -> AppResult<Vec<DetoxJob>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, report_id, job_name, created_at, tests_count, passed_count, failed_count, skipped_count, duration_ms
+             FROM detox_jobs WHERE report_id = ?1 ORDER BY job_name",
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let jobs = stmt
+        .query_map(params![report_id.to_string()], row_to_detox_job)
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    jobs.into_iter().collect()
+}
+
+fn row_to_detox_job(row: &rusqlite::Row<'_>) -> Result<AppResult<DetoxJob>, rusqlite::Error> {
+    let id_str: String = row.get(0)?;
+    let report_id_str: String = row.get(1)?;
+    let job_name: String = row.get(2)?;
+    let created_at_str: String = row.get(3)?;
+    let tests_count: i32 = row.get(4)?;
+    let passed_count: i32 = row.get(5)?;
+    let failed_count: i32 = row.get(6)?;
+    let skipped_count: i32 = row.get(7)?;
+    let duration_ms: i64 = row.get(8)?;
+
+    Ok((|| {
+        let id = Uuid::parse_str(&id_str).map_err(|e| AppError::Database(e.to_string()))?;
+        let report_id =
+            Uuid::parse_str(&report_id_str).map_err(|e| AppError::Database(e.to_string()))?;
+        let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+            .map_err(|e| AppError::Database(format!("Invalid date: {}", e)))?
+            .with_timezone(&Utc);
+
+        Ok(DetoxJob {
+            id,
+            report_id,
+            job_name,
+            created_at,
+            tests_count,
+            passed_count,
+            failed_count,
+            skipped_count,
+            duration_ms,
+        })
+    })())
+}
+
+// ============================================================================
+// Detox Screenshot Queries (T008)
+// ============================================================================
+
+/// Insert a new Detox screenshot.
+pub fn insert_detox_screenshot(conn: &Connection, screenshot: &DetoxScreenshot) -> AppResult<i64> {
+    conn.execute(
+        "INSERT INTO detox_screenshots (job_id, test_full_name, screenshot_type, file_path, created_at, deleted_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            screenshot.job_id.to_string(),
+            screenshot.test_full_name.as_str(),
+            screenshot.screenshot_type.as_str(),
+            screenshot.file_path.as_str(),
+            screenshot.created_at.to_rfc3339(),
+            screenshot.deleted_at.map(|dt| dt.to_rfc3339()),
+        ],
+    )
+    .map_err(|e| AppError::Database(format!("Failed to insert detox screenshot: {}", e)))?;
+
+    Ok(conn.last_insert_rowid())
+}
+
+/// Get screenshots by test full name (only active, not soft-deleted).
+pub fn get_detox_screenshots_by_test_name(
+    conn: &Connection,
+    job_id: Uuid,
+    test_full_name: &str,
+) -> AppResult<Vec<DetoxScreenshot>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, job_id, test_full_name, screenshot_type, file_path, created_at, deleted_at
+             FROM detox_screenshots WHERE job_id = ?1 AND test_full_name = ?2 AND deleted_at IS NULL ORDER BY id",
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let screenshots = stmt
+        .query_map(
+            params![job_id.to_string(), test_full_name],
+            row_to_detox_screenshot,
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    screenshots.into_iter().collect()
+}
+
+/// Get combined test results for a Detox report with pagination, status filter, and search.
+/// T035: Implement combined test query joining test_specs with detox_jobs.
+pub fn get_detox_combined_tests(
+    conn: &Connection,
+    report_id: Uuid,
+    pagination: &PaginationParams,
+    status_filter: Option<&str>,
+    search_filter: Option<&str>,
+) -> AppResult<(Vec<crate::api::detox::DetoxCombinedTestResult>, Pagination)> {
+    use crate::api::detox::DetoxCombinedTestResult;
+
+    let page = pagination.page.max(1);
+    let limit = pagination.clamped_limit();
+    let offset = pagination.offset();
+
+    // Build WHERE clause for filters
+    let mut conditions = vec!["dj.report_id = ?1".to_string()];
+    let mut param_idx = 2;
+
+    if let Some(status) = status_filter {
+        conditions.push(format!("tr.status = ?{}", param_idx));
+        param_idx += 1;
+        let _ = status; // Used below in params
+    }
+
+    if let Some(search) = search_filter {
+        conditions.push(format!(
+            "(ts.title LIKE ?{} OR ts.full_title LIKE ?{})",
+            param_idx,
+            param_idx + 1
+        ));
+        let _ = search; // Used below in params
+    }
+
+    let where_clause = conditions.join(" AND ");
+
+    // Build the query
+    let sql = format!(
+        r#"
+        SELECT
+            ts.id,
+            ts.title,
+            ts.full_title,
+            tr.status,
+            tr.duration_ms,
+            tr.error_message,
+            dj.id as job_id,
+            dj.job_name,
+            tsu.title as suite_title,
+            (SELECT COUNT(*) FROM detox_screenshots ds WHERE ds.test_full_name = REPLACE(REPLACE(ts.full_title, '/', '_'), '"', '_') AND ds.job_id = dj.id AND ds.deleted_at IS NULL) > 0 as has_screenshots
+        FROM test_specs ts
+        JOIN test_results tr ON tr.spec_id = ts.id
+        JOIN test_suites tsu ON ts.suite_id = tsu.id
+        JOIN reports r ON tsu.report_id = r.id
+        JOIN detox_jobs dj ON dj.report_id = r.id
+        WHERE {}
+        ORDER BY dj.job_name ASC, ts.id ASC
+        LIMIT ?{} OFFSET ?{}
+        "#,
+        where_clause,
+        param_idx,
+        param_idx + 1
+    );
+
+    // Build parameters dynamically
+    let report_id_str = report_id.to_string();
+    let search_pattern = search_filter.map(|s| format!("%{}%", s));
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Database(format!("Failed to prepare query: {}", e)))?;
+
+    // Execute query with appropriate params based on filters
+    let results: Vec<DetoxCombinedTestResult> = match (status_filter, &search_pattern) {
+        (Some(status), Some(search)) => {
+            let rows = stmt
+                .query_map(
+                    params![report_id_str, status, search, search, limit, offset],
+                    row_to_combined_test,
+                )
+                .map_err(|e| AppError::Database(format!("Failed to query tests: {}", e)))?;
+            rows.filter_map(|r| r.ok().and_then(|r| r.ok())).collect()
+        }
+        (Some(status), None) => {
+            let rows = stmt
+                .query_map(
+                    params![report_id_str, status, limit, offset],
+                    row_to_combined_test,
+                )
+                .map_err(|e| AppError::Database(format!("Failed to query tests: {}", e)))?;
+            rows.filter_map(|r| r.ok().and_then(|r| r.ok())).collect()
+        }
+        (None, Some(search)) => {
+            let rows = stmt
+                .query_map(
+                    params![report_id_str, search, search, limit, offset],
+                    row_to_combined_test,
+                )
+                .map_err(|e| AppError::Database(format!("Failed to query tests: {}", e)))?;
+            rows.filter_map(|r| r.ok().and_then(|r| r.ok())).collect()
+        }
+        (None, None) => {
+            let rows = stmt
+                .query_map(params![report_id_str, limit, offset], row_to_combined_test)
+                .map_err(|e| AppError::Database(format!("Failed to query tests: {}", e)))?;
+            rows.filter_map(|r| r.ok().and_then(|r| r.ok())).collect()
+        }
+    };
+
+    // Get total count for pagination
+    let count_sql = format!(
+        r#"
+        SELECT COUNT(*)
+        FROM test_specs ts
+        JOIN test_results tr ON tr.spec_id = ts.id
+        JOIN test_suites tsu ON ts.suite_id = tsu.id
+        JOIN reports r ON ts.report_id = r.id
+        JOIN detox_jobs dj ON dj.report_id = r.id
+        WHERE {}
+        "#,
+        where_clause
+    );
+
+    let total: i64 = match (status_filter, &search_pattern) {
+        (Some(status), Some(search)) => conn
+            .query_row(
+                &count_sql,
+                params![report_id_str, status, search, search],
+                |row| row.get(0),
+            )
+            .unwrap_or(0),
+        (Some(status), None) => conn
+            .query_row(&count_sql, params![report_id_str, status], |row| row.get(0))
+            .unwrap_or(0),
+        (None, Some(search)) => conn
+            .query_row(&count_sql, params![report_id_str, search, search], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0),
+        (None, None) => conn
+            .query_row(&count_sql, params![report_id_str], |row| row.get(0))
+            .unwrap_or(0),
+    };
+
+    Ok((results, Pagination::new(page, limit, total as u64)))
+}
+
+fn row_to_combined_test(
+    row: &rusqlite::Row<'_>,
+) -> Result<AppResult<crate::api::detox::DetoxCombinedTestResult>, rusqlite::Error> {
+    use crate::api::detox::DetoxCombinedTestResult;
+
+    let id: i64 = row.get(0)?;
+    let title: String = row.get(1)?;
+    let full_title: String = row.get(2)?;
+    let status: String = row.get(3)?;
+    let duration_ms: i64 = row.get(4)?;
+    let error_message: Option<String> = row.get(5)?;
+    let job_id_str: String = row.get(6)?;
+    let job_name: String = row.get(7)?;
+    let suite_title: Option<String> = row.get(8)?;
+    let has_screenshots: bool = row.get(9)?;
+
+    Ok(Ok(DetoxCombinedTestResult {
+        id,
+        title,
+        full_title,
+        status,
+        duration_ms,
+        error_message,
+        job_id: job_id_str,
+        job_name,
+        suite_title,
+        has_screenshots,
+    }))
+}
+
+fn row_to_detox_screenshot(
+    row: &rusqlite::Row<'_>,
+) -> Result<AppResult<DetoxScreenshot>, rusqlite::Error> {
+    let id: i64 = row.get(0)?;
+    let job_id_str: String = row.get(1)?;
+    let test_full_name: String = row.get(2)?;
+    let screenshot_type_str: String = row.get(3)?;
+    let file_path: String = row.get(4)?;
+    let created_at_str: String = row.get(5)?;
+    let deleted_at_str: Option<String> = row.get(6)?;
+
+    Ok((|| {
+        let job_id = Uuid::parse_str(&job_id_str).map_err(|e| AppError::Database(e.to_string()))?;
+        let screenshot_type = ScreenshotType::from_str(&screenshot_type_str).ok_or_else(|| {
+            AppError::Database(format!("Invalid screenshot type: {}", screenshot_type_str))
+        })?;
+        let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+            .map_err(|e| AppError::Database(format!("Invalid date: {}", e)))?
+            .with_timezone(&Utc);
+        let deleted_at = deleted_at_str.and_then(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .map(|dt| dt.with_timezone(&Utc))
+                .ok()
+        });
+
+        Ok(DetoxScreenshot {
+            id: Some(id),
+            job_id,
+            test_full_name,
+            screenshot_type,
+            file_path,
+            created_at,
+            deleted_at,
+        })
+    })())
 }

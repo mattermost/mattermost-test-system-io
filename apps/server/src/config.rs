@@ -15,6 +15,7 @@ pub mod defaults {
     pub const DEV_DATA_DIR: &str = "./data/files";
     pub const DEV_BACKUP_DIR: &str = "./data/backups";
     pub const DEV_MAX_UPLOAD_SIZE: usize = 52_428_800; // 50MB
+    pub const DEV_MAX_CONCURRENT_UPLOADS: usize = 10; // Max concurrent upload requests
     pub const DEV_ARTIFACT_RETENTION_HOURS: u64 = 1; // 1 hour in development
     pub const PROD_ARTIFACT_RETENTION_HOURS: u64 = 168; // 7 days in production
 }
@@ -75,8 +76,10 @@ pub struct Config {
     pub static_dir: Option<PathBuf>,
     /// API key for protected endpoints
     pub api_key: String,
-    /// Maximum upload size in bytes (default: 500MB)
+    /// Maximum upload size in bytes (default: 50MB)
     pub max_upload_size: usize,
+    /// Maximum concurrent upload requests (default: 10)
+    pub max_concurrent_uploads: usize,
     /// Artifact retention in hours (default: 1 hour dev, 7 days production)
     pub artifact_retention_hours: u64,
 }
@@ -101,7 +104,8 @@ impl Config {
     /// - `RRV_DATA_DIR`: Report storage directory (default: ./data/files)
     /// - `RRV_BACKUP_DIR`: Backup directory (default: ./data/backups)
     /// - `RRV_STATIC_DIR`: Static assets directory for production
-    /// - `RRV_MAX_UPLOAD_SIZE`: Max upload size in bytes (default: 500MB)
+    /// - `RRV_MAX_UPLOAD_SIZE`: Max upload size in bytes (default: 50MB)
+    /// - `RRV_MAX_CONCURRENT_UPLOADS`: Max concurrent upload requests (default: 10)
     /// - `RRV_ARTIFACT_RETENTION_HOURS`: Artifact retention in hours (default: 1 hour dev, 168 hours prod)
     pub fn from_env() -> Result<Self, ConfigError> {
         // Parse environment - required
@@ -137,6 +141,13 @@ impl Config {
             .parse::<usize>()
             .map_err(|_| ConfigError::InvalidValue("RRV_MAX_UPLOAD_SIZE must be a valid number"))?;
 
+        let max_concurrent_uploads = env::var("RRV_MAX_CONCURRENT_UPLOADS")
+            .unwrap_or_else(|_| defaults::DEV_MAX_CONCURRENT_UPLOADS.to_string())
+            .parse::<usize>()
+            .map_err(|_| {
+                ConfigError::InvalidValue("RRV_MAX_CONCURRENT_UPLOADS must be a valid number")
+            })?;
+
         let static_dir = env::var("RRV_STATIC_DIR").ok().map(PathBuf::from);
 
         // Artifact retention defaults based on environment
@@ -163,6 +174,7 @@ impl Config {
             static_dir,
             api_key,
             max_upload_size,
+            max_concurrent_uploads,
             artifact_retention_hours,
         };
 
@@ -258,6 +270,7 @@ mod tests {
             static_dir: None,
             api_key: "test-key".to_string(),
             max_upload_size: 1024,
+            max_concurrent_uploads: 10,
             artifact_retention_hours: 1,
         };
 
@@ -291,6 +304,7 @@ mod tests {
             static_dir: None,
             api_key: defaults::DEV_API_KEY.to_string(),
             max_upload_size: 1024,
+            max_concurrent_uploads: 10,
             artifact_retention_hours: 168,
         };
 
@@ -314,6 +328,7 @@ mod tests {
             static_dir: Some(PathBuf::from("/app/static")),
             api_key: "a-very-secure-api-key-that-is-long-enough-for-production".to_string(),
             max_upload_size: 1024,
+            max_concurrent_uploads: 10,
             artifact_retention_hours: 168,
         };
 

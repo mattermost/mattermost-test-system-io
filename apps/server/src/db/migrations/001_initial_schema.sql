@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS reports (
     -- Framework info
     framework TEXT,
     framework_version TEXT,
+    -- Platform for mobile tests (ios, android, etc.)
+    platform TEXT,
     -- GitHub context (JSON)
     github_context TEXT
 );
@@ -58,7 +60,7 @@ CREATE TABLE IF NOT EXISTS test_specs (
     suite_id INTEGER NOT NULL,
     title TEXT NOT NULL,
     ok INTEGER NOT NULL,
-    spec_id TEXT NOT NULL,
+    full_title TEXT NOT NULL,
     file_path TEXT NOT NULL,
     line INTEGER NOT NULL,
     col INTEGER NOT NULL,
@@ -82,6 +84,39 @@ CREATE TABLE IF NOT EXISTS test_results (
 );
 
 CREATE INDEX IF NOT EXISTS idx_test_results_spec_id ON test_results(spec_id);
+
+-- Detox jobs table: Individual job within a Detox report
+CREATE TABLE IF NOT EXISTS detox_jobs (
+    id TEXT PRIMARY KEY,
+    report_id TEXT NOT NULL,
+    job_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    tests_count INTEGER NOT NULL DEFAULT 0,
+    passed_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE,
+    UNIQUE(report_id, job_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_detox_jobs_report_id ON detox_jobs(report_id);
+
+-- Detox screenshots table: Screenshots captured during test execution
+CREATE TABLE IF NOT EXISTS detox_screenshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    test_full_name TEXT NOT NULL,
+    screenshot_type TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT,
+    FOREIGN KEY (job_id) REFERENCES detox_jobs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_detox_screenshots_job_id ON detox_screenshots(job_id);
+CREATE INDEX IF NOT EXISTS idx_detox_screenshots_test_name ON detox_screenshots(test_full_name);
+CREATE INDEX IF NOT EXISTS idx_detox_screenshots_deleted_at ON detox_screenshots(deleted_at) WHERE deleted_at IS NULL;
 
 -- Server metadata: Tracks server version and settings
 CREATE TABLE IF NOT EXISTS server_metadata (

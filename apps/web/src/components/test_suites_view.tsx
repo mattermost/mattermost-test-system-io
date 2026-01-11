@@ -392,6 +392,7 @@ function SuiteRow({
                 <SpecRow
                   key={spec.id}
                   spec={spec}
+                  reportId={reportId}
                   rowLabel={`${rowNumber}.${specIndex + 1}`}
                 />
               ))}
@@ -411,10 +412,11 @@ function SuiteRow({
 
 interface SpecRowProps {
   spec: TestSpec;
+  reportId: string;
   rowLabel: string;
 }
 
-function SpecRow({ spec, rowLabel }: SpecRowProps) {
+function SpecRow({ spec, reportId, rowLabel }: SpecRowProps) {
   const latestResult = spec.results[spec.results.length - 1];
 
   // Determine status icon based on actual status
@@ -476,6 +478,34 @@ function SpecRow({ spec, rowLabel }: SpecRowProps) {
             ))}
         </div>
       )}
+      {spec.screenshots && spec.screenshots.length > 0 && (
+        <div className="ml-5 mt-2 space-y-2">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Screenshots ({spec.screenshots.length})
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {spec.screenshots.map((screenshot, idx) => (
+              <a
+                key={idx}
+                href={`${API_BASE}/reports/${reportId}/data/${screenshot.file_path}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group relative"
+              >
+                <img
+                  src={`${API_BASE}/reports/${reportId}/data/${screenshot.file_path}`}
+                  alt={`${screenshot.screenshot_type} screenshot`}
+                  className="h-80 w-auto rounded border border-gray-200 object-cover hover:border-blue-500 dark:border-gray-700"
+                  loading="lazy"
+                />
+                <span className="absolute bottom-0 left-0 right-0 rounded-b bg-black/60 px-1 py-0.5 text-center text-xs text-white">
+                  {screenshot.screenshot_type}
+                </span>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -503,8 +533,26 @@ function ErrorDisplay({
   try {
     const parsed = JSON.parse(errorsJson);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      // Playwright format: array of error objects
-      errors = parsed;
+      // Check if it's an array of strings (jest-stare/Detox format)
+      if (typeof parsed[0] === "string") {
+        // Jest-stare format: array of full error strings
+        // Parse each string to extract message and stack
+        errors = parsed.map((errorStr: string) => {
+          // Split on first "at " to separate message from stack
+          const atIndex = errorStr.indexOf("\n    at ");
+          if (atIndex > 0) {
+            return {
+              message: errorStr.substring(0, atIndex).trim(),
+              estack: errorStr.substring(atIndex + 1).trim(),
+            };
+          }
+          // No stack trace found, use entire string as message
+          return { message: errorStr.trim() };
+        });
+      } else {
+        // Playwright format: array of error objects
+        errors = parsed;
+      }
     } else if (parsed && typeof parsed === "object" && parsed.message) {
       // Cypress format: single error object with message and estack
       errors = [parsed];

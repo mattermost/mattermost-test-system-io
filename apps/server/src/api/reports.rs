@@ -292,15 +292,50 @@ async fn get_suite_specs(
     pool: web::Data<DbPool>,
     path: web::Path<(String, i64)>,
 ) -> AppResult<HttpResponse> {
+    use crate::models::ScreenshotInfo;
+
     let (report_id_str, suite_id) = path.into_inner();
     let report_id = Uuid::parse_str(&report_id_str)?;
     let conn = pool.connection();
 
-    // Verify report exists
-    let _ = queries::get_active_report_by_id(&conn, report_id)?
+    // Verify report exists and get framework info
+    let report = queries::get_active_report_by_id(&conn, report_id)?
         .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
 
-    let specs = queries::get_suite_specs_with_results(&conn, suite_id)?;
+    let mut specs = queries::get_suite_specs_with_results(&conn, suite_id)?;
+
+    // For Detox reports, enrich specs with screenshot info
+    if report.framework.as_deref() == Some("detox") {
+        // Get all jobs for this report (screenshots can be in any job)
+        let jobs = queries::get_detox_jobs_by_report_id(&conn, report_id)?;
+        for spec in &mut specs {
+            // full_title contains the full_name used for screenshot lookup
+            // Normalize: replace / and " with _ since folder names can't contain these characters
+            let normalized_full_title = spec.full_title.replace(['/', '"'], "_");
+
+            // Search across all jobs for screenshots matching this spec
+            for job in &jobs {
+                let screenshots = queries::get_detox_screenshots_by_test_name(
+                    &conn,
+                    job.id,
+                    &normalized_full_title,
+                )?;
+
+                if !screenshots.is_empty() {
+                    spec.screenshots = Some(
+                        screenshots
+                            .into_iter()
+                            .map(|s| ScreenshotInfo {
+                                file_path: s.file_path,
+                                screenshot_type: s.screenshot_type.as_str().to_string(),
+                            })
+                            .collect(),
+                    );
+                    break; // Found screenshots, no need to check other jobs
+                }
+            }
+        }
+    }
 
     Ok(HttpResponse::Ok().json(TestSpecListResponse { specs }))
 }

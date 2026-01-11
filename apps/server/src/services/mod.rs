@@ -6,4 +6,4 @@ pub mod extraction;
 pub mod upload;
 
 pub use cleanup::{start_cleanup_task, CleanupConfig};
-pub use upload::configure_upload_routes;
+pub use upload::configure_routes as configure_upload_routes;

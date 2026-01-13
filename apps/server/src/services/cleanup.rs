@@ -85,6 +85,16 @@ async fn run_cleanup(
                                 report_id, e
                             );
                         }
+
+                        // Also mark Detox screenshots as deleted so UI won't render broken links
+                        if let Err(e) =
+                            queries::mark_detox_screenshots_deleted_by_report_id(&conn, uuid)
+                        {
+                            warn!(
+                                "Failed to mark Detox screenshots deleted for report {}: {}",
+                                report_id, e
+                            );
+                        }
                     }
 
                     deleted_count += 1;

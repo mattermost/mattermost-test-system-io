@@ -401,10 +401,11 @@ pub fn scan_detox_screenshots(report_path: &Path) -> Vec<DiscoveredScreenshot> {
         }
     }
 
-    // Sort: testStart first (priority 0), then testFnFailure (priority 1)
+    // Sort for upload/save: testFnFailure first (priority 0), then testStart (priority 1)
+    // This ensures failure screenshots are saved before the upload limit is reached
     screenshots.sort_by_key(|s| match s.screenshot_type {
-        crate::models::ScreenshotType::TestStart => 0,
-        crate::models::ScreenshotType::TestFnFailure => 1,
+        crate::models::ScreenshotType::TestFnFailure => 0,
+        crate::models::ScreenshotType::TestStart => 1,
     });
 
     screenshots

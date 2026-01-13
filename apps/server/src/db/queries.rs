@@ -731,7 +731,8 @@ pub fn get_detox_screenshots_by_test_name(
     let mut stmt = conn
         .prepare(
             "SELECT id, job_id, test_full_name, screenshot_type, file_path, created_at, deleted_at
-             FROM detox_screenshots WHERE job_id = ?1 AND test_full_name = ?2 AND deleted_at IS NULL ORDER BY id",
+             FROM detox_screenshots WHERE job_id = ?1 AND test_full_name = ?2 AND deleted_at IS NULL
+             ORDER BY CASE screenshot_type WHEN 'testStart' THEN 0 WHEN 'testFnFailure' THEN 1 END, id",
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -745,6 +746,25 @@ pub fn get_detox_screenshots_by_test_name(
         .map_err(|e| AppError::Database(e.to_string()))?;
 
     screenshots.into_iter().collect()
+}
+
+/// Mark all Detox screenshots for a report as deleted (soft delete).
+/// This is called during cleanup when report files are deleted.
+pub fn mark_detox_screenshots_deleted_by_report_id(
+    conn: &Connection,
+    report_id: Uuid,
+) -> AppResult<usize> {
+    let rows_affected = conn
+        .execute(
+            "UPDATE detox_screenshots
+             SET deleted_at = ?1
+             WHERE job_id IN (SELECT id FROM detox_jobs WHERE report_id = ?2)
+             AND deleted_at IS NULL",
+            params![Utc::now().to_rfc3339(), report_id.to_string()],
+        )
+        .map_err(|e| AppError::Database(format!("Failed to mark screenshots deleted: {}", e)))?;
+
+    Ok(rows_affected)
 }
 
 /// Get combined test results for a Detox report with pagination, status filter, and search.

@@ -2,14 +2,14 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
-import { ReportList } from '../../src/components/report_list';
+import { ReportList } from './report_list';
 
 // Mock the API module
-vi.mock('../../src/services/api', () => ({
+vi.mock('../services/api', () => ({
   useReports: vi.fn(),
 }));
 
-import { useReports } from '../../src/services/api';
+import { useReports } from '../services/api';
 
 const createWrapper = () => {
   const queryClient = new QueryClient({

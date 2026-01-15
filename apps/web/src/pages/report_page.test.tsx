@@ -2,10 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { ReportPage } from '../../src/pages/report_page';
+import { ReportPage } from './report_page';
 
 // Mock the API module
-vi.mock('../../src/services/api', () => ({
+vi.mock('../services/api', () => ({
   useReport: vi.fn(),
   useReportSuites: vi.fn(() => ({
     data: { suites: [] },
@@ -15,7 +15,7 @@ vi.mock('../../src/services/api', () => ({
   getReportHtmlUrl: vi.fn((id) => `/api/v1/reports/${id}/html`),
 }));
 
-import { useReport, useReportSuites } from '../../src/services/api';
+import { useReport, useReportSuites } from '../services/api';
 
 const createWrapper = (reportId: string) => {
   const queryClient = new QueryClient({
@@ -47,7 +47,9 @@ describe('ReportPage', () => {
       error: null,
     } as ReturnType<typeof useReport>);
 
-    const { container } = render(<ReportPage />, { wrapper: createWrapper(mockReportId) });
+    const { container } = render(<ReportPage />, {
+      wrapper: createWrapper(mockReportId),
+    });
 
     // Loader2 icon is rendered with animate-spin class
     expect(container.querySelector('.animate-spin')).toBeInTheDocument();
@@ -184,10 +186,7 @@ describe('ReportPage', () => {
 
     const iframe = screen.getByTitle('HTML Report');
     expect(iframe).toBeInTheDocument();
-    expect(iframe).toHaveAttribute(
-      'src',
-      `/api/v1/reports/${mockReportId}/html`,
-    );
+    expect(iframe).toHaveAttribute('src', `/api/v1/reports/${mockReportId}/html`);
   });
 
   it('shows error message when extraction failed', () => {
@@ -346,5 +345,4 @@ describe('ReportPage', () => {
     expect(screen.getByText('Test Suites (1)')).toBeInTheDocument();
     expect(screen.getByText('Login Tests')).toBeInTheDocument();
   });
-
 });

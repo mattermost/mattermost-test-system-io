@@ -1,7 +1,7 @@
 // TypeScript types matching API schemas
 
-export type ExtractionStatus = "pending" | "completed" | "failed";
-export type TestStatus = "passed" | "failed" | "skipped" | "timedOut";
+export type ExtractionStatus = 'pending' | 'completed' | 'failed';
+export type TestStatus = 'passed' | 'failed' | 'skipped' | 'timedOut';
 
 export interface GitHubContext {
   repository?: string;
@@ -108,7 +108,7 @@ export interface TestSpecListResponse {
 }
 
 // Detox types (T024)
-export type DetoxPlatform = "android" | "ios";
+export type DetoxPlatform = 'android' | 'ios';
 
 export interface DetoxRunSummary {
   id: string;

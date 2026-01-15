@@ -1,7 +1,7 @@
-import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
-import { useReport, useReportSuites, getReportHtmlUrl } from "../services/api";
-import { TestSuitesView } from "../components/test_suites_view";
+import { useState } from 'react';
+import { useParams, Link } from 'react-router-dom';
+import { useReport, useReportSuites, getReportHtmlUrl } from '../services/api';
+import { TestSuitesView } from '../components/test_suites_view';
 import {
   Loader2,
   ChevronRight,
@@ -16,19 +16,19 @@ import {
   AlertCircle,
   Calendar,
   FlaskConical,
-} from "lucide-react";
+} from 'lucide-react';
 
-type ViewTab = "report" | "html";
+type ViewTab = 'report' | 'html';
 
 export function ReportPage() {
   const { id } = useParams<{ id: string }>();
-  const [activeTab, setActiveTab] = useState<ViewTab>("report");
-  const { data: report, isLoading, error } = useReport(id || "");
+  const [activeTab, setActiveTab] = useState<ViewTab>('report');
+  const { data: report, isLoading, error } = useReport(id || '');
   const {
     data: suitesData,
     isLoading: isLoadingSuites,
     error: suitesError,
-  } = useReportSuites(id || "");
+  } = useReportSuites(id || '');
 
   if (isLoading) {
     return (
@@ -42,7 +42,7 @@ export function ReportPage() {
     return (
       <div className="rounded-lg bg-red-50 p-4 text-red-700 dark:bg-red-900/20 dark:text-red-400">
         <p className="font-medium">Error loading report</p>
-        <p className="text-sm">{error?.message || "Report not found"}</p>
+        <p className="text-sm">{error?.message || 'Report not found'}</p>
         <Link
           to="/"
           className="mt-4 inline-block text-sm text-red-600 hover:text-red-500 dark:text-red-400 dark:hover:text-red-300"
@@ -89,9 +89,8 @@ export function ReportPage() {
             {report.framework && report.framework_version && (
               <span className="inline-flex items-center gap-1">
                 <FlaskConical className="h-3.5 w-3.5" />
-                {report.framework.charAt(0).toUpperCase() +
-                  report.framework.slice(1)}{" "}
-                v{report.framework_version}
+                {report.framework.charAt(0).toUpperCase() + report.framework.slice(1)} v
+                {report.framework_version}
               </span>
             )}
           </div>
@@ -121,14 +120,13 @@ export function ReportPage() {
                   href={
                     report.github_context.repository
                       ? `https://github.com/${report.github_context.repository}/pull/${report.github_context.pr_number}`
-                      : "#"
+                      : '#'
                   }
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 px-2 py-1 bg-purple-100 rounded-md text-xs text-purple-700 hover:bg-purple-200 dark:bg-purple-900/50 dark:text-purple-300 dark:hover:bg-purple-900/70 transition-colors"
                 >
-                  <GitPullRequest className="h-3 w-3" />#
-                  {report.github_context.pr_number}
+                  <GitPullRequest className="h-3 w-3" />#{report.github_context.pr_number}
                 </a>
               )}
               {report.github_context.commit_sha && (
@@ -136,7 +134,7 @@ export function ReportPage() {
                   href={
                     report.github_context.repository
                       ? `https://github.com/${report.github_context.repository}/commit/${report.github_context.commit_sha}`
-                      : "#"
+                      : '#'
                   }
                   target="_blank"
                   rel="noopener noreferrer"
@@ -151,7 +149,7 @@ export function ReportPage() {
                   href={
                     report.github_context.repository
                       ? `https://github.com/${report.github_context.repository}/actions/runs/${report.github_context.run_id}`
-                      : "#"
+                      : '#'
                   }
                   target="_blank"
                   rel="noopener noreferrer"
@@ -173,16 +171,16 @@ export function ReportPage() {
       <div className="border-b border-gray-200 dark:border-gray-700">
         <nav className="flex gap-1" aria-label="Tabs">
           <TabButton
-            active={activeTab === "report"}
-            onClick={() => setActiveTab("report")}
+            active={activeTab === 'report'}
+            onClick={() => setActiveTab('report')}
             icon={<FileText className="h-4 w-4" />}
           >
             Test Results
           </TabButton>
           {report.has_files && !report.files_deleted_at && (
             <TabButton
-              active={activeTab === "html"}
-              onClick={() => setActiveTab("html")}
+              active={activeTab === 'html'}
+              onClick={() => setActiveTab('html')}
               icon={<Code className="h-4 w-4" />}
             >
               HTML Report
@@ -192,7 +190,7 @@ export function ReportPage() {
       </div>
 
       {/* Tab Content */}
-      {activeTab === "report" && (
+      {activeTab === 'report' && (
         <div>
           {isLoadingSuites ? (
             <div className="flex items-center justify-center py-12">
@@ -204,14 +202,14 @@ export function ReportPage() {
               <p className="text-sm mt-1">{suitesError?.message}</p>
               {report.has_files && !report.files_deleted_at && (
                 <p className="text-sm mt-2">
-                  Try viewing the{" "}
+                  Try viewing the{' '}
                   <button
                     type="button"
                     className="text-yellow-700 underline hover:text-yellow-600 dark:text-yellow-400 dark:hover:text-yellow-300"
-                    onClick={() => setActiveTab("html")}
+                    onClick={() => setActiveTab('html')}
                   >
                     HTML Report
-                  </button>{" "}
+                  </button>{' '}
                   instead.
                 </p>
               )}
@@ -227,7 +225,7 @@ export function ReportPage() {
         </div>
       )}
 
-      {activeTab === "html" && report.has_files && !report.files_deleted_at && (
+      {activeTab === 'html' && report.has_files && !report.files_deleted_at && (
         <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-600 dark:bg-gray-800 overflow-hidden">
           <div className="border-b border-gray-200 bg-gray-50 px-4 py-3 flex items-center justify-between dark:border-gray-600 dark:bg-gray-700">
             <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 inline-flex items-center gap-2">
@@ -258,12 +256,8 @@ export function ReportPage() {
           <div className="flex items-start gap-3">
             <AlertCircle className="h-5 w-5 text-red-500 dark:text-red-400 flex-shrink-0 mt-0.5" />
             <div>
-              <p className="text-sm font-medium text-red-800 dark:text-red-300">
-                Extraction Error
-              </p>
-              <p className="mt-1 text-sm text-red-700 dark:text-red-400">
-                {report.error_message}
-              </p>
+              <p className="text-sm font-medium text-red-800 dark:text-red-300">Extraction Error</p>
+              <p className="mt-1 text-sm text-red-700 dark:text-red-400">{report.error_message}</p>
             </div>
           </div>
         </div>
@@ -286,8 +280,8 @@ function TabButton({ active, onClick, children, icon }: TabButtonProps) {
       onClick={onClick}
       className={`inline-flex items-center gap-2 px-3 py-2.5 text-sm font-medium border-b-2 transition-colors ${
         active
-          ? "border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400"
-          : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:border-gray-600"
+          ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+          : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:border-gray-600'
       }`}
     >
       {icon}

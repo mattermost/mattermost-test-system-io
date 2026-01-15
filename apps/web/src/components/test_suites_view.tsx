@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   ChevronRight,
   CheckCircle2,
@@ -10,17 +10,12 @@ import {
   FileCode,
   Loader2,
   RotateCcw,
-} from "lucide-react";
-import type {
-  TestSuite,
-  ReportStats,
-  TestSpec,
-  TestSpecListResponse,
-} from "../types";
+} from 'lucide-react';
+import type { TestSuite, ReportStats, TestSpec, TestSpecListResponse } from '../types';
 
-const API_BASE = "/api/v1";
+const API_BASE = '/api/v1';
 
-type StatusFilter = "all" | "passed" | "failed" | "flaky" | "skipped";
+type StatusFilter = 'all' | 'passed' | 'failed' | 'flaky' | 'skipped';
 
 interface TestSuitesViewProps {
   reportId: string;
@@ -29,14 +24,9 @@ interface TestSuitesViewProps {
   title?: string;
 }
 
-export function TestSuitesView({
-  reportId,
-  suites,
-  stats,
-  title,
-}: TestSuitesViewProps) {
+export function TestSuitesView({ reportId, suites, stats, title }: TestSuitesViewProps) {
   const [expandedSuiteId, setExpandedSuiteId] = useState<number | null>(null);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
   const handleSuiteClick = (suiteId: number) => {
     setExpandedSuiteId(expandedSuiteId === suiteId ? null : suiteId);
@@ -44,15 +34,15 @@ export function TestSuitesView({
 
   // Filter suites based on status filter
   const filteredSuites = suites.filter((suite) => {
-    if (statusFilter === "all") return true;
+    if (statusFilter === 'all') return true;
     switch (statusFilter) {
-      case "passed":
+      case 'passed':
         return suite.passed_count > 0;
-      case "failed":
+      case 'failed':
         return suite.failed_count > 0;
-      case "flaky":
+      case 'flaky':
         return (suite.flaky_count ?? 0) > 0;
-      case "skipped":
+      case 'skipped':
         return (suite.skipped_count ?? 0) > 0;
       default:
         return true;
@@ -69,28 +59,24 @@ export function TestSuitesView({
             {/* Left: Title + Pass rate + Duration */}
             <div className="flex items-center gap-2 min-w-0">
               <h2 className="text-sm font-medium text-gray-900 dark:text-white truncate">
-                {title || "Test Report"}
+                {title || 'Test Report'}
               </h2>
-              <span className="text-xs text-gray-400 dark:text-gray-500">
-                •
-              </span>
+              <span className="text-xs text-gray-400 dark:text-gray-500">•</span>
               <span
                 className={`inline-flex items-center gap-1 text-xs font-semibold whitespace-nowrap ${
-                  calcPassRate(stats) === "100.0"
-                    ? "text-green-600 dark:text-green-400"
-                    : "text-red-600 dark:text-red-400"
+                  calcPassRate(stats) === '100.0'
+                    ? 'text-green-600 dark:text-green-400'
+                    : 'text-red-600 dark:text-red-400'
                 }`}
               >
-                {calcPassRate(stats) === "100.0" ? (
+                {calcPassRate(stats) === '100.0' ? (
                   <CheckCircle2 className="h-3 w-3" />
                 ) : (
                   <XCircle className="h-3 w-3" />
                 )}
                 {calcPassRate(stats)}%
               </span>
-              <span className="text-xs text-gray-400 dark:text-gray-500">
-                •
-              </span>
+              <span className="text-xs text-gray-400 dark:text-gray-500">•</span>
               <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
                 {formatDuration(stats.duration_ms)}
               </span>
@@ -102,30 +88,25 @@ export function TestSuitesView({
             <div className="flex items-center gap-1">
               <StatPill
                 label="Total"
-                value={
-                  stats.expected +
-                  stats.unexpected +
-                  stats.flaky +
-                  stats.skipped
-                }
+                value={stats.expected + stats.unexpected + stats.flaky + stats.skipped}
                 variant="default"
-                isActive={statusFilter === "all"}
-                onClick={() => setStatusFilter("all")}
+                isActive={statusFilter === 'all'}
+                onClick={() => setStatusFilter('all')}
               />
               <StatPill
                 label="Passed"
                 value={stats.expected}
                 variant="success"
-                isActive={statusFilter === "passed"}
-                onClick={() => setStatusFilter("passed")}
+                isActive={statusFilter === 'passed'}
+                onClick={() => setStatusFilter('passed')}
               />
               {stats.unexpected > 0 && (
                 <StatPill
                   label="Failed"
                   value={stats.unexpected}
                   variant="error"
-                  isActive={statusFilter === "failed"}
-                  onClick={() => setStatusFilter("failed")}
+                  isActive={statusFilter === 'failed'}
+                  onClick={() => setStatusFilter('failed')}
                 />
               )}
               {stats.flaky > 0 && (
@@ -133,8 +114,8 @@ export function TestSuitesView({
                   label="Flaky"
                   value={stats.flaky}
                   variant="warning"
-                  isActive={statusFilter === "flaky"}
-                  onClick={() => setStatusFilter("flaky")}
+                  isActive={statusFilter === 'flaky'}
+                  onClick={() => setStatusFilter('flaky')}
                 />
               )}
               {stats.skipped > 0 && (
@@ -142,8 +123,8 @@ export function TestSuitesView({
                   label="Skipped"
                   value={stats.skipped}
                   variant="muted"
-                  isActive={statusFilter === "skipped"}
-                  onClick={() => setStatusFilter("skipped")}
+                  isActive={statusFilter === 'skipped'}
+                  onClick={() => setStatusFilter('skipped')}
                 />
               )}
             </div>
@@ -160,13 +141,13 @@ export function TestSuitesView({
       <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
         <h3 className="mb-4 text-sm font-medium text-gray-900 dark:text-white">
           Test Suites ({filteredSuites.length}
-          {statusFilter !== "all" ? ` of ${suites.length}` : ""})
+          {statusFilter !== 'all' ? ` of ${suites.length}` : ''})
         </h3>
 
         {filteredSuites.length === 0 ? (
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            {statusFilter === "all"
-              ? "No test suites found"
+            {statusFilter === 'all'
+              ? 'No test suites found'
               : `No suites with ${statusFilter} tests`}
           </p>
         ) : (
@@ -188,20 +169,14 @@ export function TestSuitesView({
         {/* Totals - use stats for consistency with header */}
         {suites.length > 0 && stats && (
           <div className="mt-4 flex items-center justify-between border-t border-gray-200 pt-4 text-xs dark:border-gray-700">
-            <span className="font-medium text-gray-900 dark:text-white">
-              Total
-            </span>
+            <span className="font-medium text-gray-900 dark:text-white">Total</span>
             <div className="flex items-center gap-3">
               <span className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-400">
                 <Clock className="h-3 w-3" />
                 {formatDuration(stats.duration_ms)}
               </span>
               <span className="text-gray-600 dark:text-gray-300">
-                {stats.expected +
-                  stats.unexpected +
-                  stats.flaky +
-                  stats.skipped}{" "}
-                specs
+                {stats.expected + stats.unexpected + stats.flaky + stats.skipped} specs
               </span>
               <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
                 <CheckCircle2 className="h-3 w-3" />
@@ -255,12 +230,10 @@ function SuiteRow({
 
   // Fetch specs when expanded
   const { data: specsData, isLoading } = useQuery<TestSpecListResponse>({
-    queryKey: ["suite-specs", reportId, suite.id],
+    queryKey: ['suite-specs', reportId, suite.id],
     queryFn: async () => {
-      const res = await fetch(
-        `${API_BASE}/reports/${reportId}/suites/${suite.id}/specs`,
-      );
-      if (!res.ok) throw new Error("Failed to fetch specs");
+      const res = await fetch(`${API_BASE}/reports/${reportId}/suites/${suite.id}/specs`);
+      if (!res.ok) throw new Error('Failed to fetch specs');
       return res.json();
     },
     enabled: isExpanded,
@@ -270,12 +243,12 @@ function SuiteRow({
   // Filter specs based on status filter
   const filteredSpecs =
     specsData?.specs?.filter((spec) => {
-      if (statusFilter === "all") return true;
+      if (statusFilter === 'all') return true;
       if (spec.results.length === 0) return false;
 
       // Check for flaky: passed eventually but had at least one failure
-      const hasFailure = spec.results.some((r) => r.status === "failed");
-      const hasPassed = spec.results.some((r) => r.status === "passed");
+      const hasFailure = spec.results.some((r) => r.status === 'failed');
+      const hasPassed = spec.results.some((r) => r.status === 'passed');
       const isFlaky = spec.ok && hasFailure && hasPassed;
 
       // Get the final result (highest retry number)
@@ -284,45 +257,39 @@ function SuiteRow({
       );
 
       switch (statusFilter) {
-        case "passed":
+        case 'passed':
           // All specs that ultimately passed (including flaky)
           return spec.ok;
-        case "failed":
-          return !spec.ok && finalResult?.status !== "skipped";
-        case "flaky":
+        case 'failed':
+          return !spec.ok && finalResult?.status !== 'skipped';
+        case 'flaky':
           return isFlaky;
-        case "skipped":
-          return finalResult?.status === "skipped";
+        case 'skipped':
+          return finalResult?.status === 'skipped';
         default:
           return true;
       }
     }) || [];
 
   // Status icon based on suite state
-  const StatusIcon = hasFailed
-    ? XCircle
-    : hasFlaky
-      ? AlertTriangle
-      : CheckCircle2;
+  const StatusIcon = hasFailed ? XCircle : hasFlaky ? AlertTriangle : CheckCircle2;
   const statusIconColor = hasFailed
-    ? "text-red-500"
+    ? 'text-red-500'
     : hasFlaky
-      ? "text-yellow-500"
-      : "text-green-500";
+      ? 'text-yellow-500'
+      : 'text-green-500';
 
   return (
     <div
-      className={`-mx-2 px-2 rounded-lg transition-colors ${
-        isExpanded ? "bg-blue-50 dark:bg-blue-900/20" : ""
-      }`}
+      className={`-mx-2 px-2 rounded-lg transition-colors ${isExpanded ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}
     >
       <button
         type="button"
         onClick={onToggle}
         className={`w-full cursor-pointer py-2.5 text-left transition-colors ${
           isExpanded
-            ? "hover:bg-blue-100/50 dark:hover:bg-blue-900/30"
-            : "hover:bg-gray-50 dark:hover:bg-gray-700/50"
+            ? 'hover:bg-blue-100/50 dark:hover:bg-blue-900/30'
+            : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
         }`}
       >
         <div className="flex items-center justify-between">
@@ -332,21 +299,17 @@ function SuiteRow({
             </span>
             <ChevronRight
               className={`h-4 w-4 flex-shrink-0 text-gray-400 transition-transform dark:text-gray-500 ${
-                isExpanded ? "rotate-90" : ""
+                isExpanded ? 'rotate-90' : ''
               }`}
             />
-            <StatusIcon
-              className={`h-4 w-4 flex-shrink-0 ${statusIconColor}`}
-            />
+            <StatusIcon className={`h-4 w-4 flex-shrink-0 ${statusIconColor}`} />
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-gray-900 dark:text-white flex items-center gap-1.5">
                 <FileCode className="h-3.5 w-3.5 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                 {suite.file_path}
               </p>
               {suite.title !== suite.file_path && (
-                <p className="truncate text-xs text-gray-500 dark:text-gray-400">
-                  {suite.title}
-                </p>
+                <p className="truncate text-xs text-gray-500 dark:text-gray-400">{suite.title}</p>
               )}
             </div>
           </div>
@@ -355,9 +318,7 @@ function SuiteRow({
               <Clock className="h-3 w-3" />
               {formatDuration(suite.duration_ms || 0)}
             </span>
-            <span className="text-gray-600 dark:text-gray-300">
-              {suite.specs_count} specs
-            </span>
+            <span className="text-gray-600 dark:text-gray-300">{suite.specs_count} specs</span>
             <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
               <CheckCircle2 className="h-3 w-3" />
               {suite.passed_count}
@@ -399,9 +360,7 @@ function SuiteRow({
             </div>
           ) : (
             <p className="py-2 text-sm text-gray-500 dark:text-gray-400">
-              {statusFilter === "all"
-                ? "No specs found"
-                : `No ${statusFilter} specs`}
+              {statusFilter === 'all' ? 'No specs found' : `No ${statusFilter} specs`}
             </p>
           )}
         </div>
@@ -420,21 +379,21 @@ function SpecRow({ spec, reportId, rowLabel }: SpecRowProps) {
   const latestResult = spec.results[spec.results.length - 1];
 
   // Determine status icon based on actual status
-  const isSkipped = latestResult?.status === "skipped";
-  const isFlaky = spec.ok && spec.results.some((r) => r.status === "failed");
+  const isSkipped = latestResult?.status === 'skipped';
+  const isFlaky = spec.ok && spec.results.some((r) => r.status === 'failed');
 
   let StatusIcon = CheckCircle2;
-  let statusColor = "text-green-500";
+  let statusColor = 'text-green-500';
 
   if (isSkipped) {
     StatusIcon = MinusCircle;
-    statusColor = "text-gray-400";
+    statusColor = 'text-gray-400';
   } else if (!spec.ok) {
     StatusIcon = XCircle;
-    statusColor = "text-red-500";
+    statusColor = 'text-red-500';
   } else if (isFlaky) {
     StatusIcon = AlertTriangle;
-    statusColor = "text-yellow-500";
+    statusColor = 'text-yellow-500';
   }
 
   return (
@@ -444,9 +403,7 @@ function SpecRow({ spec, reportId, rowLabel }: SpecRowProps) {
           {rowLabel}
         </span>
         <StatusIcon className={`h-3.5 w-3.5 flex-shrink-0 ${statusColor}`} />
-        <span className="flex-1 truncate text-gray-900 dark:text-gray-100">
-          {spec.title}
-        </span>
+        <span className="flex-1 truncate text-gray-900 dark:text-gray-100">{spec.title}</span>
         {latestResult && (
           <>
             <span className="text-xs text-gray-600 dark:text-gray-400">
@@ -522,11 +479,7 @@ interface ErrorDisplayProps {
   totalAttempts: number;
 }
 
-function ErrorDisplay({
-  errorsJson,
-  attempt,
-  totalAttempts,
-}: ErrorDisplayProps) {
+function ErrorDisplay({ errorsJson, attempt, totalAttempts }: ErrorDisplayProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   let errors: ErrorInfo[] = [];
 
@@ -534,12 +487,12 @@ function ErrorDisplay({
     const parsed = JSON.parse(errorsJson);
     if (Array.isArray(parsed) && parsed.length > 0) {
       // Check if it's an array of strings (jest-stare/Detox format)
-      if (typeof parsed[0] === "string") {
+      if (typeof parsed[0] === 'string') {
         // Jest-stare format: array of full error strings
         // Parse each string to extract message and stack
         errors = parsed.map((errorStr: string) => {
           // Split on first "at " to separate message from stack
-          const atIndex = errorStr.indexOf("\n    at ");
+          const atIndex = errorStr.indexOf('\n    at ');
           if (atIndex > 0) {
             return {
               message: errorStr.substring(0, atIndex).trim(),
@@ -553,7 +506,7 @@ function ErrorDisplay({
         // Playwright format: array of error objects
         errors = parsed;
       }
-    } else if (parsed && typeof parsed === "object" && parsed.message) {
+    } else if (parsed && typeof parsed === 'object' && parsed.message) {
       // Cypress format: single error object with message and estack
       errors = [parsed];
     }
@@ -574,7 +527,7 @@ function ErrorDisplay({
       const line = match[2];
       const col = match[3];
       // Simplify webpack paths
-      const simplePath = filePath.replace(/^webpack:\/\/[^/]+\/\.\//, "");
+      const simplePath = filePath.replace(/^webpack:\/\/[^/]+\/\.\//, '');
       return `${simplePath}:${line}:${col}`;
     }
     return null;
@@ -596,14 +549,10 @@ function ErrorDisplay({
           <div key={idx} className="space-y-1">
             <p className="font-medium text-red-800 dark:text-red-300 flex items-center gap-1">
               <XCircle className="h-3 w-3 flex-shrink-0" />
-              <span className="break-all">
-                {error.message || "Unknown error"}
-              </span>
+              <span className="break-all">{error.message || 'Unknown error'}</span>
             </p>
             {location && (
-              <p className="ml-4 font-mono text-red-600 dark:text-red-400">
-                at {location}
-              </p>
+              <p className="ml-4 font-mono text-red-600 dark:text-red-400">at {location}</p>
             )}
             {error.estack && (
               <div className="ml-4">
@@ -612,7 +561,7 @@ function ErrorDisplay({
                   onClick={() => setIsExpanded(!isExpanded)}
                   className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 underline"
                 >
-                  {isExpanded ? "Hide stack trace" : "Show stack trace"}
+                  {isExpanded ? 'Hide stack trace' : 'Show stack trace'}
                 </button>
                 {isExpanded && (
                   <pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-900/30 p-2 rounded">
@@ -628,7 +577,7 @@ function ErrorDisplay({
   );
 }
 
-type StatVariant = "default" | "success" | "error" | "warning" | "muted";
+type StatVariant = 'default' | 'success' | 'error' | 'warning' | 'muted';
 
 interface StatPillProps {
   label: string;
@@ -640,13 +589,11 @@ interface StatPillProps {
 
 function StatPill({ label, value, variant, isActive, onClick }: StatPillProps) {
   const variants: Record<StatVariant, string> = {
-    default: "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200",
-    success:
-      "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400",
-    error: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400",
-    warning:
-      "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400",
-    muted: "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400",
+    default: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200',
+    success: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400',
+    error: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400',
+    warning: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400',
+    muted: 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
   };
 
   return (
@@ -655,8 +602,8 @@ function StatPill({ label, value, variant, isActive, onClick }: StatPillProps) {
       onClick={onClick}
       className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors ${variants[variant]} ${
         isActive
-          ? "ring-1 ring-blue-500 ring-offset-1 dark:ring-offset-gray-800"
-          : "hover:opacity-80"
+          ? 'ring-1 ring-blue-500 ring-offset-1 dark:ring-offset-gray-800'
+          : 'hover:opacity-80'
       }`}
     >
       <span className="font-semibold">{value}</span>
@@ -667,8 +614,7 @@ function StatPill({ label, value, variant, isActive, onClick }: StatPillProps) {
 
 function ProgressBar({ stats }: { stats: ReportStats }) {
   const total = stats.expected + stats.unexpected + stats.flaky + stats.skipped;
-  if (total === 0)
-    return <div className="h-2 rounded-full bg-gray-200 dark:bg-gray-700" />;
+  if (total === 0) return <div className="h-2 rounded-full bg-gray-200 dark:bg-gray-700" />;
 
   return (
     <div className="flex h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
@@ -703,7 +649,7 @@ function ProgressBar({ stats }: { stats: ReportStats }) {
 function calcPassRate(stats: ReportStats): string {
   // Pass rate excludes skipped tests: (passed + flaky) / (passed + flaky + failed)
   const countedTotal = stats.expected + stats.flaky + stats.unexpected;
-  if (countedTotal === 0) return "0";
+  if (countedTotal === 0) return '0';
   return (((stats.expected + stats.flaky) / countedTotal) * 100).toFixed(1);
 }
 

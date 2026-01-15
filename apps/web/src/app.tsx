@@ -1,8 +1,8 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { HomePage } from "./pages/home_page";
-import { ReportPage } from "./pages/report_page";
-import { ThemeProvider } from "./contexts/theme_context";
-import { ThemeToggle } from "./components/theme_toggle";
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { HomePage } from './pages/home_page';
+import { ReportPage } from './pages/report_page';
+import { ThemeProvider } from './contexts/theme_context';
+import { ThemeToggle } from './components/theme_toggle';
 
 export function App() {
   return (
@@ -13,10 +13,7 @@ export function App() {
             <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
               <div className="flex items-center justify-between py-4">
                 <h1 className="text-xl font-semibold text-gray-900 dark:text-white">
-                  <a
-                    href="/"
-                    className="hover:text-gray-700 dark:hover:text-gray-300"
-                  >
+                  <a href="/" className="hover:text-gray-700 dark:hover:text-gray-300">
                     Rust Report Viewer
                   </a>
                 </h1>

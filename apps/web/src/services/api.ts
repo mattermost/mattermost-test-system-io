@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery } from '@tanstack/react-query';
 import type {
   ReportListResponse,
   ReportDetail,
@@ -8,9 +8,9 @@ import type {
   DetoxCombinedTestsResponse,
   DetoxJobDetail,
   DetoxScreenshotsListResponse,
-} from "../types";
+} from '../types';
 
-const API_URL = import.meta.env.VITE_API_URL || "/api/v1";
+const API_URL = import.meta.env.VITE_API_URL || '/api/v1';
 
 // Error handling
 class ApiError extends Error {
@@ -20,19 +20,19 @@ class ApiError extends Error {
     message: string,
   ) {
     super(message);
-    this.name = "ApiError";
+    this.name = 'ApiError';
   }
 }
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({
-      error: "UNKNOWN_ERROR",
+      error: 'UNKNOWN_ERROR',
       message: response.statusText,
     }));
     throw new ApiError(
       response.status,
-      errorData.error || "UNKNOWN_ERROR",
+      errorData.error || 'UNKNOWN_ERROR',
       errorData.message || response.statusText,
     );
   }
@@ -40,13 +40,8 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 // API functions
-export async function fetchReports(
-  page = 1,
-  limit = 100,
-): Promise<ReportListResponse> {
-  const response = await fetch(
-    `${API_URL}/reports?page=${page}&limit=${limit}`,
-  );
+export async function fetchReports(page = 1, limit = 100): Promise<ReportListResponse> {
+  const response = await fetch(`${API_URL}/reports?page=${page}&limit=${limit}`);
   return handleResponse<ReportListResponse>(response);
 }
 
@@ -55,9 +50,7 @@ export async function fetchReport(id: string): Promise<ReportDetail> {
   return handleResponse<ReportDetail>(response);
 }
 
-export async function fetchReportSuites(
-  id: string,
-): Promise<TestSuiteListResponse> {
+export async function fetchReportSuites(id: string): Promise<TestSuiteListResponse> {
   const response = await fetch(`${API_URL}/reports/${id}/suites`);
   return handleResponse<TestSuiteListResponse>(response);
 }
@@ -70,14 +63,14 @@ export function getReportHtmlUrl(id: string): string {
 // React Query hooks
 export function useReports(page = 1, limit = 100) {
   return useQuery({
-    queryKey: ["reports", page, limit],
+    queryKey: ['reports', page, limit],
     queryFn: () => fetchReports(page, limit),
   });
 }
 
 export function useReport(id: string) {
   return useQuery({
-    queryKey: ["report", id],
+    queryKey: ['report', id],
     queryFn: () => fetchReport(id),
     enabled: !!id,
   });
@@ -85,7 +78,7 @@ export function useReport(id: string) {
 
 export function useReportSuites(id: string) {
   return useQuery({
-    queryKey: ["report", id, "suites"],
+    queryKey: ['report', id, 'suites'],
     queryFn: () => fetchReportSuites(id),
     enabled: !!id,
   });
@@ -102,7 +95,7 @@ export async function fetchDetoxRuns(
     limit: String(limit),
   });
   if (platform) {
-    params.set("platform", platform);
+    params.set('platform', platform);
   }
   const response = await fetch(`${API_URL}/detox-runs?${params}`);
   return handleResponse<DetoxRunListResponse>(response);
@@ -125,10 +118,10 @@ export async function fetchDetoxRunTests(
     limit: String(limit),
   });
   if (status) {
-    params.set("status", status);
+    params.set('status', status);
   }
   if (search) {
-    params.set("search", search);
+    params.set('search', search);
   }
   const response = await fetch(`${API_URL}/detox-runs/${id}/tests?${params}`);
   return handleResponse<DetoxCombinedTestsResponse>(response);
@@ -157,14 +150,14 @@ export async function fetchDetoxTestScreenshots(
 // Detox React Query hooks
 export function useDetoxRuns(page = 1, limit = 20, platform?: string) {
   return useQuery({
-    queryKey: ["detox-runs", page, limit, platform],
+    queryKey: ['detox-runs', page, limit, platform],
     queryFn: () => fetchDetoxRuns(page, limit, platform),
   });
 }
 
 export function useDetoxRun(id: string) {
   return useQuery({
-    queryKey: ["detox-run", id],
+    queryKey: ['detox-run', id],
     queryFn: () => fetchDetoxRun(id),
     enabled: !!id,
   });
@@ -178,7 +171,7 @@ export function useDetoxRunTests(
   search?: string,
 ) {
   return useQuery({
-    queryKey: ["detox-run", id, "tests", page, limit, status, search],
+    queryKey: ['detox-run', id, 'tests', page, limit, status, search],
     queryFn: () => fetchDetoxRunTests(id, page, limit, status, search),
     enabled: !!id,
   });
@@ -186,7 +179,7 @@ export function useDetoxRunTests(
 
 export function useDetoxJob(id: string) {
   return useQuery({
-    queryKey: ["detox-job", id],
+    queryKey: ['detox-job', id],
     queryFn: () => fetchDetoxJob(id),
     enabled: !!id,
   });
@@ -194,7 +187,7 @@ export function useDetoxJob(id: string) {
 
 export function useDetoxTestScreenshots(jobId: string, testFullName: string) {
   return useQuery({
-    queryKey: ["detox-screenshots", jobId, testFullName],
+    queryKey: ['detox-screenshots', jobId, testFullName],
     queryFn: () => fetchDetoxTestScreenshots(jobId, testFullName),
     enabled: !!jobId && !!testFullName,
   });

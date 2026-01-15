@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link } from 'react-router-dom';
 import {
   GitBranch,
   GitCommit,
@@ -14,8 +14,8 @@ import {
   FlaskConical,
   FileCheck,
   Loader2,
-} from "lucide-react";
-import type { ReportSummary } from "../types";
+} from 'lucide-react';
+import type { ReportSummary } from '../types';
 
 interface ReportCardProps {
   report: ReportSummary;
@@ -26,10 +26,10 @@ export function ReportCard({ report, rowNumber }: ReportCardProps) {
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
     });
   };
 
@@ -45,9 +45,7 @@ export function ReportCard({ report, rowNumber }: ReportCardProps) {
 
   const stats = report.stats;
   // Pass rate excludes skipped tests: (passed + flaky) / (passed + flaky + failed)
-  const countedTotal = stats
-    ? stats.expected + stats.flaky + stats.unexpected
-    : 0;
+  const countedTotal = stats ? stats.expected + stats.flaky + stats.unexpected : 0;
   const passRate =
     stats && countedTotal > 0
       ? Math.round(((stats.expected + stats.flaky) / countedTotal) * 100)
@@ -56,11 +54,11 @@ export function ReportCard({ report, rowNumber }: ReportCardProps) {
   // Extraction status icon (different from pass/fail icons)
   const statusIcon = (() => {
     switch (report.extraction_status) {
-      case "completed":
+      case 'completed':
         return <FileCheck className="h-4 w-4 text-blue-500" />;
-      case "failed":
+      case 'failed':
         return <AlertCircle className="h-4 w-4 text-orange-500" />;
-      case "pending":
+      case 'pending':
         return <Loader2 className="h-4 w-4 text-gray-400 animate-spin" />;
       default:
         return <MinusCircle className="h-4 w-4 text-gray-400" />;
@@ -87,9 +85,7 @@ export function ReportCard({ report, rowNumber }: ReportCardProps) {
         {report.github_context?.repository ? (
           <div className="flex items-center gap-1.5 text-sm font-medium text-gray-700 group-hover:text-blue-600 truncate dark:text-gray-200 dark:group-hover:text-blue-400">
             <Folder className="h-3.5 w-3.5 flex-shrink-0 text-gray-400 dark:text-gray-500" />
-            <span className="truncate">
-              {report.github_context.repository.split("/").pop()}
-            </span>
+            <span className="truncate">{report.github_context.repository.split('/').pop()}</span>
           </div>
         ) : (
           <div className="text-sm text-gray-400 dark:text-gray-500">—</div>
@@ -122,9 +118,7 @@ export function ReportCard({ report, rowNumber }: ReportCardProps) {
           {report.github_context.branch && (
             <span className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-1.5 py-0.5 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
               <GitBranch className="h-3 w-3" />
-              <span className="max-w-16 truncate">
-                {report.github_context.branch}
-              </span>
+              <span className="max-w-16 truncate">{report.github_context.branch}</span>
             </span>
           )}
           {report.github_context.pr_number && (
@@ -178,8 +172,8 @@ export function ReportCard({ report, rowNumber }: ReportCardProps) {
         <span
           className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
             passRate === 100
-              ? "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300"
-              : "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300"
+              ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300'
+              : 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'
           }`}
         >
           {passRate === 100 ? (

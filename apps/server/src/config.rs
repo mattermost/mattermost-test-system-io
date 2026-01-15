@@ -6,10 +6,13 @@ use std::path::PathBuf;
 /// HTTP header name for API key authentication.
 pub const API_KEY_HEADER: &str = "X-API-Key";
 
+/// HTTP header name for admin key (bootstrap).
+pub const ADMIN_KEY_HEADER: &str = "X-Admin-Key";
+
 /// Development default values - NEVER use in production.
 pub mod defaults {
     pub const DEV_DATABASE_URL: &str = "file:./data/dev.db";
-    pub const DEV_API_KEY: &str = "dev-api-key-do-not-use-in-production";
+    pub const DEV_ADMIN_KEY: &str = "dev-admin-key-do-not-use-in-production";
     pub const DEV_HOST: &str = "127.0.0.1";
     pub const DEV_PORT: u16 = 8080;
     pub const DEV_DATA_DIR: &str = "./data/files";
@@ -74,8 +77,8 @@ pub struct Config {
     pub backup_dir: PathBuf,
     /// Directory for static frontend assets (production only)
     pub static_dir: Option<PathBuf>,
-    /// API key for protected endpoints
-    pub api_key: String,
+    /// Admin key for bootstrap operations (creating first API key)
+    pub admin_key: Option<String>,
     /// Maximum upload size in bytes (default: 50MB)
     pub max_upload_size: usize,
     /// Maximum concurrent upload requests (default: 10)
@@ -92,15 +95,15 @@ impl Config {
     /// - Only RUST_ENV is required
     ///
     /// In production mode (RUST_ENV=production):
-    /// - RRV_DATABASE_URL and RRV_API_KEY are required
-    /// - Server will NOT start if any value matches development defaults
+    /// - RRV_DATABASE_URL is required
+    /// - Server will NOT start if database URL matches development default
     ///
     /// Environment variables:
     /// - `RUST_ENV`: Environment (development/production) - REQUIRED
     /// - `RRV_HOST`: Server host (default: 127.0.0.1)
     /// - `RRV_PORT`: Server port (default: 8080)
     /// - `RRV_DATABASE_URL`: Database connection URL (required in production)
-    /// - `RRV_API_KEY`: API key for protected endpoints (required in production)
+    /// - `RRV_ADMIN_KEY`: Admin key for bootstrap operations (optional, for creating first API key)
     /// - `RRV_DATA_DIR`: Report storage directory (default: ./data/files)
     /// - `RRV_BACKUP_DIR`: Backup directory (default: ./data/backups)
     /// - `RRV_STATIC_DIR`: Static assets directory for production
@@ -126,7 +129,12 @@ impl Config {
         let database_url =
             env::var("RRV_DATABASE_URL").unwrap_or_else(|_| defaults::DEV_DATABASE_URL.to_string());
 
-        let api_key = env::var("RRV_API_KEY").unwrap_or_else(|_| defaults::DEV_API_KEY.to_string());
+        // Admin key is optional - used for bootstrap operations
+        let admin_key = if environment.is_development() {
+            Some(env::var("RRV_ADMIN_KEY").unwrap_or_else(|_| defaults::DEV_ADMIN_KEY.to_string()))
+        } else {
+            env::var("RRV_ADMIN_KEY").ok()
+        };
 
         let data_dir = PathBuf::from(
             env::var("RRV_DATA_DIR").unwrap_or_else(|_| defaults::DEV_DATA_DIR.to_string()),
@@ -172,7 +180,7 @@ impl Config {
             data_dir,
             backup_dir,
             static_dir,
-            api_key,
+            admin_key,
             max_upload_size,
             max_concurrent_uploads,
             artifact_retention_hours,
@@ -197,30 +205,22 @@ impl Config {
             ));
         }
 
-        if self.api_key == defaults::DEV_API_KEY {
-            errors.push(
-                "RRV_API_KEY is using development default. Set a secure production API key."
-                    .to_string(),
-            );
-        }
-
-        if self.api_key.is_empty() {
-            errors.push("RRV_API_KEY cannot be empty in production.".to_string());
-        }
-
-        if self.api_key.len() < 32 {
-            errors.push(
-                "RRV_API_KEY should be at least 32 characters in production for security."
-                    .to_string(),
-            );
-        }
-
         // Check if database URL looks like a local file in production (warning)
         if self.database_url.starts_with("file:") && !self.database_url.contains("/app/") {
             errors.push(format!(
                 "RRV_DATABASE_URL '{}' appears to be a local file path. Use an absolute path in production.",
                 self.database_url
             ));
+        }
+
+        // Warn if admin key is using development default in production
+        if let Some(ref key) = self.admin_key {
+            if key == defaults::DEV_ADMIN_KEY {
+                errors.push(
+                    "RRV_ADMIN_KEY is using development default. Set a secure admin key or remove it."
+                        .to_string(),
+                );
+            }
         }
 
         if !errors.is_empty() {
@@ -268,7 +268,7 @@ mod tests {
             data_dir: PathBuf::from("./data"),
             backup_dir: PathBuf::from("./backups"),
             static_dir: None,
-            api_key: "test-key".to_string(),
+            admin_key: Some("test-key".to_string()),
             max_upload_size: 1024,
             max_concurrent_uploads: 10,
             artifact_retention_hours: 1,
@@ -302,7 +302,7 @@ mod tests {
             data_dir: PathBuf::from("./data"),
             backup_dir: PathBuf::from("./backups"),
             static_dir: None,
-            api_key: defaults::DEV_API_KEY.to_string(),
+            admin_key: Some(defaults::DEV_ADMIN_KEY.to_string()),
             max_upload_size: 1024,
             max_concurrent_uploads: 10,
             artifact_retention_hours: 168,
@@ -326,7 +326,7 @@ mod tests {
             data_dir: PathBuf::from("/app/data"),
             backup_dir: PathBuf::from("/app/backups"),
             static_dir: Some(PathBuf::from("/app/static")),
-            api_key: "a-very-secure-api-key-that-is-long-enough-for-production".to_string(),
+            admin_key: None, // No admin key in production is fine
             max_upload_size: 1024,
             max_concurrent_uploads: 10,
             artifact_retention_hours: 168,

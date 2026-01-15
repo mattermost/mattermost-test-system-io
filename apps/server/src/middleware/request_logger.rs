@@ -60,7 +60,20 @@ where
             .and_then(|v| v.to_str().ok())
             .unwrap_or("unknown")
             .to_string();
-        let has_api_key = req.headers().contains_key("x-api-key");
+
+        // Extract API key prefix for logging (first 8 chars only)
+        let api_key_info = req
+            .headers()
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .map(|k| {
+                if k.len() >= 8 {
+                    format!("{}...", &k[..8])
+                } else {
+                    "invalid".to_string()
+                }
+            })
+            .unwrap_or_else(|| "none".to_string());
 
         // Log request start
         info!(
@@ -70,7 +83,7 @@ where
             query = %query,
             remote_addr = %remote_addr,
             user_agent = %user_agent,
-            has_api_key = %has_api_key,
+            api_key = %api_key_info,
             "→ Request started"
         );
 

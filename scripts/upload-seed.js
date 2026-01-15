@@ -15,8 +15,10 @@ const crypto = require("crypto");
 
 // Configuration
 const API_BASE = process.env.API_BASE || "http://localhost:8080/api/v1";
-const API_KEY =
-  process.env.RRV_API_KEY || "dev-api-key-do-not-use-in-production";
+// Use RRV_API_KEY for database-backed API keys, or fall back to admin key for development
+const API_KEY = process.env.RRV_API_KEY;
+const ADMIN_KEY =
+  process.env.RRV_ADMIN_KEY || "dev-admin-key-do-not-use-in-production";
 
 // Framework-specific upload URLs (two-phase API)
 const UPLOAD_REQUEST_URLS = {
@@ -312,10 +314,15 @@ async function uploadDirectory(seedDir, repoName, framework = "playwright", plat
     requestBody.platform = platform;
   }
 
+  // Use X-API-Key if RRV_API_KEY is set, otherwise use X-Admin-Key for development
   const requestHeaders = {
-    "X-API-Key": API_KEY,
     "Content-Type": "application/json",
   };
+  if (API_KEY) {
+    requestHeaders["X-API-Key"] = API_KEY;
+  } else {
+    requestHeaders["X-Admin-Key"] = ADMIN_KEY;
+  }
 
   const phase1Body = JSON.stringify(requestBody);
   requestHeaders["Content-Length"] = Buffer.byteLength(phase1Body);
@@ -366,10 +373,14 @@ async function uploadDirectory(seedDir, repoName, framework = "playwright", plat
 
     const body = form.getBody();
     const headers = {
-      "X-API-Key": API_KEY,
       "Content-Type": form.getContentType(),
       "Content-Length": body.length,
     };
+    if (API_KEY) {
+      headers["X-API-Key"] = API_KEY;
+    } else {
+      headers["X-Admin-Key"] = ADMIN_KEY;
+    }
 
     const phase2Response = await makeRequest(
       uploadUrl,

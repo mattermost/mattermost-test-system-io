@@ -1,5 +1,6 @@
 //! Domain models for the Rust Report Viewer.
 
+pub mod api_key;
 pub mod detox_job;
 pub mod detox_screenshot;
 pub mod github_context;
@@ -10,6 +11,10 @@ pub mod test_spec;
 pub mod test_suite;
 
 // Re-export commonly used types
+pub use api_key::{
+    ApiKey, ApiKeyCreateResponse, ApiKeyListItem, ApiKeyRole, AuthenticatedCaller,
+    CreateApiKeyRequest,
+};
 pub use detox_job::DetoxJob;
 pub use detox_screenshot::{DetoxScreenshot, ScreenshotType};
 pub use github_context::GitHubContext;

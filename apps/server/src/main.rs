@@ -3,6 +3,7 @@
 //! Starts the Actix-web server with configured routes and middleware.
 
 mod api;
+mod auth;
 mod config;
 mod db;
 mod error;
@@ -20,6 +21,7 @@ use tokio::sync::Semaphore;
 use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
+use crate::auth::AdminKey;
 use crate::config::Config;
 use crate::db::DbPool;
 
@@ -153,7 +155,7 @@ async fn main() -> std::io::Result<()> {
 
     // Prepare shared state
     let bind_address = config.bind_address();
-    let api_key = config.api_key.clone();
+    let admin_key = AdminKey::new(config.admin_key.clone());
     let data_dir = config.data_dir.clone();
     let max_upload_size = config.max_upload_size;
     let max_concurrent_uploads = config.max_concurrent_uploads;
@@ -226,7 +228,7 @@ async fn main() -> std::io::Result<()> {
             // Add shared state
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(data_dir.clone()))
-            .app_data(web::Data::new(api_key.clone()))
+            .app_data(web::Data::new(admin_key.clone()))
             .app_data(web::Data::new(max_upload_size))
             .app_data(web::Data::new(upload_semaphore.clone()))
             // Allow 10x max_upload_size at HTTP layer - actual limit enforced in streaming code
@@ -238,7 +240,8 @@ async fn main() -> std::io::Result<()> {
                     .configure(api::configure_health_routes)
                     .configure(api::configure_report_routes)
                     .configure(api::configure_detox_routes)
-                    .configure(services::configure_upload_routes),
+                    .configure(services::configure_upload_routes)
+                    .configure(services::configure_auth_routes),
             );
 
         // Serve static files in production (when STATIC_DIR is set)

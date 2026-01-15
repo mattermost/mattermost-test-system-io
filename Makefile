@@ -132,11 +132,11 @@ dev: ## Run both server and web in development mode (requires tmux or two termin
 dev-server: clean-debug-if-large ## Run Rust server in development mode with auto-reload
 	@echo "$(CYAN)Starting Rust server (with cargo-watch if available)...$(RESET)"
 	@if command -v cargo-watch >/dev/null 2>&1; then \
-		cd $(SERVER_DIR) && cargo watch -x run; \
+		cd $(SERVER_DIR) && cargo watch -x 'run --bin server'; \
 	else \
 		echo "$(YELLOW)cargo-watch not installed. Running without auto-reload.$(RESET)"; \
 		echo "$(YELLOW)Install with: cargo install cargo-watch$(RESET)"; \
-		cd $(SERVER_DIR) && cargo run; \
+		cd $(SERVER_DIR) && cargo run --bin server; \
 	fi
 
 dev-web: ## Run Vite dev server with HMR
@@ -147,7 +147,7 @@ run: run-server run-web ## Run both server and web (no auto-reload)
 
 run-server: clean-debug-if-large ## Run Rust server (no auto-reload)
 	@echo "$(CYAN)Starting Rust server...$(RESET)"
-	cd $(SERVER_DIR) && cargo run
+	cd $(SERVER_DIR) && cargo run --bin server
 
 run-web: ## Run Vite preview server (serves built assets)
 	@echo "$(CYAN)Starting Vite preview server...$(RESET)"

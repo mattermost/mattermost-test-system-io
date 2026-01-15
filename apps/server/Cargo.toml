@@ -33,7 +33,11 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tracing-actix-web = "0.7.19"
 
 # Utilities
-uuid = { version = "1.18.1", features = ["v7", "serde"] }
+uuid = { version = "1.18.1", features = ["v4", "v7", "serde"] }
+sha2 = "0.10.9"
+rand = "0.8.5"
+hex = "0.4.3"
+secrecy = { version = "0.10.3", features = ["serde"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 dotenvy = "0.15.7"
 futures-util = "0.3.31"
@@ -48,6 +52,18 @@ actix-rt = "2.10.0"
 tokio-test = "0.4.4"
 tempfile = "3.20.0"
 
+[lib]
+name = "rust_report_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "server"
 path = "src/main.rs"
+
+[[bin]]
+name = "generate-api-key"
+path = "src/bin/generate_api_key.rs"
+
+[[bin]]
+name = "manage-api-keys"
+path = "src/bin/manage_api_keys.rs"

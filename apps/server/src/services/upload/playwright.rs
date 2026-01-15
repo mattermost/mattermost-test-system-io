@@ -1,10 +1,11 @@
 //! Playwright report upload handlers.
 
-use actix_web::{post, web, HttpRequest, HttpResponse};
+use actix_web::{post, web, HttpResponse};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::auth::ApiKeyAuth;
 use crate::db::{queries, DbPool};
 use crate::error::AppResult;
 use crate::models::ExtractionStatus;
@@ -31,19 +32,17 @@ use super::{handle_upload_request, Framework, UploadRequest};
 /// Returns report_id and list of accepted/rejected files.
 #[post("/reports/upload/playwright/request")]
 pub(crate) async fn request_playwright_upload(
-    req: HttpRequest,
+    auth: ApiKeyAuth,
     body: web::Json<UploadRequest>,
     pool: web::Data<DbPool>,
     data_dir: web::Data<PathBuf>,
-    api_key: web::Data<String>,
     max_upload_size: web::Data<usize>,
 ) -> AppResult<HttpResponse> {
     handle_upload_request(
-        req,
+        &auth.caller,
         body,
         pool,
         data_dir,
-        api_key,
         max_upload_size,
         Framework::Playwright,
     )

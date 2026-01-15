@@ -19,7 +19,7 @@ mod detox;
 mod playwright;
 
 use actix_multipart::Multipart;
-use actix_web::{post, web, HttpRequest, HttpResponse};
+use actix_web::{post, web, HttpResponse};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -29,10 +29,10 @@ use tokio::sync::Semaphore;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::config::API_KEY_HEADER;
+use crate::auth::ApiKeyAuth;
 use crate::db::{queries, DbPool};
 use crate::error::{AppError, AppResult};
-use crate::models::{DetoxPlatform, ExtractionStatus, GitHubContext, Report};
+use crate::models::{AuthenticatedCaller, DetoxPlatform, ExtractionStatus, GitHubContext, Report};
 
 // Re-export extraction triggers for use in phase 2
 pub(crate) use cypress::trigger_cypress_extraction;
@@ -176,18 +176,19 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
 ///
 /// Validates metadata and filenames, creates report entry, returns report_id.
 pub(crate) async fn handle_upload_request(
-    req: HttpRequest,
+    caller: &AuthenticatedCaller,
     body: web::Json<UploadRequest>,
     pool: web::Data<DbPool>,
     data_dir: web::Data<PathBuf>,
-    api_key: web::Data<String>,
     max_upload_size: web::Data<usize>,
     framework: Framework,
 ) -> AppResult<HttpResponse> {
-    // Validate API key
-    validate_api_key(&req, &api_key)?;
-
-    info!("Processing {} upload request", framework.as_str());
+    info!(
+        "Processing {} upload request from {} ({})",
+        framework.as_str(),
+        caller.name,
+        caller.key_prefix
+    );
 
     // Validate required fields
     validate_request_body(&body, framework)?;
@@ -246,17 +247,18 @@ pub(crate) async fn handle_upload_request(
 #[post("/reports/upload/{report_id}/files")]
 #[allow(clippy::too_many_arguments)]
 async fn upload_files(
-    req: HttpRequest,
+    auth: ApiKeyAuth,
     path: web::Path<String>,
     mut payload: Multipart,
     pool: web::Data<DbPool>,
     data_dir: web::Data<PathBuf>,
-    api_key: web::Data<String>,
     max_upload_size: web::Data<usize>,
     upload_semaphore: web::Data<Arc<Semaphore>>,
 ) -> AppResult<HttpResponse> {
-    // Validate API key
-    validate_api_key(&req, &api_key)?;
+    info!(
+        "Uploading files from {} ({})",
+        auth.caller.name, auth.caller.key_prefix
+    );
 
     // Parse report ID
     let report_id = Uuid::parse_str(&path.into_inner())
@@ -361,22 +363,6 @@ async fn upload_files(
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/// Validate API key from request headers.
-fn validate_api_key(req: &HttpRequest, api_key: &str) -> AppResult<()> {
-    let provided_key = req
-        .headers()
-        .get(API_KEY_HEADER)
-        .and_then(|v| v.to_str().ok());
-
-    match provided_key {
-        Some(key) if key == api_key => Ok(()),
-        Some(_) => Err(AppError::Unauthorized("Invalid API key".to_string())),
-        None => Err(AppError::Unauthorized(
-            "Missing API key. Provide X-API-Key header.".to_string(),
-        )),
-    }
-}
 
 /// Validate request body fields.
 fn validate_request_body(body: &UploadRequest, framework: Framework) -> AppResult<()> {

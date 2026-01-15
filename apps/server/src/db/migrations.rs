@@ -8,10 +8,13 @@ use crate::error::{AppError, AppResult};
 use super::DbPool;
 
 /// Embedded migration files.
-const MIGRATIONS: &[(&str, &str)] = &[(
-    "001_initial_schema",
-    include_str!("migrations/001_initial_schema.sql"),
-)];
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "001_initial_schema",
+        include_str!("migrations/001_initial_schema.sql"),
+    ),
+    ("002_api_keys", include_str!("migrations/002_api_keys.sql")),
+];
 
 /// Run all pending migrations.
 ///

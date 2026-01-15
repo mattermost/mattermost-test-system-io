@@ -1,5 +1,6 @@
 //! Database module providing connection management, migrations, and queries.
 
+pub mod api_keys;
 pub mod backup;
 pub mod migrations;
 pub mod queries;

@@ -13,7 +13,7 @@ use crate::services::extraction;
 
 use super::{handle_upload_request, Framework, UploadRequest};
 
-/// Request Playwright report upload (Phase 1).
+/// Initialize Playwright report upload.
 ///
 /// POST /reports/upload/playwright/request
 /// Content-Type: application/json
@@ -37,6 +37,7 @@ pub(crate) async fn request_playwright_upload(
     pool: web::Data<DbPool>,
     data_dir: web::Data<PathBuf>,
     max_upload_size: web::Data<usize>,
+    max_files_per_request: web::Data<usize>,
 ) -> AppResult<HttpResponse> {
     handle_upload_request(
         &auth.caller,
@@ -44,6 +45,7 @@ pub(crate) async fn request_playwright_upload(
         pool,
         data_dir,
         max_upload_size,
+        max_files_per_request,
         Framework::Playwright,
     )
     .await

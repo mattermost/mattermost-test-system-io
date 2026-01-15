@@ -4,6 +4,7 @@ pub mod api_keys;
 pub mod backup;
 pub mod migrations;
 pub mod queries;
+pub mod upload_files;
 pub mod version;
 
 use rusqlite::Connection;

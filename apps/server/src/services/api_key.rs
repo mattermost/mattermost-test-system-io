@@ -40,7 +40,7 @@ pub fn generate_key(
 
     // Parse expiration
     let expires_at = expires_in
-        .and_then(|s| parse_duration(s))
+        .and_then(parse_duration)
         .map(|d| Utc::now() + d);
 
     let api_key = ApiKey {
@@ -70,7 +70,7 @@ fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim().to_lowercase();
 
     if let Some(days) = s.strip_suffix('d') {
-        days.parse::<i64>().ok().and_then(|d| Duration::try_days(d))
+        days.parse::<i64>().ok().and_then(Duration::try_days)
     } else if let Some(years) = s.strip_suffix('y') {
         years
             .parse::<i64>()
@@ -82,13 +82,10 @@ fn parse_duration(s: &str) -> Option<Duration> {
             .ok()
             .and_then(|m| Duration::try_days(m * 30))
     } else if let Some(weeks) = s.strip_suffix('w') {
-        weeks
-            .parse::<i64>()
-            .ok()
-            .and_then(|w| Duration::try_weeks(w))
+        weeks.parse::<i64>().ok().and_then(Duration::try_weeks)
     } else {
         // Try parsing as days by default
-        s.parse::<i64>().ok().and_then(|d| Duration::try_days(d))
+        s.parse::<i64>().ok().and_then(Duration::try_days)
     }
 }
 
@@ -148,12 +145,6 @@ pub fn list_keys(pool: &DbPool) -> AppResult<Vec<ApiKey>> {
     db::list_all(&conn)
 }
 
-/// List active (non-revoked) API keys.
-pub fn list_active_keys(pool: &DbPool) -> AppResult<Vec<ApiKey>> {
-    let conn = pool.connection();
-    db::list_active(&conn)
-}
-
 /// Revoke an API key by ID.
 pub fn revoke_key(pool: &DbPool, id: &str) -> AppResult<bool> {
     let conn = pool.connection();
@@ -170,12 +161,6 @@ pub fn restore_key(pool: &DbPool, id: &str) -> AppResult<bool> {
 pub fn get_key(pool: &DbPool, id: &str) -> AppResult<Option<ApiKey>> {
     let conn = pool.connection();
     db::find_by_id(&conn, id)
-}
-
-/// Check if any API keys exist.
-pub fn has_any_keys(pool: &DbPool) -> AppResult<bool> {
-    let conn = pool.connection();
-    db::has_any_keys(&conn)
 }
 
 #[cfg(test)]

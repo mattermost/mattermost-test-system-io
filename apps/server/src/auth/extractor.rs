@@ -45,7 +45,6 @@ impl ResponseError for AuthError {
         HttpResponse::build(StatusCode::UNAUTHORIZED).json(ErrorResponse {
             error: "UNAUTHORIZED".to_string(),
             message: self.message.clone(),
-            details: None,
         })
     }
 }

@@ -17,7 +17,7 @@ pub enum ScreenshotType {
 
 impl ScreenshotType {
     /// Convert from database string representation.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "testFnFailure" => Some(Self::TestFnFailure),
             "testStart" => Some(Self::TestStart),

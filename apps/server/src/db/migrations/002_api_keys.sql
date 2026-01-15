@@ -16,3 +16,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix);
 CREATE INDEX IF NOT EXISTS idx_api_keys_deleted ON api_keys(deleted_at);
+
+-- Mark this migration as applied
+INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, datetime('now'));

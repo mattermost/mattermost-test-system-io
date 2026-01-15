@@ -28,13 +28,6 @@ pub enum AppError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
-    /// File too large with details
-    #[error("Payload too large: {message}")]
-    PayloadTooLarge {
-        message: String,
-        details: serde_json::Value,
-    },
-
     /// Extraction failed
     #[error("Extraction failed: {0}")]
     ExtractionFailed(String),
@@ -66,10 +59,6 @@ impl ResponseError for AppError {
             AppError::Unauthorized(_) => {
                 (actix_web::http::StatusCode::UNAUTHORIZED, "UNAUTHORIZED")
             }
-            AppError::PayloadTooLarge { .. } => (
-                actix_web::http::StatusCode::PAYLOAD_TOO_LARGE,
-                "PAYLOAD_TOO_LARGE",
-            ),
             AppError::ExtractionFailed(_) => (
                 actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "EXTRACTION_FAILED",
@@ -84,16 +73,9 @@ impl ResponseError for AppError {
             ),
         };
 
-        // Extract details if present
-        let details = match self {
-            AppError::PayloadTooLarge { details, .. } => Some(details.clone()),
-            _ => None,
-        };
-
         HttpResponse::build(status).json(ErrorResponse {
             error: error_code.to_string(),
             message: self.to_string(),
-            details,
         })
     }
 }
@@ -103,8 +85,6 @@ impl ResponseError for AppError {
 pub struct ErrorResponse {
     pub error: String,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<serde_json::Value>,
 }
 
 impl fmt::Display for ErrorResponse {

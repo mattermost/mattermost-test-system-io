@@ -9,7 +9,8 @@ use tokio::time::interval;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::db::{queries, DbPool};
+use crate::db::{queries, upload_files, DbPool};
+use crate::models::ExtractionStatus;
 
 /// Configuration for the cleanup service.
 #[derive(Clone)]
@@ -47,6 +48,20 @@ pub fn start_cleanup_task(pool: Arc<DbPool>, config: CleanupConfig) {
 
 /// Run a single cleanup cycle.
 async fn run_cleanup(
+    pool: &DbPool,
+    config: &CleanupConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 1. Clean up expired reports (files older than retention period)
+    cleanup_expired_reports(pool, config).await?;
+
+    // 2. Clean up incomplete uploads (pending uploads older than retention period)
+    cleanup_incomplete_uploads(pool, config).await?;
+
+    Ok(())
+}
+
+/// Clean up reports that have exceeded the retention period.
+async fn cleanup_expired_reports(
     pool: &DbPool,
     config: &CleanupConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -109,8 +124,93 @@ async fn run_cleanup(
 
     if deleted_count > 0 || error_count > 0 {
         info!(
-            "Cleanup complete: {} deleted, {} errors",
+            "Expired reports cleanup: {} deleted, {} errors",
             deleted_count, error_count
+        );
+    }
+
+    Ok(())
+}
+
+/// Clean up reports with incomplete uploads (files registered but never fully uploaded).
+async fn cleanup_incomplete_uploads(
+    pool: &DbPool,
+    config: &CleanupConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Get reports with incomplete uploads older than retention period
+    let incomplete_reports = {
+        let conn = pool.connection();
+        upload_files::get_incomplete_reports_older_than(&conn, config.retention_hours)?
+    };
+
+    if incomplete_reports.is_empty() {
+        return Ok(());
+    }
+
+    info!(
+        "Found {} reports with incomplete uploads to clean up",
+        incomplete_reports.len()
+    );
+
+    let mut cleaned_count = 0;
+    let mut error_count = 0;
+
+    for report_id_str in incomplete_reports {
+        let report_dir = config.data_dir.join(&report_id_str);
+
+        // Delete the report directory if it exists
+        if report_dir.exists() {
+            if let Err(e) = tokio::fs::remove_dir_all(&report_dir).await {
+                warn!(
+                    "Failed to delete incomplete upload directory for {}: {}",
+                    report_id_str, e
+                );
+                error_count += 1;
+                continue;
+            }
+        }
+
+        // Clean up database records
+        if let Ok(uuid) = Uuid::parse_str(&report_id_str) {
+            let conn = pool.connection();
+
+            // Delete upload file records
+            if let Err(e) = upload_files::delete_for_report(&conn, &report_id_str) {
+                warn!(
+                    "Failed to delete upload file records for {}: {}",
+                    report_id_str, e
+                );
+            }
+
+            // Mark report as failed due to incomplete upload
+            if let Err(e) = queries::update_report_status(
+                &conn,
+                uuid,
+                ExtractionStatus::Failed,
+                None,
+                None,
+                Some("Upload incomplete - cleaned up"),
+            ) {
+                warn!("Failed to mark report {} as failed: {}", report_id_str, e);
+            }
+
+            // Mark files as deleted
+            if let Err(e) = queries::mark_report_files_deleted(&conn, uuid) {
+                warn!(
+                    "Failed to mark files deleted for report {}: {}",
+                    report_id_str, e
+                );
+            }
+        }
+
+        info!("Cleaned up incomplete upload for report {}", report_id_str);
+        cleaned_count += 1;
+    }
+
+    if cleaned_count > 0 || error_count > 0 {
+        info!(
+            "Incomplete uploads cleanup: {} cleaned, {} errors",
+            cleaned_count, error_count
         );
     }
 

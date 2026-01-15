@@ -517,7 +517,7 @@ fn row_to_report(row: ReportRow) -> AppResult<Report> {
             .map(|dt| dt.with_timezone(&Utc))
             .ok()
     });
-    let extraction_status = ExtractionStatus::from_str(&row.extraction_status)
+    let extraction_status = ExtractionStatus::parse(&row.extraction_status)
         .ok_or_else(|| AppError::Database(format!("Invalid status: {}", row.extraction_status)))?;
     let files_deleted_at = row.files_deleted_at.and_then(|s| {
         DateTime::parse_from_rfc3339(&s)
@@ -549,7 +549,7 @@ fn row_to_report_summary(row: ReportSummaryRow) -> AppResult<ReportSummary> {
     let created_at = DateTime::parse_from_rfc3339(&row.created_at)
         .map_err(|e| AppError::Database(format!("Invalid date: {}", e)))?
         .with_timezone(&Utc);
-    let extraction_status = ExtractionStatus::from_str(&row.extraction_status)
+    let extraction_status = ExtractionStatus::parse(&row.extraction_status)
         .ok_or_else(|| AppError::Database(format!("Invalid status: {}", row.extraction_status)))?;
 
     let stats = if let Some(st) = row.start_time {
@@ -957,7 +957,7 @@ fn row_to_detox_screenshot(
 
     Ok((|| {
         let job_id = Uuid::parse_str(&job_id_str).map_err(|e| AppError::Database(e.to_string()))?;
-        let screenshot_type = ScreenshotType::from_str(&screenshot_type_str).ok_or_else(|| {
+        let screenshot_type = ScreenshotType::parse(&screenshot_type_str).ok_or_else(|| {
             AppError::Database(format!("Invalid screenshot type: {}", screenshot_type_str))
         })?;
         let created_at = DateTime::parse_from_rfc3339(&created_at_str)

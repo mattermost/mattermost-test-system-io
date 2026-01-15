@@ -44,7 +44,7 @@ async fn create_api_key(
     let role = body
         .role
         .as_ref()
-        .and_then(|r| ApiKeyRole::from_str(r))
+        .and_then(|r| ApiKeyRole::parse(r))
         .unwrap_or_default();
 
     // Create the key

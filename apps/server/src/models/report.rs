@@ -41,7 +41,7 @@ pub enum ExtractionStatus {
 
 impl ExtractionStatus {
     /// Convert from database string representation.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(Self::Pending),
             "completed" => Some(Self::Completed),

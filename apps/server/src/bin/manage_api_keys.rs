@@ -71,10 +71,8 @@ fn main() {
 fn parse_id_arg(args: &[String]) -> String {
     let mut i = 2;
     while i < args.len() {
-        if args[i] == "--id" || args[i] == "-i" {
-            if i + 1 < args.len() {
-                return args[i + 1].clone();
-            }
+        if (args[i] == "--id" || args[i] == "-i") && i + 1 < args.len() {
+            return args[i + 1].clone();
         }
         i += 1;
     }

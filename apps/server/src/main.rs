@@ -158,18 +158,21 @@ async fn main() -> std::io::Result<()> {
     let admin_key = AdminKey::new(config.admin_key.clone());
     let data_dir = config.data_dir.clone();
     let max_upload_size = config.max_upload_size;
+    let max_files_per_request = config.max_files_per_request;
     let max_concurrent_uploads = config.max_concurrent_uploads;
+    let upload_queue_timeout_secs = config.upload_queue_timeout_secs;
     let static_dir = config.static_dir.clone();
     let is_development = config.is_development();
 
-    // Create upload semaphore to limit concurrent uploads
-    // This bounds memory usage: max_concurrent_uploads × max_upload_size
+    // Create upload semaphore to limit concurrent upload batches
+    // This limits concurrent disk I/O operations (files are streamed directly to disk)
     let upload_semaphore = Arc::new(Semaphore::new(max_concurrent_uploads));
     info!(
-        "Upload limits: {}MB max size, {} concurrent uploads ({}MB peak memory)",
+        "Upload limits: {}MB max size, {} files/batch, {} concurrent batches, {}s queue timeout",
         max_upload_size / 1024 / 1024,
+        max_files_per_request,
         max_concurrent_uploads,
-        (max_upload_size * max_concurrent_uploads) / 1024 / 1024
+        upload_queue_timeout_secs
     );
 
     if static_dir.is_some() {
@@ -230,7 +233,9 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(data_dir.clone()))
             .app_data(web::Data::new(admin_key.clone()))
             .app_data(web::Data::new(max_upload_size))
+            .app_data(web::Data::new(max_files_per_request))
             .app_data(web::Data::new(upload_semaphore.clone()))
+            .app_data(web::Data::new(upload_queue_timeout_secs))
             // Allow 10x max_upload_size at HTTP layer - actual limit enforced in streaming code
             // This prevents ECONNRESET when clients send large uploads with many optional files
             .app_data(web::PayloadConfig::new(max_upload_size * 10))

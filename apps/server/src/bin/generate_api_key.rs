@@ -65,7 +65,7 @@ fn main() {
     };
 
     // Parse role
-    let role_enum = match ApiKeyRole::from_str(&role) {
+    let role_enum = match ApiKeyRole::parse(&role) {
         Some(r) => r,
         None => {
             eprintln!(

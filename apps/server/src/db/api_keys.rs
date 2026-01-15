@@ -155,50 +155,6 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<ApiKey>> {
     Ok(keys)
 }
 
-/// List active (non-revoked) API keys.
-pub fn list_active(conn: &Connection) -> AppResult<Vec<ApiKey>> {
-    let mut stmt = conn.prepare(
-        r#"
-        SELECT id, key_hash, key_prefix, name, role, expires_at, last_used_at, created_at, deleted_at
-        FROM api_keys
-        WHERE deleted_at IS NULL
-        ORDER BY created_at DESC
-        "#,
-    )?;
-
-    let keys = stmt
-        .query_map([], |row| {
-            Ok(ApiKey {
-                id: row.get(0)?,
-                key_hash: row.get(1)?,
-                key_prefix: row.get(2)?,
-                name: row.get(3)?,
-                role: row.get(4)?,
-                expires_at: row
-                    .get::<_, Option<String>>(5)?
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|d| d.with_timezone(&Utc)),
-                last_used_at: row
-                    .get::<_, Option<String>>(6)?
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|d| d.with_timezone(&Utc)),
-                created_at: row
-                    .get::<_, String>(7)
-                    .ok()
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|d| d.with_timezone(&Utc))
-                    .unwrap_or_else(Utc::now),
-                deleted_at: row
-                    .get::<_, Option<String>>(8)?
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|d| d.with_timezone(&Utc)),
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(keys)
-}
-
 /// Update last_used_at timestamp for an API key.
 pub fn update_last_used(conn: &Connection, id: &str) -> AppResult<()> {
     let now = Utc::now().to_rfc3339();
@@ -226,32 +182,4 @@ pub fn restore(conn: &Connection, id: &str) -> AppResult<bool> {
         params![id],
     )?;
     Ok(rows > 0)
-}
-
-/// Permanently delete an API key.
-pub fn delete(conn: &Connection, id: &str) -> AppResult<bool> {
-    let rows = conn.execute("DELETE FROM api_keys WHERE id = ?1", params![id])?;
-    Ok(rows > 0)
-}
-
-/// Count total API keys.
-pub fn count_all(conn: &Connection) -> AppResult<i64> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM api_keys", [], |row| row.get(0))?;
-    Ok(count)
-}
-
-/// Count active (non-revoked) API keys.
-pub fn count_active(conn: &Connection) -> AppResult<i64> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM api_keys WHERE deleted_at IS NULL",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(count)
-}
-
-/// Check if any API keys exist.
-pub fn has_any_keys(conn: &Connection) -> AppResult<bool> {
-    let count = count_all(conn)?;
-    Ok(count > 0)
 }

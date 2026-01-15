@@ -43,11 +43,6 @@ impl AdminKey {
             None => false,
         }
     }
-
-    /// Check if an admin key is configured.
-    pub fn is_configured(&self) -> bool {
-        self.0.is_some()
-    }
 }
 
 impl std::fmt::Debug for AdminKey {

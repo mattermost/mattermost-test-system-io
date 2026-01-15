@@ -4,10 +4,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// API Key roles for future RBAC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiKeyRole {
     Admin,
+    #[default]
     Contributor,
     Viewer,
 }
@@ -21,19 +22,13 @@ impl ApiKeyRole {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "admin" => Some(Self::Admin),
             "contributor" => Some(Self::Contributor),
             "viewer" => Some(Self::Viewer),
             _ => None,
         }
-    }
-}
-
-impl Default for ApiKeyRole {
-    fn default() -> Self {
-        Self::Contributor
     }
 }
 
@@ -81,14 +76,9 @@ impl ApiKey {
         }
     }
 
-    /// Check if the key is valid (not revoked and not expired).
-    pub fn is_valid(&self) -> bool {
-        !self.is_revoked() && !self.is_expired()
-    }
-
     /// Get the role as enum.
     pub fn role_enum(&self) -> ApiKeyRole {
-        ApiKeyRole::from_str(&self.role).unwrap_or_default()
+        ApiKeyRole::parse(&self.role).unwrap_or_default()
     }
 }
 
@@ -140,12 +130,6 @@ pub struct CreateApiKeyRequest {
     /// Expiration duration (e.g., "365d", "30d", "1y")
     #[serde(default)]
     pub expires_in: Option<String>,
-}
-
-/// Request to revoke an API key.
-#[derive(Debug, Deserialize)]
-pub struct RevokeApiKeyRequest {
-    pub id: String,
 }
 
 /// Authenticated caller information extracted from API key.

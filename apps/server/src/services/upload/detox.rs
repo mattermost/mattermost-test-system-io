@@ -13,7 +13,7 @@ use crate::services::extraction;
 
 use super::{handle_upload_request, Framework, UploadRequest};
 
-/// Request Detox report upload (Phase 1).
+/// Initialize Detox report upload.
 ///
 /// POST /reports/upload/detox/request
 /// Content-Type: application/json
@@ -49,6 +49,7 @@ pub(crate) async fn request_detox_upload(
     pool: web::Data<DbPool>,
     data_dir: web::Data<PathBuf>,
     max_upload_size: web::Data<usize>,
+    max_files_per_request: web::Data<usize>,
 ) -> AppResult<HttpResponse> {
     handle_upload_request(
         &auth.caller,
@@ -56,6 +57,7 @@ pub(crate) async fn request_detox_upload(
         pool,
         data_dir,
         max_upload_size,
+        max_files_per_request,
         Framework::Detox,
     )
     .await

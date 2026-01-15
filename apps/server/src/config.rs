@@ -17,8 +17,10 @@ pub mod defaults {
     pub const DEV_PORT: u16 = 8080;
     pub const DEV_DATA_DIR: &str = "./data/files";
     pub const DEV_BACKUP_DIR: &str = "./data/backups";
-    pub const DEV_MAX_UPLOAD_SIZE: usize = 52_428_800; // 50MB
+    pub const DEV_MAX_UPLOAD_SIZE: usize = 52_428_800; // 50MB total per report
+    pub const DEV_MAX_FILES_PER_REQUEST: usize = 20; // Max files per upload request (batching)
     pub const DEV_MAX_CONCURRENT_UPLOADS: usize = 10; // Max concurrent upload requests
+    pub const DEV_UPLOAD_QUEUE_TIMEOUT_SECS: u64 = 30; // Queue timeout before rejecting
     pub const DEV_ARTIFACT_RETENTION_HOURS: u64 = 1; // 1 hour in development
     pub const PROD_ARTIFACT_RETENTION_HOURS: u64 = 168; // 7 days in production
 }
@@ -32,7 +34,7 @@ pub enum Environment {
 
 impl Environment {
     /// Parse environment from string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "development" | "dev" => Some(Self::Development),
             "production" | "prod" => Some(Self::Production),
@@ -81,8 +83,12 @@ pub struct Config {
     pub admin_key: Option<String>,
     /// Maximum upload size in bytes (default: 50MB)
     pub max_upload_size: usize,
-    /// Maximum concurrent upload requests (default: 10)
+    /// Maximum files per upload request for batching (default: 20)
+    pub max_files_per_request: usize,
+    /// Maximum concurrent upload batches (limits disk I/O, default: 10)
     pub max_concurrent_uploads: usize,
+    /// Upload queue timeout in seconds (default: 30s)
+    pub upload_queue_timeout_secs: u64,
     /// Artifact retention in hours (default: 1 hour dev, 7 days production)
     pub artifact_retention_hours: u64,
 }
@@ -108,13 +114,15 @@ impl Config {
     /// - `RRV_BACKUP_DIR`: Backup directory (default: ./data/backups)
     /// - `RRV_STATIC_DIR`: Static assets directory for production
     /// - `RRV_MAX_UPLOAD_SIZE`: Max upload size in bytes (default: 50MB)
-    /// - `RRV_MAX_CONCURRENT_UPLOADS`: Max concurrent upload requests (default: 10)
+    /// - `RRV_MAX_FILES_PER_REQUEST`: Max files per batch upload (default: 20)
+    /// - `RRV_MAX_CONCURRENT_UPLOADS`: Max concurrent upload batches (default: 10)
+    /// - `RRV_UPLOAD_QUEUE_TIMEOUT_SECS`: Upload queue timeout in seconds (default: 30)
     /// - `RRV_ARTIFACT_RETENTION_HOURS`: Artifact retention in hours (default: 1 hour dev, 168 hours prod)
     pub fn from_env() -> Result<Self, ConfigError> {
         // Parse environment - required
         let env_str = env::var("RUST_ENV").map_err(|_| ConfigError::MissingEnvVar("RUST_ENV"))?;
 
-        let environment = Environment::from_str(&env_str).ok_or(ConfigError::InvalidValue(
+        let environment = Environment::parse(&env_str).ok_or(ConfigError::InvalidValue(
             "RUST_ENV must be 'development' or 'production'",
         ))?;
 
@@ -149,11 +157,25 @@ impl Config {
             .parse::<usize>()
             .map_err(|_| ConfigError::InvalidValue("RRV_MAX_UPLOAD_SIZE must be a valid number"))?;
 
+        let max_files_per_request = env::var("RRV_MAX_FILES_PER_REQUEST")
+            .unwrap_or_else(|_| defaults::DEV_MAX_FILES_PER_REQUEST.to_string())
+            .parse::<usize>()
+            .map_err(|_| {
+                ConfigError::InvalidValue("RRV_MAX_FILES_PER_REQUEST must be a valid number")
+            })?;
+
         let max_concurrent_uploads = env::var("RRV_MAX_CONCURRENT_UPLOADS")
             .unwrap_or_else(|_| defaults::DEV_MAX_CONCURRENT_UPLOADS.to_string())
             .parse::<usize>()
             .map_err(|_| {
                 ConfigError::InvalidValue("RRV_MAX_CONCURRENT_UPLOADS must be a valid number")
+            })?;
+
+        let upload_queue_timeout_secs = env::var("RRV_UPLOAD_QUEUE_TIMEOUT_SECS")
+            .unwrap_or_else(|_| defaults::DEV_UPLOAD_QUEUE_TIMEOUT_SECS.to_string())
+            .parse::<u64>()
+            .map_err(|_| {
+                ConfigError::InvalidValue("RRV_UPLOAD_QUEUE_TIMEOUT_SECS must be a valid number")
             })?;
 
         let static_dir = env::var("RRV_STATIC_DIR").ok().map(PathBuf::from);
@@ -182,7 +204,9 @@ impl Config {
             static_dir,
             admin_key,
             max_upload_size,
+            max_files_per_request,
             max_concurrent_uploads,
+            upload_queue_timeout_secs,
             artifact_retention_hours,
         };
 
@@ -270,7 +294,9 @@ mod tests {
             static_dir: None,
             admin_key: Some("test-key".to_string()),
             max_upload_size: 1024,
+            max_files_per_request: 20,
             max_concurrent_uploads: 10,
+            upload_queue_timeout_secs: 30,
             artifact_retention_hours: 1,
         };
 
@@ -280,16 +306,16 @@ mod tests {
     #[test]
     fn test_environment_parsing() {
         assert_eq!(
-            Environment::from_str("development"),
+            Environment::parse("development"),
             Some(Environment::Development)
         );
-        assert_eq!(Environment::from_str("dev"), Some(Environment::Development));
+        assert_eq!(Environment::parse("dev"), Some(Environment::Development));
         assert_eq!(
-            Environment::from_str("production"),
+            Environment::parse("production"),
             Some(Environment::Production)
         );
-        assert_eq!(Environment::from_str("prod"), Some(Environment::Production));
-        assert_eq!(Environment::from_str("invalid"), None);
+        assert_eq!(Environment::parse("prod"), Some(Environment::Production));
+        assert_eq!(Environment::parse("invalid"), None);
     }
 
     #[test]
@@ -304,7 +330,9 @@ mod tests {
             static_dir: None,
             admin_key: Some(defaults::DEV_ADMIN_KEY.to_string()),
             max_upload_size: 1024,
+            max_files_per_request: 20,
             max_concurrent_uploads: 10,
+            upload_queue_timeout_secs: 30,
             artifact_retention_hours: 168,
         };
 
@@ -328,7 +356,9 @@ mod tests {
             static_dir: Some(PathBuf::from("/app/static")),
             admin_key: None, // No admin key in production is fine
             max_upload_size: 1024,
+            max_files_per_request: 20,
             max_concurrent_uploads: 10,
+            upload_queue_timeout_secs: 30,
             artifact_retention_hours: 168,
         };
 

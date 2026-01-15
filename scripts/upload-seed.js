@@ -267,7 +267,18 @@ function makeRequest(url, options, body) {
 }
 
 /**
- * Upload a single directory using two-phase API.
+ * Split array into chunks.
+ */
+function chunkArray(array, chunkSize) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += chunkSize) {
+    chunks.push(array.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+/**
+ * Upload a single directory using two-phase API with batched uploads.
  * @param {string} seedDir - Path to the seed directory
  * @param {string} [repoName] - Optional repository name override (e.g., "repo-mobile", "repo-web")
  * @param {string} [framework] - Framework type: "playwright", "cypress", or "detox"
@@ -295,13 +306,13 @@ async function uploadDirectory(seedDir, repoName, framework = "playwright", plat
   console.log(`  branch: ${githubContext.branch}`);
   console.log("  ...");
 
-  // Collect all files (server handles size limits and screenshot deprioritization)
+  // Collect all files
   const allFiles = getAllFiles(seedDir);
   const filenames = allFiles.map((f) => f.relativePath);
   console.log(`Found ${allFiles.length} files`);
 
-  // ===== Phase 1: Request upload =====
-  console.log("\n[Phase 1] Requesting upload...");
+  // ===== Initialize: Request upload =====
+  console.log("\n[Initialize] Requesting upload...");
   const requestUrl = UPLOAD_REQUEST_URLS[framework] || UPLOAD_REQUEST_URLS.playwright;
   const requestBody = {
     framework_version: "1.0.0",
@@ -335,7 +346,7 @@ async function uploadDirectory(seedDir, repoName, framework = "playwright", plat
     );
 
     if (phase1Response.statusCode !== 201) {
-      console.log(`Phase 1 failed (${phase1Response.statusCode}):`);
+      console.log(`Initialize failed (${phase1Response.statusCode}):`);
       console.log(phase1Response.body);
       return false;
     }
@@ -343,60 +354,86 @@ async function uploadDirectory(seedDir, repoName, framework = "playwright", plat
     const phase1Data = JSON.parse(phase1Response.body);
     const reportId = phase1Data.report_id;
     const maxUploadSize = phase1Data.max_upload_size;
+    const maxFilesPerRequest = phase1Data.max_files_per_request || 20;
     console.log(`  Report ID: ${reportId}`);
     console.log(`  Max upload size: ${(maxUploadSize / 1024 / 1024).toFixed(1)}MB`);
+    console.log(`  Max files per batch: ${maxFilesPerRequest}`);
     console.log(`  Files accepted: ${phase1Data.files_accepted.length}`);
     console.log(`  Files rejected: ${phase1Data.files_rejected.length}`);
 
     if (phase1Data.files_rejected.length > 0) {
       console.log("  Rejected files:");
-      for (const rej of phase1Data.files_rejected) {
+      for (const rej of phase1Data.files_rejected.slice(0, 5)) {
         console.log(`    - ${rej.file}: ${rej.reason}`);
+      }
+      if (phase1Data.files_rejected.length > 5) {
+        console.log(`    ... and ${phase1Data.files_rejected.length - 5} more`);
       }
     }
 
-    // ===== Phase 2: Upload files =====
-    console.log("\n[Phase 2] Uploading files...");
+    // ===== Transfer: Upload files in batches =====
+    console.log("\n[Transfer] Uploading files...");
     const uploadUrl = `${UPLOAD_FILES_URL}/${reportId}/files`;
-
-    // Build multipart form data with only accepted files
-    const form = new MultipartFormData();
     const acceptedSet = new Set(phase1Data.files_accepted);
 
-    for (const { fullPath, relativePath } of allFiles) {
-      if (acceptedSet.has(relativePath)) {
+    // Filter to only accepted files
+    const filesToUpload = allFiles.filter(({ relativePath }) => acceptedSet.has(relativePath));
+
+    // Split into batches
+    const batches = chunkArray(filesToUpload, maxFilesPerRequest);
+    console.log(`  Uploading ${filesToUpload.length} files in ${batches.length} batch(es)`);
+
+    let totalUploaded = 0;
+    let lastResponse = null;
+
+    for (let batchNum = 0; batchNum < batches.length; batchNum++) {
+      const batch = batches[batchNum];
+      console.log(`  Batch ${batchNum + 1}/${batches.length}: ${batch.length} files`);
+
+      // Build multipart form data for this batch
+      const form = new MultipartFormData();
+      for (const { fullPath, relativePath } of batch) {
         const content = fs.readFileSync(fullPath);
         const mimeType = getMimeType(relativePath);
         form.addFile("files", relativePath, content, mimeType);
       }
+
+      const body = form.getBody();
+      const headers = {
+        "Content-Type": form.getContentType(),
+        "Content-Length": body.length,
+      };
+      if (API_KEY) {
+        headers["X-API-Key"] = API_KEY;
+      } else {
+        headers["X-Admin-Key"] = ADMIN_KEY;
+      }
+
+      const response = await makeRequest(
+        uploadUrl,
+        { method: "POST", headers },
+        body,
+      );
+
+      if (response.statusCode !== 200) {
+        console.log(`    Batch ${batchNum + 1} failed (${response.statusCode}):`);
+        console.log(response.body);
+        return false;
+      }
+
+      const responseData = JSON.parse(response.body);
+      totalUploaded += responseData.files_uploaded || 0;
+      lastResponse = responseData;
+
+      console.log(`    Uploaded: ${responseData.files_uploaded}, Pending: ${responseData.files_pending}`);
     }
 
-    const body = form.getBody();
-    const headers = {
-      "Content-Type": form.getContentType(),
-      "Content-Length": body.length,
-    };
-    if (API_KEY) {
-      headers["X-API-Key"] = API_KEY;
-    } else {
-      headers["X-Admin-Key"] = ADMIN_KEY;
+    console.log(`\nFinal Response:`);
+    if (lastResponse) {
+      console.log(JSON.stringify(lastResponse, null, 2));
     }
 
-    const phase2Response = await makeRequest(
-      uploadUrl,
-      { method: "POST", headers },
-      body,
-    );
-
-    console.log(`\nResponse (${phase2Response.statusCode}):`);
-    try {
-      const responseData = JSON.parse(phase2Response.body);
-      console.log(JSON.stringify(responseData, null, 2));
-    } catch {
-      console.log(phase2Response.body);
-    }
-
-    return phase2Response.statusCode === 200;
+    return lastResponse && lastResponse.extraction_status !== "failed";
   } catch (error) {
     console.log(`Error: ${error.message}`);
     return false;

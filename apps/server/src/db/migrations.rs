@@ -14,6 +14,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("migrations/001_initial_schema.sql"),
     ),
     ("002_api_keys", include_str!("migrations/002_api_keys.sql")),
+    (
+        "003_upload_files",
+        include_str!("migrations/003_upload_files.sql"),
+    ),
 ];
 
 /// Run all pending migrations.

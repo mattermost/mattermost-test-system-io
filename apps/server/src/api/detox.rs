@@ -5,6 +5,7 @@
 use actix_web::{get, web, HttpResponse};
 use serde::{Deserialize, Serialize};
 use tracing::{info, instrument};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::db::{queries, DbPool};
@@ -12,7 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::{Pagination, PaginationParams};
 
 /// Summary of a Detox job.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct DetoxJobSummaryResponse {
     pub id: String,
     pub job_name: String,
@@ -26,13 +27,13 @@ pub struct DetoxJobSummaryResponse {
 }
 
 /// Detox job list response.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct DetoxJobListResponse {
     pub jobs: Vec<DetoxJobSummaryResponse>,
 }
 
 /// Combined test result for display.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct DetoxCombinedTestResult {
     pub id: i64,
     pub title: String,
@@ -47,14 +48,14 @@ pub struct DetoxCombinedTestResult {
 }
 
 /// Combined tests list response.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct DetoxCombinedTestsResponse {
     pub tests: Vec<DetoxCombinedTestResult>,
     pub pagination: Pagination,
 }
 
 /// Query parameters for combined tests.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CombinedTestsQueryParams {
     #[serde(flatten)]
     pub pagination: PaginationParams,
@@ -63,7 +64,7 @@ pub struct CombinedTestsQueryParams {
 }
 
 /// Detox job detail response.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct DetoxJobDetailResponse {
     pub id: String,
     pub job_name: String,
@@ -77,7 +78,7 @@ pub struct DetoxJobDetailResponse {
 }
 
 /// Screenshot response.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct DetoxScreenshotResponse {
     pub id: i64,
     pub file_path: String,
@@ -87,7 +88,7 @@ pub struct DetoxScreenshotResponse {
 }
 
 /// Screenshots list response.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct DetoxScreenshotsListResponse {
     pub screenshots: Vec<DetoxScreenshotResponse>,
 }
@@ -104,9 +105,21 @@ pub fn configure_detox_routes(cfg: &mut web::ServiceConfig) {
 /// Get Detox jobs for a report.
 ///
 /// GET /reports/{id}/detox-jobs
+#[utoipa::path(
+    get,
+    path = "/api/v1/reports/{id}/detox-jobs",
+    tag = "Detox",
+    params(
+        ("id" = String, Path, description = "Report UUID")
+    ),
+    responses(
+        (status = 200, description = "List of Detox jobs", body = DetoxJobListResponse),
+        (status = 404, description = "Report not found")
+    )
+)]
 #[get("/reports/{id}/detox-jobs")]
 #[instrument(name = "detox.get_report_jobs", skip(pool, path))]
-async fn get_report_detox_jobs(
+pub async fn get_report_detox_jobs(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
 ) -> AppResult<HttpResponse> {
@@ -143,9 +156,25 @@ async fn get_report_detox_jobs(
 /// Get combined test results for a Detox report.
 ///
 /// GET /reports/{id}/detox-tests?status=failed&search=Login
+#[utoipa::path(
+    get,
+    path = "/api/v1/reports/{id}/detox-tests",
+    tag = "Detox",
+    params(
+        ("id" = String, Path, description = "Report UUID"),
+        ("status" = Option<String>, Query, description = "Filter by status (passed, failed, skipped)"),
+        ("search" = Option<String>, Query, description = "Search in test titles"),
+        ("page" = Option<u32>, Query, description = "Page number"),
+        ("limit" = Option<u32>, Query, description = "Items per page")
+    ),
+    responses(
+        (status = 200, description = "Combined test results", body = DetoxCombinedTestsResponse),
+        (status = 404, description = "Report not found")
+    )
+)]
 #[get("/reports/{id}/detox-tests")]
 #[instrument(name = "detox.get_report_tests", skip(pool, path), fields(status = ?query.status, search = ?query.search))]
-async fn get_report_detox_tests(
+pub async fn get_report_detox_tests(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
     query: web::Query<CombinedTestsQueryParams>,
@@ -172,9 +201,21 @@ async fn get_report_detox_tests(
 /// Get Detox job details by ID.
 ///
 /// GET /detox-jobs/{id}
+#[utoipa::path(
+    get,
+    path = "/api/v1/detox-jobs/{id}",
+    tag = "Detox",
+    params(
+        ("id" = String, Path, description = "Detox job UUID")
+    ),
+    responses(
+        (status = 200, description = "Detox job details", body = DetoxJobDetailResponse),
+        (status = 404, description = "Detox job not found")
+    )
+)]
 #[get("/detox-jobs/{id}")]
 #[instrument(name = "detox.get_job", skip(pool, path))]
-async fn get_detox_job(
+pub async fn get_detox_job(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
 ) -> AppResult<HttpResponse> {
@@ -201,9 +242,21 @@ async fn get_detox_job(
 /// Get HTML report for a Detox job.
 ///
 /// GET /detox-jobs/{id}/html
+#[utoipa::path(
+    get,
+    path = "/api/v1/detox-jobs/{id}/html",
+    tag = "Detox",
+    params(
+        ("id" = String, Path, description = "Detox job UUID")
+    ),
+    responses(
+        (status = 200, description = "HTML report content", content_type = "text/html"),
+        (status = 404, description = "Detox job or HTML file not found")
+    )
+)]
 #[get("/detox-jobs/{id}/html")]
 #[instrument(name = "detox.get_job_html", skip(pool, path, data_dir))]
-async fn get_detox_job_html(
+pub async fn get_detox_job_html(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
     data_dir: web::Data<std::path::PathBuf>,
@@ -261,9 +314,21 @@ async fn get_detox_job_html(
 /// Get screenshots for a Detox test by job ID and test name.
 ///
 /// GET /detox-jobs/{job_id}/tests/{test_full_name}/screenshots
+#[utoipa::path(
+    get,
+    path = "/api/v1/detox-jobs/{job_id}/tests/{test_full_name}/screenshots",
+    tag = "Detox",
+    params(
+        ("job_id" = String, Path, description = "Detox job UUID"),
+        ("test_full_name" = String, Path, description = "URL-encoded test full name")
+    ),
+    responses(
+        (status = 200, description = "List of screenshots", body = DetoxScreenshotsListResponse)
+    )
+)]
 #[get("/detox-jobs/{job_id}/tests/{test_full_name}/screenshots")]
 #[instrument(name = "detox.get_test_screenshots", skip(pool, path))]
-async fn get_detox_test_screenshots(
+pub async fn get_detox_test_screenshots(
     pool: web::Data<DbPool>,
     path: web::Path<(String, String)>,
 ) -> AppResult<HttpResponse> {

@@ -1,10 +1,11 @@
 //! GitHub Actions context model for CI/CD metadata.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// GitHub Actions context metadata.
 /// All fields are optional to support various CI scenarios.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct GitHubContext {
     /// Repository in "owner/repo" format (from GITHUB_REPOSITORY)
     #[serde(skip_serializing_if = "Option::is_none")]

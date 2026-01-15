@@ -2,6 +2,7 @@
 
 use actix_web::{delete, get, post, web, HttpResponse};
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::auth::ApiKeyAuth;
 use crate::db::DbPool;
@@ -22,8 +23,22 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
 ///
 /// POST /api/v1/auth/keys
 /// Authorization: X-API-Key (admin role) or X-Admin-Key (bootstrap)
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/keys",
+    tag = "Auth",
+    request_body = CreateApiKeyRequest,
+    responses(
+        (status = 201, description = "API key created", body = ApiKeyCreateResponse),
+        (status = 401, description = "Unauthorized - admin role required"),
+        (status = 400, description = "Invalid input")
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
 #[post("/auth/keys")]
-async fn create_api_key(
+pub async fn create_api_key(
     auth: ApiKeyAuth,
     body: web::Json<CreateApiKeyRequest>,
     pool: web::Data<DbPool>,
@@ -65,8 +80,20 @@ async fn create_api_key(
 ///
 /// GET /api/v1/auth/keys
 /// Authorization: X-API-Key (admin role) or X-Admin-Key
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/keys",
+    tag = "Auth",
+    responses(
+        (status = 200, description = "List of API keys", body = ListApiKeysResponse),
+        (status = 401, description = "Unauthorized - admin role required")
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
 #[get("/auth/keys")]
-async fn list_api_keys(auth: ApiKeyAuth, pool: web::Data<DbPool>) -> AppResult<HttpResponse> {
+pub async fn list_api_keys(auth: ApiKeyAuth, pool: web::Data<DbPool>) -> AppResult<HttpResponse> {
     // Check admin permission
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
@@ -84,8 +111,24 @@ async fn list_api_keys(auth: ApiKeyAuth, pool: web::Data<DbPool>) -> AppResult<H
 ///
 /// GET /api/v1/auth/keys/{id}
 /// Authorization: X-API-Key (admin role) or X-Admin-Key
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/keys/{id}",
+    tag = "Auth",
+    params(
+        ("id" = String, Path, description = "API key UUID")
+    ),
+    responses(
+        (status = 200, description = "API key details", body = ApiKeyListItem),
+        (status = 401, description = "Unauthorized - admin role required"),
+        (status = 404, description = "API key not found")
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
 #[get("/auth/keys/{id}")]
-async fn get_api_key(
+pub async fn get_api_key(
     auth: ApiKeyAuth,
     path: web::Path<String>,
     pool: web::Data<DbPool>,
@@ -108,8 +151,24 @@ async fn get_api_key(
 ///
 /// DELETE /api/v1/auth/keys/{id}
 /// Authorization: X-API-Key (admin role) or X-Admin-Key
+#[utoipa::path(
+    delete,
+    path = "/api/v1/auth/keys/{id}",
+    tag = "Auth",
+    params(
+        ("id" = String, Path, description = "API key UUID")
+    ),
+    responses(
+        (status = 200, description = "API key revoked", body = RevokeApiKeyResponse),
+        (status = 401, description = "Unauthorized - admin role required"),
+        (status = 404, description = "API key not found or already revoked")
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
 #[delete("/auth/keys/{id}")]
-async fn revoke_api_key(
+pub async fn revoke_api_key(
     auth: ApiKeyAuth,
     path: web::Path<String>,
     pool: web::Data<DbPool>,
@@ -149,8 +208,24 @@ async fn revoke_api_key(
 ///
 /// POST /api/v1/auth/keys/{id}/restore
 /// Authorization: X-API-Key (admin role) or X-Admin-Key
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/keys/{id}/restore",
+    tag = "Auth",
+    params(
+        ("id" = String, Path, description = "API key UUID")
+    ),
+    responses(
+        (status = 200, description = "API key restored", body = RestoreApiKeyResponse),
+        (status = 401, description = "Unauthorized - admin role required"),
+        (status = 404, description = "API key not found or not revoked")
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
 #[post("/auth/keys/{id}/restore")]
-async fn restore_api_key(
+pub async fn restore_api_key(
     auth: ApiKeyAuth,
     path: web::Path<String>,
     pool: web::Data<DbPool>,
@@ -180,19 +255,19 @@ async fn restore_api_key(
 
 // Response types
 
-#[derive(Debug, Serialize)]
-struct ListApiKeysResponse {
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListApiKeysResponse {
     keys: Vec<ApiKeyListItem>,
 }
 
-#[derive(Debug, Serialize)]
-struct RevokeApiKeyResponse {
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RevokeApiKeyResponse {
     message: String,
     id: String,
 }
 
-#[derive(Debug, Serialize)]
-struct RestoreApiKeyResponse {
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RestoreApiKeyResponse {
     message: String,
     id: String,
 }

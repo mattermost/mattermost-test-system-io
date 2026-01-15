@@ -81,7 +81,7 @@ impl ResponseError for AppError {
 }
 
 /// Error response body matching OpenAPI schema.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
     pub message: String,

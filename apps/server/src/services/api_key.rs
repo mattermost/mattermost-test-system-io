@@ -39,9 +39,7 @@ pub fn generate_key(
     let key_prefix = full_key.chars().take(KEY_PREFIX_LENGTH).collect::<String>();
 
     // Parse expiration
-    let expires_at = expires_in
-        .and_then(parse_duration)
-        .map(|d| Utc::now() + d);
+    let expires_at = expires_in.and_then(parse_duration).map(|d| Utc::now() + d);
 
     let api_key = ApiKey {
         id: uuid::Uuid::new_v4().to_string(),

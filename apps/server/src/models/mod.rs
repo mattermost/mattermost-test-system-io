@@ -1,5 +1,7 @@
 //! Domain models for the Rust Report Viewer.
 
+use utoipa::ToSchema;
+
 pub mod api_key;
 pub mod detox_job;
 pub mod detox_screenshot;
@@ -25,7 +27,7 @@ pub use test_spec::{ScreenshotInfo, TestSpec, TestSpecListResponse, TestSpecWith
 pub use test_suite::{TestSuite, TestSuiteListResponse};
 
 /// Pagination parameters.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, ToSchema)]
 pub struct PaginationParams {
     #[serde(default = "default_page")]
     pub page: u32,
@@ -54,7 +56,7 @@ impl PaginationParams {
 }
 
 /// Pagination metadata for responses.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
 pub struct Pagination {
     pub page: u32,
     pub limit: u32,

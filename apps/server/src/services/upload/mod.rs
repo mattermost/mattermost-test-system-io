@@ -14,9 +14,9 @@
 //!
 //! - `POST /api/v1/reports/upload/{report_id}/files`
 
-mod cypress;
-mod detox;
-mod playwright;
+pub mod cypress;
+pub mod detox;
+pub mod playwright;
 
 use actix_multipart::Multipart;
 use actix_web::{post, web, HttpResponse};
@@ -28,6 +28,7 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::auth::ApiKeyAuth;
@@ -71,7 +72,7 @@ impl Framework {
 }
 
 /// Initialize upload request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UploadRequest {
     /// Framework version (required).
     pub framework_version: String,
@@ -88,7 +89,7 @@ pub struct UploadRequest {
 }
 
 /// Initialize upload response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct UploadRequestResponse {
     /// Report ID to use for file upload.
     pub report_id: Uuid,
@@ -119,7 +120,7 @@ pub struct UploadRequestResponse {
 }
 
 /// File transfer response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct UploadFilesResponse {
     /// Report ID.
     pub report_id: Uuid,
@@ -150,7 +151,7 @@ pub struct UploadFilesResponse {
 }
 
 /// A file that was rejected or failed during upload.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct FileError {
     pub file: String,
     pub reason: String,
@@ -255,9 +256,25 @@ pub(crate) async fn handle_upload_request(
 /// uploaded, extraction is triggered automatically.
 ///
 /// Clients should upload files in batches of `max_files_per_request` (from initialize response).
+#[utoipa::path(
+    post,
+    path = "/api/v1/reports/upload/{report_id}/files",
+    tag = "Upload",
+    params(
+        ("report_id" = String, Path, description = "Report UUID from initialization")
+    ),
+    responses(
+        (status = 200, description = "Files uploaded successfully", body = UploadFilesResponse),
+        (status = 404, description = "Report not found"),
+        (status = 503, description = "Service unavailable - too many concurrent uploads")
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
 #[post("/reports/upload/{report_id}/files")]
 #[allow(clippy::too_many_arguments)]
-async fn upload_report_files(
+pub async fn upload_report_files(
     auth: ApiKeyAuth,
     path: web::Path<String>,
     mut payload: Multipart,
@@ -278,12 +295,7 @@ async fn upload_report_files(
     // Acquire upload permit with timeout (queues requests instead of rejecting immediately)
     // This handles burst scenarios where multiple CI jobs finish simultaneously
     let queue_timeout = Duration::from_secs(*upload_queue_timeout_secs.get_ref());
-    let _permit = match tokio::time::timeout(
-        queue_timeout,
-        upload_semaphore.acquire(),
-    )
-    .await
-    {
+    let _permit = match tokio::time::timeout(queue_timeout, upload_semaphore.acquire()).await {
         Ok(Ok(permit)) => {
             debug!("Upload permit acquired for report {}", report_id);
             permit
@@ -301,12 +313,10 @@ async fn upload_report_files(
                 report_id,
                 queue_timeout.as_secs()
             );
-            return Err(AppError::ServiceUnavailable(
-                format!(
-                    "Upload queue full. {} concurrent uploads in progress. Please retry.",
-                    upload_semaphore.available_permits()
-                ),
-            ));
+            return Err(AppError::ServiceUnavailable(format!(
+                "Upload queue full. {} concurrent uploads in progress. Please retry.",
+                upload_semaphore.available_permits()
+            )));
         }
     };
 

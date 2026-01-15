@@ -1,6 +1,7 @@
 //! Test spec model representing an individual test specification.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use super::TestResult;
 
@@ -52,14 +53,14 @@ impl TestSpec {
 }
 
 /// Screenshot info for API response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ScreenshotInfo {
     pub file_path: String,
     pub screenshot_type: String,
 }
 
 /// Test spec with its results for API response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TestSpecWithResults {
     pub id: i64,
     pub title: String,
@@ -74,7 +75,7 @@ pub struct TestSpecWithResults {
 }
 
 /// Response for test spec list with results.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TestSpecListResponse {
     pub specs: Vec<TestSpecWithResults>,
 }

@@ -2,12 +2,13 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::github_context::GitHubContext;
 
 /// Detox platform (iOS or Android).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum DetoxPlatform {
     Ios,
@@ -31,7 +32,7 @@ impl std::fmt::Display for DetoxPlatform {
 }
 
 /// Extraction status for a report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ExtractionStatus {
     Pending,
@@ -124,7 +125,7 @@ impl Report {
 }
 
 /// Summary view of a report for list responses.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReportSummary {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,
@@ -158,7 +159,7 @@ impl From<Report> for ReportSummary {
 }
 
 /// Detailed view of a report.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReportDetail {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,

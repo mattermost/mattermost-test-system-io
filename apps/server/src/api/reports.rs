@@ -2,6 +2,7 @@
 
 use actix_web::{get, web, HttpResponse};
 use serde::Serialize;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::db::{queries, DbPool};
@@ -12,7 +13,7 @@ use crate::models::{
 };
 
 /// Report list response.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ReportListResponse {
     pub reports: Vec<ReportSummary>,
     pub pagination: Pagination,
@@ -36,8 +37,20 @@ pub fn configure_report_routes(cfg: &mut web::ServiceConfig) {
 /// List all reports with pagination.
 ///
 /// GET /reports?page=1&limit=20
+#[utoipa::path(
+    get,
+    path = "/api/v1/reports",
+    tag = "Reports",
+    params(
+        ("page" = Option<u32>, Query, description = "Page number (default: 1)"),
+        ("limit" = Option<u32>, Query, description = "Items per page (default: 100, max: 100)")
+    ),
+    responses(
+        (status = 200, description = "List of reports", body = ReportListResponse)
+    )
+)]
 #[get("/reports")]
-async fn list_reports(
+pub async fn list_reports(
     pool: web::Data<DbPool>,
     query: web::Query<PaginationParams>,
 ) -> AppResult<HttpResponse> {
@@ -53,8 +66,20 @@ async fn list_reports(
 /// Get report details by ID.
 ///
 /// GET /reports/{id}
+#[utoipa::path(
+    get,
+    path = "/api/v1/reports/{id}",
+    tag = "Reports",
+    params(
+        ("id" = String, Path, description = "Report UUID")
+    ),
+    responses(
+        (status = 200, description = "Report details", body = ReportDetail),
+        (status = 404, description = "Report not found", body = crate::error::ErrorResponse)
+    )
+)]
 #[get("/reports/{id}")]
-async fn get_report(
+pub async fn get_report(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
     data_dir: web::Data<std::path::PathBuf>,
@@ -87,8 +112,20 @@ async fn get_report(
 /// Serves different HTML files based on framework:
 /// - Playwright: index.html
 /// - Cypress: mochawesome.html (fallback to index.html if not found)
+#[utoipa::path(
+    get,
+    path = "/api/v1/reports/{id}/html",
+    tag = "Reports",
+    params(
+        ("id" = String, Path, description = "Report UUID")
+    ),
+    responses(
+        (status = 200, description = "HTML report content", content_type = "text/html"),
+        (status = 404, description = "Report or HTML file not found")
+    )
+)]
 #[get("/reports/{id}/html")]
-async fn get_report_html(
+pub async fn get_report_html(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
     data_dir: web::Data<std::path::PathBuf>,
@@ -133,8 +170,21 @@ async fn get_report_html(
 /// GET /reports/{id}/assets/{filename}
 ///
 /// Serves files from the assets/ directory for mochawesome HTML reports.
+#[utoipa::path(
+    get,
+    path = "/api/v1/reports/{id}/assets/{filename}",
+    tag = "Reports",
+    params(
+        ("id" = String, Path, description = "Report UUID"),
+        ("filename" = String, Path, description = "Asset filename")
+    ),
+    responses(
+        (status = 200, description = "Asset file content"),
+        (status = 404, description = "Asset file not found")
+    )
+)]
 #[get("/reports/{id}/assets/{filename:.*}")]
-async fn get_report_assets(
+pub async fn get_report_assets(
     pool: web::Data<DbPool>,
     path: web::Path<(String, String)>,
     data_dir: web::Data<std::path::PathBuf>,
@@ -175,8 +225,21 @@ async fn get_report_assets(
 ///
 /// Serves files from the screenshots/ directory for Cypress HTML reports.
 /// Supports nested paths like screenshots/spec_file/screenshot.png
+#[utoipa::path(
+    get,
+    path = "/api/v1/reports/{id}/screenshots/{filepath}",
+    tag = "Reports",
+    params(
+        ("id" = String, Path, description = "Report UUID"),
+        ("filepath" = String, Path, description = "Screenshot file path")
+    ),
+    responses(
+        (status = 200, description = "Screenshot file content"),
+        (status = 404, description = "Screenshot file not found")
+    )
+)]
 #[get("/reports/{id}/screenshots/{filepath:.*}")]
-async fn get_report_screenshots(
+pub async fn get_report_screenshots(
     pool: web::Data<DbPool>,
     path: web::Path<(String, String)>,
     data_dir: web::Data<std::path::PathBuf>,
@@ -219,8 +282,21 @@ async fn get_report_screenshots(
 /// - Playwright: data/ subdirectory
 /// - Cypress: screenshots/ subdirectory
 /// - Fallback: root report directory
+#[utoipa::path(
+    get,
+    path = "/api/v1/reports/{id}/data/{filename}",
+    tag = "Reports",
+    params(
+        ("id" = String, Path, description = "Report UUID"),
+        ("filename" = String, Path, description = "Data filename")
+    ),
+    responses(
+        (status = 200, description = "Data file content"),
+        (status = 404, description = "Data file not found")
+    )
+)]
 #[get("/reports/{id}/data/{filename:.*}")]
-async fn get_report_data_file(
+pub async fn get_report_data_file(
     pool: web::Data<DbPool>,
     path: web::Path<(String, String)>,
     data_dir: web::Data<std::path::PathBuf>,
@@ -267,8 +343,20 @@ async fn get_report_data_file(
 /// Get test suites for a report.
 ///
 /// GET /reports/{id}/suites
+#[utoipa::path(
+    get,
+    path = "/api/v1/reports/{id}/suites",
+    tag = "Reports",
+    params(
+        ("id" = String, Path, description = "Report UUID")
+    ),
+    responses(
+        (status = 200, description = "List of test suites", body = TestSuiteListResponse),
+        (status = 404, description = "Report not found")
+    )
+)]
 #[get("/reports/{id}/suites")]
-async fn get_report_suites(
+pub async fn get_report_suites(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
 ) -> AppResult<HttpResponse> {
@@ -287,8 +375,21 @@ async fn get_report_suites(
 /// Get test specs with results for a suite.
 ///
 /// GET /reports/{id}/suites/{suite_id}/specs
+#[utoipa::path(
+    get,
+    path = "/api/v1/reports/{id}/suites/{suite_id}/specs",
+    tag = "Reports",
+    params(
+        ("id" = String, Path, description = "Report UUID"),
+        ("suite_id" = i64, Path, description = "Suite ID")
+    ),
+    responses(
+        (status = 200, description = "List of test specs with results", body = TestSpecListResponse),
+        (status = 404, description = "Report not found")
+    )
+)]
 #[get("/reports/{id}/suites/{suite_id}/specs")]
-async fn get_suite_specs(
+pub async fn get_suite_specs(
     pool: web::Data<DbPool>,
     path: web::Path<(String, i64)>,
 ) -> AppResult<HttpResponse> {

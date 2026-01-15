@@ -82,7 +82,9 @@ pub fn get_files_status(
     }
 
     // Build IN clause with placeholders
-    let placeholders: Vec<String> = (0..filenames.len()).map(|i| format!("?{}", i + 2)).collect();
+    let placeholders: Vec<String> = (0..filenames.len())
+        .map(|i| format!("?{}", i + 2))
+        .collect();
     let query = format!(
         "SELECT filename, uploaded_at IS NOT NULL as is_uploaded
          FROM upload_files

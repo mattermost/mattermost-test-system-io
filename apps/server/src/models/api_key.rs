@@ -2,9 +2,10 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// API Key roles for future RBAC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiKeyRole {
     Admin,
@@ -83,7 +84,7 @@ impl ApiKey {
 }
 
 /// Response when creating a new API key (includes the full key).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ApiKeyCreateResponse {
     pub id: String,
     pub key: String, // Full key - only shown once
@@ -94,7 +95,7 @@ pub struct ApiKeyCreateResponse {
 }
 
 /// Response for listing API keys (key masked).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ApiKeyListItem {
     pub id: String,
     pub key_prefix: String,
@@ -122,7 +123,7 @@ impl From<ApiKey> for ApiKeyListItem {
 }
 
 /// Request to create a new API key.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateApiKeyRequest {
     pub name: String,
     #[serde(default)]

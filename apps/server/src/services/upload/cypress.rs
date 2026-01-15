@@ -3,6 +3,7 @@
 use actix_web::{post, web, HttpResponse};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
+use utoipa;
 use uuid::Uuid;
 
 use crate::auth::ApiKeyAuth;
@@ -30,8 +31,21 @@ use super::{handle_upload_request, Framework, UploadRequest};
 ///
 /// ## Response
 /// Returns report_id and list of accepted/rejected files.
+#[utoipa::path(
+    post,
+    path = "/api/v1/reports/upload/cypress/request",
+    tag = "Upload",
+    request_body = super::UploadRequest,
+    responses(
+        (status = 200, description = "Upload request initialized", body = super::UploadRequestResponse),
+        (status = 400, description = "Invalid request")
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
 #[post("/reports/upload/cypress/request")]
-pub(crate) async fn request_cypress_upload(
+pub async fn request_cypress_upload(
     auth: ApiKeyAuth,
     body: web::Json<UploadRequest>,
     pool: web::Data<DbPool>,

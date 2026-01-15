@@ -1,10 +1,11 @@
 //! Test suite model representing a test file.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// Test suite representing a test file from results.json.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TestSuite {
     /// Internal ID
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,7 +56,7 @@ impl TestSuite {
 }
 
 /// Response for test suite list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TestSuiteListResponse {
     pub suites: Vec<TestSuite>,
 }

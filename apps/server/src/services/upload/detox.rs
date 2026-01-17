@@ -1,18 +1,19 @@
 //! Detox report upload handlers.
 
-use actix_web::{post, web, HttpResponse};
-use std::path::{Path, PathBuf};
+use actix_web::{HttpResponse, post, web};
+use sea_orm::DatabaseConnection;
 use tracing::{info, warn};
 use utoipa;
 use uuid::Uuid;
 
 use crate::auth::ApiKeyAuth;
-use crate::db::{queries, DbPool};
+use crate::db::{DbPool, queries};
 use crate::error::AppResult;
 use crate::models::{DetoxJob, DetoxScreenshot, ExtractionStatus, Report, ReportStats};
+use crate::services::Storage;
 use crate::services::extraction;
 
-use super::{handle_upload_request, Framework, UploadRequest};
+use super::{Framework, UploadRequest, handle_upload_request};
 
 /// Initialize Detox report upload.
 ///
@@ -61,7 +62,6 @@ pub async fn request_detox_upload(
     auth: ApiKeyAuth,
     body: web::Json<UploadRequest>,
     pool: web::Data<DbPool>,
-    data_dir: web::Data<PathBuf>,
     max_upload_size: web::Data<usize>,
     max_files_per_request: web::Data<usize>,
 ) -> AppResult<HttpResponse> {
@@ -69,7 +69,6 @@ pub async fn request_detox_upload(
         &auth.caller,
         body,
         pool,
-        data_dir,
         max_upload_size,
         max_files_per_request,
         Framework::Detox,
@@ -78,10 +77,10 @@ pub async fn request_detox_upload(
 }
 
 /// Trigger Detox results extraction.
-pub(crate) fn trigger_detox_extraction(
-    conn: &rusqlite::Connection,
+pub(crate) async fn trigger_detox_extraction(
+    conn: &DatabaseConnection,
     report_id: Uuid,
-    report_dir: &Path,
+    storage: &Storage,
     files: &[String],
     report: &Report,
 ) -> &'static str {
@@ -101,11 +100,12 @@ pub(crate) fn trigger_detox_extraction(
             Some("detox"),
             report.framework_version.as_deref(),
             Some(msg),
-        );
+        )
+        .await;
         return "failed";
     }
 
-    let result = process_jobs(conn, report_id, report_dir, &data_files);
+    let result = process_jobs(conn, report_id, storage, &data_files, files).await;
 
     match result {
         Ok(_) => {
@@ -117,7 +117,8 @@ pub(crate) fn trigger_detox_extraction(
                 Some("detox"),
                 report.framework_version.as_deref(),
                 None,
-            );
+            )
+            .await;
             "completed"
         }
         Err(e) => {
@@ -129,18 +130,20 @@ pub(crate) fn trigger_detox_extraction(
                 Some("detox"),
                 report.framework_version.as_deref(),
                 Some(&e.to_string()),
-            );
+            )
+            .await;
             "failed"
         }
     }
 }
 
 /// Process Detox jobs (one or more).
-fn process_jobs(
-    conn: &rusqlite::Connection,
+async fn process_jobs(
+    conn: &DatabaseConnection,
     report_id: Uuid,
-    report_dir: &Path,
+    storage: &Storage,
     data_files: &[&String],
+    all_files: &[String],
 ) -> AppResult<()> {
     info!(
         "Processing {} Detox jobs for report {}",
@@ -148,6 +151,7 @@ fn process_jobs(
         report_id
     );
 
+    let report_id_str = report_id.to_string();
     let mut total_tests = 0;
     let mut total_passed = 0;
     let mut total_failed = 0;
@@ -158,8 +162,18 @@ fn process_jobs(
         // Extract job folder (job name): "ios-results-xxx-1/jest-stare/ios-data.json" -> "ios-results-xxx-1"
         let job_name = data_file.split('/').next().unwrap_or("default");
 
-        let json_path = report_dir.join(data_file);
-        let stats = extraction::extract_jest_stare_results(conn, report_id, &json_path)?;
+        // Download JSON from S3
+        let s3_key = Storage::report_key(&report_id_str, data_file);
+        let json_data = match storage.download(&s3_key).await? {
+            Some(data) => data,
+            None => {
+                warn!("Data file {} not found in S3", data_file);
+                continue;
+            }
+        };
+
+        let stats =
+            extraction::extract_jest_stare_results_from_bytes(conn, report_id, &json_data).await?;
 
         info!(
             "Job '{}': {} tests ({} passed, {} failed)",
@@ -173,13 +187,10 @@ fn process_jobs(
         job.failed_count = stats.failed_tests;
         job.skipped_count = stats.skipped_tests;
         job.duration_ms = stats.duration_ms;
-        queries::insert_detox_job(conn, &job)?;
+        queries::insert_detox_job(conn, &job).await?;
 
-        // Scan screenshots for this job
-        let job_dir = report_dir.join(job_name);
-        if job_dir.exists() {
-            store_screenshots(conn, &job, &job_dir, Some(job_name))?;
-        }
+        // Store screenshots for this job (scan file list instead of directory)
+        store_screenshots_from_file_list(conn, &job, all_files, job_name).await?;
 
         // Accumulate totals
         total_tests += stats.total_tests;
@@ -201,7 +212,8 @@ fn process_jobs(
             unexpected: total_failed,
             flaky: 0,
         },
-    )?;
+    )
+    .await?;
 
     info!(
         "Detox extraction complete: report={}, {} jobs, {} tests",
@@ -212,30 +224,38 @@ fn process_jobs(
     Ok(())
 }
 
-/// Scan and store screenshots for a job.
-fn store_screenshots(
-    conn: &rusqlite::Connection,
+/// Store screenshots from file list (for S3 storage).
+async fn store_screenshots_from_file_list(
+    conn: &DatabaseConnection,
     job: &DetoxJob,
-    scan_dir: &Path,
-    path_prefix: Option<&str>,
+    all_files: &[String],
+    job_name: &str,
 ) -> AppResult<()> {
-    let screenshots = extraction::scan_detox_screenshots(scan_dir);
     let mut count = 0;
+    let job_prefix = format!("{}/", job_name);
 
-    for discovered in &screenshots {
-        let file_path = match path_prefix {
-            Some(prefix) => format!("{}/{}", prefix, discovered.file_path),
-            None => discovered.file_path.clone(),
-        };
+    // Find screenshot files for this job
+    for file_path in all_files {
+        if !file_path.starts_with(&job_prefix) {
+            continue;
+        }
 
-        let screenshot = DetoxScreenshot::new(
-            job.id,
-            discovered.test_full_name.clone(),
-            discovered.screenshot_type,
-            file_path,
-        );
-        queries::insert_detox_screenshot(conn, &screenshot)?;
-        count += 1;
+        // Check if it's a screenshot (PNG file not in jest-stare)
+        if !file_path.ends_with(".png") || file_path.contains("/jest-stare/") {
+            continue;
+        }
+
+        // Parse screenshot info from filename
+        if let Some(discovered) = extraction::parse_detox_screenshot_path(file_path) {
+            let screenshot = DetoxScreenshot::new(
+                job.id,
+                discovered.test_full_name,
+                discovered.screenshot_type,
+                file_path.to_string(),
+            );
+            queries::insert_detox_screenshot(conn, &screenshot).await?;
+            count += 1;
+        }
     }
 
     if count > 0 {

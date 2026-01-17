@@ -1,7 +1,8 @@
 //! Health check endpoints.
 
-use actix_web::{get, web, HttpResponse};
+use actix_web::{HttpResponse, get, web};
 use chrono::Utc;
+use sea_orm::ConnectionTrait;
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -56,7 +57,9 @@ pub async fn health() -> HttpResponse {
 pub async fn ready(pool: web::Data<DbPool>) -> HttpResponse {
     // Try a simple query to verify database connectivity
     let conn = pool.connection();
-    match conn.query_row("SELECT 1", [], |_| Ok(())) {
+    let stmt =
+        sea_orm::Statement::from_string(sea_orm::DatabaseBackend::Postgres, "SELECT 1".to_owned());
+    match conn.query_one_raw(stmt).await {
         Ok(_) => HttpResponse::Ok().json(ReadyResponse {
             status: "ready",
             database: "connected",

@@ -2,13 +2,13 @@
 //!
 //! Provides endpoints for viewing Detox jobs and combined results for reports.
 
-use actix_web::{get, web, HttpResponse};
+use actix_web::{HttpResponse, get, web};
 use serde::{Deserialize, Serialize};
 use tracing::{info, instrument};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::db::{queries, DbPool};
+use crate::db::{DbPool, queries};
 use crate::error::{AppError, AppResult};
 use crate::models::{Pagination, PaginationParams};
 
@@ -50,7 +50,7 @@ pub struct DetoxCombinedTestResult {
 /// Combined tests list response.
 #[derive(Serialize, ToSchema)]
 pub struct DetoxCombinedTestsResponse {
-    pub tests: Vec<DetoxCombinedTestResult>,
+    pub tests: Vec<queries::CombinedDetoxTest>,
     pub pagination: Pagination,
 }
 
@@ -128,10 +128,11 @@ pub async fn get_report_detox_jobs(
     let conn = pool.connection();
 
     // Verify report exists
-    let _ = queries::get_active_report_by_id(&conn, report_id)?
+    let _ = queries::get_active_report_by_id(conn, report_id)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
 
-    let jobs = queries::get_detox_jobs_by_report_id(&conn, report_id)?;
+    let jobs = queries::get_detox_jobs_by_report_id(conn, report_id).await?;
 
     let job_summaries: Vec<DetoxJobSummaryResponse> = jobs
         .into_iter()
@@ -184,16 +185,15 @@ pub async fn get_report_detox_tests(
     let conn = pool.connection();
 
     // Verify report exists
-    let _ = queries::get_active_report_by_id(&conn, report_id)?
+    let _ = queries::get_active_report_by_id(conn, report_id)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
 
-    let (tests, pagination) = queries::get_detox_combined_tests(
-        &conn,
-        report_id,
-        &query.pagination,
-        query.status.as_deref(),
-        query.search.as_deref(),
-    )?;
+    // Build params with status filter
+    let mut params = query.pagination.clone();
+    params.status = query.status.clone();
+
+    let (tests, pagination) = queries::get_detox_combined_tests(conn, report_id, &params).await?;
 
     Ok(HttpResponse::Ok().json(DetoxCombinedTestsResponse { tests, pagination }))
 }
@@ -223,7 +223,8 @@ pub async fn get_detox_job(
     info!(job_id = %id, "Getting Detox job details");
     let conn = pool.connection();
 
-    let job = queries::get_detox_job_by_id(&conn, id)?
+    let job = queries::get_detox_job_by_id(conn, id)
+        .await?
         .ok_or_else(|| AppError::DetoxJobNotFound(id.to_string()))?;
 
     Ok(HttpResponse::Ok().json(DetoxJobDetailResponse {
@@ -265,16 +266,16 @@ pub async fn get_detox_job_html(
     info!(job_id = %id, "Getting Detox job HTML report");
 
     // Get job and report path from database
-    let report_file_path = {
-        let conn = pool.connection();
-        let job = queries::get_detox_job_by_id(&conn, id)?
-            .ok_or_else(|| AppError::NotFound(format!("Detox job {}", id)))?;
+    let conn = pool.connection();
+    let job = queries::get_detox_job_by_id(conn, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Detox job {}", id)))?;
 
-        let report = queries::get_active_report_by_id(&conn, job.report_id)?
-            .ok_or_else(|| AppError::NotFound(format!("Report {}", job.report_id)))?;
+    let report = queries::get_active_report_by_id(conn, job.report_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Report {}", job.report_id)))?;
 
-        report.file_path
-    };
+    let report_file_path = report.file_path;
 
     // Look for jest-stare HTML file (e.g., jest-stare/ios-main.html or jest-stare/android-main.html)
     let report_dir = data_dir.join(&report_file_path);
@@ -347,7 +348,7 @@ pub async fn get_detox_test_screenshots(
     let normalized_test_name = test_full_name.replace(['/', '"'], "_");
 
     let screenshots =
-        queries::get_detox_screenshots_by_test_name(&conn, job_id, &normalized_test_name)?;
+        queries::get_detox_screenshots_by_test_name(conn, job_id, &normalized_test_name).await?;
 
     let screenshot_responses: Vec<DetoxScreenshotResponse> = screenshots
         .into_iter()

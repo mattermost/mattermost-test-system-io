@@ -4,7 +4,7 @@
 //! JSON reports (all.json or mochawesome.json) into the database schema.
 
 use chrono::{DateTime, Utc};
-use rusqlite::Connection;
+use sea_orm::DatabaseConnection;
 use serde::Deserialize;
 use std::path::Path;
 use tracing::{info, warn};
@@ -101,8 +101,9 @@ pub struct MochawesomeTest {
 /// - TestResults: Execution results with status and duration
 ///
 /// Returns the framework version if found in the report metadata.
-pub fn extract_cypress_results(
-    conn: &Connection,
+#[allow(dead_code)]
+pub async fn extract_cypress_results(
+    conn: &DatabaseConnection,
     report_id: Uuid,
     json_path: &Path,
 ) -> AppResult<Option<String>> {
@@ -112,12 +113,63 @@ pub fn extract_cypress_results(
     );
 
     // Read and parse the JSON file
-    let json_content = std::fs::read_to_string(json_path)
+    let json_content = tokio::fs::read_to_string(json_path)
+        .await
         .map_err(|e| AppError::FileSystem(format!("Failed to read mochawesome JSON: {}", e)))?;
 
-    let report: MochawesomeReport = serde_json::from_str(&json_content)
+    extract_cypress_results_from_string(conn, report_id, &json_content).await
+}
+
+/// Extract Cypress test results from JSON bytes (for S3 storage).
+pub async fn extract_cypress_results_from_bytes(
+    conn: &DatabaseConnection,
+    report_id: Uuid,
+    data: &[u8],
+) -> AppResult<Option<String>> {
+    let content = String::from_utf8(data.to_vec()).map_err(|e| {
+        AppError::ExtractionFailed(format!("Invalid UTF-8 in mochawesome JSON: {}", e))
+    })?;
+
+    extract_cypress_results_from_string(conn, report_id, &content).await
+}
+
+/// Extract Cypress test results from JSON Value (from database JSONB).
+pub async fn extract_cypress_results_from_json(
+    conn: &DatabaseConnection,
+    report_id: Uuid,
+    json: serde_json::Value,
+) -> AppResult<Option<String>> {
+    info!(
+        "Starting Cypress extraction for report {} from JSON value",
+        report_id
+    );
+
+    let report: MochawesomeReport = serde_json::from_value(json)
+        .map_err(|e| AppError::ExtractionFailed(format!("Failed to parse JSON value: {}", e)))?;
+
+    extract_mochawesome_report(conn, report_id, report).await
+}
+
+/// Extract Cypress test results from JSON string.
+async fn extract_cypress_results_from_string(
+    conn: &DatabaseConnection,
+    report_id: Uuid,
+    json_content: &str,
+) -> AppResult<Option<String>> {
+    info!("Starting Cypress extraction for report {}", report_id);
+
+    let report: MochawesomeReport = serde_json::from_str(json_content)
         .map_err(|e| AppError::InvalidInput(format!("Failed to parse mochawesome JSON: {}", e)))?;
 
+    extract_mochawesome_report(conn, report_id, report).await
+}
+
+/// Extract data from parsed MochawesomeReport.
+async fn extract_mochawesome_report(
+    conn: &DatabaseConnection,
+    report_id: Uuid,
+    report: MochawesomeReport,
+) -> AppResult<Option<String>> {
     info!(
         "Parsed mochawesome report: {} suites, {} tests, {} passes, {} failures",
         report.stats.suites, report.stats.tests, report.stats.passes, report.stats.failures
@@ -140,7 +192,7 @@ pub fn extract_cypress_results(
     };
 
     // Insert stats
-    queries::insert_report_stats(conn, &stats)?;
+    queries::insert_report_stats(conn, &stats).await?;
     info!("Inserted report stats for {}", report_id);
 
     // Process each result (spec file)
@@ -157,7 +209,7 @@ pub fn extract_cypress_results(
         // Process nested suites
         for suite in &result.suites {
             let (suite_count, spec_count) =
-                process_mochawesome_suite(conn, report_id, file_path, suite, &start_time)?;
+                process_mochawesome_suite(conn, report_id, file_path, suite, &start_time).await?;
             total_suites += suite_count;
             total_specs += spec_count;
         }
@@ -176,7 +228,8 @@ pub fn extract_cypress_results(
         Some("cypress"),
         None, // Version could be extracted from meta field if present
         None,
-    )?;
+    )
+    .await?;
 
     // Return None for version as mochawesome doesn't include Cypress version by default
     Ok(None)
@@ -185,8 +238,8 @@ pub fn extract_cypress_results(
 /// Process a mochawesome suite and its nested suites recursively.
 ///
 /// Returns (suite_count, spec_count) for tracking.
-fn process_mochawesome_suite(
-    conn: &Connection,
+async fn process_mochawesome_suite(
+    conn: &DatabaseConnection,
     report_id: Uuid,
     file_path: &str,
     suite: &MochawesomeSuite,
@@ -216,19 +269,25 @@ fn process_mochawesome_suite(
         duration_ms: None,
     };
 
-    let suite_id = queries::insert_test_suite(conn, &test_suite)?;
+    let suite_id = queries::insert_test_suite(conn, &test_suite).await?;
     suite_count += 1;
 
     // Process tests in this suite
     for test in &suite.tests {
-        process_mochawesome_test(conn, suite_id, file_path, test, start_time)?;
+        process_mochawesome_test(conn, suite_id, file_path, test, start_time).await?;
         spec_count += 1;
     }
 
     // Process nested suites recursively
     for nested_suite in &suite.suites {
-        let (nested_suites, nested_specs) =
-            process_mochawesome_suite(conn, report_id, file_path, nested_suite, start_time)?;
+        let (nested_suites, nested_specs) = Box::pin(process_mochawesome_suite(
+            conn,
+            report_id,
+            file_path,
+            nested_suite,
+            start_time,
+        ))
+        .await?;
         suite_count += nested_suites;
         spec_count += nested_specs;
     }
@@ -237,8 +296,8 @@ fn process_mochawesome_suite(
 }
 
 /// Process a single mochawesome test and insert spec + result.
-fn process_mochawesome_test(
-    conn: &Connection,
+async fn process_mochawesome_test(
+    conn: &DatabaseConnection,
     suite_id: i64,
     file_path: &str,
     test: &MochawesomeTest,
@@ -260,7 +319,7 @@ fn process_mochawesome_test(
         column: 0, // Mochawesome doesn't provide column numbers
     };
 
-    let spec_id = queries::insert_test_spec(conn, &spec)?;
+    let spec_id = queries::insert_test_spec(conn, &spec).await?;
 
     // Extract error details if test failed
     let errors_json = if test.fail && !test.err.is_null() {
@@ -282,7 +341,7 @@ fn process_mochawesome_test(
         errors_json,
     };
 
-    queries::insert_test_result(conn, &result)?;
+    queries::insert_test_result(conn, &result).await?;
 
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! API Key management endpoints.
 
-use actix_web::{delete, get, post, web, HttpResponse};
+use actix_web::{HttpResponse, delete, get, post, web};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -64,7 +64,7 @@ pub async fn create_api_key(
 
     // Create the key
     let (full_key, api_key) =
-        api_key::create_key(pool.get_ref(), &body.name, role, body.expires_in.as_deref())?;
+        api_key::create_key(pool.get_ref(), &body.name, role, body.expires_in.as_deref()).await?;
 
     Ok(HttpResponse::Created().json(ApiKeyCreateResponse {
         id: api_key.id,
@@ -101,7 +101,7 @@ pub async fn list_api_keys(auth: ApiKeyAuth, pool: web::Data<DbPool>) -> AppResu
         ));
     }
 
-    let keys = api_key::list_keys(pool.get_ref())?;
+    let keys = api_key::list_keys(pool.get_ref()).await?;
     let items: Vec<ApiKeyListItem> = keys.into_iter().map(ApiKeyListItem::from).collect();
 
     Ok(HttpResponse::Ok().json(ListApiKeysResponse { keys: items }))
@@ -141,7 +141,8 @@ pub async fn get_api_key(
     }
 
     let id = path.into_inner();
-    let key = api_key::get_key(pool.get_ref(), &id)?
+    let key = api_key::get_key(pool.get_ref(), &id)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("API key {} not found", id)))?;
 
     Ok(HttpResponse::Ok().json(ApiKeyListItem::from(key)))
@@ -189,7 +190,7 @@ pub async fn revoke_api_key(
         ));
     }
 
-    let revoked = api_key::revoke_key(pool.get_ref(), &id)?;
+    let revoked = api_key::revoke_key(pool.get_ref(), &id).await?;
 
     if revoked {
         Ok(HttpResponse::Ok().json(RevokeApiKeyResponse {
@@ -238,7 +239,7 @@ pub async fn restore_api_key(
     }
 
     let id = path.into_inner();
-    let restored = api_key::restore_key(pool.get_ref(), &id)?;
+    let restored = api_key::restore_key(pool.get_ref(), &id).await?;
 
     if restored {
         Ok(HttpResponse::Ok().json(RestoreApiKeyResponse {

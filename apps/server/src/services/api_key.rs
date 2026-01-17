@@ -4,7 +4,7 @@ use chrono::{Duration, Utc};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
-use crate::db::{api_keys as db, DbPool};
+use crate::db::{DbPool, api_keys as db};
 use crate::error::{AppError, AppResult};
 use crate::models::{ApiKey, ApiKeyRole, AuthenticatedCaller};
 
@@ -88,12 +88,13 @@ fn parse_duration(s: &str) -> Option<Duration> {
 }
 
 /// Verify an API key and return the authenticated caller.
-pub fn verify_key(pool: &DbPool, key: &str) -> AppResult<AuthenticatedCaller> {
+pub async fn verify_key(pool: &DbPool, key: &str) -> AppResult<AuthenticatedCaller> {
     let key_hash = hash_key(key);
     let conn = pool.connection();
 
     // Look up by hash
-    let api_key = db::find_by_hash(&conn, &key_hash)?
+    let api_key = db::find_by_hash(conn, &key_hash)
+        .await?
         .ok_or_else(|| AppError::Unauthorized("Invalid API key".to_string()))?;
 
     // Check if revoked
@@ -109,7 +110,7 @@ pub fn verify_key(pool: &DbPool, key: &str) -> AppResult<AuthenticatedCaller> {
     }
 
     // Update last used timestamp (fire and forget)
-    let _ = db::update_last_used(&conn, &api_key.id);
+    let _ = db::update_last_used(conn, &api_key.id).await;
 
     // Extract role before moving other fields
     let role = api_key.role_enum();
@@ -123,7 +124,7 @@ pub fn verify_key(pool: &DbPool, key: &str) -> AppResult<AuthenticatedCaller> {
 }
 
 /// Create a new API key and store it in the database.
-pub fn create_key(
+pub async fn create_key(
     pool: &DbPool,
     name: &str,
     role: ApiKeyRole,
@@ -132,33 +133,33 @@ pub fn create_key(
     let (full_key, api_key) = generate_key(name, role, expires_in)?;
 
     let conn = pool.connection();
-    db::insert_api_key(&conn, &api_key)?;
+    db::insert_api_key(conn, &api_key).await?;
 
     Ok((full_key, api_key))
 }
 
 /// List all API keys.
-pub fn list_keys(pool: &DbPool) -> AppResult<Vec<ApiKey>> {
+pub async fn list_keys(pool: &DbPool) -> AppResult<Vec<ApiKey>> {
     let conn = pool.connection();
-    db::list_all(&conn)
+    db::list_all(conn).await
 }
 
 /// Revoke an API key by ID.
-pub fn revoke_key(pool: &DbPool, id: &str) -> AppResult<bool> {
+pub async fn revoke_key(pool: &DbPool, id: &str) -> AppResult<bool> {
     let conn = pool.connection();
-    db::revoke(&conn, id)
+    db::revoke(conn, id).await
 }
 
 /// Restore a revoked API key by ID.
-pub fn restore_key(pool: &DbPool, id: &str) -> AppResult<bool> {
+pub async fn restore_key(pool: &DbPool, id: &str) -> AppResult<bool> {
     let conn = pool.connection();
-    db::restore(&conn, id)
+    db::restore(conn, id).await
 }
 
 /// Get an API key by ID.
-pub fn get_key(pool: &DbPool, id: &str) -> AppResult<Option<ApiKey>> {
+pub async fn get_key(pool: &DbPool, id: &str) -> AppResult<Option<ApiKey>> {
     let conn = pool.connection();
-    db::find_by_id(&conn, id)
+    db::find_by_id(conn, id).await
 }
 
 #[cfg(test)]

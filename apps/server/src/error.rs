@@ -39,6 +39,10 @@ pub enum AppError {
     /// Service temporarily unavailable (e.g., too many concurrent requests)
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
+
+    /// Storage (S3) operation failed
+    #[error("Storage error: {0}")]
+    Storage(String),
 }
 
 impl ResponseError for AppError {
@@ -70,6 +74,10 @@ impl ResponseError for AppError {
             AppError::ServiceUnavailable(_) => (
                 actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
                 "SERVICE_UNAVAILABLE",
+            ),
+            AppError::Storage(_) => (
+                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "STORAGE_ERROR",
             ),
         };
 
@@ -110,8 +118,8 @@ impl From<serde_json::Error> for AppError {
     }
 }
 
-impl From<rusqlite::Error> for AppError {
-    fn from(err: rusqlite::Error) -> Self {
+impl From<sea_orm::DbErr> for AppError {
+    fn from(err: sea_orm::DbErr) -> Self {
         AppError::Database(err.to_string())
     }
 }

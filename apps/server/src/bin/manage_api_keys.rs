@@ -8,11 +8,12 @@
 use std::env;
 
 use rust_report_server::config::Config;
-use rust_report_server::db::{migrations, DbPool};
+use rust_report_server::db::DbPool;
 use rust_report_server::models::ApiKeyListItem;
 use rust_report_server::services::api_key;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     dotenvy::dotenv().ok();
 
     let args: Vec<String> = env::args().collect();
@@ -33,7 +34,7 @@ fn main() {
         }
     };
 
-    let pool = match DbPool::new(&config) {
+    let pool = match DbPool::new(&config).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Error connecting to database: {}", e);
@@ -41,21 +42,15 @@ fn main() {
         }
     };
 
-    // Run migrations
-    if let Err(e) = migrations::run_migrations(&pool) {
-        eprintln!("Error running migrations: {}", e);
-        std::process::exit(1);
-    }
-
     match command.as_str() {
-        "list" | "ls" => list_keys(&pool),
+        "list" | "ls" => list_keys(&pool).await,
         "revoke" => {
             let id = parse_id_arg(&args);
-            revoke_key(&pool, &id);
+            revoke_key(&pool, &id).await;
         }
         "restore" => {
             let id = parse_id_arg(&args);
-            restore_key(&pool, &id);
+            restore_key(&pool, &id).await;
         }
         "help" | "--help" | "-h" => {
             print_usage();
@@ -80,8 +75,8 @@ fn parse_id_arg(args: &[String]) -> String {
     std::process::exit(1);
 }
 
-fn list_keys(pool: &DbPool) {
-    let keys = match api_key::list_keys(pool) {
+async fn list_keys(pool: &DbPool) {
+    let keys = match api_key::list_keys(pool).await {
         Ok(k) => k,
         Err(e) => {
             eprintln!("Error listing keys: {}", e);
@@ -120,8 +115,8 @@ fn list_keys(pool: &DbPool) {
     println!();
 }
 
-fn revoke_key(pool: &DbPool, id: &str) {
-    match api_key::revoke_key(pool, id) {
+async fn revoke_key(pool: &DbPool, id: &str) {
+    match api_key::revoke_key(pool, id).await {
         Ok(true) => {
             println!("API key {} revoked successfully.", id);
         }
@@ -136,8 +131,8 @@ fn revoke_key(pool: &DbPool, id: &str) {
     }
 }
 
-fn restore_key(pool: &DbPool, id: &str) {
-    match api_key::restore_key(pool, id) {
+async fn restore_key(pool: &DbPool, id: &str) {
+    match api_key::restore_key(pool, id).await {
         Ok(true) => {
             println!("API key {} restored successfully.", id);
         }

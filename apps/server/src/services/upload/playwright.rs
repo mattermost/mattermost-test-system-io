@@ -1,18 +1,19 @@
 //! Playwright report upload handlers.
 
-use actix_web::{post, web, HttpResponse};
-use std::path::{Path, PathBuf};
+use actix_web::{HttpResponse, post, web};
+use sea_orm::DatabaseConnection;
 use tracing::{info, warn};
 use utoipa;
 use uuid::Uuid;
 
 use crate::auth::ApiKeyAuth;
-use crate::db::{queries, DbPool};
+use crate::db::{DbPool, queries};
 use crate::error::AppResult;
-use crate::models::ExtractionStatus;
+use crate::models::{ExtractionStatus, JsonFileType};
+use crate::services::Storage;
 use crate::services::extraction;
 
-use super::{handle_upload_request, Framework, UploadRequest};
+use super::{Framework, UploadRequest, handle_upload_request};
 
 /// Initialize Playwright report upload.
 ///
@@ -49,7 +50,6 @@ pub async fn request_playwright_upload(
     auth: ApiKeyAuth,
     body: web::Json<UploadRequest>,
     pool: web::Data<DbPool>,
-    data_dir: web::Data<PathBuf>,
     max_upload_size: web::Data<usize>,
     max_files_per_request: web::Data<usize>,
 ) -> AppResult<HttpResponse> {
@@ -57,7 +57,6 @@ pub async fn request_playwright_upload(
         &auth.caller,
         body,
         pool,
-        data_dir,
         max_upload_size,
         max_files_per_request,
         Framework::Playwright,
@@ -66,20 +65,78 @@ pub async fn request_playwright_upload(
 }
 
 /// Trigger Playwright results extraction.
-pub(crate) fn trigger_playwright_extraction(
-    conn: &rusqlite::Connection,
+///
+/// Reads from database JSONB first (faster), falls back to S3 if not found.
+pub(crate) async fn trigger_playwright_extraction(
+    conn: &DatabaseConnection,
     report_id: Uuid,
-    report_dir: &Path,
+    storage: &Storage,
     framework_version: Option<&str>,
 ) -> &'static str {
-    let results_path = report_dir.join("results.json");
+    // Try to get JSON from database first (populated during upload)
+    let json_value =
+        match queries::get_report_json(conn, report_id, JsonFileType::ResultsJson).await {
+            Ok(Some(report_json)) => {
+                info!(
+                    "Using cached results.json from database for report {}",
+                    report_id
+                );
+                Some(report_json.data)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                warn!(
+                    "Failed to query database for results.json (report {}): {}",
+                    report_id, e
+                );
+                None
+            }
+        };
 
-    if !results_path.exists() {
-        warn!("No results.json found for report {}", report_id);
-        return "pending";
+    // If found in database, extract directly from JSON value
+    if let Some(json) = json_value {
+        return match extraction::extract_results_from_json(conn, report_id, json).await {
+            Ok(_) => {
+                info!("Playwright extraction completed for report {}", report_id);
+                "completed"
+            }
+            Err(e) => {
+                warn!(
+                    "Playwright extraction failed for report {}: {}",
+                    report_id, e
+                );
+                let _ = queries::update_report_status(
+                    conn,
+                    report_id,
+                    ExtractionStatus::Failed,
+                    Some("playwright"),
+                    framework_version,
+                    Some(&e.to_string()),
+                )
+                .await;
+                "failed"
+            }
+        };
     }
 
-    match extraction::extract_results(conn, report_id, &results_path) {
+    // Fallback: Download results.json from S3
+    let s3_key = Storage::report_key(&report_id.to_string(), "results.json");
+    let results_data = match storage.download(&s3_key).await {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            warn!("No results.json found in S3 for report {}", report_id);
+            return "pending";
+        }
+        Err(e) => {
+            warn!(
+                "Failed to download results.json for report {}: {}",
+                report_id, e
+            );
+            return "pending";
+        }
+    };
+
+    match extraction::extract_results_from_bytes(conn, report_id, &results_data).await {
         Ok(_) => {
             info!("Playwright extraction completed for report {}", report_id);
             "completed"
@@ -96,7 +153,8 @@ pub(crate) fn trigger_playwright_extraction(
                 Some("playwright"),
                 framework_version,
                 Some(&e.to_string()),
-            );
+            )
+            .await;
             "failed"
         }
     }

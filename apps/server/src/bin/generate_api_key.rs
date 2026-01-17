@@ -6,11 +6,12 @@
 use std::env;
 
 use rust_report_server::config::Config;
-use rust_report_server::db::{migrations, DbPool};
+use rust_report_server::db::DbPool;
 use rust_report_server::models::ApiKeyRole;
 use rust_report_server::services::api_key;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     dotenvy::dotenv().ok();
 
     let args: Vec<String> = env::args().collect();
@@ -85,7 +86,7 @@ fn main() {
         }
     };
 
-    let pool = match DbPool::new(&config) {
+    let pool = match DbPool::new(&config).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Error connecting to database: {}", e);
@@ -93,15 +94,9 @@ fn main() {
         }
     };
 
-    // Run migrations
-    if let Err(e) = migrations::run_migrations(&pool) {
-        eprintln!("Error running migrations: {}", e);
-        std::process::exit(1);
-    }
-
     // Generate the key
     let (full_key, api_key) =
-        match api_key::create_key(&pool, &name, role_enum, expires_in.as_deref()) {
+        match api_key::create_key(&pool, &name, role_enum, expires_in.as_deref()).await {
             Ok(result) => result,
             Err(e) => {
                 eprintln!("Error generating key: {}", e);
@@ -127,7 +122,7 @@ fn main() {
     println!();
     println!("  Key:     {}", full_key);
     println!();
-    println!("  ⚠️  Save this key! It cannot be retrieved later.");
+    println!("  Warning: Save this key! It cannot be retrieved later.");
     println!("════════════════════════════════════════════════════════════════");
     println!();
 }

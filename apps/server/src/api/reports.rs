@@ -1,16 +1,17 @@
 //! Report API endpoints.
 
-use actix_web::{get, web, HttpResponse};
+use actix_web::{HttpResponse, get, web};
 use serde::Serialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::db::{queries, DbPool};
+use crate::db::{DbPool, queries};
 use crate::error::{AppError, AppResult};
 use crate::models::{
     Pagination, PaginationParams, ReportDetail, ReportSummary, TestSpecListResponse,
     TestSuiteListResponse,
 };
+use crate::services::Storage;
 
 /// Report list response.
 #[derive(Serialize, ToSchema)]
@@ -55,7 +56,7 @@ pub async fn list_reports(
     query: web::Query<PaginationParams>,
 ) -> AppResult<HttpResponse> {
     let conn = pool.connection();
-    let (reports, pagination) = queries::list_reports(&conn, &query)?;
+    let (reports, pagination) = queries::list_reports(conn, &query).await?;
 
     Ok(HttpResponse::Ok().json(ReportListResponse {
         reports,
@@ -82,21 +83,27 @@ pub async fn list_reports(
 pub async fn get_report(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
-    data_dir: web::Data<std::path::PathBuf>,
+    storage: web::Data<Storage>,
 ) -> AppResult<HttpResponse> {
     let id = Uuid::parse_str(&path.into_inner())?;
     let conn = pool.connection();
 
-    let report = queries::get_active_report_by_id(&conn, id)?
+    let report = queries::get_active_report_by_id(conn, id)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
 
-    let stats = queries::get_report_stats(&conn, id)?;
+    let stats = queries::get_report_stats(conn, id).await?;
 
-    // Check if files exist on disk
+    // Check if files exist in S3
     // Support both Playwright (index.html) and Cypress (mochawesome.html) reports
-    let report_dir = data_dir.join(&report.file_path);
-    let has_files = report_dir.exists()
-        && (report_dir.join("index.html").exists() || report_dir.join("mochawesome.html").exists());
+    let report_id_str = id.to_string();
+    let index_key = Storage::report_key(&report_id_str, "index.html");
+    let mochawesome_key = Storage::report_key(&report_id_str, "mochawesome.html");
+
+    let has_files = match storage.download(&index_key).await {
+        Ok(Some(_)) => true,
+        _ => matches!(storage.download(&mochawesome_key).await, Ok(Some(_))),
+    };
 
     let mut detail: ReportDetail = report.into();
     detail.stats = stats;
@@ -128,41 +135,47 @@ pub async fn get_report(
 pub async fn get_report_html(
     pool: web::Data<DbPool>,
     path: web::Path<String>,
-    data_dir: web::Data<std::path::PathBuf>,
+    storage: web::Data<Storage>,
 ) -> AppResult<HttpResponse> {
     let id = Uuid::parse_str(&path.into_inner())?;
 
-    // Get file path and framework from database, then drop connection before async file read
-    let (report_dir, framework) = {
-        let conn = pool.connection();
-        let report = queries::get_active_report_by_id(&conn, id)?
-            .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
-        (data_dir.join(&report.file_path), report.framework.clone())
-    };
+    // Get framework from database
+    let conn = pool.connection();
+    let report = queries::get_active_report_by_id(conn, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
+    let framework = report.framework.clone();
 
     // Determine HTML file based on framework
-    let html_path = if framework.as_deref() == Some("cypress") {
+    let report_id_str = id.to_string();
+    let content = if framework.as_deref() == Some("cypress") {
         // For Cypress, prefer mochawesome.html, fallback to index.html
-        let mochawesome_path = report_dir.join("mochawesome.html");
-        if mochawesome_path.exists() {
-            mochawesome_path
-        } else {
-            report_dir.join("index.html")
+        let mochawesome_key = Storage::report_key(&report_id_str, "mochawesome.html");
+        match storage.download(&mochawesome_key).await? {
+            Some(data) => data,
+            None => {
+                let index_key = Storage::report_key(&report_id_str, "index.html");
+                storage
+                    .download(&index_key)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("HTML report file".to_string()))?
+            }
         }
     } else {
         // For Playwright and unknown frameworks, use index.html
-        report_dir.join("index.html")
+        let index_key = Storage::report_key(&report_id_str, "index.html");
+        storage
+            .download(&index_key)
+            .await?
+            .ok_or_else(|| AppError::NotFound("HTML report file".to_string()))?
     };
 
-    if !html_path.exists() {
-        return Err(AppError::NotFound("HTML report file".to_string()));
-    }
-
-    let content = tokio::fs::read_to_string(&html_path).await?;
+    let content_str = String::from_utf8(content)
+        .map_err(|e| AppError::InvalidInput(format!("Invalid UTF-8 in HTML file: {}", e)))?;
 
     Ok(HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
-        .body(content))
+        .body(content_str))
 }
 
 /// Get asset files for HTML report (CSS, JS, fonts).
@@ -187,7 +200,7 @@ pub async fn get_report_html(
 pub async fn get_report_assets(
     pool: web::Data<DbPool>,
     path: web::Path<(String, String)>,
-    data_dir: web::Data<std::path::PathBuf>,
+    storage: web::Data<Storage>,
 ) -> AppResult<HttpResponse> {
     let (id_str, filename) = path.into_inner();
     let id = Uuid::parse_str(&id_str)?;
@@ -197,21 +210,20 @@ pub async fn get_report_assets(
         return Err(AppError::InvalidInput("Invalid filename".to_string()));
     }
 
-    // Get report path from database, then drop connection before async file read
-    let report_path = {
-        let conn = pool.connection();
-        let report = queries::get_active_report_by_id(&conn, id)?
-            .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
-        data_dir.join(&report.file_path)
-    };
+    // Verify report exists
+    let conn = pool.connection();
+    let _ = queries::get_active_report_by_id(conn, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
 
-    let file_path = report_path.join("assets").join(&filename);
+    // Download asset from S3
+    let report_id_str = id.to_string();
+    let key = Storage::report_key(&report_id_str, &format!("assets/{}", filename));
+    let content = storage
+        .download(&key)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Asset file {}", filename)))?;
 
-    if !file_path.exists() {
-        return Err(AppError::NotFound(format!("Asset file {}", filename)));
-    }
-
-    let content = tokio::fs::read(&file_path).await?;
     let content_type = mime_guess::from_path(&filename)
         .first_or_octet_stream()
         .to_string();
@@ -242,7 +254,7 @@ pub async fn get_report_assets(
 pub async fn get_report_screenshots(
     pool: web::Data<DbPool>,
     path: web::Path<(String, String)>,
-    data_dir: web::Data<std::path::PathBuf>,
+    storage: web::Data<Storage>,
 ) -> AppResult<HttpResponse> {
     let (id_str, filepath) = path.into_inner();
     let id = Uuid::parse_str(&id_str)?;
@@ -252,21 +264,20 @@ pub async fn get_report_screenshots(
         return Err(AppError::InvalidInput("Invalid filepath".to_string()));
     }
 
-    // Get report path from database, then drop connection before async file read
-    let report_path = {
-        let conn = pool.connection();
-        let report = queries::get_active_report_by_id(&conn, id)?
-            .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
-        data_dir.join(&report.file_path)
-    };
+    // Verify report exists
+    let conn = pool.connection();
+    let _ = queries::get_active_report_by_id(conn, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
 
-    let file_path = report_path.join("screenshots").join(&filepath);
+    // Download screenshot from S3
+    let report_id_str = id.to_string();
+    let key = Storage::report_key(&report_id_str, &format!("screenshots/{}", filepath));
+    let content = storage
+        .download(&key)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Screenshot file {}", filepath)))?;
 
-    if !file_path.exists() {
-        return Err(AppError::NotFound(format!("Screenshot file {}", filepath)));
-    }
-
-    let content = tokio::fs::read(&file_path).await?;
     let content_type = mime_guess::from_path(&filepath)
         .first_or_octet_stream()
         .to_string();
@@ -299,7 +310,7 @@ pub async fn get_report_screenshots(
 pub async fn get_report_data_file(
     pool: web::Data<DbPool>,
     path: web::Path<(String, String)>,
-    data_dir: web::Data<std::path::PathBuf>,
+    storage: web::Data<Storage>,
 ) -> AppResult<HttpResponse> {
     let (id_str, filename) = path.into_inner();
     let id = Uuid::parse_str(&id_str)?;
@@ -309,30 +320,32 @@ pub async fn get_report_data_file(
         return Err(AppError::InvalidInput("Invalid filename".to_string()));
     }
 
-    // Get report path from database, then drop connection before async file read
-    let report_path = {
-        let conn = pool.connection();
-        let report = queries::get_active_report_by_id(&conn, id)?
-            .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
-        data_dir.join(&report.file_path)
-    };
+    // Verify report exists
+    let conn = pool.connection();
+    let _ = queries::get_active_report_by_id(conn, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
 
-    // Search multiple directories for the file:
+    // Search multiple S3 paths for the file:
     // 1. data/ (Playwright screenshots, traces)
     // 2. screenshots/ (Cypress screenshots)
     // 3. root report directory (fallback)
-    let search_paths = [
-        report_path.join("data").join(&filename),
-        report_path.join("screenshots").join(&filename),
-        report_path.join(&filename),
+    let report_id_str = id.to_string();
+    let search_keys = [
+        Storage::report_key(&report_id_str, &format!("data/{}", filename)),
+        Storage::report_key(&report_id_str, &format!("screenshots/{}", filename)),
+        Storage::report_key(&report_id_str, &filename),
     ];
 
-    let file_path = search_paths
-        .iter()
-        .find(|p| p.exists())
-        .ok_or_else(|| AppError::NotFound(format!("Data file {}", filename)))?;
+    let mut content: Option<Vec<u8>> = None;
+    for key in &search_keys {
+        if let Ok(Some(data)) = storage.download(key).await {
+            content = Some(data);
+            break;
+        }
+    }
 
-    let content = tokio::fs::read(file_path).await?;
+    let content = content.ok_or_else(|| AppError::NotFound(format!("Data file {}", filename)))?;
     let content_type = mime_guess::from_path(&filename)
         .first_or_octet_stream()
         .to_string();
@@ -364,10 +377,11 @@ pub async fn get_report_suites(
     let conn = pool.connection();
 
     // Verify report exists
-    let _ = queries::get_active_report_by_id(&conn, id)?
+    let _ = queries::get_active_report_by_id(conn, id)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Report {}", id)))?;
 
-    let suites = queries::get_test_suites(&conn, id)?;
+    let suites = queries::get_test_suites(conn, id).await?;
 
     Ok(HttpResponse::Ok().json(TestSuiteListResponse { suites }))
 }
@@ -400,15 +414,16 @@ pub async fn get_suite_specs(
     let conn = pool.connection();
 
     // Verify report exists and get framework info
-    let report = queries::get_active_report_by_id(&conn, report_id)?
+    let report = queries::get_active_report_by_id(conn, report_id)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
 
-    let mut specs = queries::get_suite_specs_with_results(&conn, suite_id)?;
+    let mut specs = queries::get_suite_specs_with_results(conn, suite_id).await?;
 
     // For Detox reports, enrich specs with screenshot info
     if report.framework.as_deref() == Some("detox") {
         // Get all jobs for this report (screenshots can be in any job)
-        let jobs = queries::get_detox_jobs_by_report_id(&conn, report_id)?;
+        let jobs = queries::get_detox_jobs_by_report_id(conn, report_id).await?;
         for spec in &mut specs {
             // full_title contains the full_name used for screenshot lookup
             // Normalize: replace / and " with _ since folder names can't contain these characters
@@ -417,10 +432,11 @@ pub async fn get_suite_specs(
             // Search across all jobs for screenshots matching this spec
             for job in &jobs {
                 let screenshots = queries::get_detox_screenshots_by_test_name(
-                    &conn,
+                    conn,
                     job.id,
                     &normalized_full_title,
-                )?;
+                )
+                .await?;
 
                 if !screenshots.is_empty() {
                     spec.screenshots = Some(

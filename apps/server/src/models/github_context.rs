@@ -47,18 +47,4 @@ impl GitHubContext {
             && self.run_id.is_none()
             && self.run_attempt.is_none()
     }
-
-    /// Serialize to JSON string for database storage.
-    pub fn to_json_string(&self) -> Option<String> {
-        if self.is_empty() {
-            None
-        } else {
-            serde_json::to_string(self).ok()
-        }
-    }
-
-    /// Deserialize from JSON string from database.
-    pub fn from_json_string(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
-    }
 }

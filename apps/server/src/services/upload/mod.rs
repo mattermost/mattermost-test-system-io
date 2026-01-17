@@ -19,22 +19,25 @@ pub mod detox;
 pub mod playwright;
 
 use actix_multipart::Multipart;
-use actix_web::{post, web, HttpResponse};
+use actix_web::{HttpResponse, post, web};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::auth::ApiKeyAuth;
-use crate::db::{queries, upload_files as db_upload_files, DbPool};
+use crate::db::{DbPool, queries, upload_files as db_upload_files};
 use crate::error::{AppError, AppResult};
-use crate::models::{AuthenticatedCaller, DetoxPlatform, ExtractionStatus, GitHubContext, Report};
+use crate::models::{
+    AuthenticatedCaller, DetoxPlatform, ExtractionStatus, GitHubContext, JsonFileType, Report,
+    ReportJson,
+};
+use crate::services::Storage;
 
 // Re-export extraction triggers for use in phase 2
 pub(crate) use cypress::trigger_cypress_extraction;
@@ -180,7 +183,6 @@ pub(crate) async fn handle_upload_request(
     caller: &AuthenticatedCaller,
     body: web::Json<UploadRequest>,
     pool: web::Data<DbPool>,
-    data_dir: web::Data<PathBuf>,
     max_upload_size: web::Data<usize>,
     max_files_per_request: web::Data<usize>,
     framework: Framework,
@@ -207,19 +209,13 @@ pub(crate) async fn handle_upload_request(
     // Create report entry
     let report = create_report(&body, framework, platform);
     let report_id = report.id;
-    let report_dir = data_dir.join(report_id.to_string());
 
-    // Create report directory
-    tokio::fs::create_dir_all(&report_dir)
-        .await
-        .map_err(|e| AppError::FileSystem(format!("Failed to create report directory: {}", e)))?;
-
-    // Insert report and register files in database
+    // Insert report and register files in database (no local directory needed - files go to S3)
     let conn = pool.connection();
-    queries::insert_report(&conn, &report)?;
+    queries::insert_report(conn, &report).await?;
 
     // Register accepted files for tracking
-    db_upload_files::register_files(&conn, &report_id.to_string(), &files_accepted)?;
+    db_upload_files::register_files(conn, report_id, &files_accepted).await?;
 
     info!(
         "Report {} created: {} files registered, {} rejected",
@@ -279,7 +275,7 @@ pub async fn upload_report_files(
     path: web::Path<String>,
     mut payload: Multipart,
     pool: web::Data<DbPool>,
-    data_dir: web::Data<PathBuf>,
+    storage: web::Data<Storage>,
     upload_semaphore: web::Data<Arc<Semaphore>>,
     upload_queue_timeout_secs: web::Data<u64>,
 ) -> AppResult<HttpResponse> {
@@ -321,11 +317,10 @@ pub async fn upload_report_files(
     };
 
     // Get report and validate state
-    let report = {
-        let conn = pool.connection();
-        queries::get_active_report_by_id(&conn, report_id)?
-            .ok_or_else(|| AppError::NotFound(format!("Report {} not found", report_id)))?
-    };
+    let conn = pool.connection();
+    let report = queries::get_active_report_by_id(conn, report_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Report {} not found", report_id)))?;
 
     if report.extraction_status != ExtractionStatus::Pending {
         return Err(AppError::InvalidInput(format!(
@@ -334,26 +329,13 @@ pub async fn upload_report_files(
         )));
     }
 
-    let report_dir = data_dir.join(report_id.to_string());
-    let report_id_str = report_id.to_string();
-
     info!("Processing file batch for report {}", report_id);
 
     // Pre-fetch all pending file statuses for this report (single DB query)
     // This reduces lock contention by avoiding per-file DB queries
-    let mut file_status_cache: std::collections::HashMap<String, db_upload_files::FileStatus> = {
-        let conn = pool.connection();
-        // Get all files for this report - we'll filter as needed
-        let all_filenames: Vec<String> = conn
-            .prepare("SELECT filename FROM upload_files WHERE report_id = ?1")
-            .map_err(|e| AppError::Database(format!("Failed to get filenames: {}", e)))?
-            .query_map([&report_id_str], |row| row.get(0))
-            .map_err(|e| AppError::Database(format!("Failed to query filenames: {}", e)))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AppError::Database(format!("Failed to read filenames: {}", e)))?;
-
-        db_upload_files::get_files_status(&conn, &report_id_str, &all_filenames)?
-    };
+    let all_filenames = db_upload_files::get_all_filenames(conn, report_id).await?;
+    let mut file_status_cache =
+        db_upload_files::get_files_status(conn, report_id, &all_filenames).await?;
 
     // Process multipart upload - stream files directly to final location
     let mut files_accepted: Vec<String> = Vec::new();
@@ -396,21 +378,35 @@ pub async fn upload_report_files(
             continue;
         }
 
-        // Stream file directly to final location
-        let final_path = report_dir.join(&filename);
+        // Stream file to S3
+        let s3_key = Storage::report_key(&report_id.to_string(), &filename);
+        let content_type = Path::new(&filename)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(Storage::content_type_for_extension);
 
-        match stream_file_to_disk(&mut field, &final_path).await {
-            Ok(file_size) => {
-                // Mark file as uploaded in database (scope connection to avoid holding across await)
-                let db_result = {
-                    let conn = pool.connection();
-                    db_upload_files::mark_uploaded(&conn, &report_id_str, &filename, file_size)
-                };
+        // Check if this is a JSON extraction file
+        let is_extraction_json = JsonFileType::from_filename(&filename).is_some();
+
+        match stream_file_to_s3(
+            &mut field,
+            &storage,
+            &s3_key,
+            content_type,
+            is_extraction_json,
+        )
+        .await
+        {
+            Ok(result) => {
+                // Mark file as uploaded in database
+                let db_result =
+                    db_upload_files::mark_uploaded(conn, report_id, &filename, result.file_size)
+                        .await;
 
                 if let Err(e) = db_result {
                     warn!("Failed to mark {} as uploaded: {}", filename, e);
-                    // File is on disk but not tracked - clean it up
-                    let _ = tokio::fs::remove_file(&final_path).await;
+                    // File is in S3 but not tracked - clean it up
+                    let _ = storage.delete(&s3_key).await;
                     files_failed.push(FileError {
                         file: filename,
                         reason: format!("Database error: {}", e),
@@ -418,18 +414,23 @@ pub async fn upload_report_files(
                     continue;
                 }
 
+                // Save JSON extraction data to database
+                if let Some(json_data) = result.json_data {
+                    save_json_to_database(conn, report_id, &filename, &json_data).await;
+                }
+
                 // Update local cache to mark file as uploaded
                 if let Some(status) = file_status_cache.get_mut(&filename) {
                     status.is_uploaded = true;
                 }
 
-                info!("Saved {} ({} bytes)", filename, file_size);
+                info!("Uploaded {} to S3 ({} bytes)", filename, result.file_size);
                 files_accepted.push(filename);
             }
             Err(e) => {
-                warn!("Failed to write {}: {}", filename, e);
-                // Clean up partial file if it exists
-                let _ = tokio::fs::remove_file(&final_path).await;
+                warn!("Failed to upload {}: {}", filename, e);
+                // Attempt to clean up partial upload if any
+                let _ = storage.delete(&s3_key).await;
                 files_failed.push(FileError {
                     file: filename,
                     reason: e,
@@ -439,35 +440,33 @@ pub async fn upload_report_files(
     }
 
     // Check upload progress (single query instead of 3 separate queries)
-    let (total_files, uploaded_count, all_uploaded) = {
-        let conn = pool.connection();
-        db_upload_files::get_upload_progress(&conn, &report_id_str)?
-    };
+    let (total_files, uploaded_count, all_uploaded) =
+        db_upload_files::get_upload_progress(conn, report_id).await?;
     let files_pending = total_files - uploaded_count;
 
     // Trigger extraction if all files are uploaded
     let extraction_status = if all_uploaded {
         let framework = report.framework.clone().unwrap_or_default();
-        let conn = pool.connection();
         let framework_version = report.framework_version.as_deref();
+        let report_id_str = report_id.to_string();
 
         // Get all uploaded files for extraction (use already computed uploaded_count)
         let uploaded_files: Vec<String> = if framework == "detox" {
-            // For Detox we need the file list - scan directory
-            scan_uploaded_files(&report_dir)
+            // For Detox we need the file list - list from S3
+            list_uploaded_files_from_s3(&storage, &report_id_str).await
         } else {
             Vec::with_capacity(uploaded_count as usize)
         };
 
         match framework.as_str() {
             "playwright" => {
-                trigger_playwright_extraction(&conn, report_id, &report_dir, framework_version)
+                trigger_playwright_extraction(conn, report_id, &storage, framework_version).await
             }
             "cypress" => {
-                trigger_cypress_extraction(&conn, report_id, &report_dir, framework_version)
+                trigger_cypress_extraction(conn, report_id, &storage, framework_version).await
             }
             "detox" => {
-                trigger_detox_extraction(&conn, report_id, &report_dir, &uploaded_files, &report)
+                trigger_detox_extraction(conn, report_id, &storage, &uploaded_files, &report).await
             }
             _ => {
                 warn!("Unknown framework: {}", framework);
@@ -510,26 +509,22 @@ pub async fn upload_report_files(
     }))
 }
 
-/// Scan directory for uploaded files (used for Detox extraction).
-fn scan_uploaded_files(dir: &std::path::Path) -> Vec<String> {
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(name) = path.file_name() {
-                    files.push(name.to_string_lossy().to_string());
-                }
-            } else if path.is_dir() {
-                // Recurse into subdirectories
-                let subdir_name = path.file_name().unwrap().to_string_lossy().to_string();
-                for sub_file in scan_uploaded_files(&path) {
-                    files.push(format!("{}/{}", subdir_name, sub_file));
-                }
-            }
+/// List uploaded files from S3 for a report (used for Detox extraction).
+async fn list_uploaded_files_from_s3(storage: &Storage, report_id: &str) -> Vec<String> {
+    let prefix = format!("reports/{}/", report_id);
+    match storage.list(&prefix).await {
+        Ok(keys) => {
+            // Strip the prefix to get relative filenames
+            keys.iter()
+                .filter_map(|key| key.strip_prefix(&prefix))
+                .map(|s| s.to_string())
+                .collect()
+        }
+        Err(e) => {
+            warn!("Failed to list files from S3: {}", e);
+            Vec::new()
         }
     }
-    files
 }
 
 // ============================================================================
@@ -725,38 +720,87 @@ async fn drain_field(field: &mut actix_multipart::Field) {
     }
 }
 
-/// Stream a multipart field directly to disk.
-/// Returns the file size on success, or an error message on failure.
-async fn stream_file_to_disk(
+/// Result of streaming a file to S3.
+struct StreamResult {
+    file_size: i64,
+    /// Raw data returned for JSON extraction files (for saving to database)
+    json_data: Option<Vec<u8>>,
+}
+
+/// Stream a multipart field directly to S3.
+/// Returns the file size and optionally raw data for JSON extraction files.
+async fn stream_file_to_s3(
     field: &mut actix_multipart::Field,
-    final_path: &std::path::Path,
-) -> Result<i64, String> {
-    // Create parent directories if needed
-    if let Some(parent) = final_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
-    }
-
-    // Create the file
-    let mut file = tokio::fs::File::create(final_path)
-        .await
-        .map_err(|e| format!("Failed to create file: {}", e))?;
-
-    // Stream chunks to disk
+    storage: &Storage,
+    s3_key: &str,
+    content_type: Option<&str>,
+    is_extraction_json: bool,
+) -> Result<StreamResult, String> {
+    // Collect all chunks into memory
+    // Note: For very large files, consider implementing multipart upload
+    let mut data = Vec::new();
     let mut file_size: i64 = 0;
+
     while let Some(chunk) = field.next().await {
         let chunk_data = chunk.map_err(|e| format!("Read error: {}", e))?;
         file_size += chunk_data.len() as i64;
-        file.write_all(&chunk_data)
-            .await
-            .map_err(|e| format!("Write error: {}", e))?;
+        data.extend_from_slice(&chunk_data);
     }
 
-    // Flush to ensure data is persisted
-    file.flush()
+    // Upload to S3
+    storage
+        .upload(s3_key, data.clone(), content_type)
         .await
-        .map_err(|e| format!("Flush error: {}", e))?;
+        .map_err(|e| format!("S3 upload error: {}", e))?;
 
-    Ok(file_size)
+    Ok(StreamResult {
+        file_size,
+        json_data: if is_extraction_json { Some(data) } else { None },
+    })
+}
+
+/// Save JSON extraction data to the database.
+async fn save_json_to_database(
+    conn: &sea_orm::DatabaseConnection,
+    report_id: Uuid,
+    filename: &str,
+    data: &[u8],
+) {
+    // Determine file type from filename
+    let file_type = match JsonFileType::from_filename(filename) {
+        Some(ft) => ft,
+        None => {
+            warn!("Unknown JSON file type for {}", filename);
+            return;
+        }
+    };
+
+    // Parse JSON
+    let json_value: serde_json::Value = match serde_json::from_slice(data) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("Failed to parse JSON for {}: {}", filename, e);
+            return;
+        }
+    };
+
+    // Save to database
+    let report_json = ReportJson::new(report_id, file_type, json_value);
+    match queries::upsert_report_json(conn, &report_json).await {
+        Ok(id) => {
+            info!(
+                "Saved {} ({}) to database for report {} (id: {})",
+                filename,
+                file_type.as_str(),
+                report_id,
+                id
+            );
+        }
+        Err(e) => {
+            warn!(
+                "Failed to save {} to database for report {}: {}",
+                filename, report_id, e
+            );
+        }
+    }
 }

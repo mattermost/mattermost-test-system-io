@@ -1,9 +1,9 @@
 //! Request logging middleware for detailed API request/response logging.
 
-use actix_web::dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::Error;
+use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready};
 use futures_util::future::LocalBoxFuture;
-use std::future::{ready, Ready};
+use std::future::{Ready, ready};
 use std::time::Instant;
 use tracing::{info, warn};
 

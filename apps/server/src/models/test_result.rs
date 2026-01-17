@@ -25,6 +25,17 @@ impl TestStatus {
             Self::TimedOut => "timedOut",
         }
     }
+
+    /// Parse from string representation.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "passed" => Self::Passed,
+            "failed" => Self::Failed,
+            "skipped" => Self::Skipped,
+            "timedOut" => Self::TimedOut,
+            _ => Self::Failed, // Default to failed for unknown statuses
+        }
+    }
 }
 
 impl std::fmt::Display for TestStatus {

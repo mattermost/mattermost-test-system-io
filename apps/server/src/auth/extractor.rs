@@ -8,9 +8,10 @@
 
 use actix_web::dev::Payload;
 use actix_web::http::StatusCode;
-use actix_web::{web, FromRequest, HttpRequest, HttpResponse, ResponseError};
+use actix_web::{FromRequest, HttpRequest, HttpResponse, ResponseError, web};
 use secrecy::{ExposeSecret, SecretString};
-use std::future::{ready, Ready};
+use std::future::Future;
+use std::pin::Pin;
 
 use super::AdminKey;
 use crate::config::{ADMIN_KEY_HEADER, API_KEY_HEADER};
@@ -68,63 +69,66 @@ pub struct ApiKeyAuth {
 
 impl FromRequest for ApiKeyAuth {
     type Error = AuthError;
-    type Future = Ready<Result<Self, Self::Error>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
 
     fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
         // Get DbPool from app data
         let pool = match req.app_data::<web::Data<DbPool>>() {
-            Some(pool) => pool,
+            Some(pool) => pool.clone(),
             None => {
-                return ready(Err(AuthError {
-                    message: "Internal configuration error".to_string(),
-                }));
+                return Box::pin(async {
+                    Err(AuthError {
+                        message: "Internal configuration error".to_string(),
+                    })
+                });
             }
         };
 
         // Get stored admin key from app data (optional)
-        let stored_admin_key = req.app_data::<web::Data<AdminKey>>();
+        let stored_admin_key = req.app_data::<web::Data<AdminKey>>().cloned();
 
         // Extract secrets from headers - immediately wrapped in SecretString
         let provided_api_key: Option<SecretString> = extract_secret_header(req, API_KEY_HEADER);
         let provided_admin_key: Option<SecretString> = extract_secret_header(req, ADMIN_KEY_HEADER);
 
-        // Check admin key first (for bootstrap operations)
-        // Uses constant-time comparison to prevent timing attacks
-        if let Some(ref provided) = provided_admin_key {
-            if let Some(key) = stored_admin_key {
-                if key.verify(provided.expose_secret()) {
-                    // Admin key authenticated - return admin caller
-                    // Note: provided_admin_key is dropped here, memory zeroized
-                    return ready(Ok(ApiKeyAuth {
-                        caller: AuthenticatedCaller {
-                            key_id: "admin".to_string(),
-                            name: "Admin (Bootstrap)".to_string(),
-                            key_prefix: "admin".to_string(),
-                            role: crate::models::ApiKeyRole::Admin,
-                        },
-                    }));
-                }
+        Box::pin(async move {
+            // Check admin key first (for bootstrap operations)
+            // Uses constant-time comparison to prevent timing attacks
+            if let Some(ref provided) = provided_admin_key
+                && let Some(key) = stored_admin_key
+                && key.verify(provided.expose_secret())
+            {
+                // Admin key authenticated - return admin caller
+                // Note: provided_admin_key is dropped here, memory zeroized
+                return Ok(ApiKeyAuth {
+                    caller: AuthenticatedCaller {
+                        key_id: "admin".to_string(),
+                        name: "Admin (Bootstrap)".to_string(),
+                        key_prefix: "admin".to_string(),
+                        role: crate::models::ApiKeyRole::Admin,
+                    },
+                });
             }
-        }
 
-        // Check API key from database
-        match provided_api_key {
-            Some(ref key) => {
-                // Verify the key - expose_secret() is the only way to access the value
-                match api_key::verify_key(pool.get_ref(), key.expose_secret()) {
-                    Ok(caller) => ready(Ok(ApiKeyAuth { caller })),
-                    Err(e) => ready(Err(AuthError {
-                        message: e.to_string(),
-                    })),
+            // Check API key from database
+            match provided_api_key {
+                Some(ref key) => {
+                    // Verify the key - expose_secret() is the only way to access the value
+                    match api_key::verify_key(&pool, key.expose_secret()).await {
+                        Ok(caller) => Ok(ApiKeyAuth { caller }),
+                        Err(e) => Err(AuthError {
+                            message: e.to_string(),
+                        }),
+                    }
+                    // Note: key is dropped here, memory zeroized
                 }
-                // Note: key is dropped here, memory zeroized
+                None => {
+                    // No key provided
+                    Err(AuthError {
+                        message: "Missing API key. Provide X-API-Key header.".to_string(),
+                    })
+                }
             }
-            None => {
-                // No key provided
-                ready(Err(AuthError {
-                    message: "Missing API key. Provide X-API-Key header.".to_string(),
-                }))
-            }
-        }
+        })
     }
 }

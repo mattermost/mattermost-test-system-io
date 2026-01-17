@@ -54,3 +54,6 @@ seed/
 # specify
 .specify/
 specs/
+
+# docker
+docker/data/

@@ -11,18 +11,21 @@ pub const ADMIN_KEY_HEADER: &str = "X-Admin-Key";
 
 /// Development default values - NEVER use in production.
 pub mod defaults {
-    pub const DEV_DATABASE_URL: &str = "file:./data/dev.db";
+    pub const DEV_DATABASE_URL: &str = "postgres://rrv:rrv@localhost:6432/rrv";
     pub const DEV_ADMIN_KEY: &str = "dev-admin-key-do-not-use-in-production";
     pub const DEV_HOST: &str = "127.0.0.1";
     pub const DEV_PORT: u16 = 8080;
-    pub const DEV_DATA_DIR: &str = "./data/files";
-    pub const DEV_BACKUP_DIR: &str = "./data/backups";
     pub const DEV_MAX_UPLOAD_SIZE: usize = 52_428_800; // 50MB total per report
     pub const DEV_MAX_FILES_PER_REQUEST: usize = 20; // Max files per upload request (batching)
     pub const DEV_MAX_CONCURRENT_UPLOADS: usize = 10; // Max concurrent upload requests
     pub const DEV_UPLOAD_QUEUE_TIMEOUT_SECS: u64 = 30; // Queue timeout before rejecting
-    pub const DEV_ARTIFACT_RETENTION_HOURS: u64 = 1; // 1 hour in development
-    pub const PROD_ARTIFACT_RETENTION_HOURS: u64 = 168; // 7 days in production
+
+    // S3/MinIO defaults for development
+    pub const DEV_S3_ENDPOINT: &str = "http://localhost:9100";
+    pub const DEV_S3_BUCKET: &str = "reports";
+    pub const DEV_S3_REGION: &str = "us-east-1";
+    pub const DEV_S3_ACCESS_KEY: &str = "minioadmin";
+    pub const DEV_S3_SECRET_KEY: &str = "minioadmin";
 }
 
 /// Runtime environment.
@@ -62,6 +65,21 @@ impl std::fmt::Display for Environment {
     }
 }
 
+/// S3 storage configuration.
+#[derive(Debug, Clone)]
+pub struct S3Config {
+    /// S3 endpoint URL (for MinIO or custom S3-compatible services)
+    pub endpoint: Option<String>,
+    /// S3 bucket name
+    pub bucket: String,
+    /// S3 region
+    pub region: String,
+    /// S3 access key ID
+    pub access_key: String,
+    /// S3 secret access key
+    pub secret_key: String,
+}
+
 /// Application configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -71,12 +89,8 @@ pub struct Config {
     pub host: String,
     /// Server port
     pub port: u16,
-    /// Database URL (file path)
+    /// Database URL (PostgreSQL connection string)
     pub database_url: String,
-    /// Directory for storing uploaded report files
-    pub data_dir: PathBuf,
-    /// Directory for database backups
-    pub backup_dir: PathBuf,
     /// Directory for static frontend assets (production only)
     pub static_dir: Option<PathBuf>,
     /// Admin key for bootstrap operations (creating first API key)
@@ -89,8 +103,8 @@ pub struct Config {
     pub max_concurrent_uploads: usize,
     /// Upload queue timeout in seconds (default: 30s)
     pub upload_queue_timeout_secs: u64,
-    /// Artifact retention in hours (default: 1 hour dev, 7 days production)
-    pub artifact_retention_hours: u64,
+    /// S3 storage configuration
+    pub s3: S3Config,
 }
 
 impl Config {
@@ -101,23 +115,26 @@ impl Config {
     /// - Only RUST_ENV is required
     ///
     /// In production mode (RUST_ENV=production):
-    /// - RRV_DATABASE_URL is required
-    /// - Server will NOT start if database URL matches development default
+    /// - DATABASE_URL is required
+    /// - S3 configuration is required
+    /// - Server will NOT start if using development defaults
     ///
     /// Environment variables:
     /// - `RUST_ENV`: Environment (development/production) - REQUIRED
     /// - `RRV_HOST`: Server host (default: 127.0.0.1)
     /// - `RRV_PORT`: Server port (default: 8080)
-    /// - `RRV_DATABASE_URL`: Database connection URL (required in production)
-    /// - `RRV_ADMIN_KEY`: Admin key for bootstrap operations (optional, for creating first API key)
-    /// - `RRV_DATA_DIR`: Report storage directory (default: ./data/files)
-    /// - `RRV_BACKUP_DIR`: Backup directory (default: ./data/backups)
+    /// - `DATABASE_URL`: PostgreSQL connection string (required in production)
+    /// - `RRV_ADMIN_KEY`: Admin key for bootstrap operations (optional)
     /// - `RRV_STATIC_DIR`: Static assets directory for production
     /// - `RRV_MAX_UPLOAD_SIZE`: Max upload size in bytes (default: 50MB)
     /// - `RRV_MAX_FILES_PER_REQUEST`: Max files per batch upload (default: 20)
     /// - `RRV_MAX_CONCURRENT_UPLOADS`: Max concurrent upload batches (default: 10)
     /// - `RRV_UPLOAD_QUEUE_TIMEOUT_SECS`: Upload queue timeout in seconds (default: 30)
-    /// - `RRV_ARTIFACT_RETENTION_HOURS`: Artifact retention in hours (default: 1 hour dev, 168 hours prod)
+    /// - `S3_ENDPOINT`: S3 endpoint URL (for MinIO/custom S3)
+    /// - `S3_BUCKET`: S3 bucket name
+    /// - `S3_REGION`: S3 region
+    /// - `S3_ACCESS_KEY`: S3 access key ID
+    /// - `S3_SECRET_KEY`: S3 secret access key
     pub fn from_env() -> Result<Self, ConfigError> {
         // Parse environment - required
         let env_str = env::var("RUST_ENV").map_err(|_| ConfigError::MissingEnvVar("RUST_ENV"))?;
@@ -135,7 +152,7 @@ impl Config {
             .map_err(|_| ConfigError::InvalidValue("RRV_PORT must be a valid port number"))?;
 
         let database_url =
-            env::var("RRV_DATABASE_URL").unwrap_or_else(|_| defaults::DEV_DATABASE_URL.to_string());
+            env::var("DATABASE_URL").unwrap_or_else(|_| defaults::DEV_DATABASE_URL.to_string());
 
         // Admin key is optional - used for bootstrap operations
         let admin_key = if environment.is_development() {
@@ -143,14 +160,6 @@ impl Config {
         } else {
             env::var("RRV_ADMIN_KEY").ok()
         };
-
-        let data_dir = PathBuf::from(
-            env::var("RRV_DATA_DIR").unwrap_or_else(|_| defaults::DEV_DATA_DIR.to_string()),
-        );
-
-        let backup_dir = PathBuf::from(
-            env::var("RRV_BACKUP_DIR").unwrap_or_else(|_| defaults::DEV_BACKUP_DIR.to_string()),
-        );
 
         let max_upload_size = env::var("RRV_MAX_UPLOAD_SIZE")
             .unwrap_or_else(|_| defaults::DEV_MAX_UPLOAD_SIZE.to_string())
@@ -180,34 +189,35 @@ impl Config {
 
         let static_dir = env::var("RRV_STATIC_DIR").ok().map(PathBuf::from);
 
-        // Artifact retention defaults based on environment
-        let default_retention = if environment.is_development() {
-            defaults::DEV_ARTIFACT_RETENTION_HOURS
-        } else {
-            defaults::PROD_ARTIFACT_RETENTION_HOURS
+        // S3 configuration
+        let s3 = S3Config {
+            endpoint: env::var("S3_ENDPOINT").ok().or_else(|| {
+                if environment.is_development() {
+                    Some(defaults::DEV_S3_ENDPOINT.to_string())
+                } else {
+                    None
+                }
+            }),
+            bucket: env::var("S3_BUCKET").unwrap_or_else(|_| defaults::DEV_S3_BUCKET.to_string()),
+            region: env::var("S3_REGION").unwrap_or_else(|_| defaults::DEV_S3_REGION.to_string()),
+            access_key: env::var("S3_ACCESS_KEY")
+                .unwrap_or_else(|_| defaults::DEV_S3_ACCESS_KEY.to_string()),
+            secret_key: env::var("S3_SECRET_KEY")
+                .unwrap_or_else(|_| defaults::DEV_S3_SECRET_KEY.to_string()),
         };
-
-        let artifact_retention_hours = env::var("RRV_ARTIFACT_RETENTION_HOURS")
-            .unwrap_or_else(|_| default_retention.to_string())
-            .parse::<u64>()
-            .map_err(|_| {
-                ConfigError::InvalidValue("RRV_ARTIFACT_RETENTION_HOURS must be a valid number")
-            })?;
 
         let config = Config {
             environment,
             host,
             port,
             database_url,
-            data_dir,
-            backup_dir,
             static_dir,
             admin_key,
             max_upload_size,
             max_files_per_request,
             max_concurrent_uploads,
             upload_queue_timeout_secs,
-            artifact_retention_hours,
+            s3,
         };
 
         // Validate production configuration
@@ -224,27 +234,29 @@ impl Config {
 
         if self.database_url == defaults::DEV_DATABASE_URL {
             errors.push(format!(
-                "RRV_DATABASE_URL is using development default '{}'. Set a production database URL.",
+                "DATABASE_URL is using development default '{}'. Set a production PostgreSQL URL.",
                 defaults::DEV_DATABASE_URL
             ));
         }
 
-        // Check if database URL looks like a local file in production (warning)
-        if self.database_url.starts_with("file:") && !self.database_url.contains("/app/") {
-            errors.push(format!(
-                "RRV_DATABASE_URL '{}' appears to be a local file path. Use an absolute path in production.",
-                self.database_url
-            ));
+        // Check if using dev S3 credentials in production
+        if self.s3.access_key == defaults::DEV_S3_ACCESS_KEY
+            || self.s3.secret_key == defaults::DEV_S3_SECRET_KEY
+        {
+            errors.push(
+                "S3_ACCESS_KEY/S3_SECRET_KEY are using development defaults. Set production S3 credentials."
+                    .to_string(),
+            );
         }
 
         // Warn if admin key is using development default in production
-        if let Some(ref key) = self.admin_key {
-            if key == defaults::DEV_ADMIN_KEY {
-                errors.push(
-                    "RRV_ADMIN_KEY is using development default. Set a secure admin key or remove it."
-                        .to_string(),
-                );
-            }
+        if let Some(ref key) = self.admin_key
+            && key == defaults::DEV_ADMIN_KEY
+        {
+            errors.push(
+                "RRV_ADMIN_KEY is using development default. Set a secure admin key or remove it."
+                    .to_string(),
+            );
         }
 
         if !errors.is_empty() {
@@ -282,22 +294,30 @@ pub enum ConfigError {
 mod tests {
     use super::*;
 
+    fn test_s3_config() -> S3Config {
+        S3Config {
+            endpoint: Some("http://localhost:9000".to_string()),
+            bucket: "test".to_string(),
+            region: "us-east-1".to_string(),
+            access_key: "testkey".to_string(),
+            secret_key: "testsecret".to_string(),
+        }
+    }
+
     #[test]
     fn test_bind_address() {
         let config = Config {
             environment: Environment::Development,
             host: "0.0.0.0".to_string(),
             port: 3000,
-            database_url: "file:test.db".to_string(),
-            data_dir: PathBuf::from("./data"),
-            backup_dir: PathBuf::from("./backups"),
+            database_url: "postgres://test:test@localhost:5432/test".to_string(),
             static_dir: None,
             admin_key: Some("test-key".to_string()),
             max_upload_size: 1024,
             max_files_per_request: 20,
             max_concurrent_uploads: 10,
             upload_queue_timeout_secs: 30,
-            artifact_retention_hours: 1,
+            s3: test_s3_config(),
         };
 
         assert_eq!(config.bind_address(), "0.0.0.0:3000");
@@ -325,15 +345,19 @@ mod tests {
             host: "0.0.0.0".to_string(),
             port: 8080,
             database_url: defaults::DEV_DATABASE_URL.to_string(),
-            data_dir: PathBuf::from("./data"),
-            backup_dir: PathBuf::from("./backups"),
             static_dir: None,
             admin_key: Some(defaults::DEV_ADMIN_KEY.to_string()),
             max_upload_size: 1024,
             max_files_per_request: 20,
             max_concurrent_uploads: 10,
             upload_queue_timeout_secs: 30,
-            artifact_retention_hours: 168,
+            s3: S3Config {
+                endpoint: None,
+                bucket: "reports".to_string(),
+                region: "us-east-1".to_string(),
+                access_key: defaults::DEV_S3_ACCESS_KEY.to_string(),
+                secret_key: defaults::DEV_S3_SECRET_KEY.to_string(),
+            },
         };
 
         let result = config.validate_production();
@@ -350,16 +374,20 @@ mod tests {
             environment: Environment::Production,
             host: "0.0.0.0".to_string(),
             port: 8080,
-            database_url: "file:/app/data/prod.db".to_string(),
-            data_dir: PathBuf::from("/app/data"),
-            backup_dir: PathBuf::from("/app/backups"),
+            database_url: "postgres://user:pass@prod-db:5432/rrv".to_string(),
             static_dir: Some(PathBuf::from("/app/static")),
-            admin_key: None, // No admin key in production is fine
+            admin_key: None,
             max_upload_size: 1024,
             max_files_per_request: 20,
             max_concurrent_uploads: 10,
             upload_queue_timeout_secs: 30,
-            artifact_retention_hours: 168,
+            s3: S3Config {
+                endpoint: None, // Use AWS S3 in production
+                bucket: "prod-reports".to_string(),
+                region: "us-west-2".to_string(),
+                access_key: "AKIA...".to_string(),
+                secret_key: "secret...".to_string(),
+            },
         };
 
         let result = config.validate_production();

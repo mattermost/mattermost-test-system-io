@@ -7,6 +7,7 @@ pub mod detox_job;
 pub mod detox_screenshot;
 pub mod github_context;
 pub mod report;
+pub mod report_json;
 pub mod report_stats;
 pub mod test_result;
 pub mod test_spec;
@@ -21,6 +22,7 @@ pub use detox_job::DetoxJob;
 pub use detox_screenshot::{DetoxScreenshot, ScreenshotType};
 pub use github_context::GitHubContext;
 pub use report::{DetoxPlatform, ExtractionStatus, Report, ReportDetail, ReportSummary};
+pub use report_json::{JsonFileType, ReportJson};
 pub use report_stats::ReportStats;
 pub use test_result::{TestResult, TestStatus};
 pub use test_spec::{ScreenshotInfo, TestSpec, TestSpecListResponse, TestSpecWithResults};
@@ -29,10 +31,11 @@ pub use test_suite::{TestSuite, TestSuiteListResponse};
 /// Pagination parameters.
 #[derive(Debug, Clone, serde::Deserialize, ToSchema)]
 pub struct PaginationParams {
-    #[serde(default = "default_page")]
-    pub page: u32,
-    #[serde(default = "default_limit")]
-    pub limit: u32,
+    pub page: Option<u32>,
+    pub limit: Option<u32>,
+    /// Optional status filter (used by combined tests queries).
+    #[serde(skip)]
+    pub status: Option<String>,
 }
 
 fn default_page() -> u32 {
@@ -46,12 +49,14 @@ fn default_limit() -> u32 {
 impl PaginationParams {
     /// Calculate the offset for database queries.
     pub fn offset(&self) -> u32 {
-        (self.page.saturating_sub(1)) * self.limit
+        let page = self.page.unwrap_or(default_page());
+        let limit = self.limit.unwrap_or(default_limit());
+        (page.saturating_sub(1)) * limit
     }
 
     /// Clamp limit to maximum allowed value.
     pub fn clamped_limit(&self) -> u32 {
-        self.limit.min(100)
+        self.limit.unwrap_or(default_limit()).min(100)
     }
 }
 

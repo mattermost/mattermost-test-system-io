@@ -6,8 +6,10 @@ mod api;
 mod auth;
 mod config;
 mod db;
+mod entity;
 mod error;
 mod middleware;
+mod migration;
 mod models;
 mod services;
 
@@ -16,16 +18,18 @@ use std::sync::Arc;
 
 use actix_cors::Cors;
 use actix_files::{Files, NamedFile};
-use actix_web::{http::header, web, App, HttpRequest, HttpServer, Result as ActixResult};
+use actix_web::{App, HttpRequest, HttpServer, Result as ActixResult, http::header, web};
 use tokio::sync::Semaphore;
-use tracing::{error, info, warn, Level};
+use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+use crate::api::ApiDoc;
 use crate::auth::AdminKey;
 use crate::config::Config;
 use crate::db::DbPool;
+use crate::services::Storage;
 
 /// SPA fallback handler - serves index.html for client-side routing.
 async fn spa_fallback(req: HttpRequest) -> ActixResult<NamedFile> {
@@ -40,126 +44,6 @@ async fn spa_fallback(req: HttpRequest) -> ActixResult<NamedFile> {
 async fn health_check() -> bool {
     // Simple check - just verify we can load config
     Config::from_env().is_ok()
-}
-
-/// OpenAPI documentation.
-#[derive(OpenApi)]
-#[openapi(
-    info(
-        title = "Rust Report Server",
-        version = "0.1.0",
-        description = "API server for uploading and viewing test reports (Playwright, Cypress, Detox)"
-    ),
-    servers(
-        (url = "/", description = "Local server")
-    ),
-    paths(
-        // Health endpoints
-        api::health::health,
-        api::health::ready,
-        // Report endpoints
-        api::reports::list_reports,
-        api::reports::get_report,
-        api::reports::get_report_html,
-        api::reports::get_report_assets,
-        api::reports::get_report_screenshots,
-        api::reports::get_report_data_file,
-        api::reports::get_report_suites,
-        api::reports::get_suite_specs,
-        // Detox endpoints
-        api::detox::get_report_detox_jobs,
-        api::detox::get_report_detox_tests,
-        api::detox::get_detox_job,
-        api::detox::get_detox_job_html,
-        api::detox::get_detox_test_screenshots,
-        // Upload endpoints
-        services::upload::playwright::request_playwright_upload,
-        services::upload::cypress::request_cypress_upload,
-        services::upload::detox::request_detox_upload,
-        services::upload::upload_report_files,
-        // Auth endpoints
-        services::auth_admin::create_api_key,
-        services::auth_admin::list_api_keys,
-        services::auth_admin::get_api_key,
-        services::auth_admin::revoke_api_key,
-        services::auth_admin::restore_api_key,
-    ),
-    components(
-        schemas(
-            // Common
-            error::ErrorResponse,
-            models::Pagination,
-            models::PaginationParams,
-            models::GitHubContext,
-            // Health
-            api::health::HealthResponse,
-            api::health::ReadyResponse,
-            // Reports
-            models::ReportSummary,
-            models::ReportDetail,
-            models::ReportStats,
-            models::ExtractionStatus,
-            models::DetoxPlatform,
-            api::reports::ReportListResponse,
-            // Test suites/specs
-            models::TestSuite,
-            models::TestSuiteListResponse,
-            models::TestSpecWithResults,
-            models::TestSpecListResponse,
-            models::ScreenshotInfo,
-            models::TestResult,
-            models::TestStatus,
-            // Detox
-            api::detox::DetoxJobSummaryResponse,
-            api::detox::DetoxJobListResponse,
-            api::detox::DetoxJobDetailResponse,
-            api::detox::DetoxCombinedTestResult,
-            api::detox::DetoxCombinedTestsResponse,
-            api::detox::CombinedTestsQueryParams,
-            api::detox::DetoxScreenshotResponse,
-            api::detox::DetoxScreenshotsListResponse,
-            // Upload
-            services::upload::UploadRequest,
-            services::upload::UploadRequestResponse,
-            services::upload::UploadFilesResponse,
-            services::upload::FileError,
-            // Auth
-            models::ApiKeyRole,
-            models::ApiKeyCreateResponse,
-            models::ApiKeyListItem,
-            models::CreateApiKeyRequest,
-            services::auth_admin::ListApiKeysResponse,
-            services::auth_admin::RevokeApiKeyResponse,
-            services::auth_admin::RestoreApiKeyResponse,
-        )
-    ),
-    tags(
-        (name = "Health", description = "Health check endpoints"),
-        (name = "Reports", description = "Test report management"),
-        (name = "Detox", description = "Detox-specific report endpoints"),
-        (name = "Upload", description = "Report upload endpoints"),
-        (name = "Auth", description = "API key management")
-    ),
-    modifiers(&SecurityAddon)
-)]
-struct ApiDoc;
-
-/// Add API key security scheme.
-struct SecurityAddon;
-
-impl utoipa::Modify for SecurityAddon {
-    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
-        if let Some(components) = openapi.components.as_mut() {
-            components.add_security_scheme(
-                "api_key",
-                utoipa::openapi::security::SecurityScheme::ApiKey(
-                    utoipa::openapi::security::ApiKey::Header(
-                        utoipa::openapi::security::ApiKeyValue::new("X-API-Key"),
-                    ),
-                ),
-            );
-        }
-    }
 }
 
 #[actix_web::main]
@@ -210,75 +94,27 @@ async fn main() -> std::io::Result<()> {
         info!("Using development defaults for DATABASE_URL and API_KEY");
     }
 
-    // Create data directories
-    tokio::fs::create_dir_all(&config.data_dir)
+    // Initialize database (async)
+    let pool = DbPool::new(&config)
         .await
-        .expect("Failed to create data directory");
-    tokio::fs::create_dir_all(&config.backup_dir)
-        .await
-        .expect("Failed to create backup directory");
-
-    // Initialize database (synchronous)
-    let pool = DbPool::new(&config).expect("Failed to initialize database");
+        .expect("Failed to initialize database");
     info!("Database connection established");
 
-    // Run migrations (synchronous, no backup needed here)
-    db::migrations::run_migrations(&pool).expect("Failed to run migrations");
+    // Run migrations
+    pool.run_migrations()
+        .await
+        .expect("Failed to run migrations");
     info!("Database migrations complete");
 
-    // Check version and conditionally backup
-    let version_info = {
-        let conn = pool.connection();
-        db::version::check_version(&conn).expect("Failed to check server version")
-    };
-    let (needs_backup, version_changed) = version_info;
-
-    if needs_backup {
-        info!("Minor version bump detected, creating backup...");
-        match db::backup::create_backup(
-            &config.database_url,
-            &config.data_dir,
-            &config.backup_dir,
-            db::version::SERVER_VERSION,
-        )
+    // Initialize S3 storage
+    let storage = Storage::new(&config.s3)
         .await
-        {
-            Ok(Some(path)) => info!("Backup created at: {}", path.display()),
-            Ok(None) => info!("Backup skipped (no database file)"),
-            Err(e) => error!("Failed to create backup: {}", e),
-        }
-
-        // Cleanup old backups (keep last 5)
-        if let Err(e) = db::backup::cleanup_old_backups(&config.backup_dir, 5).await {
-            warn!("Failed to cleanup old backups: {}", e);
-        }
-    }
-
-    // Update stored version if changed
-    if version_changed {
-        let conn = pool.connection();
-        db::version::update_stored_version(&conn, db::version::SERVER_VERSION)
-            .expect("Failed to update stored version");
-    }
-
-    info!("Server version: {}", db::version::SERVER_VERSION);
-
-    // Start the cleanup background task
-    let cleanup_config = services::CleanupConfig {
-        data_dir: config.data_dir.clone(),
-        retention_hours: config.artifact_retention_hours,
-        interval_secs: if config.is_development() { 60 } else { 3600 }, // 1 min dev, 1 hour prod
-    };
-    services::start_cleanup_task(Arc::new(pool.clone()), cleanup_config);
-    info!(
-        "Cleanup service started (artifact retention: {} hours)",
-        config.artifact_retention_hours
-    );
+        .expect("Failed to initialize S3 storage");
+    info!("S3 storage initialized: bucket={}", config.s3.bucket);
 
     // Prepare shared state
     let bind_address = config.bind_address();
     let admin_key = AdminKey::new(config.admin_key.clone());
-    let data_dir = config.data_dir.clone();
     let max_upload_size = config.max_upload_size;
     let max_files_per_request = config.max_files_per_request;
     let max_concurrent_uploads = config.max_concurrent_uploads;
@@ -287,7 +123,7 @@ async fn main() -> std::io::Result<()> {
     let is_development = config.is_development();
 
     // Create upload semaphore to limit concurrent upload batches
-    // This limits concurrent disk I/O operations (files are streamed directly to disk)
+    // This limits concurrent S3 operations
     let upload_semaphore = Arc::new(Semaphore::new(max_concurrent_uploads));
     info!(
         "Upload limits: {}MB max size, {} files/batch, {} concurrent batches, {}s queue timeout",
@@ -352,7 +188,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::RequestLogger)
             // Add shared state
             .app_data(web::Data::new(pool.clone()))
-            .app_data(web::Data::new(data_dir.clone()))
+            .app_data(web::Data::new(storage.clone()))
             .app_data(web::Data::new(admin_key.clone()))
             .app_data(web::Data::new(max_upload_size))
             .app_data(web::Data::new(max_files_per_request))

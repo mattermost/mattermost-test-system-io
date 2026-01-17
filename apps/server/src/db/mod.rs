@@ -1,71 +1,56 @@
 //! Database module providing connection management, migrations, and queries.
 
 pub mod api_keys;
-pub mod backup;
-pub mod migrations;
 pub mod queries;
 pub mod upload_files;
-pub mod version;
 
-use rusqlite::Connection;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use sea_orm::{ConnectOptions, Database, DatabaseConnection};
+use std::time::Duration;
+use tracing::info;
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
+use crate::migration::Migrator;
+use sea_orm_migration::MigratorTrait;
 
-/// Database connection pool wrapper.
-/// Uses a Mutex since rusqlite Connection is not thread-safe.
+/// Database connection pool wrapper using SeaORM.
 #[derive(Clone)]
 pub struct DbPool {
-    conn: Arc<Mutex<Connection>>,
+    conn: DatabaseConnection,
 }
 
 impl DbPool {
     /// Create a new database pool from configuration.
-    pub fn new(config: &Config) -> AppResult<Self> {
-        let path = if config.database_url.starts_with("file:") {
-            config
-                .database_url
-                .strip_prefix("file:")
-                .unwrap_or(&config.database_url)
-        } else {
-            return Err(AppError::Database(format!(
-                "Invalid DATABASE_URL format: {}. Expected 'file:path'",
-                config.database_url
-            )));
-        };
+    pub async fn new(config: &Config) -> AppResult<Self> {
+        let mut opt = ConnectOptions::new(&config.database_url);
+        opt.max_connections(100)
+            .min_connections(5)
+            .connect_timeout(Duration::from_secs(10))
+            .acquire_timeout(Duration::from_secs(10))
+            .idle_timeout(Duration::from_secs(600))
+            .max_lifetime(Duration::from_secs(1800))
+            .sqlx_logging(false);
 
-        // Ensure parent directory exists
-        if let Some(parent) = Path::new(path).parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                AppError::Database(format!("Failed to create database directory: {}", e))
-            })?;
-        }
+        let conn = Database::connect(opt)
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to connect to database: {}", e)))?;
 
-        let conn = Connection::open(path)
-            .map_err(|e| AppError::Database(format!("Failed to open database: {}", e)))?;
+        info!("Database connection established");
 
-        // Enable foreign keys
-        conn.execute("PRAGMA foreign_keys = OFF", [])
-            .map_err(|e| AppError::Database(format!("Failed to set pragma: {}", e)))?;
-
-        // Force synchronous writes
-        conn.execute("PRAGMA synchronous = FULL", [])
-            .map_err(|e| AppError::Database(format!("Failed to set synchronous pragma: {}", e)))?;
-
-        // Use WAL mode for better concurrency (pragma returns current mode, so use query_row)
-        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))
-            .map_err(|e| AppError::Database(format!("Failed to set journal_mode pragma: {}", e)))?;
-
-        Ok(DbPool {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        Ok(DbPool { conn })
     }
 
-    /// Get access to the connection for executing queries.
-    /// Returns a MutexGuard that must be held while using the connection.
-    pub fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().expect("Database mutex poisoned")
+    /// Run pending database migrations.
+    pub async fn run_migrations(&self) -> AppResult<()> {
+        Migrator::up(&self.conn, None)
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to run migrations: {}", e)))?;
+        info!("Database migrations complete");
+        Ok(())
+    }
+
+    /// Get the database connection.
+    pub fn connection(&self) -> &DatabaseConnection {
+        &self.conn
     }
 }

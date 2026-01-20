@@ -137,8 +137,6 @@ pub struct CreateApiKeyRequest {
 #[derive(Debug, Clone)]
 pub struct AuthenticatedCaller {
     pub key_id: String,
-    pub name: String,
-    pub key_prefix: String,
     pub role: ApiKeyRole,
 }
 

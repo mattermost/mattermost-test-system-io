@@ -11,6 +11,7 @@ use crate::models::ApiKey;
 pub async fn insert_api_key(db: &DatabaseConnection, key: &ApiKey) -> AppResult<()> {
     let id = Uuid::parse_str(&key.id).unwrap_or_else(|_| Uuid::new_v4());
 
+    let now = Utc::now();
     let model = crate::entity::api_key::ActiveModel {
         id: Set(id),
         key_hash: Set(key.key_hash.clone()),
@@ -20,6 +21,7 @@ pub async fn insert_api_key(db: &DatabaseConnection, key: &ApiKey) -> AppResult<
         expires_at: Set(key.expires_at),
         last_used_at: Set(key.last_used_at),
         created_at: Set(key.created_at),
+        updated_at: Set(now),
         deleted_at: Set(key.deleted_at),
     };
 

@@ -1,762 +1,1219 @@
-//! JSON extraction service for parsing Playwright results.json.
+//! Extraction service for processing JSON test result files.
+//!
+//! Extracts test suites and test cases from framework-specific JSON formats
+//! (Cypress/mochawesome, Detox/Jest, Playwright) and stores them in the database.
 
 use chrono::{DateTime, Utc};
-use sea_orm::DatabaseConnection;
 use serde::Deserialize;
-use std::path::Path;
-use tracing::{info, warn};
+use serde_json::{json, Value as JsonValue};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::db::queries;
-use crate::error::{AppError, AppResult};
-use crate::models::{ExtractionStatus, ReportStats, TestResult, TestSpec, TestStatus, TestSuite};
+use crate::db::test_results::{NewTestCase, NewTestSuite};
+use crate::db::DbPool;
+use crate::models::JobStatus;
+use crate::services::Storage;
 
 // ============================================================================
-// Playwright JSON Schema Structs
+// Cypress / Mochawesome JSON Structures
 // ============================================================================
 
-/// Root structure of Playwright results.json.
 #[derive(Debug, Deserialize)]
-pub struct PlaywrightReport {
-    pub config: PlaywrightConfig,
-    pub suites: Vec<PlaywrightSuite>,
-    #[serde(default, rename = "errors")]
-    pub _errors: Vec<serde_json::Value>,
-    pub stats: PlaywrightStats,
+struct CypressStats {
+    /// ISO 8601 timestamp when test run started.
+    #[serde(default)]
+    start: Option<String>,
 }
 
-/// Playwright configuration section.
 #[derive(Debug, Deserialize)]
-pub struct PlaywrightConfig {
-    pub version: Option<String>,
+struct CypressReport {
+    #[serde(default)]
+    stats: Option<CypressStats>,
+    results: Vec<CypressResult>,
 }
 
-/// Playwright stats section.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaywrightStats {
-    pub start_time: String,
-    pub duration: f64,
-    pub expected: i32,
-    pub skipped: i32,
-    pub unexpected: i32,
-    pub flaky: i32,
+struct CypressResult {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    file: String,
+    #[serde(rename = "fullFile", default)]
+    full_file: String,
+    #[serde(default)]
+    tests: Vec<CypressTest>,
+    #[serde(default)]
+    suites: Vec<CypressSuite>,
 }
 
-/// Playwright test suite.
 #[derive(Debug, Deserialize)]
-pub struct PlaywrightSuite {
-    pub title: String,
-    pub file: String,
+struct CypressSuite {
     #[serde(default)]
-    pub specs: Vec<PlaywrightSpec>,
+    title: String,
     #[serde(default)]
-    pub suites: Vec<PlaywrightSuite>,
+    file: String,
+    #[serde(default)]
+    tests: Vec<CypressTest>,
+    #[serde(default)]
+    suites: Vec<CypressSuite>,
 }
 
-/// Playwright test specification.
 #[derive(Debug, Deserialize)]
-pub struct PlaywrightSpec {
-    pub title: String,
-    pub ok: bool,
+struct CypressTest {
     #[serde(default)]
-    pub id: String,
+    title: String,
+    #[serde(rename = "fullTitle", default)]
+    full_title: String,
     #[serde(default)]
-    pub file: String,
+    duration: i64,
     #[serde(default)]
-    pub line: i32,
+    state: String,
     #[serde(default)]
-    pub column: i32,
+    pass: bool,
     #[serde(default)]
-    pub tests: Vec<PlaywrightTest>,
+    fail: bool,
+    #[serde(default)]
+    pending: bool,
+    #[serde(default)]
+    skipped: bool,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    err: Option<CypressError>,
 }
 
-/// Playwright test (can have multiple results due to retries).
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaywrightTest {
-    pub project_id: String,
-    pub project_name: String,
+struct CypressError {
     #[serde(default)]
-    pub results: Vec<PlaywrightResult>,
-}
-
-/// Playwright test result.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaywrightResult {
-    pub status: String,
-    pub duration: i64,
-    pub retry: i32,
-    pub start_time: String,
+    message: Option<String>,
     #[serde(default)]
-    pub errors: Vec<serde_json::Value>,
+    estack: Option<String>,
 }
 
 // ============================================================================
-// Extraction Logic
+// Detox / Jest JSON Structures
 // ============================================================================
 
-/// Extract test results from a results.json file into the database.
-#[allow(dead_code)]
-pub async fn extract_results(
-    conn: &DatabaseConnection,
-    report_id: Uuid,
-    results_path: &Path,
-) -> AppResult<()> {
-    info!(
-        "Starting extraction for report {} from {:?}",
-        report_id, results_path
-    );
-
-    // Read and parse JSON
-    let content = tokio::fs::read_to_string(results_path)
-        .await
-        .map_err(|e| AppError::FileSystem(format!("Failed to read results.json: {}", e)))?;
-
-    extract_results_from_string(conn, report_id, &content).await
-}
-
-/// Extract test results from JSON bytes (for S3 storage).
-pub async fn extract_results_from_bytes(
-    conn: &DatabaseConnection,
-    report_id: Uuid,
-    data: &[u8],
-) -> AppResult<()> {
-    let content = String::from_utf8(data.to_vec())
-        .map_err(|e| AppError::ExtractionFailed(format!("Invalid UTF-8 in results.json: {}", e)))?;
-
-    extract_results_from_string(conn, report_id, &content).await
-}
-
-/// Extract test results from JSON string.
-async fn extract_results_from_string(
-    conn: &DatabaseConnection,
-    report_id: Uuid,
-    content: &str,
-) -> AppResult<()> {
-    info!("Starting extraction for report {}", report_id);
-
-    let report: PlaywrightReport = serde_json::from_str(content)
-        .map_err(|e| AppError::ExtractionFailed(format!("Failed to parse results.json: {}", e)))?;
-
-    extract_playwright_report(conn, report_id, report).await
-}
-
-/// Extract test results from JSON Value (from database JSONB).
-pub async fn extract_results_from_json(
-    conn: &DatabaseConnection,
-    report_id: Uuid,
-    json: serde_json::Value,
-) -> AppResult<()> {
-    info!(
-        "Starting extraction for report {} from JSON value",
-        report_id
-    );
-
-    let report: PlaywrightReport = serde_json::from_value(json)
-        .map_err(|e| AppError::ExtractionFailed(format!("Failed to parse JSON value: {}", e)))?;
-
-    extract_playwright_report(conn, report_id, report).await
-}
-
-/// Extract test results from parsed Playwright report.
-async fn extract_playwright_report(
-    conn: &DatabaseConnection,
-    report_id: Uuid,
-    report: PlaywrightReport,
-) -> AppResult<()> {
-    // Parse start time
-    let start_time = DateTime::parse_from_rfc3339(&report.stats.start_time)
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now());
-
-    // Insert stats
-    let stats = ReportStats::new(
-        report_id,
-        start_time,
-        report.stats.duration as i64,
-        report.stats.expected,
-        report.stats.skipped,
-        report.stats.unexpected,
-        report.stats.flaky,
-    );
-
-    queries::insert_report_stats(conn, &stats).await?;
-    info!("Inserted stats for report {}", report_id);
-
-    // Process suites recursively
-    let mut suite_count = 0;
-    let mut spec_count = 0;
-    let mut result_count = 0;
-
-    for suite in &report.suites {
-        let (s, sp, r) = process_suite(conn, report_id, suite).await?;
-        suite_count += s;
-        spec_count += sp;
-        result_count += r;
-    }
-
-    // Update report status with framework detection
-    queries::update_report_status(
-        conn,
-        report_id,
-        ExtractionStatus::Completed,
-        Some("playwright"),
-        report.config.version.as_deref(),
-        None,
-    )
-    .await?;
-
-    info!(
-        "Extraction complete for report {}: {} suites, {} specs, {} results",
-        report_id, suite_count, spec_count, result_count
-    );
-
-    Ok(())
-}
-
-/// Process a suite and its nested suites recursively.
-async fn process_suite(
-    conn: &DatabaseConnection,
-    report_id: Uuid,
-    suite: &PlaywrightSuite,
-) -> AppResult<(usize, usize, usize)> {
-    let mut suite_count = 0;
-    let mut spec_count = 0;
-    let mut result_count = 0;
-
-    // Only insert suite if it has specs
-    if !suite.specs.is_empty() {
-        let db_suite = TestSuite::new(report_id, suite.title.clone(), suite.file.clone());
-        let suite_id = queries::insert_test_suite(conn, &db_suite).await?;
-        suite_count += 1;
-
-        // Process specs
-        for spec in &suite.specs {
-            let (sp, r) = process_spec(conn, suite_id, spec).await?;
-            spec_count += sp;
-            result_count += r;
-        }
-    }
-
-    // Process nested suites
-    for nested_suite in &suite.suites {
-        let (s, sp, r) = Box::pin(process_suite(conn, report_id, nested_suite)).await?;
-        suite_count += s;
-        spec_count += sp;
-        result_count += r;
-    }
-
-    Ok((suite_count, spec_count, result_count))
-}
-
-/// Process a spec and its test results.
-async fn process_spec(
-    conn: &DatabaseConnection,
-    suite_id: i64,
-    spec: &PlaywrightSpec,
-) -> AppResult<(usize, usize)> {
-    let db_spec = TestSpec::new(
-        suite_id,
-        spec.title.clone(),
-        spec.ok,
-        spec.id.clone(),
-        spec.file.clone(),
-        spec.line,
-        spec.column,
-    );
-
-    let spec_id = queries::insert_test_spec(conn, &db_spec).await?;
-    let mut result_count = 0;
-
-    // Process tests and their results
-    for test in &spec.tests {
-        for result in &test.results {
-            let status = parse_test_status(&result.status);
-            let start_time = DateTime::parse_from_rfc3339(&result.start_time)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-
-            let errors_json = if result.errors.is_empty() {
-                None
-            } else {
-                Some(serde_json::to_string(&result.errors).unwrap_or_default())
-            };
-
-            let db_result = TestResult::new(
-                spec_id,
-                status,
-                result.duration,
-                result.retry,
-                start_time,
-                test.project_id.clone(),
-                test.project_name.clone(),
-                errors_json,
-            );
-
-            queries::insert_test_result(conn, &db_result).await?;
-            result_count += 1;
-        }
-    }
-
-    Ok((1, result_count))
-}
-
-/// Parse test status string to enum.
-fn parse_test_status(status: &str) -> TestStatus {
-    match status {
-        "passed" => TestStatus::Passed,
-        "failed" => TestStatus::Failed,
-        "skipped" => TestStatus::Skipped,
-        "timedOut" => TestStatus::TimedOut,
-        _ => {
-            warn!("Unknown test status: {}, treating as failed", status);
-            TestStatus::Failed
-        }
-    }
-}
-
-// ============================================================================
-// Detox/Jest-Stare JSON Schema Structs (T010)
-// ============================================================================
-
-/// Root structure of jest-stare JSON data file.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JestStareReport {
-    /// Total number of tests
+struct DetoxPerfStats {
+    /// Unix timestamp in milliseconds when test file started.
     #[serde(default)]
-    pub num_total_tests: i32,
-    /// Number of passed tests
-    #[serde(default)]
-    pub num_passed_tests: i32,
-    /// Number of failed tests
-    #[serde(default)]
-    pub num_failed_tests: i32,
-    /// Number of pending/skipped tests
-    #[serde(default)]
-    pub num_pending_tests: i32,
-    /// Test results by suite
-    #[serde(default)]
-    pub test_results: Vec<JestStareSuiteResult>,
-    /// Whether all tests passed
-    #[serde(default)]
-    pub success: bool,
-    /// Start time in milliseconds
-    #[serde(default)]
-    pub start_time: i64,
+    start: Option<i64>,
 }
 
-/// Jest-stare suite result (corresponds to a test file).
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JestStareSuiteResult {
-    /// Path to the test file
-    #[serde(default)]
-    pub test_file_path: String,
-    /// Suite name from the test file
-    #[serde(default)]
-    pub name: String,
-    /// Individual test results
-    #[serde(default)]
-    pub test_results: Vec<JestStareTestResult>,
-    /// Performance stats
-    #[serde(default)]
-    pub perf_stats: Option<JestStarePerfStats>,
+struct DetoxReport {
+    #[serde(rename = "testResults", default)]
+    test_results: Vec<DetoxTestFile>,
 }
 
-/// Jest-stare individual test result.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JestStareTestResult {
-    /// Test title (short name)
-    #[serde(default)]
-    pub title: String,
-    /// Full test name including describe blocks
-    #[serde(default)]
-    pub full_name: String,
-    /// Ancestor titles (describe blocks)
-    #[serde(default)]
-    pub ancestor_titles: Vec<String>,
-    /// Test status: "passed", "failed", "pending"
-    #[serde(default)]
-    pub status: String,
-    /// Duration in milliseconds
-    #[serde(default)]
-    pub duration: i64,
-    /// Failure messages
-    #[serde(default)]
-    pub failure_messages: Vec<String>,
-    /// Number of invocations (retries)
-    #[serde(default)]
-    pub invocations: i32,
+struct DetoxTestFile {
+    #[serde(rename = "testFilePath", default)]
+    test_file_path: String,
+    #[serde(rename = "perfStats", default)]
+    perf_stats: Option<DetoxPerfStats>,
+    #[serde(rename = "testResults", default)]
+    test_results: Vec<DetoxTestResult>,
 }
 
-/// Jest-stare performance statistics.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JestStarePerfStats {
-    /// Start time
+struct DetoxTestResult {
+    #[serde(rename = "ancestorTitles", default)]
+    ancestor_titles: Vec<String>,
     #[serde(default)]
-    pub start: i64,
-    /// End time
+    duration: Option<i64>,
+    #[serde(rename = "failureMessages", default)]
+    failure_messages: Vec<String>,
+    #[serde(rename = "fullName", default)]
+    full_name: String,
     #[serde(default)]
-    pub end: i64,
-    /// Runtime in milliseconds
+    status: String,
     #[serde(default)]
-    pub runtime: i64,
+    title: String,
 }
 
 // ============================================================================
-// Screenshot Folder Scanner (T012)
+// Playwright JSON Structures
 // ============================================================================
 
-/// Information about discovered screenshots for a test.
+#[derive(Debug, Deserialize)]
+struct PlaywrightReport {
+    #[serde(default)]
+    suites: Vec<PlaywrightSuite>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaywrightSuite {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    file: String,
+    #[serde(default)]
+    specs: Vec<PlaywrightSpec>,
+    #[serde(default)]
+    suites: Vec<PlaywrightSuite>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaywrightSpec {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    tests: Vec<PlaywrightTest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaywrightTest {
+    #[serde(rename = "projectName", default)]
+    project_name: String,
+    #[serde(default)]
+    results: Vec<PlaywrightTestResult>,
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaywrightTestResult {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    duration: i64,
+    #[serde(default)]
+    errors: Vec<PlaywrightError>,
+    #[serde(default)]
+    retry: i32,
+    #[serde(default)]
+    attachments: Vec<PlaywrightAttachment>,
+    /// ISO 8601 timestamp when test started.
+    #[serde(rename = "startTime", default)]
+    start_time: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaywrightError {
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    stack: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlaywrightAttachment {
+    #[serde(rename = "contentType", default)]
+    content_type: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+// ============================================================================
+// Extracted Data Structures
+// ============================================================================
+
+/// Extracted test case data before inserting.
+struct ExtractedTestCase {
+    title: String,
+    full_title: String,
+    status: String,
+    duration_ms: i32,
+    retry_count: i32,
+    error_message: Option<String>,
+    sequence: i32,
+    attachments: Vec<ExtractedAttachment>,
+    /// Test execution start time (ISO 8601).
+    start_time: Option<DateTime<Utc>>,
+}
+
+/// Attachment extracted from test results.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct DiscoveredScreenshot {
-    /// Full test name (for matching)
-    pub test_full_name: String,
-    /// Screenshot type
-    pub screenshot_type: crate::models::ScreenshotType,
-    /// Relative path to screenshot file
-    pub file_path: String,
+struct ExtractedAttachment {
+    path: String,
+    content_type: Option<String>,
+    retry: i32,
+    s3_key: Option<String>,
+    missing: bool,
+    sequence: i32,
 }
 
-/// Scan report directory for Detox screenshots.
-/// Screenshots are stored in folders named after the test: {device}/{testFullName}/{type}.png
-/// Results are sorted with testFnFailure first (highest priority), then testStart.
-#[allow(dead_code)]
-pub fn scan_detox_screenshots(report_path: &Path) -> Vec<DiscoveredScreenshot> {
-    let mut screenshots = Vec::new();
+/// Extracted test suite with its test cases.
+struct ExtractedTestSuite {
+    title: String,
+    file_path: Option<String>,
+    test_cases: Vec<ExtractedTestCase>,
+    /// Earliest test start time in this suite (computed from test cases).
+    start_time: Option<DateTime<Utc>>,
+}
 
-    // Look for device folders (e.g., "android.emu.debug.2026-01-09 01-04-31Z")
-    let entries = match std::fs::read_dir(report_path) {
-        Ok(e) => e,
-        Err(_) => return screenshots,
+// ============================================================================
+// Main Extraction Function
+// ============================================================================
+
+/// Extract data from a job's JSON files and update the database.
+///
+/// This function is called asynchronously after JSON files are uploaded.
+/// It fetches the files from S3, parses them, and stores the results.
+pub async fn extract_job(pool: &DbPool, storage: &Storage, job_id: Uuid, framework: &str) {
+    info!("Starting JSON extraction for job_id={}, framework={}", job_id, framework);
+
+    // Get job to verify it exists and get report_id
+    let job = match pool.get_job_by_id(job_id).await {
+        Ok(Some(j)) => j,
+        Ok(None) => {
+            error!("Job {} not found during extraction", job_id);
+            return;
+        }
+        Err(e) => {
+            error!("Failed to get job {} during extraction: {}", job_id, e);
+            return;
+        }
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            // Check if this looks like a device folder (contains timestamp pattern)
-            let folder_name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n,
-                None => continue,
-            };
+    // Get uploaded JSON files for this job
+    let json_files = match pool.get_uploaded_json_files(job_id).await {
+        Ok(files) => files,
+        Err(e) => {
+            error!("Failed to get JSON files for job {}: {}", job_id, e);
+            if let Err(e) = pool
+                .update_job_status(job_id, JobStatus::Failed, Some(format!("Failed to get JSON files: {}", e)))
+                .await
+            {
+                error!("Failed to update job status: {}", e);
+            }
+            return;
+        }
+    };
 
-            // Device folders typically contain "debug" or "release" and a timestamp
-            if folder_name.contains("debug") || folder_name.contains("release") {
-                // Scan this device folder for test screenshots
-                let test_screenshots = scan_device_folder(&path, folder_name);
-                screenshots.extend(test_screenshots);
+    if json_files.is_empty() {
+        error!("Job {} has no uploaded JSON files", job_id);
+        if let Err(e) = pool
+            .update_job_status(job_id, JobStatus::Failed, Some("No JSON files uploaded".to_string()))
+            .await
+        {
+            error!("Failed to update job status: {}", e);
+        }
+        return;
+    }
+
+    let mut all_suites: Vec<ExtractedTestSuite> = Vec::new();
+    let mut total_duration_ms: i64 = 0;
+    let earliest_time: Option<DateTime<Utc>> = None;
+    let mut global_sequence = 0;
+
+    // Fetch uploaded screenshots for validation
+    let uploaded_screenshots = match pool.get_screenshots_by_job_id(job_id).await {
+        Ok(screenshots) => screenshots,
+        Err(e) => {
+            warn!("Failed to get screenshots for job {}: {}", job_id, e);
+            Vec::new()
+        }
+    };
+
+    // Build a lookup map: filename -> s3_key
+    let screenshot_map: std::collections::HashMap<String, String> = uploaded_screenshots
+        .iter()
+        .map(|s| (s.filename.clone(), s.s3_key.clone()))
+        .collect();
+
+    // Fetch and parse each JSON file from S3
+    for file in &json_files {
+        info!("Fetching JSON file from S3: {}", file.s3_key);
+
+        let json_content = match storage.get(&file.s3_key).await {
+            Ok((data, _content_type)) => match String::from_utf8(data) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("JSON file {} is not valid UTF-8: {}", file.s3_key, e);
+                    continue;
+                }
+            },
+            Err(e) => {
+                warn!("Failed to fetch JSON file {}: {}", file.s3_key, e);
+                continue;
+            }
+        };
+
+        // Parse JSON and extract test data based on framework
+        let suites = match framework.to_lowercase().as_str() {
+            "cypress" => extract_cypress(&json_content, &screenshot_map, &mut global_sequence),
+            "detox" => extract_detox(&json_content, &screenshot_map, &mut global_sequence),
+            "playwright" => extract_playwright(&json_content, &screenshot_map, &mut global_sequence),
+            _ => {
+                // Try to auto-detect format
+                if let Some(suites) = try_auto_detect(&json_content, &screenshot_map, &mut global_sequence) {
+                    suites
+                } else {
+                    warn!("Unknown framework '{}' and auto-detection failed for {}", framework, file.s3_key);
+                    continue;
+                }
+            }
+        };
+
+        for suite in suites {
+            total_duration_ms += suite.test_cases.iter().map(|tc| tc.duration_ms as i64).sum::<i64>();
+            all_suites.push(suite);
+        }
+
+        // Mark file as extracted
+        if let Err(e) = pool.mark_json_file_extracted(file.id).await {
+            warn!("Failed to mark JSON file {} as extracted: {}", file.id, e);
+        }
+    }
+
+    info!(
+        "Parsed JSON files for job_id={}: {} suites, {} total duration ms",
+        job_id, all_suites.len(), total_duration_ms
+    );
+
+    // Insert test suites and cases into database
+    let mut suite_count = 0;
+    let mut case_count = 0;
+    for suite in all_suites {
+        let (passed, failed, skipped, flaky, unique_count) = count_statuses(&suite.test_cases);
+        let duration_ms = suite.test_cases.iter().map(|tc| tc.duration_ms).sum();
+
+        let new_suite = NewTestSuite {
+            job_id,
+            title: suite.title,
+            file_path: suite.file_path,
+            total_count: unique_count,
+            passed_count: passed,
+            failed_count: failed,
+            skipped_count: skipped,
+            flaky_count: flaky,
+            duration_ms,
+            start_time: suite.start_time,
+        };
+
+        match pool.insert_test_suite(new_suite).await {
+            Ok(inserted_suite) => {
+                suite_count += 1;
+                let suite_id = inserted_suite.id;
+
+                for test_case in suite.test_cases {
+                    // Convert attachments to JSON with validation status
+                    let attachments_json = if test_case.attachments.is_empty() {
+                        None
+                    } else {
+                        Some(json!(test_case.attachments.iter().map(|a| {
+                            let mut obj = json!({
+                                "path": a.path,
+                                "content_type": a.content_type,
+                                "retry": a.retry,
+                                "missing": a.missing,
+                                "sequence": a.sequence
+                            });
+                            if let Some(ref key) = a.s3_key {
+                                obj["s3_key"] = json!(key);
+                            }
+                            obj
+                        }).collect::<Vec<_>>()))
+                    };
+
+                    let new_case = NewTestCase {
+                        suite_id,
+                        job_id,
+                        title: test_case.title,
+                        full_title: test_case.full_title,
+                        status: test_case.status,
+                        duration_ms: test_case.duration_ms,
+                        retry_count: test_case.retry_count,
+                        error_message: test_case.error_message,
+                        sequence: test_case.sequence,
+                        attachments: attachments_json,
+                    };
+
+                    if let Err(e) = pool.insert_test_case(new_case).await {
+                        error!("Failed to insert test case for job {}: {}", job_id, e);
+                    } else {
+                        case_count += 1;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to insert test suite for job {}: {}", job_id, e);
             }
         }
     }
 
-    // Sort for upload/save: testFnFailure first (priority 0), then testStart (priority 1)
-    // This ensures failure screenshots are saved before the upload limit is reached
-    screenshots.sort_by_key(|s| match s.screenshot_type {
-        crate::models::ScreenshotType::TestFnFailure => 0,
-        crate::models::ScreenshotType::TestStart => 1,
-    });
+    // Update job duration if we have stats
+    if (total_duration_ms > 0 || earliest_time.is_some())
+        && let Err(e) = pool.update_job_duration(job_id, Some(total_duration_ms), earliest_time).await
+    {
+        error!("Failed to update job {} duration: {}", job_id, e);
+    }
 
-    screenshots
+    // Link screenshots to test cases
+    if let Err(e) = link_screenshots_to_test_cases(pool, job_id).await {
+        error!("Failed to link screenshots for job {}: {}", job_id, e);
+        // Don't fail the job - screenshots linking is not critical
+    }
+
+    // Update job status to complete
+    if let Err(e) = pool
+        .update_job_status(job_id, JobStatus::Complete, None)
+        .await
+    {
+        error!("Failed to update job {} status to complete: {}", job_id, e);
+        return;
+    }
+
+    // Check if all jobs for the report are complete
+    let report_id = job.test_report_id;
+    if let Err(e) = check_report_completion(pool, report_id).await {
+        error!("Failed to check report {} completion: {}", report_id, e);
+    }
+
+    info!(
+        "Extraction complete for job_id={}: {} suites, {} test cases",
+        job_id, suite_count, case_count
+    );
 }
 
-/// Scan a device folder for test screenshot folders.
-fn scan_device_folder(device_path: &Path, device_name: &str) -> Vec<DiscoveredScreenshot> {
-    let mut screenshots = Vec::new();
+// ============================================================================
+// Screenshot Linking
+// ============================================================================
 
-    let entries = match std::fs::read_dir(device_path) {
-        Ok(e) => e,
-        Err(_) => return screenshots,
-    };
+/// Link screenshots to their matching test cases.
+///
+/// This function can be called:
+/// 1. After JSON extraction - to link screenshots that were uploaded first
+/// 2. After screenshot upload - to link screenshots to existing test cases
+///
+/// Matching logic:
+/// - Screenshot's test_name (from path) is compared with test case's full_title
+/// - Handles path normalization (e.g., "/" vs " > ")
+/// - Handles project suffix in full_title (e.g., "Title [chromium]")
+pub async fn link_screenshots_to_test_cases(
+    pool: &DbPool,
+    job_id: Uuid,
+) -> Result<(), crate::error::AppError> {
+    // Get all screenshots for this job (only unlinked ones need processing)
+    let screenshots = pool.get_screenshots_by_job_id(job_id).await?;
+    let unlinked_screenshots: Vec<_> = screenshots
+        .iter()
+        .filter(|s| s.test_case_id.is_none())
+        .collect();
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            // This folder name is the test full name
-            let test_full_name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
+    if unlinked_screenshots.is_empty() {
+        // All screenshots are already linked or no screenshots exist
+        return Ok(());
+    }
 
-            // Look for screenshot files in this folder
-            let test_screenshots = scan_test_folder(&path, &test_full_name, device_name);
-            screenshots.extend(test_screenshots);
+    // Get all test cases for this job
+    let test_cases = pool.get_test_cases_by_job_id(job_id).await?;
+    if test_cases.is_empty() {
+        // No test cases yet - screenshots will be linked when JSON is extracted
+        return Ok(());
+    }
+
+    // Build a mapping: (screenshot_id, test_case_id)
+    let mut mappings: Vec<(Uuid, Uuid)> = Vec::new();
+
+    for screenshot in &unlinked_screenshots {
+        // Screenshot test_name comes from folder path (e.g., "Suite > Spec" or "Suite/Spec")
+        let normalized_test_name = screenshot.test_name.replace('/', " > ");
+
+        // Find matching test case
+        for test_case in &test_cases {
+            let full_title = &test_case.full_title;
+
+            // Match conditions:
+            // 1. Exact match
+            // 2. Normalized match (/ -> " > ")
+            // 3. Match with project suffix (e.g., "Title [chromium]")
+            let is_match = full_title == &screenshot.test_name
+                || full_title == &normalized_test_name
+                || full_title.starts_with(&format!("{} [", screenshot.test_name))
+                || full_title.starts_with(&format!("{} [", normalized_test_name));
+
+            if is_match {
+                mappings.push((screenshot.id, test_case.id));
+                break; // Found a match, move to next screenshot
+            }
         }
     }
 
-    screenshots
+    let total_unlinked = unlinked_screenshots.len();
+    let linked_count = mappings.len();
+    let unmapped_count = total_unlinked - linked_count;
+
+    // Link the screenshots
+    if !mappings.is_empty() {
+        pool.link_screenshots_to_test_cases(&mappings).await?;
+    }
+
+    if linked_count > 0 {
+        if unmapped_count > 0 {
+            warn!(
+                "Screenshot linking for job_id={}: {} linked, {} still unmapped",
+                job_id, linked_count, unmapped_count
+            );
+        } else {
+            info!(
+                "Screenshot linking for job_id={}: {} linked",
+                job_id, linked_count
+            );
+        }
+    }
+
+    Ok(())
 }
 
-/// Scan a test folder for screenshot files.
-fn scan_test_folder(
-    test_path: &Path,
-    test_full_name: &str,
-    device_name: &str,
-) -> Vec<DiscoveredScreenshot> {
-    let mut screenshots = Vec::new();
+// ============================================================================
+// Framework-Specific Extractors
+// ============================================================================
 
-    let entries = match std::fs::read_dir(test_path) {
-        Ok(e) => e,
-        Err(_) => return screenshots,
+/// Extract test data from Cypress/mochawesome JSON format.
+fn extract_cypress(
+    json_content: &str,
+    screenshot_map: &std::collections::HashMap<String, String>,
+    global_sequence: &mut i32,
+) -> Vec<ExtractedTestSuite> {
+    let report: CypressReport = match serde_json::from_str(json_content) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to parse Cypress JSON: {}", e);
+            return Vec::new();
+        }
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file()
-            && let Some(ext) = path.extension().and_then(|e| e.to_str())
-            && (ext == "png" || ext == "jpg" || ext == "jpeg")
-        {
-            // Parse screenshot type from filename
-            let file_name = match path.file_name().and_then(|s| s.to_str()) {
-                Some(n) => n,
-                None => continue,
-            };
-            let file_stem = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(n) => n,
-                None => continue,
-            };
+    // Parse start time from stats (applies to all suites in this report)
+    let report_start_time = report
+        .stats
+        .as_ref()
+        .and_then(|s| s.start.as_ref())
+        .and_then(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        });
 
-            // Only save high-priority screenshots: testFnFailure (highest) and testStart
-            // Skip testDone and afterAllFailure to save storage
-            let screenshot_type = match file_stem {
-                "testFnFailure" => Some(crate::models::ScreenshotType::TestFnFailure),
-                "testStart" => Some(crate::models::ScreenshotType::TestStart),
-                _ => None,
-            };
+    let mut suites = Vec::new();
 
-            if let Some(s_type) = screenshot_type {
-                // Build relative path: {device}/{testFullName}/{filename}
-                let file_path = format!("{}/{}/{}", device_name, test_full_name, file_name);
+    for result in report.results {
+        // Process root-level tests
+        let file_path = if !result.full_file.is_empty() {
+            Some(result.full_file.clone())
+        } else if !result.file.is_empty() {
+            Some(result.file.clone())
+        } else {
+            None
+        };
 
-                screenshots.push(DiscoveredScreenshot {
-                    test_full_name: test_full_name.to_string(),
-                    screenshot_type: s_type,
-                    file_path,
+        // Process nested suites
+        for suite in result.suites {
+            let extracted = extract_cypress_suite(&suite, file_path.as_deref(), screenshot_map, global_sequence, report_start_time);
+            suites.push(extracted);
+        }
+
+        // Process root-level tests if any
+        if !result.tests.is_empty() {
+            let test_cases: Vec<ExtractedTestCase> = result
+                .tests
+                .iter()
+                .map(|t| {
+                    let seq = *global_sequence;
+                    *global_sequence += 1;
+                    extract_cypress_test(t, screenshot_map, seq, report_start_time)
+                })
+                .collect();
+
+            if !test_cases.is_empty() {
+                suites.push(ExtractedTestSuite {
+                    title: result.title.clone(),
+                    file_path: file_path.clone(),
+                    test_cases,
+                    start_time: report_start_time,
                 });
             }
         }
     }
 
-    screenshots
+    suites
 }
 
-// ============================================================================
-// Jest-Stare JSON Extraction
-// ============================================================================
+fn extract_cypress_suite(
+    suite: &CypressSuite,
+    parent_file: Option<&str>,
+    screenshot_map: &std::collections::HashMap<String, String>,
+    global_sequence: &mut i32,
+    report_start_time: Option<DateTime<Utc>>,
+) -> ExtractedTestSuite {
+    let file_path = if !suite.file.is_empty() {
+        Some(suite.file.clone())
+    } else {
+        parent_file.map(|s| s.to_string())
+    };
 
-/// Extract test results from jest-stare JSON file.
-#[allow(dead_code)]
-pub async fn extract_jest_stare_results(
-    conn: &DatabaseConnection,
-    report_id: Uuid,
-    data_json_path: &Path,
-) -> AppResult<JestStareStats> {
-    info!(
-        "Extracting jest-stare results for report {} from {:?}",
-        report_id, data_json_path
-    );
-
-    let content = tokio::fs::read_to_string(data_json_path)
-        .await
-        .map_err(|e| AppError::FileSystem(format!("Failed to read jest-stare data: {}", e)))?;
-
-    extract_jest_stare_results_from_string(conn, report_id, &content).await
-}
-
-/// Extract test results from jest-stare JSON bytes (for S3 storage).
-pub async fn extract_jest_stare_results_from_bytes(
-    conn: &DatabaseConnection,
-    report_id: Uuid,
-    data: &[u8],
-) -> AppResult<JestStareStats> {
-    let content = String::from_utf8(data.to_vec()).map_err(|e| {
-        AppError::ExtractionFailed(format!("Invalid UTF-8 in jest-stare data: {}", e))
-    })?;
-
-    extract_jest_stare_results_from_string(conn, report_id, &content).await
-}
-
-/// Extract test results from jest-stare JSON string.
-async fn extract_jest_stare_results_from_string(
-    conn: &DatabaseConnection,
-    report_id: Uuid,
-    content: &str,
-) -> AppResult<JestStareStats> {
-    info!("Extracting jest-stare results for report {}", report_id);
-
-    let report: JestStareReport = serde_json::from_str(content).map_err(|e| {
-        AppError::ExtractionFailed(format!("Failed to parse jest-stare JSON: {}", e))
-    })?;
-
-    // Calculate total duration from all test results
-    let total_duration: i64 = report
-        .test_results
+    let mut test_cases: Vec<ExtractedTestCase> = suite
+        .tests
         .iter()
-        .flat_map(|suite| suite.test_results.iter())
-        .map(|test| test.duration)
-        .sum();
+        .map(|t| {
+            let seq = *global_sequence;
+            *global_sequence += 1;
+            extract_cypress_test(t, screenshot_map, seq, report_start_time)
+        })
+        .collect();
 
-    // Process each suite
-    let mut suite_count = 0;
-    let mut spec_count = 0;
-    let mut result_count = 0;
+    // Recursively process nested suites
+    for nested in &suite.suites {
+        let nested_suite = extract_cypress_suite(nested, file_path.as_deref(), screenshot_map, global_sequence, report_start_time);
+        test_cases.extend(nested_suite.test_cases);
+    }
 
-    for suite_result in &report.test_results {
-        if suite_result.test_results.is_empty() {
-            continue;
-        }
+    ExtractedTestSuite {
+        title: suite.title.clone(),
+        file_path,
+        test_cases,
+        start_time: report_start_time,
+    }
+}
 
-        // Create suite from test file path
-        let suite_title = if !suite_result.name.is_empty() {
-            suite_result.name.clone()
-        } else if !suite_result.test_file_path.is_empty() {
-            std::path::Path::new(&suite_result.test_file_path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "Unknown Suite".to_string())
+fn extract_cypress_test(
+    test: &CypressTest,
+    screenshot_map: &std::collections::HashMap<String, String>,
+    sequence: i32,
+    report_start_time: Option<DateTime<Utc>>,
+) -> ExtractedTestCase {
+    let status = if test.pending || test.skipped {
+        "skipped".to_string()
+    } else if test.fail {
+        "failed".to_string()
+    } else if test.pass {
+        "passed".to_string()
+    } else {
+        test.state.clone()
+    };
+
+    let error_message = test.err.as_ref().and_then(|e| {
+        e.message.clone().or_else(|| e.estack.clone())
+    });
+
+    // Parse screenshot context if available
+    let attachments = parse_cypress_context(&test.context, screenshot_map, sequence);
+
+    ExtractedTestCase {
+        title: test.title.clone(),
+        full_title: if test.full_title.is_empty() {
+            test.title.clone()
         } else {
-            "Unknown Suite".to_string()
+            test.full_title.clone()
+        },
+        status,
+        duration_ms: test.duration as i32,
+        retry_count: 0,
+        error_message,
+        sequence,
+        attachments,
+        start_time: report_start_time, // From stats.start at report level
+    }
+}
+
+fn parse_cypress_context(
+    context: &Option<String>,
+    screenshot_map: &std::collections::HashMap<String, String>,
+    _sequence: i32,
+) -> Vec<ExtractedAttachment> {
+    let Some(ctx) = context else {
+        return Vec::new();
+    };
+
+    // Cypress context is JSON: {"title": "...", "value": "screenshot/path.png"}
+    let parsed: Result<JsonValue, _> = serde_json::from_str(ctx);
+    let Ok(value) = parsed else {
+        return Vec::new();
+    };
+
+    let mut attachments = Vec::new();
+    let mut seq = 0;
+
+    if let Some(path) = value.get("value").and_then(|v| v.as_str()) {
+        let decoded_path = urlencoding::decode(path).unwrap_or_else(|_| path.into()).to_string();
+        let (s3_key, missing) = lookup_screenshot(&decoded_path, screenshot_map);
+
+        attachments.push(ExtractedAttachment {
+            path: decoded_path,
+            content_type: Some("image/png".to_string()),
+            retry: 0,
+            s3_key,
+            missing,
+            sequence: seq,
+        });
+        seq += 1;
+    }
+
+    // Handle array of contexts
+    if let Some(arr) = value.as_array() {
+        for item in arr {
+            if let Some(path) = item.get("value").and_then(|v| v.as_str()) {
+                let decoded_path = urlencoding::decode(path).unwrap_or_else(|_| path.into()).to_string();
+                let (s3_key, missing) = lookup_screenshot(&decoded_path, screenshot_map);
+
+                attachments.push(ExtractedAttachment {
+                    path: decoded_path,
+                    content_type: Some("image/png".to_string()),
+                    retry: 0,
+                    s3_key,
+                    missing,
+                    sequence: seq,
+                });
+                seq += 1;
+            }
+        }
+    }
+
+    attachments
+}
+
+/// Extract test data from Detox/Jest JSON format.
+fn extract_detox(
+    json_content: &str,
+    screenshot_map: &std::collections::HashMap<String, String>,
+    global_sequence: &mut i32,
+) -> Vec<ExtractedTestSuite> {
+    let report: DetoxReport = match serde_json::from_str(json_content) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to parse Detox JSON: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let mut suites = Vec::new();
+
+    for file_result in report.test_results {
+        let file_path = if file_result.test_file_path.is_empty() {
+            None
+        } else {
+            // Extract relative path from full path
+            let path = &file_result.test_file_path;
+            let relative = path.rsplit_once("/e2e/").map(|(_, rest)| rest.to_string())
+                .unwrap_or_else(|| path.clone());
+            Some(relative)
         };
 
-        let db_suite = TestSuite::new(report_id, suite_title, suite_result.test_file_path.clone());
-        let suite_id = queries::insert_test_suite(conn, &db_suite).await?;
-        suite_count += 1;
+        // Parse start time from perfStats (Unix timestamp in milliseconds)
+        let file_start_time = file_result
+            .perf_stats
+            .as_ref()
+            .and_then(|ps| ps.start)
+            .and_then(DateTime::from_timestamp_millis)
+            .map(|dt| dt.with_timezone(&Utc));
 
-        // Process each test in the suite
-        for test_result in &suite_result.test_results {
-            let (sp, r) = process_jest_stare_test(conn, suite_id, test_result).await?;
-            spec_count += sp;
-            result_count += r;
+        // Group tests by ancestor titles (suite name)
+        let mut suite_tests: std::collections::HashMap<String, Vec<ExtractedTestCase>> =
+            std::collections::HashMap::new();
+
+        for test in &file_result.test_results {
+            let suite_name = test.ancestor_titles.join(" > ");
+
+            let status = match test.status.as_str() {
+                "passed" => "passed".to_string(),
+                "failed" => "failed".to_string(),
+                "pending" | "skipped" | "todo" => "skipped".to_string(),
+                other => other.to_string(),
+            };
+
+            let error_message = if test.failure_messages.is_empty() {
+                None
+            } else {
+                Some(test.failure_messages.join("\n"))
+            };
+
+            let seq = *global_sequence;
+            *global_sequence += 1;
+
+            let test_case = ExtractedTestCase {
+                title: test.title.clone(),
+                full_title: test.full_name.clone(),
+                status,
+                duration_ms: test.duration.unwrap_or(0) as i32,
+                retry_count: 0,
+                error_message,
+                sequence: seq,
+                attachments: Vec::new(), // Detox doesn't embed attachments in JSON
+                start_time: file_start_time, // From perfStats.start at file level
+            };
+
+            suite_tests.entry(suite_name).or_default().push(test_case);
+        }
+
+        // Create suites from grouped tests
+        for (suite_name, test_cases) in suite_tests {
+            let title = if suite_name.is_empty() {
+                file_path.clone().unwrap_or_else(|| "Root".to_string())
+            } else {
+                suite_name
+            };
+
+            suites.push(ExtractedTestSuite {
+                title,
+                file_path: file_path.clone(),
+                test_cases,
+                start_time: file_start_time, // From perfStats.start
+            });
         }
     }
 
-    info!(
-        "Jest-stare extraction complete: {} suites, {} specs, {} results",
-        suite_count, spec_count, result_count
-    );
+    // Handle case where we didn't find any suites but screenshots exist
+    let _ = screenshot_map; // Mark as used even though Detox doesn't embed in JSON
 
-    Ok(JestStareStats {
-        total_tests: report.num_total_tests,
-        passed_tests: report.num_passed_tests,
-        failed_tests: report.num_failed_tests,
-        skipped_tests: report.num_pending_tests,
-        duration_ms: total_duration,
-    })
+    suites
 }
 
-/// Statistics extracted from jest-stare report.
-#[derive(Debug, Clone)]
-pub struct JestStareStats {
-    pub total_tests: i32,
-    pub passed_tests: i32,
-    pub failed_tests: i32,
-    pub skipped_tests: i32,
-    pub duration_ms: i64,
-}
-
-/// Process a single jest-stare test result.
-async fn process_jest_stare_test(
-    conn: &DatabaseConnection,
-    suite_id: i64,
-    test: &JestStareTestResult,
-) -> AppResult<(usize, usize)> {
-    // Map jest-stare status to our TestStatus
-    let status = match test.status.as_str() {
-        "passed" => TestStatus::Passed,
-        "failed" => TestStatus::Failed,
-        "pending" | "skipped" => TestStatus::Skipped,
-        _ => {
-            warn!(
-                "Unknown jest-stare status: {}, treating as failed",
-                test.status
-            );
-            TestStatus::Failed
+/// Extract test data from Playwright JSON format.
+fn extract_playwright(
+    json_content: &str,
+    screenshot_map: &std::collections::HashMap<String, String>,
+    global_sequence: &mut i32,
+) -> Vec<ExtractedTestSuite> {
+    let report: PlaywrightReport = match serde_json::from_str(json_content) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to parse Playwright JSON: {}", e);
+            return Vec::new();
         }
     };
 
-    let ok = status == TestStatus::Passed;
+    let mut suites = Vec::new();
 
-    // Create spec (use full_name as the full_title)
-    let db_spec = TestSpec::new(
-        suite_id,
-        test.title.clone(),
-        ok,
-        test.full_name.clone(), // Full title including suite/describe blocks
-        String::new(),          // No file path in jest-stare
-        0,                      // No line info
-        0,                      // No column info
-    );
+    for suite in report.suites {
+        let extracted = extract_playwright_suite(&suite, screenshot_map, global_sequence);
+        suites.extend(extracted);
+    }
 
-    let spec_id = queries::insert_test_spec(conn, &db_spec).await?;
+    suites
+}
 
-    // Create test result
-    let errors_json = if test.failure_messages.is_empty() {
+fn extract_playwright_suite(
+    suite: &PlaywrightSuite,
+    screenshot_map: &std::collections::HashMap<String, String>,
+    global_sequence: &mut i32,
+) -> Vec<ExtractedTestSuite> {
+    let mut result = Vec::new();
+
+    let file_path = if suite.file.is_empty() {
         None
     } else {
-        Some(serde_json::to_string(&test.failure_messages).unwrap_or_default())
+        Some(suite.file.clone())
     };
 
-    let db_result = TestResult::new(
-        spec_id,
-        status,
-        test.duration,
-        test.invocations.saturating_sub(1).max(0), // Convert invocations to retry count
-        Utc::now(),                                // No start time in jest-stare
-        String::new(),                             // No project_id
-        String::new(),                             // No project_name
-        errors_json,
-    );
-
-    queries::insert_test_result(conn, &db_result).await?;
-
-    Ok((1, 1))
-}
-
-// ============================================================================
-// Screenshot Path Parsing (for S3 storage)
-// ============================================================================
-
-/// Parsed screenshot information from S3 path.
-pub struct ParsedScreenshot {
-    pub test_full_name: String,
-    pub screenshot_type: crate::models::ScreenshotType,
-}
-
-/// Parse Detox screenshot information from a file path.
-/// Path format: {job}/{device}/{testFullName}/{screenshotType}.png
-pub fn parse_detox_screenshot_path(file_path: &str) -> Option<ParsedScreenshot> {
-    let parts: Vec<&str> = file_path.split('/').collect();
-
-    // Minimum: job/device/testName/screenshot.png = 4 parts
-    if parts.len() < 4 {
-        return None;
+    // Extract tests from specs
+    let mut test_cases = Vec::new();
+    for spec in &suite.specs {
+        for test in &spec.tests {
+            let extracted = extract_playwright_test(
+                &spec.title,
+                test,
+                file_path.as_deref(),
+                screenshot_map,
+                global_sequence,
+            );
+            test_cases.extend(extracted);
+        }
     }
 
-    // Get filename and parse screenshot type
-    let filename = parts.last()?;
-    let file_stem = filename.strip_suffix(".png")?;
+    if !test_cases.is_empty() || !suite.title.is_empty() {
+        // Compute earliest start_time from test cases
+        let start_time = test_cases
+            .iter()
+            .filter_map(|tc| tc.start_time)
+            .min();
 
-    let screenshot_type = match file_stem {
-        "testFnFailure" => crate::models::ScreenshotType::TestFnFailure,
-        "testStart" => crate::models::ScreenshotType::TestStart,
-        _ => return None, // Only save high-priority screenshots
-    };
+        result.push(ExtractedTestSuite {
+            title: if suite.title.is_empty() {
+                file_path.clone().unwrap_or_else(|| "Root".to_string())
+            } else {
+                suite.title.clone()
+            },
+            file_path: file_path.clone(),
+            test_cases,
+            start_time,
+        });
+    }
 
-    // Test full name is the folder before the filename
-    // Path: job/device/testFullName/screenshot.png
-    let test_full_name = parts[parts.len() - 2].to_string();
+    // Process nested suites
+    for nested in &suite.suites {
+        result.extend(extract_playwright_suite(nested, screenshot_map, global_sequence));
+    }
 
-    Some(ParsedScreenshot {
-        test_full_name,
-        screenshot_type,
-    })
+    result
+}
+
+fn extract_playwright_test(
+    spec_title: &str,
+    test: &PlaywrightTest,
+    file_path: Option<&str>,
+    screenshot_map: &std::collections::HashMap<String, String>,
+    global_sequence: &mut i32,
+) -> Vec<ExtractedTestCase> {
+    let mut cases = Vec::new();
+
+    // Playwright can have multiple retry attempts
+    for result in &test.results {
+        let status = match result.status.as_str() {
+            "passed" => "passed".to_string(),
+            "failed" | "timedOut" => "failed".to_string(),
+            "skipped" => "skipped".to_string(),
+            "interrupted" => "failed".to_string(),
+            other => other.to_string(),
+        };
+
+        // Check if this is a flaky test (passed after retries)
+        let final_status = if result.retry > 0 && result.status == "passed" {
+            "flaky".to_string()
+        } else {
+            status
+        };
+
+        let error_message = if result.errors.is_empty() {
+            None
+        } else {
+            let msg = result.errors.iter()
+                .filter_map(|e| e.message.clone().or_else(|| e.stack.clone()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if msg.is_empty() { None } else { Some(truncate_message(&msg, 2000)) }
+        };
+
+        // Extract attachments
+        let attachments = result.attachments.iter()
+            .filter(|a| a.path.is_some())
+            .enumerate()
+            .map(|(idx, a)| {
+                let path = a.path.clone().unwrap_or_default();
+                let normalized = normalize_attachment_path(&path);
+                let (s3_key, missing) = lookup_screenshot(&normalized, screenshot_map);
+
+                ExtractedAttachment {
+                    path,
+                    content_type: Some(a.content_type.clone()),
+                    retry: result.retry,
+                    s3_key,
+                    missing,
+                    sequence: idx as i32,
+                }
+            })
+            .collect();
+
+        let seq = *global_sequence;
+        *global_sequence += 1;
+
+        // Build full title including project name if present
+        let full_title = if test.project_name.is_empty() {
+            spec_title.to_string()
+        } else {
+            format!("[{}] {}", test.project_name, spec_title)
+        };
+
+        // Parse start_time from ISO 8601 string
+        let start_time = result.start_time.as_ref().and_then(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        });
+
+        cases.push(ExtractedTestCase {
+            title: spec_title.to_string(),
+            full_title,
+            status: final_status,
+            duration_ms: result.duration as i32,
+            retry_count: result.retry,
+            error_message,
+            sequence: seq,
+            attachments,
+            start_time,
+        });
+    }
+
+    // If no results, create a single case based on overall status
+    if cases.is_empty() {
+        let seq = *global_sequence;
+        *global_sequence += 1;
+
+        cases.push(ExtractedTestCase {
+            title: spec_title.to_string(),
+            full_title: spec_title.to_string(),
+            status: test.status.clone(),
+            duration_ms: 0,
+            retry_count: 0,
+            error_message: None,
+            sequence: seq,
+            attachments: Vec::new(),
+            start_time: None,
+        });
+    }
+
+    let _ = file_path; // Mark as used
+    cases
+}
+
+/// Try to auto-detect the JSON format and extract accordingly.
+fn try_auto_detect(
+    json_content: &str,
+    screenshot_map: &std::collections::HashMap<String, String>,
+    global_sequence: &mut i32,
+) -> Option<Vec<ExtractedTestSuite>> {
+    let value: JsonValue = serde_json::from_str(json_content).ok()?;
+
+    // Check for Playwright indicators
+    if value.get("config").is_some() && value.get("suites").is_some() {
+        return Some(extract_playwright(json_content, screenshot_map, global_sequence));
+    }
+
+    // Check for Detox/Jest indicators
+    if value.get("numTotalTests").is_some() && value.get("testResults").is_some() {
+        return Some(extract_detox(json_content, screenshot_map, global_sequence));
+    }
+
+    // Check for Cypress/mochawesome indicators
+    if value.get("stats").is_some() && value.get("results").is_some() {
+        return Some(extract_cypress(json_content, screenshot_map, global_sequence));
+    }
+
+    None
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Normalize attachment path by removing common prefixes.
+fn normalize_attachment_path(path: &str) -> String {
+    let mut result = path;
+
+    // Check for configurable prefix from environment
+    if let Ok(prefix) = std::env::var("RRV_ATTACHMENT_PATH_PREFIX")
+        && result.starts_with(&prefix)
+    {
+        result = &result[prefix.len()..];
+    }
+
+    // Handle common prefixes
+    let common_prefixes = [
+        "../results/output/",
+        "../output/",
+        "./results/output/",
+        "./output/",
+    ];
+
+    for prefix in common_prefixes {
+        if result.starts_with(prefix) {
+            result = &result[prefix.len()..];
+            break;
+        }
+    }
+
+    // Remove any remaining leading ../ or ./
+    while result.starts_with("../") {
+        result = &result[3..];
+    }
+    while result.starts_with("./") {
+        result = &result[2..];
+    }
+
+    result.to_string()
+}
+
+/// Look up a screenshot path in the uploaded screenshots map.
+fn lookup_screenshot(
+    path: &str,
+    screenshot_map: &std::collections::HashMap<String, String>,
+) -> (Option<String>, bool) {
+    // Direct lookup
+    if let Some(key) = screenshot_map.get(path) {
+        return (Some(key.clone()), false);
+    }
+
+    // Try with just the filename
+    let filename = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path);
+
+    // Search for a matching screenshot by filename suffix
+    if let Some((_, key)) = screenshot_map.iter().find(|(k, _)| k.ends_with(filename)) {
+        return (Some(key.clone()), false);
+    }
+
+    (None, true)
+}
+
+/// Truncate a message to a maximum length.
+fn truncate_message(msg: &str, max_len: usize) -> String {
+    if msg.len() <= max_len {
+        msg.to_string()
+    } else {
+        format!("{}...", &msg[..max_len])
+    }
+}
+
+/// Count test case statuses by unique spec (full_title).
+/// For specs with multiple attempts, use the status of the last attempt (highest retry_count).
+/// Returns (passed, failed, skipped, flaky, unique_count).
+fn count_statuses(test_cases: &[ExtractedTestCase]) -> (i32, i32, i32, i32, i32) {
+    use std::collections::HashMap;
+
+    // Group by full_title and find the status of the last attempt (highest retry_count)
+    let mut final_statuses: HashMap<&str, &str> = HashMap::new();
+    let mut max_retries: HashMap<&str, i32> = HashMap::new();
+
+    for tc in test_cases {
+        let current_max = *max_retries.get(tc.full_title.as_str()).unwrap_or(&-1);
+        if tc.retry_count > current_max {
+            max_retries.insert(&tc.full_title, tc.retry_count);
+            final_statuses.insert(&tc.full_title, &tc.status);
+        }
+    }
+
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut skipped = 0;
+    let mut flaky = 0;
+
+    for status in final_statuses.values() {
+        match *status {
+            "passed" => passed += 1,
+            "failed" | "timedOut" => failed += 1,
+            "skipped" => skipped += 1,
+            "flaky" => flaky += 1,
+            _ => {}
+        }
+    }
+
+    let unique_count = final_statuses.len() as i32;
+    (passed, failed, skipped, flaky, unique_count)
+}
+
+/// Check if all jobs for a report are complete and update report status.
+async fn check_report_completion(pool: &DbPool, report_id: Uuid) -> Result<(), String> {
+    let report = pool
+        .get_report_by_id(report_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Report {} not found", report_id))?;
+
+    let completed = pool
+        .count_completed_jobs(report_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let expected = report.expected_jobs as u64;
+
+    if completed >= expected {
+        pool.update_report_status(report_id, crate::models::ReportStatus::Complete)
+            .await
+            .map_err(|e| e.to_string())?;
+        info!(
+            "Report {} marked as complete ({}/{} jobs)",
+            report_id, completed, expected
+        );
+    } else {
+        info!(
+            "Report {} progress: {}/{} jobs complete",
+            report_id, completed, expected
+        );
+    }
+
+    Ok(())
 }

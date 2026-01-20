@@ -1,12 +1,10 @@
 //! SeaORM entity definitions for PostgreSQL database.
 
 pub mod api_key;
-pub mod detox_job;
-pub mod detox_screenshot;
-pub mod report;
-pub mod report_json;
-pub mod report_stats;
-pub mod test_result;
-pub mod test_spec;
+pub mod html_file;
+pub mod json_file;
+pub mod test_job;
+pub mod test_report;
+pub mod screenshot;
+pub mod test_case;
 pub mod test_suite;
-pub mod upload_file;

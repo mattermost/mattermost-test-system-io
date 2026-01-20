@@ -28,18 +28,6 @@ pub enum AppError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
-    /// Extraction failed
-    #[error("Extraction failed: {0}")]
-    ExtractionFailed(String),
-
-    /// Detox job not found
-    #[error("Detox job not found: {0}")]
-    DetoxJobNotFound(String),
-
-    /// Service temporarily unavailable (e.g., too many concurrent requests)
-    #[error("Service unavailable: {0}")]
-    ServiceUnavailable(String),
-
     /// Storage (S3) operation failed
     #[error("Storage error: {0}")]
     Storage(String),
@@ -63,18 +51,6 @@ impl ResponseError for AppError {
             AppError::Unauthorized(_) => {
                 (actix_web::http::StatusCode::UNAUTHORIZED, "UNAUTHORIZED")
             }
-            AppError::ExtractionFailed(_) => (
-                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "EXTRACTION_FAILED",
-            ),
-            AppError::DetoxJobNotFound(_) => (
-                actix_web::http::StatusCode::NOT_FOUND,
-                "DETOX_JOB_NOT_FOUND",
-            ),
-            AppError::ServiceUnavailable(_) => (
-                actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
-                "SERVICE_UNAVAILABLE",
-            ),
             AppError::Storage(_) => (
                 actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "STORAGE_ERROR",

@@ -10,7 +10,7 @@ make ci     # Run checks, lint, test, build
 
 ## Structure
 ```
-apps/server/   # Rust API (Actix-web, SQLite)
+apps/server/   # Rust API (Actix-web, PostgreSQL)
 apps/web/      # React (Vite, TailwindCSS, lucide-react)
 ```
 

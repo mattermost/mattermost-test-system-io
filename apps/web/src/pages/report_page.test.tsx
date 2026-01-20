@@ -12,6 +12,16 @@ vi.mock('../services/api', () => ({
     isLoading: false,
     error: null,
   })),
+  useSearchTestCases: vi.fn(() => ({
+    data: { results: [] },
+    isLoading: false,
+    error: null,
+  })),
+  useClientConfig: vi.fn(() => ({
+    data: { min_search_length: 3, upload_timeout_ms: 3600000, enable_html_view: true },
+    isLoading: false,
+    error: null,
+  })),
   getReportHtmlUrl: vi.fn((id) => `/api/v1/reports/${id}/html`),
 }));
 

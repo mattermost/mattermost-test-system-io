@@ -1,4 +1,4 @@
-//! Health check endpoints.
+//! Health check and config endpoints.
 
 use actix_web::{HttpResponse, get, web};
 use chrono::Utc;
@@ -6,6 +6,7 @@ use sea_orm::ConnectionTrait;
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::config::Config;
 use crate::db::DbPool;
 
 /// Health check response.
@@ -20,6 +21,17 @@ pub struct HealthResponse {
 pub struct ReadyResponse {
     status: &'static str,
     database: &'static str,
+}
+
+/// Client configuration response.
+#[derive(Serialize, ToSchema)]
+pub struct ClientConfigResponse {
+    /// Upload timeout in milliseconds (how long before a report is considered timed out).
+    upload_timeout_ms: u64,
+    /// Whether HTML view tabs are enabled in the frontend.
+    enable_html_view: bool,
+    /// Minimum characters required for search API.
+    min_search_length: usize,
 }
 
 /// Health check endpoint.
@@ -71,7 +83,27 @@ pub async fn ready(pool: web::Data<DbPool>) -> HttpResponse {
     }
 }
 
+/// Client configuration endpoint.
+///
+/// Returns configuration values needed by the frontend.
+#[utoipa::path(
+    get,
+    path = "/api/v1/config",
+    tag = "Health",
+    responses(
+        (status = 200, description = "Client configuration", body = ClientConfigResponse)
+    )
+)]
+#[get("/config")]
+pub async fn client_config(config: web::Data<Config>) -> HttpResponse {
+    HttpResponse::Ok().json(ClientConfigResponse {
+        upload_timeout_ms: config.upload_timeout_ms,
+        enable_html_view: config.enable_html_view,
+        min_search_length: config.min_search_length,
+    })
+}
+
 /// Configure health routes.
 pub fn configure_health_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(health).service(ready);
+    cfg.service(health).service(ready).service(client_config);
 }

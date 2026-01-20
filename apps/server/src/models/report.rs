@@ -1,202 +1,268 @@
-//! Report model representing uploaded test reports.
+//! Report domain models and DTOs.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::github_context::GitHubContext;
-
-/// Detox platform (iOS or Android).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum DetoxPlatform {
-    Ios,
-    Android,
+/// GitHub metadata for reports (stored as JSONB).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct GitHubMetadata {
+    /// GitHub repository (e.g., owner/repo).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// GitHub branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// GitHub commit SHA.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// GitHub PR number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<i32>,
+    /// GitHub workflow name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    /// GitHub run ID (large integer).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<i64>,
+    /// GitHub run attempt number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_attempt: Option<i32>,
 }
 
-impl DetoxPlatform {
-    /// Convert to string representation.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Ios => "ios",
-            Self::Android => "android",
+impl GitHubMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.repo.is_none()
+            && self.branch.is_none()
+            && self.commit.is_none()
+            && self.pr_number.is_none()
+            && self.workflow.is_none()
+            && self.run_id.is_none()
+            && self.run_attempt.is_none()
+    }
+
+    pub fn to_json(&self) -> Option<JsonValue> {
+        if self.is_empty() {
+            None
+        } else {
+            serde_json::to_value(self).ok()
         }
     }
-}
 
-impl std::fmt::Display for DetoxPlatform {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
+    pub fn from_json(value: Option<&JsonValue>) -> Self {
+        value
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default()
     }
 }
 
-/// Extraction status for a report.
+/// Report status enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum ExtractionStatus {
-    Pending,
-    Completed,
+#[serde(rename_all = "snake_case")]
+pub enum ReportStatus {
+    Initializing,
+    Uploading,
+    Processing,
+    Complete,
     Failed,
 }
 
-impl ExtractionStatus {
-    /// Convert from database string representation.
+impl ReportStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Initializing => "initializing",
+            Self::Uploading => "uploading",
+            Self::Processing => "processing",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "pending" => Some(Self::Pending),
-            "completed" => Some(Self::Completed),
+            "initializing" => Some(Self::Initializing),
+            "uploading" => Some(Self::Uploading),
+            "processing" => Some(Self::Processing),
+            "complete" => Some(Self::Complete),
             "failed" => Some(Self::Failed),
             _ => None,
         }
     }
-
-    /// Convert to database string representation.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-        }
-    }
 }
 
-impl std::fmt::Display for ExtractionStatus {
+impl std::fmt::Display for ReportStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }
 
-/// Report entity representing an uploaded test report.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Report {
-    /// Unique identifier (UUID v4)
-    pub id: Uuid,
-    /// Upload timestamp
-    pub created_at: DateTime<Utc>,
-    /// Soft delete timestamp (None if active)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deleted_at: Option<DateTime<Utc>>,
-    /// Current extraction status
-    pub extraction_status: ExtractionStatus,
-    /// Relative path to report directory
-    pub file_path: String,
-    /// Test framework name (playwright, cypress, detox, etc.)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub framework: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub framework_version: Option<String>,
-    /// Platform for Detox reports (ios/android)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub platform: Option<String>,
-    /// Error message if extraction failed
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_message: Option<String>,
-    /// Whether the report files still exist on disk
-    pub has_files: bool,
-    /// Timestamp when files were deleted (None if files still exist)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub files_deleted_at: Option<DateTime<Utc>>,
-    /// GitHub Actions context metadata
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_context: Option<GitHubContext>,
+/// Test framework enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Framework {
+    Playwright,
+    Cypress,
+    Detox,
 }
 
-impl Report {
-    /// Create a new report with pending extraction status.
-    /// The ID is auto-generated and used as the file_path (directory name).
-    pub fn new_with_id() -> Self {
-        let id = Uuid::now_v7();
-        Report {
-            id,
-            created_at: Utc::now(),
-            deleted_at: None,
-            extraction_status: ExtractionStatus::Pending,
-            file_path: id.to_string(),
-            framework: None,
-            framework_version: None,
-            platform: None,
-            error_message: None,
-            has_files: true,
-            files_deleted_at: None,
-            github_context: None,
+impl Framework {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Playwright => "playwright",
+            Self::Cypress => "cypress",
+            Self::Detox => "detox",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "playwright" => Some(Self::Playwright),
+            "cypress" => Some(Self::Cypress),
+            "detox" => Some(Self::Detox),
+            _ => None,
         }
     }
 }
 
-/// Summary view of a report for list responses.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+impl std::fmt::Display for Framework {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Request to register a new report.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct RegisterReportRequest {
+    /// Number of parallel jobs expected (1-100).
+    pub expected_jobs: i32,
+    /// Test framework.
+    pub framework: Framework,
+    /// GitHub metadata (stored as JSONB).
+    #[serde(default)]
+    pub github_metadata: Option<GitHubMetadata>,
+}
+
+/// Response after registering a report.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RegisterReportResponse {
+    /// Report UUID.
+    pub report_id: Uuid,
+    /// Report status.
+    pub status: ReportStatus,
+    /// Expected number of jobs.
+    pub expected_jobs: i32,
+    /// Test framework.
+    pub framework: Framework,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Test statistics for a report.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+pub struct TestStats {
+    /// Total number of tests.
+    pub total: i32,
+    /// Number of passed tests.
+    pub passed: i32,
+    /// Number of failed tests.
+    pub failed: i32,
+    /// Number of skipped tests.
+    pub skipped: i32,
+    /// Number of flaky tests.
+    pub flaky: i32,
+    /// Total duration in milliseconds (from JSON stats, null if not available).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    /// Wall clock duration in milliseconds (parallel execution time).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wall_clock_ms: Option<i64>,
+}
+
+/// Report summary for list responses.
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ReportSummary {
+    /// Report UUID.
     pub id: Uuid,
+    /// Short ID for display (timestamp portion of UUIDv7).
+    pub short_id: String,
+    /// Report status.
+    pub status: ReportStatus,
+    /// Test framework.
+    pub framework: Framework,
+    /// Expected number of jobs.
+    pub expected_jobs: i32,
+    /// Number of completed jobs.
+    pub jobs_complete: i32,
+    /// Test statistics aggregated from all jobs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_stats: Option<TestStats>,
+    /// GitHub metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_metadata: Option<GitHubMetadata>,
+    /// Creation timestamp.
     pub created_at: DateTime<Utc>,
-    pub extraction_status: ExtractionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub framework: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub framework_version: Option<String>,
-    /// Platform for Detox reports (ios/android)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub platform: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stats: Option<super::report_stats::ReportStats>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_context: Option<GitHubContext>,
 }
 
-impl From<Report> for ReportSummary {
-    fn from(report: Report) -> Self {
-        ReportSummary {
-            id: report.id,
-            created_at: report.created_at,
-            extraction_status: report.extraction_status,
-            framework: report.framework,
-            framework_version: report.framework_version,
-            platform: report.platform,
-            stats: None,
-            github_context: report.github_context,
-        }
-    }
-}
-
-/// Detailed view of a report.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ReportDetail {
+/// Report detail response including jobs.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ReportDetailResponse {
+    /// Report UUID.
     pub id: Uuid,
+    /// Report status.
+    pub status: ReportStatus,
+    /// Test framework.
+    pub framework: Framework,
+    /// Expected number of jobs.
+    pub expected_jobs: i32,
+    /// GitHub metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_metadata: Option<GitHubMetadata>,
+    /// Creation timestamp.
     pub created_at: DateTime<Utc>,
-    pub extraction_status: ExtractionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_message: Option<String>,
-    pub file_path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub framework: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub framework_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stats: Option<super::report_stats::ReportStats>,
-    /// Whether the report originally had files from upload
-    pub has_files: bool,
-    /// Timestamp when files were deleted (None if files still exist)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub files_deleted_at: Option<DateTime<Utc>>,
-    /// GitHub Actions context metadata
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_context: Option<GitHubContext>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+    /// Jobs in this report (ordered by creation time).
+    pub jobs: Vec<super::job::JobSummary>,
 }
 
-impl From<Report> for ReportDetail {
-    fn from(report: Report) -> Self {
-        ReportDetail {
-            id: report.id,
-            created_at: report.created_at,
-            extraction_status: report.extraction_status,
-            error_message: report.error_message,
-            file_path: report.file_path,
-            framework: report.framework,
-            framework_version: report.framework_version,
-            stats: None,
-            has_files: report.has_files,
-            files_deleted_at: report.files_deleted_at,
-            github_context: report.github_context,
-        }
-    }
+/// Report list response with pagination.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ReportListResponse {
+    /// List of reports.
+    pub reports: Vec<ReportSummary>,
+    /// Total number of reports matching filter.
+    pub total: i64,
+    /// Limit used.
+    pub limit: i32,
+    /// Offset used.
+    pub offset: i32,
+}
+
+/// Query parameters for listing reports.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ListReportsQuery {
+    /// Filter by framework.
+    #[serde(default)]
+    pub framework: Option<Framework>,
+    /// Filter by status.
+    #[serde(default)]
+    pub status: Option<ReportStatus>,
+    /// Filter by GitHub repository.
+    #[serde(default)]
+    pub github_repo: Option<String>,
+    /// Filter by GitHub branch.
+    #[serde(default)]
+    pub github_branch: Option<String>,
+    /// Maximum results to return.
+    #[serde(default = "default_limit")]
+    pub limit: i32,
+    /// Offset for pagination.
+    #[serde(default)]
+    pub offset: i32,
+}
+
+fn default_limit() -> i32 {
+    20
 }

@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import type {
+  ClientConfig,
   ReportListResponse,
+  RawReportListResponse,
   ReportDetail,
   TestSuiteListResponse,
   DetoxRunListResponse,
@@ -8,6 +10,7 @@ import type {
   DetoxCombinedTestsResponse,
   DetoxJobDetail,
   DetoxScreenshotsListResponse,
+  ReportWithJobs,
 } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api/v1';
@@ -39,10 +42,39 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return response.json();
 }
 
+// Client config
+export async function fetchClientConfig(): Promise<ClientConfig> {
+  const response = await fetch(`${API_URL}/config`);
+  return handleResponse<ClientConfig>(response);
+}
+
+export function useClientConfig() {
+  return useQuery({
+    queryKey: ['client-config'],
+    queryFn: fetchClientConfig,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+}
+
 // API functions
 export async function fetchReports(page = 1, limit = 100): Promise<ReportListResponse> {
-  const response = await fetch(`${API_URL}/reports?page=${page}&limit=${limit}`);
-  return handleResponse<ReportListResponse>(response);
+  const offset = (page - 1) * limit;
+  const response = await fetch(`${API_URL}/reports?limit=${limit}&offset=${offset}`);
+  const rawData = await handleResponse<RawReportListResponse>(response);
+
+  // Transform to expected format with pagination object
+  const totalPages = Math.ceil(rawData.total / limit);
+  const currentPage = Math.floor(rawData.offset / limit) + 1;
+
+  return {
+    reports: rawData.reports,
+    pagination: {
+      page: currentPage,
+      limit: rawData.limit,
+      total: rawData.total,
+      total_pages: totalPages,
+    },
+  };
 }
 
 export async function fetchReport(id: string): Promise<ReportDetail> {
@@ -190,5 +222,80 @@ export function useDetoxTestScreenshots(jobId: string, testFullName: string) {
     queryKey: ['detox-screenshots', jobId, testFullName],
     queryFn: () => fetchDetoxTestScreenshots(jobId, testFullName),
     enabled: !!jobId && !!testFullName,
+  });
+}
+
+// Job-based report API functions (Phase 6)
+export async function fetchReportWithJobs(id: string): Promise<ReportWithJobs> {
+  const response = await fetch(`${API_URL}/reports/${id}`);
+  return handleResponse<ReportWithJobs>(response);
+}
+
+export function useReportWithJobs(id: string) {
+  return useQuery({
+    queryKey: ['report-with-jobs', id],
+    queryFn: () => fetchReportWithJobs(id),
+    enabled: !!id,
+  });
+}
+
+// Get URL for job HTML report
+export function getJobHtmlUrl(htmlPath: string): string {
+  // htmlPath is like "reports/{report_id}/jobs/{job_id}/index.html"
+  // We need to serve it from /files/{path}
+  return `/files/${htmlPath}/index.html`;
+}
+
+// Search types - grouped by suite
+export interface SearchMatchedTestCase {
+  test_case_id: string;
+  title: string;
+  full_title: string;
+  status: string;
+  match_tokens: string[];
+}
+
+export interface SearchSuiteResult {
+  suite_id: string;
+  suite_title: string;
+  suite_file_path: string | null;
+  job_id: string;
+  matches: SearchMatchedTestCase[];
+}
+
+export interface SearchResponse {
+  query: string;
+  min_search_length: number;
+  total_matches: number;
+  results: SearchSuiteResult[];
+}
+
+// Search API function
+export async function searchTestCases(
+  reportId: string,
+  query: string,
+  limit = 100,
+): Promise<SearchResponse> {
+  const params = new URLSearchParams({
+    q: query,
+    limit: String(limit),
+  });
+  const response = await fetch(`${API_URL}/reports/${reportId}/search?${params}`);
+  return handleResponse<SearchResponse>(response);
+}
+
+// Search React Query hook
+// Note: Debouncing should be done in the component before calling this hook
+export function useSearchTestCases(
+  reportId: string,
+  query: string,
+  minSearchLength: number,
+  limit = 100,
+) {
+  return useQuery({
+    queryKey: ['search-test-cases', reportId, query, limit],
+    queryFn: () => searchTestCases(reportId, query, limit),
+    enabled: !!reportId && query.length >= minSearchLength,
+    staleTime: 60 * 1000, // 1 minute cache
   });
 }

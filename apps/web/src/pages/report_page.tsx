@@ -220,6 +220,7 @@ export function ReportPage() {
               suites={suitesData?.suites || []}
               stats={report.stats}
               title={`Report ${report.id.slice(0, 8)}`}
+              jobs={suitesData?.jobs}
             />
           )}
         </div>

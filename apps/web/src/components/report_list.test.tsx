@@ -7,6 +7,7 @@ import { ReportList } from './report_list';
 // Mock the API module
 vi.mock('../services/api', () => ({
   useReports: vi.fn(),
+  useClientConfig: vi.fn(() => ({ data: { base_url: 'http://localhost:8080' } })),
 }));
 
 import { useReports } from '../services/api';
@@ -75,16 +76,13 @@ describe('ReportList', () => {
           {
             id: '123e4567-e89b-12d3-a456-426614174000',
             created_at: '2026-01-10T12:00:00Z',
-            extraction_status: 'completed' as const,
-            framework: 'playwright',
-            framework_version: '1.57.0',
-            stats: {
-              start_time: '2026-01-10T11:00:00Z',
-              duration_ms: 60000,
-              expected: 10,
-              skipped: 2,
-              unexpected: 1,
-              flaky: 0,
+            status: 'complete' as const,
+            framework: 'playwright' as const,
+            expected_jobs: 5,
+            jobs_complete: 5,
+            github_metadata: {
+              branch: 'main',
+              pr_number: 123,
             },
           },
         ],
@@ -92,18 +90,16 @@ describe('ReportList', () => {
       },
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useReports>);
+    } as unknown as ReturnType<typeof useReports>);
 
     render(<ReportList />, { wrapper: createWrapper() });
 
-    // Report ID (first 8 chars)
-    expect(screen.getByText('123e4567')).toBeInTheDocument();
-    // Framework info
-    expect(screen.getByText(/playwright v1\.57\.0/i)).toBeInTheDocument();
-    // Stats - now displayed as just numbers with icons
-    expect(screen.getByText('10')).toBeInTheDocument(); // passed count
-    // Failed count "1" appears twice (row number + failed count), use getAllByText
-    expect(screen.getAllByText('1').length).toBeGreaterThanOrEqual(1);
+    // Framework name (multiple elements due to mobile/desktop layouts)
+    expect(screen.getAllByText('Playwright').length).toBeGreaterThan(0);
+    // Jobs progress (5/5 appears in both layouts)
+    expect(screen.getAllByText('5/5').length).toBeGreaterThan(0);
+    // PR number
+    expect(screen.getAllByText('#123').length).toBeGreaterThan(0);
   });
 
   it('renders Cypress report cards with framework indicator', () => {
@@ -113,16 +109,12 @@ describe('ReportList', () => {
           {
             id: 'cypress-report-123456789abc',
             created_at: '2026-01-10T14:00:00Z',
-            extraction_status: 'completed' as const,
-            framework: 'cypress',
-            framework_version: '13.7.0',
-            stats: {
-              start_time: '2026-01-10T13:30:00Z',
-              duration_ms: 45000,
-              expected: 25,
-              skipped: 3,
-              unexpected: 2,
-              flaky: 0,
+            status: 'complete' as const,
+            framework: 'cypress' as const,
+            expected_jobs: 10,
+            jobs_complete: 8,
+            github_metadata: {
+              branch: 'develop',
             },
           },
         ],
@@ -130,17 +122,14 @@ describe('ReportList', () => {
       },
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useReports>);
+    } as unknown as ReturnType<typeof useReports>);
 
     render(<ReportList />, { wrapper: createWrapper() });
 
-    // Report ID (first 8 chars)
-    expect(screen.getByText('cypress-')).toBeInTheDocument();
-    // Framework info - Cypress with version
-    expect(screen.getByText(/cypress v13\.7\.0/i)).toBeInTheDocument();
-    // Stats
-    expect(screen.getByText('25')).toBeInTheDocument(); // passed count
-    expect(screen.getByText('2')).toBeInTheDocument(); // failed count
+    // Framework name - Cypress (multiple elements due to mobile/desktop layouts)
+    expect(screen.getAllByText('Cypress').length).toBeGreaterThan(0);
+    // Jobs progress (incomplete - 8/10)
+    expect(screen.getAllByText('8/10').length).toBeGreaterThan(0);
   });
 
   it('shows pagination when multiple pages', () => {
@@ -151,13 +140,16 @@ describe('ReportList', () => {
           .map((_, i) => ({
             id: `report-${i}`,
             created_at: '2026-01-10T12:00:00Z',
-            extraction_status: 'completed' as const,
+            status: 'complete' as const,
+            framework: 'playwright' as const,
+            expected_jobs: 1,
+            jobs_complete: 1,
           })),
         pagination: { page: 1, limit: 100, total: 150, total_pages: 2 },
       },
       isLoading: false,
       error: null,
-    } as ReturnType<typeof useReports>);
+    } as unknown as ReturnType<typeof useReports>);
 
     render(<ReportList />, { wrapper: createWrapper() });
 

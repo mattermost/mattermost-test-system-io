@@ -14,12 +14,10 @@ mod models;
 mod services;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use actix_cors::Cors;
 use actix_files::{Files, NamedFile};
 use actix_web::{App, HttpRequest, HttpServer, Result as ActixResult, http::header, web};
-use tokio::sync::Semaphore;
 use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 use utoipa::OpenApi;
@@ -116,41 +114,32 @@ async fn main() -> std::io::Result<()> {
     let bind_address = config.bind_address();
     let admin_key = AdminKey::new(config.admin_key.clone());
     let max_upload_size = config.max_upload_size;
-    let max_files_per_request = config.max_files_per_request;
-    let max_concurrent_uploads = config.max_concurrent_uploads;
-    let upload_queue_timeout_secs = config.upload_queue_timeout_secs;
     let static_dir = config.static_dir.clone();
     let is_development = config.is_development();
+    let client_config = config; // Move config for sharing with the app
 
-    // Create upload semaphore to limit concurrent upload batches
-    // This limits concurrent S3 operations
-    let upload_semaphore = Arc::new(Semaphore::new(max_concurrent_uploads));
-    info!(
-        "Upload limits: {}MB max size, {} files/batch, {} concurrent batches, {}s queue timeout",
-        max_upload_size / 1024 / 1024,
-        max_files_per_request,
-        max_concurrent_uploads,
-        upload_queue_timeout_secs
-    );
+    info!("JSON payload limit: {}MB", max_upload_size / 1024 / 1024);
 
     if static_dir.is_some() {
         info!("Static file serving enabled from {:?}", static_dir);
     }
 
-    let worker_count = if is_development {
-        info!(
-            "Starting server at http://{} (4 workers - development mode)",
-            bind_address
-        );
-        4
+    // Extract server configuration values before moving config into closure
+    let server_workers = client_config.server.workers;
+    let server_backlog = client_config.server.backlog;
+    let server_max_connections = client_config.server.max_connections;
+    let server_max_connection_rate = client_config.server.max_connection_rate;
+
+    let worker_count = if server_workers == 0 {
+        num_cpus::get()
     } else {
-        let cpus = num_cpus::get();
-        info!(
-            "Starting server at http://{} ({} workers)",
-            bind_address, cpus
-        );
-        cpus
+        server_workers
     };
+
+    info!(
+        "Starting server at http://{} ({} workers, backlog={}, max_conn={}/worker)",
+        bind_address, worker_count, server_backlog, server_max_connections
+    );
 
     // Start HTTP server
     let server = HttpServer::new(move || {
@@ -191,26 +180,25 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(storage.clone()))
             .app_data(web::Data::new(admin_key.clone()))
             .app_data(web::Data::new(max_upload_size))
-            .app_data(web::Data::new(max_files_per_request))
-            .app_data(web::Data::new(upload_semaphore.clone()))
-            .app_data(web::Data::new(upload_queue_timeout_secs))
-            // Allow 10x max_upload_size at HTTP layer - actual limit enforced in streaming code
-            // This prevents ECONNRESET when clients send large uploads with many optional files
-            .app_data(web::PayloadConfig::new(max_upload_size * 10))
+            .app_data(web::Data::new(client_config.clone()))
+            // JSON payload limit for upload_json endpoint
+            .app_data(web::PayloadConfig::new(max_upload_size))
             // Configure API routes
             .service(
                 web::scope("/api/v1")
                     .configure(api::configure_health_routes)
                     .configure(api::configure_report_routes)
-                    .configure(api::configure_detox_routes)
-                    .configure(services::configure_upload_routes)
+                    .configure(api::configure_job_routes)
+                    .configure(api::configure_test_results_routes)
                     .configure(services::configure_auth_routes),
             )
             // Swagger UI
             .service(
                 SwaggerUi::new("/swagger-ui/{_:.*}")
                     .url("/api-docs/openapi.json", ApiDoc::openapi()),
-            );
+            )
+            // File serving from S3 (proxy)
+            .configure(api::configure_file_routes);
 
         // Serve static files in production (when STATIC_DIR is set)
         if let Some(ref dir) = static_dir {
@@ -227,9 +215,12 @@ async fn main() -> std::io::Result<()> {
         app
     });
 
-    // Set worker count
+    // Configure server with resource limits to prevent "too many open files" errors
     server
         .workers(worker_count)
+        .backlog(server_backlog)
+        .max_connections(server_max_connections)
+        .max_connection_rate(server_max_connection_rate)
         .bind(&bind_address)?
         .run()
         .await

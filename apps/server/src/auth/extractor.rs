@@ -103,8 +103,6 @@ impl FromRequest for ApiKeyAuth {
                 return Ok(ApiKeyAuth {
                     caller: AuthenticatedCaller {
                         key_id: "admin".to_string(),
-                        name: "Admin (Bootstrap)".to_string(),
-                        key_prefix: "admin".to_string(),
                         role: crate::models::ApiKeyRole::Admin,
                     },
                 });

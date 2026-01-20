@@ -1,10 +1,21 @@
 #!/usr/bin/env node
 /**
- * Upload seed data to the report server using Node.js stdlib.
+ * Upload seed data to the report server using the new job-based API.
  *
  * Usage:
  *   node scripts/upload-seed.js                     # Upload all default seed directories
- *   node scripts/upload-seed.js seed/my-report      # Upload specific directory
+ *   node scripts/upload-seed.js seed/pw-report-smoke  # Upload specific report directory
+ *
+ * Environment variables:
+ *   API_BASE - Base URL (default: http://localhost:8080/api/v1)
+ *   RRV_API_KEY - API key for authentication
+ *   RRV_ADMIN_KEY - Admin key fallback (default: dev-admin-key-do-not-use-in-production)
+ *   BATCH_SIZE - Number of files per upload batch (default: 50)
+ *
+ * Framework-specific folder structures:
+ *   Cypress:    job/html/, job/screenshots/, job/json/ (folder with JSON files)
+ *   Playwright: job/html/, job/screenshots/, job/json/results.json (single file)
+ *   Detox:      job/html/, job/screenshots/, job/json/android-data.json (single file)
  */
 
 const fs = require("fs");
@@ -15,18 +26,10 @@ const crypto = require("crypto");
 
 // Configuration
 const API_BASE = process.env.API_BASE || "http://localhost:8080/api/v1";
-// Use RRV_API_KEY for database-backed API keys, or fall back to admin key for development
 const API_KEY = process.env.RRV_API_KEY;
 const ADMIN_KEY =
   process.env.RRV_ADMIN_KEY || "dev-admin-key-do-not-use-in-production";
-
-// Framework-specific upload URLs (two-phase API)
-const UPLOAD_REQUEST_URLS = {
-  playwright: `${API_BASE}/reports/upload/playwright/request`,
-  cypress: `${API_BASE}/reports/upload/cypress/request`,
-  detox: `${API_BASE}/reports/upload/detox/request`,
-};
-const UPLOAD_FILES_URL = `${API_BASE}/reports/upload`;
+const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "50", 10);
 
 // Sample data for random generation
 const OWNERS = [
@@ -36,14 +39,11 @@ const OWNERS = [
   "dev-team",
   "qa-automation",
 ];
-const REPOS = [
-  "web-app",
-  "api-server",
-  "e2e-tests",
-  "frontend",
-  "backend",
-  "mobile-app",
-];
+const REPOS = {
+  playwright: "repo-web",
+  cypress: "repo-web",
+  detox: "repo-mobile",
+};
 const BRANCHES = [
   "main",
   "develop",
@@ -61,9 +61,29 @@ const AUTHORS = [
   "dev-bot",
 ];
 
-// Files/directories to exclude
-const EXCLUDE_PATTERNS = [".DS_Store", "json/"];
+// Files/directories to exclude from HTML uploads
+const EXCLUDE_PATTERNS = [".DS_Store"];
 const VIDEO_EXTENSIONS = [".mp4", ".webm", ".avi", ".mov", ".mkv"];
+
+// Allowed image extensions for screenshot uploads
+const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
+
+// Framework-specific JSON file/folder patterns
+// Cypress: json/ folder with JSON files (mochawesome format)
+// Playwright: json/results.json file
+// Detox: json/android-data.json or json/ios-data.json file
+const JSON_PATTERNS = {
+  playwright: { type: "folder", patterns: ["json"] },
+  cypress: { type: "folder", patterns: ["json"] },
+  detox: { type: "folder", patterns: ["json"] },
+};
+
+// Framework-specific HTML entry file patterns
+const HTML_ENTRY_PATTERNS = {
+  playwright: ["index.html"],
+  cypress: ["index.html", "mochawesome.html"],
+  detox: ["android-report.html", "ios-report.html", "index.html"],
+};
 
 /**
  * Generate random hex string.
@@ -92,16 +112,16 @@ function randomInt(min, max) {
 /**
  * Generate random GitHub context.
  */
-function generateGitHubContext() {
+function generateGitHubContext(framework) {
   const owner = randomChoice(OWNERS);
-  const repo = randomChoice(REPOS);
+  const repo = REPOS[framework] || "repo-web";
   const branch = randomChoice(BRANCHES);
 
   const context = {
-    repository: `${owner}/${repo}`,
+    repo: `${owner}/${repo}`,
     branch,
-    commit_sha: generateHex(40),
-    run_id: Date.now(), // Milliseconds resolution for uniqueness
+    commit: generateHex(40),
+    run_id: Date.now(),
     run_attempt: randomInt(1, 3),
   };
 
@@ -111,7 +131,7 @@ function generateGitHubContext() {
     branch !== "develop" &&
     !branch.startsWith("release/")
   ) {
-    context.pr_number = randomInt(100, 9999); // Random PR number
+    context.pr_number = randomInt(100, 9999);
     context.pr_author = randomChoice(AUTHORS);
   }
 
@@ -119,17 +139,15 @@ function generateGitHubContext() {
 }
 
 /**
- * Check if file should be excluded.
+ * Check if file should be excluded from HTML upload.
  */
 function shouldExclude(filepath) {
-  // Check exclude patterns
   for (const pattern of EXCLUDE_PATTERNS) {
     if (filepath.includes(pattern)) {
       return true;
     }
   }
 
-  // Check video extensions
   const lowerPath = filepath.toLowerCase();
   for (const ext of VIDEO_EXTENSIONS) {
     if (lowerPath.endsWith(ext)) {
@@ -171,6 +189,10 @@ function getMimeType(filename) {
 function getAllFiles(dirPath, baseDir = dirPath) {
   const files = [];
 
+  if (!fs.existsSync(dirPath)) {
+    return files;
+  }
+
   const entries = fs.readdirSync(dirPath, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(dirPath, entry.name);
@@ -179,7 +201,13 @@ function getAllFiles(dirPath, baseDir = dirPath) {
     } else if (entry.isFile()) {
       const relativePath = path.relative(baseDir, fullPath);
       if (!shouldExclude(relativePath)) {
-        files.push({ fullPath, relativePath });
+        const stats = fs.statSync(fullPath);
+        files.push({
+          fullPath,
+          relativePath,
+          size: stats.size,
+          contentType: getMimeType(relativePath),
+        });
       }
     }
   }
@@ -188,47 +216,173 @@ function getAllFiles(dirPath, baseDir = dirPath) {
 }
 
 /**
- * Build multipart form data.
+ * Find JSON files for a framework in a job directory.
+ * Returns array of file info objects.
  */
-class MultipartFormData {
-  constructor() {
-    this.boundary = `----WebKitFormBoundary${crypto.randomUUID().replace(/-/g, "")}`;
-    this.parts = [];
+function findJsonFiles(jobDir, framework) {
+  const config = JSON_PATTERNS[framework] || JSON_PATTERNS.playwright;
+  const files = [];
+
+  // All frameworks now use folder pattern with json/ directory
+  for (const pattern of config.patterns) {
+    const folderPath = path.join(jobDir, pattern);
+    if (fs.existsSync(folderPath) && fs.statSync(folderPath).isDirectory()) {
+      // Recursively get all JSON files from the json/ folder
+      const jsonFiles = getAllJsonFilesRecursive(folderPath, folderPath);
+      files.push(...jsonFiles);
+    }
   }
 
-  addField(name, value) {
-    this.parts.push(
-      `--${this.boundary}\r\n` +
-        `Content-Disposition: form-data; name="${name}"\r\n\r\n` +
-        `${value}\r\n`,
-    );
-  }
-
-  addFile(name, filename, content, contentType = "application/octet-stream") {
-    this.parts.push(
-      `--${this.boundary}\r\n` +
-        `Content-Disposition: form-data; name="${name}"; filename="${filename}"\r\n` +
-        `Content-Type: ${contentType}\r\n\r\n`,
-    );
-    this.parts.push(content);
-    this.parts.push("\r\n");
-  }
-
-  getContentType() {
-    return `multipart/form-data; boundary=${this.boundary}`;
-  }
-
-  getBody() {
-    const buffers = this.parts.map((part) =>
-      typeof part === "string" ? Buffer.from(part, "utf-8") : part,
-    );
-    buffers.push(Buffer.from(`--${this.boundary}--\r\n`, "utf-8"));
-    return Buffer.concat(buffers);
-  }
+  return files;
 }
 
 /**
- * Make HTTP request.
+ * Recursively get all JSON files in a directory.
+ */
+function getAllJsonFilesRecursive(dirPath, baseDir) {
+  const files = [];
+
+  if (!fs.existsSync(dirPath)) {
+    return files;
+  }
+
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...getAllJsonFilesRecursive(fullPath, baseDir));
+    } else if (entry.isFile() && entry.name.endsWith(".json")) {
+      const relativePath = path.relative(baseDir, fullPath);
+      const stats = fs.statSync(fullPath);
+      files.push({
+        fullPath,
+        relativePath,
+        size: stats.size,
+        contentType: "application/json",
+      });
+    }
+  }
+
+  return files;
+}
+
+/**
+ * Check if file is an allowed image for screenshot uploads.
+ */
+function isImageFile(filepath) {
+  const ext = path.extname(filepath).toLowerCase();
+  return IMAGE_EXTENSIONS.includes(ext);
+}
+
+/**
+ * Get all screenshot image files from a screenshots directory.
+ */
+function getScreenshotFiles(screenshotsDir) {
+  const files = [];
+
+  if (!fs.existsSync(screenshotsDir)) {
+    return files;
+  }
+
+  const entries = fs.readdirSync(screenshotsDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(screenshotsDir, entry.name);
+    if (entry.isDirectory()) {
+      // Recursively get files from subdirectories (test-name folders)
+      const subFiles = getAllFilesRecursive(fullPath, screenshotsDir);
+      for (const file of subFiles) {
+        if (isImageFile(file.relativePath) && !shouldExclude(file.relativePath)) {
+          files.push(file);
+        }
+      }
+    } else if (entry.isFile() && isImageFile(entry.name) && !shouldExclude(entry.name)) {
+      // Handle root-level screenshots
+      const stats = fs.statSync(fullPath);
+      files.push({
+        fullPath,
+        relativePath: entry.name,
+        size: stats.size,
+        contentType: getMimeType(entry.name),
+      });
+    }
+  }
+
+  return files;
+}
+
+/**
+ * Recursively get all files in a directory with relative paths.
+ */
+function getAllFilesRecursive(dirPath, baseDir) {
+  const files = [];
+
+  if (!fs.existsSync(dirPath)) {
+    return files;
+  }
+
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...getAllFilesRecursive(fullPath, baseDir));
+    } else if (entry.isFile()) {
+      const relativePath = path.relative(baseDir, fullPath);
+      const stats = fs.statSync(fullPath);
+      files.push({
+        fullPath,
+        relativePath,
+        size: stats.size,
+        contentType: getMimeType(entry.name),
+      });
+    }
+  }
+
+  return files;
+}
+
+/**
+ * Get job directories within a report directory.
+ */
+function getJobDirectories(reportDir) {
+  const entries = fs.readdirSync(reportDir, { withFileTypes: true });
+  const jobDirs = [];
+
+  for (const entry of entries) {
+    if (entry.isDirectory() && !entry.name.startsWith(".")) {
+      const jobPath = path.join(reportDir, entry.name);
+      const htmlDir = path.join(jobPath, "html");
+      const screenshotsDir = path.join(jobPath, "screenshots");
+
+      // Check if this is a valid job directory (has html subdirectory)
+      if (fs.existsSync(htmlDir)) {
+        jobDirs.push({
+          name: entry.name,
+          path: jobPath,
+          htmlDir,
+          screenshotsDir: fs.existsSync(screenshotsDir) ? screenshotsDir : null,
+        });
+      }
+    }
+  }
+
+  return jobDirs;
+}
+
+/**
+ * Build auth headers based on available keys.
+ */
+function getAuthHeaders() {
+  const headers = {};
+  if (API_KEY) {
+    headers["X-API-Key"] = API_KEY;
+  } else {
+    headers["X-Admin-Key"] = ADMIN_KEY;
+  }
+  return headers;
+}
+
+/**
+ * Make HTTP request with JSON body.
  */
 function makeRequest(url, options, body) {
   return new Promise((resolve, reject) => {
@@ -242,13 +396,18 @@ function makeRequest(url, options, body) {
         path: parsedUrl.pathname + parsedUrl.search,
         method: options.method || "POST",
         headers: options.headers,
-        timeout: 300000, // 5 minutes
+        timeout: 300000,
       },
       (res) => {
-        let data = "";
-        res.on("data", (chunk) => (data += chunk));
+        let data = Buffer.alloc(0);
+        res.on("data", (chunk) => {
+          data = Buffer.concat([data, chunk]);
+        });
         res.on("end", () => {
-          resolve({ statusCode: res.statusCode, body: data });
+          resolve({
+            statusCode: res.statusCode,
+            body: data.toString("utf-8"),
+          });
         });
       },
     );
@@ -267,175 +426,459 @@ function makeRequest(url, options, body) {
 }
 
 /**
- * Split array into chunks.
+ * Upload files via multipart/form-data.
  */
-function chunkArray(array, chunkSize) {
-  const chunks = [];
-  for (let i = 0; i < array.length; i += chunkSize) {
-    chunks.push(array.slice(i, i + chunkSize));
-  }
-  return chunks;
+function uploadFilesMultipart(url, files, baseDir) {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const client = parsedUrl.protocol === "https:" ? https : http;
+    const boundary = `----FormBoundary${crypto.randomBytes(16).toString("hex")}`;
+
+    // Build multipart body
+    const parts = [];
+    for (const file of files) {
+      const content = fs.readFileSync(file.fullPath);
+      parts.push(
+        Buffer.from(
+          `--${boundary}\r\n` +
+            `Content-Disposition: form-data; name="files"; filename="${file.relativePath}"\r\n` +
+            `Content-Type: ${file.contentType}\r\n\r\n`,
+        ),
+      );
+      parts.push(content);
+      parts.push(Buffer.from("\r\n"));
+    }
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+
+    const body = Buffer.concat(parts);
+
+    const headers = {
+      ...getAuthHeaders(),
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      "Content-Length": body.length,
+    };
+
+    const req = client.request(
+      {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: "POST",
+        headers,
+        timeout: 300000,
+      },
+      (res) => {
+        let data = Buffer.alloc(0);
+        res.on("data", (chunk) => {
+          data = Buffer.concat([data, chunk]);
+        });
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode,
+            body: data.toString("utf-8"),
+          });
+        });
+      },
+    );
+
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error("Upload timeout"));
+    });
+
+    req.write(body);
+    req.end();
+  });
 }
 
 /**
- * Upload a single directory using two-phase API with batched uploads.
- * @param {string} seedDir - Path to the seed directory
- * @param {string} [repoName] - Optional repository name override (e.g., "repo-mobile", "repo-web")
- * @param {string} [framework] - Framework type: "playwright", "cypress", or "detox"
- * @param {string} [platform] - Platform for Detox: "ios" or "android"
+ * Step 1: Register a new report.
  */
-async function uploadDirectory(seedDir, repoName, framework = "playwright", platform) {
-  if (!fs.existsSync(seedDir) || !fs.statSync(seedDir).isDirectory()) {
-    console.log(`Warning: Directory not found: ${seedDir} (skipping)`);
+async function registerReport(framework, expectedJobs, githubContext) {
+  const url = `${API_BASE}/reports`;
+  const body = JSON.stringify({
+    framework,
+    expected_jobs: expectedJobs,
+    github_metadata: githubContext,
+  });
+
+  const headers = {
+    ...getAuthHeaders(),
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  };
+
+  const response = await makeRequest(url, { method: "POST", headers }, body);
+
+  if (response.statusCode !== 201) {
+    throw new Error(
+      `Failed to register report (${response.statusCode}): ${response.body}`,
+    );
+  }
+
+  return JSON.parse(response.body);
+}
+
+/**
+ * Step 2: Initialize a job.
+ */
+async function initJob(reportId, jobName) {
+  const url = `${API_BASE}/reports/${reportId}/jobs/init`;
+  const body = JSON.stringify({
+    github_metadata: {
+      job_name: jobName,
+    },
+  });
+
+  const headers = {
+    ...getAuthHeaders(),
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  };
+
+  const response = await makeRequest(url, { method: "POST", headers }, body);
+
+  if (response.statusCode !== 200) {
+    throw new Error(
+      `Failed to init job (${response.statusCode}): ${response.body}`,
+    );
+  }
+
+  return JSON.parse(response.body);
+}
+
+/**
+ * Step 3a: Initialize HTML files (request-then-transfer pattern).
+ */
+async function initHtml(reportId, jobId, files) {
+  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/html/init`;
+  const body = JSON.stringify({
+    files: files.map((f) => ({
+      path: f.relativePath,
+      size: f.size,
+      content_type: f.contentType,
+    })),
+  });
+
+  const headers = {
+    ...getAuthHeaders(),
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  };
+
+  const response = await makeRequest(url, { method: "POST", headers }, body);
+
+  if (response.statusCode !== 200) {
+    throw new Error(
+      `Failed to init HTML (${response.statusCode}): ${response.body}`,
+    );
+  }
+
+  return JSON.parse(response.body);
+}
+
+/**
+ * Step 3b: Upload HTML files in batches.
+ */
+async function uploadHtmlFiles(reportId, jobId, files, htmlDir) {
+  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/html`;
+  let totalUploaded = 0;
+
+  // Upload in batches
+  for (let i = 0; i < files.length; i += BATCH_SIZE) {
+    const batch = files.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(files.length / BATCH_SIZE);
+
+    console.log(
+      `    Batch ${batchNum}/${totalBatches}: uploading ${batch.length} files...`,
+    );
+
+    const response = await uploadFilesMultipart(url, batch, htmlDir);
+
+    if (response.statusCode !== 200) {
+      throw new Error(
+        `Failed to upload HTML files (${response.statusCode}): ${response.body}`,
+      );
+    }
+
+    const result = JSON.parse(response.body);
+    totalUploaded += result.files_uploaded;
+    console.log(
+      `    Progress: ${result.total_uploaded}/${result.total_expected} files`,
+    );
+  }
+
+  return totalUploaded;
+}
+
+/**
+ * Step 4a: Initialize screenshots (request-then-transfer pattern).
+ */
+async function initScreenshots(reportId, jobId, files) {
+  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/screenshots/init`;
+  const body = JSON.stringify({
+    files: files.map((f) => ({
+      path: f.relativePath,
+      size: f.size,
+      content_type: f.contentType,
+    })),
+  });
+
+  const headers = {
+    ...getAuthHeaders(),
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  };
+
+  const response = await makeRequest(url, { method: "POST", headers }, body);
+
+  if (response.statusCode !== 200) {
+    throw new Error(
+      `Failed to init screenshots (${response.statusCode}): ${response.body}`,
+    );
+  }
+
+  return JSON.parse(response.body);
+}
+
+/**
+ * Step 4b: Upload screenshot files.
+ */
+async function uploadScreenshots(reportId, jobId, files) {
+  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/screenshots`;
+  let totalUploaded = 0;
+
+  // Upload in batches
+  for (let i = 0; i < files.length; i += BATCH_SIZE) {
+    const batch = files.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(files.length / BATCH_SIZE);
+
+    console.log(
+      `    Batch ${batchNum}/${totalBatches}: uploading ${batch.length} screenshots...`,
+    );
+
+    const response = await uploadFilesMultipart(url, batch, null);
+
+    if (response.statusCode !== 200) {
+      throw new Error(
+        `Failed to upload screenshots (${response.statusCode}): ${response.body}`,
+      );
+    }
+
+    const result = JSON.parse(response.body);
+    totalUploaded += result.files_uploaded;
+    console.log(
+      `    Progress: ${result.total_uploaded}/${result.total_expected} screenshots`,
+    );
+  }
+
+  return totalUploaded;
+}
+
+/**
+ * Step 5a: Initialize JSON files (request-then-transfer pattern).
+ */
+async function initJson(reportId, jobId, files) {
+  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/json/init`;
+  const body = JSON.stringify({
+    files: files.map((f) => ({
+      path: f.relativePath,
+      size: f.size,
+      content_type: f.contentType,
+    })),
+  });
+
+  const headers = {
+    ...getAuthHeaders(),
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  };
+
+  const response = await makeRequest(url, { method: "POST", headers }, body);
+
+  if (response.statusCode !== 200) {
+    throw new Error(
+      `Failed to init JSON (${response.statusCode}): ${response.body}`,
+    );
+  }
+
+  return JSON.parse(response.body);
+}
+
+/**
+ * Step 5b: Upload JSON files.
+ */
+async function uploadJson(reportId, jobId, files) {
+  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/json`;
+  let totalUploaded = 0;
+
+  // Upload in batches
+  for (let i = 0; i < files.length; i += BATCH_SIZE) {
+    const batch = files.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(files.length / BATCH_SIZE);
+
+    if (totalBatches > 1) {
+      console.log(
+        `    Batch ${batchNum}/${totalBatches}: uploading ${batch.length} JSON files...`,
+      );
+    }
+
+    const response = await uploadFilesMultipart(url, batch, null);
+
+    if (response.statusCode !== 200) {
+      throw new Error(
+        `Failed to upload JSON files (${response.statusCode}): ${response.body}`,
+      );
+    }
+
+    const result = JSON.parse(response.body);
+    totalUploaded += result.files_uploaded;
+
+    if (result.extraction_triggered) {
+      console.log(`    Extraction triggered`);
+    }
+  }
+
+  return totalUploaded;
+}
+
+/**
+ * Upload a single report directory (containing multiple job subdirectories).
+ */
+async function uploadReport(reportDir, framework = "playwright") {
+  if (!fs.existsSync(reportDir) || !fs.statSync(reportDir).isDirectory()) {
+    console.log(`Warning: Directory not found: ${reportDir} (skipping)`);
     return false;
   }
 
+  const reportName = path.basename(reportDir);
+
   console.log("");
-  console.log("=".repeat(50));
-  const platformStr = platform ? ` - ${platform}` : "";
-  console.log(`Uploading: ${path.basename(seedDir)} (${framework}${platformStr})`);
-  console.log("=".repeat(50));
+  console.log("=".repeat(60));
+  console.log(`Report: ${reportName} (${framework})`);
+  console.log("=".repeat(60));
 
-  // Generate GitHub context with optional repo override
-  const githubContext = generateGitHubContext();
-  if (repoName) {
-    githubContext.repository = `test-org/${repoName}`;
-  }
-  console.log("GitHub Context:");
-  console.log(`  repository: ${githubContext.repository}`);
-  console.log(`  branch: ${githubContext.branch}`);
-  console.log("  ...");
-
-  // Collect all files
-  const allFiles = getAllFiles(seedDir);
-  const filenames = allFiles.map((f) => f.relativePath);
-  console.log(`Found ${allFiles.length} files`);
-
-  // ===== Initialize: Request upload =====
-  console.log("\n[Initialize] Requesting upload...");
-  const requestUrl = UPLOAD_REQUEST_URLS[framework] || UPLOAD_REQUEST_URLS.playwright;
-  const requestBody = {
-    framework_version: "1.0.0",
-    github_context: githubContext,
-    filenames,
-  };
-
-  // Add platform for Detox
-  if (framework === "detox" && platform) {
-    requestBody.platform = platform;
+  // Get job directories
+  const jobDirs = getJobDirectories(reportDir);
+  if (jobDirs.length === 0) {
+    console.log("  No job directories found (skipping)");
+    return false;
   }
 
-  // Use X-API-Key if RRV_API_KEY is set, otherwise use X-Admin-Key for development
-  const requestHeaders = {
-    "Content-Type": "application/json",
-  };
-  if (API_KEY) {
-    requestHeaders["X-API-Key"] = API_KEY;
-  } else {
-    requestHeaders["X-Admin-Key"] = ADMIN_KEY;
-  }
+  console.log(`  Found ${jobDirs.length} job(s)`);
 
-  const phase1Body = JSON.stringify(requestBody);
-  requestHeaders["Content-Length"] = Buffer.byteLength(phase1Body);
+  // Generate GitHub context
+  const githubContext = generateGitHubContext(framework);
+  console.log(`  Repository: ${githubContext.repo}`);
+  console.log(`  Branch: ${githubContext.branch}`);
 
   try {
-    const phase1Response = await makeRequest(
-      requestUrl,
-      { method: "POST", headers: requestHeaders },
-      phase1Body,
+    // Step 1: Register report
+    console.log("\n[1/5] Registering report...");
+    const reportResponse = await registerReport(
+      framework,
+      jobDirs.length,
+      githubContext,
     );
-
-    if (phase1Response.statusCode !== 201) {
-      console.log(`Initialize failed (${phase1Response.statusCode}):`);
-      console.log(phase1Response.body);
-      return false;
-    }
-
-    const phase1Data = JSON.parse(phase1Response.body);
-    const reportId = phase1Data.report_id;
-    const maxUploadSize = phase1Data.max_upload_size;
-    const maxFilesPerRequest = phase1Data.max_files_per_request || 20;
+    const reportId = reportResponse.report_id;
     console.log(`  Report ID: ${reportId}`);
-    console.log(`  Max upload size: ${(maxUploadSize / 1024 / 1024).toFixed(1)}MB`);
-    console.log(`  Max files per batch: ${maxFilesPerRequest}`);
-    console.log(`  Files accepted: ${phase1Data.files_accepted.length}`);
-    console.log(`  Files rejected: ${phase1Data.files_rejected.length}`);
+    console.log(`  Status: ${reportResponse.status}`);
 
-    if (phase1Data.files_rejected.length > 0) {
-      console.log("  Rejected files:");
-      for (const rej of phase1Data.files_rejected.slice(0, 5)) {
-        console.log(`    - ${rej.file}: ${rej.reason}`);
-      }
-      if (phase1Data.files_rejected.length > 5) {
-        console.log(`    ... and ${phase1Data.files_rejected.length - 5} more`);
-      }
-    }
+    // Process each job
+    for (let i = 0; i < jobDirs.length; i++) {
+      const job = jobDirs[i];
+      console.log(`\n--- Job ${i + 1}/${jobDirs.length}: ${job.name} ---`);
 
-    // ===== Transfer: Upload files in batches =====
-    console.log("\n[Transfer] Uploading files...");
-    const uploadUrl = `${UPLOAD_FILES_URL}/${reportId}/files`;
-    const acceptedSet = new Set(phase1Data.files_accepted);
+      // Step 2: Initialize job
+      console.log("[2/5] Initializing job...");
+      const initResponse = await initJob(reportId, job.name);
+      const jobId = initResponse.job_id;
+      console.log(`  Job ID: ${jobId}`);
 
-    // Filter to only accepted files
-    const filesToUpload = allFiles.filter(({ relativePath }) => acceptedSet.has(relativePath));
+      // Step 3: Upload HTML files (optional)
+      const htmlFiles = getAllFiles(job.htmlDir);
+      if (htmlFiles.length > 0) {
+        console.log(`[3/5] Uploading ${htmlFiles.length} HTML files...`);
 
-    // Split into batches
-    const batches = chunkArray(filesToUpload, maxFilesPerRequest);
-    console.log(`  Uploading ${filesToUpload.length} files in ${batches.length} batch(es)`);
+        // Step 3a: Initialize HTML
+        console.log("  Initializing HTML files...");
+        const initHtmlResponse = await initHtml(reportId, jobId, htmlFiles);
+        console.log(`  Accepted: ${initHtmlResponse.accepted_files.length} files`);
+        if (initHtmlResponse.rejected_files && initHtmlResponse.rejected_files.length > 0) {
+          console.log(`  Rejected: ${initHtmlResponse.rejected_files.length} files`);
+          for (const rejected of initHtmlResponse.rejected_files.slice(0, 3)) {
+            console.log(`    - ${rejected.path}: ${rejected.reason}`);
+          }
+        }
 
-    let totalUploaded = 0;
-    let lastResponse = null;
-
-    for (let batchNum = 0; batchNum < batches.length; batchNum++) {
-      const batch = batches[batchNum];
-      console.log(`  Batch ${batchNum + 1}/${batches.length}: ${batch.length} files`);
-
-      // Build multipart form data for this batch
-      const form = new MultipartFormData();
-      for (const { fullPath, relativePath } of batch) {
-        const content = fs.readFileSync(fullPath);
-        const mimeType = getMimeType(relativePath);
-        form.addFile("files", relativePath, content, mimeType);
-      }
-
-      const body = form.getBody();
-      const headers = {
-        "Content-Type": form.getContentType(),
-        "Content-Length": body.length,
-      };
-      if (API_KEY) {
-        headers["X-API-Key"] = API_KEY;
+        // Step 3b: Upload HTML files
+        const uploadedHtml = await uploadHtmlFiles(reportId, jobId, htmlFiles, job.htmlDir);
+        console.log(`  Uploaded ${uploadedHtml} HTML files`);
       } else {
-        headers["X-Admin-Key"] = ADMIN_KEY;
+        console.log("[3/5] No HTML files found (skipping)");
       }
 
-      const response = await makeRequest(
-        uploadUrl,
-        { method: "POST", headers },
-        body,
-      );
+      // Step 4: Upload screenshots (optional)
+      if (job.screenshotsDir) {
+        const screenshotFiles = getScreenshotFiles(job.screenshotsDir);
+        if (screenshotFiles.length > 0) {
+          console.log(`[4/5] Uploading ${screenshotFiles.length} screenshots...`);
 
-      if (response.statusCode !== 200) {
-        console.log(`    Batch ${batchNum + 1} failed (${response.statusCode}):`);
-        console.log(response.body);
-        return false;
+          // Step 4a: Initialize screenshots
+          console.log("  Initializing screenshots...");
+          const initSsResponse = await initScreenshots(reportId, jobId, screenshotFiles);
+          console.log(`  Accepted: ${initSsResponse.accepted_files.length} screenshots`);
+          if (initSsResponse.rejected_files && initSsResponse.rejected_files.length > 0) {
+            console.log(`  Rejected: ${initSsResponse.rejected_files.length} screenshots`);
+            for (const rejected of initSsResponse.rejected_files.slice(0, 3)) {
+              console.log(`    - ${rejected.path}: ${rejected.reason}`);
+            }
+          }
+
+          // Step 4b: Upload screenshot files
+          const uploadedSs = await uploadScreenshots(reportId, jobId, screenshotFiles);
+          console.log(`  Uploaded ${uploadedSs} screenshots`);
+        } else {
+          console.log("[4/5] No screenshots found (skipping)");
+        }
+      } else {
+        console.log("[4/5] No screenshots directory (skipping)");
       }
 
-      const responseData = JSON.parse(response.body);
-      totalUploaded += responseData.files_uploaded || 0;
-      lastResponse = responseData;
+      // Step 5: Upload JSON files (required)
+      const jsonFiles = findJsonFiles(job.path, framework);
+      if (jsonFiles.length > 0) {
+        console.log(`[5/5] Uploading ${jsonFiles.length} JSON file(s)...`);
 
-      console.log(`    Uploaded: ${responseData.files_uploaded}, Pending: ${responseData.files_pending}`);
+        // Step 5a: Initialize JSON
+        console.log("  Initializing JSON files...");
+        const initJsonResponse = await initJson(reportId, jobId, jsonFiles);
+        console.log(`  Accepted: ${initJsonResponse.accepted_files.length} files`);
+        if (initJsonResponse.rejected_files && initJsonResponse.rejected_files.length > 0) {
+          console.log(`  Rejected: ${initJsonResponse.rejected_files.length} files`);
+          for (const rejected of initJsonResponse.rejected_files.slice(0, 3)) {
+            console.log(`    - ${rejected.path}: ${rejected.reason}`);
+          }
+        }
+
+        // Step 5b: Upload JSON files
+        const uploadedJson = await uploadJson(reportId, jobId, jsonFiles);
+        console.log(`  Uploaded ${uploadedJson} JSON file(s)`);
+      } else {
+        console.log("[5/5] WARNING: No JSON files found!");
+        console.log("  JSON files are required for test data extraction.");
+        console.log(`  Expected: json/ folder with .json files`);
+      }
     }
 
-    console.log(`\nFinal Response:`);
-    if (lastResponse) {
-      console.log(JSON.stringify(lastResponse, null, 2));
-    }
-
-    return lastResponse && lastResponse.extraction_status !== "failed";
+    console.log(`\nReport ${reportId} uploaded successfully!`);
+    return true;
   } catch (error) {
-    console.log(`Error: ${error.message}`);
+    console.log(`\nError: ${error.message}`);
     return false;
   }
 }
@@ -448,58 +891,45 @@ async function main() {
   const scriptDir = __dirname;
   const projectRoot = path.dirname(scriptDir);
 
+  console.log(`API Base: ${API_BASE}`);
+  console.log(`Auth: ${API_KEY ? "API Key" : "Admin Key"}`);
+  console.log(`Batch Size: ${BATCH_SIZE}`);
+
   if (args.length > 0) {
     // Upload specified directories
     for (const dirPath of args) {
       const fullPath = path.isAbsolute(dirPath)
         ? dirPath
         : path.join(projectRoot, dirPath);
-      await uploadDirectory(fullPath);
+
+      // Try to detect framework from directory name
+      let framework = "playwright";
+      const dirName = path.basename(fullPath).toLowerCase();
+      if (dirName.includes("cy") || dirName.includes("cypress")) {
+        framework = "cypress";
+      } else if (dirName.includes("detox")) {
+        framework = "detox";
+      }
+
+      await uploadReport(fullPath, framework);
     }
   } else {
     // Default: upload all seed directories
-    console.log(`API Base: ${API_BASE}`);
-    console.log("Uploading all seed data...");
+    console.log("\nUploading all seed data...\n");
 
-    // Playwright, Cypress and Detox reports with their repository names and frameworks
-    // - Playwright/Cypress: repo-web
-    // - Detox: repo-mobile (platform: android - using detox-android-many and detox-android-one)
     const seedConfigs = [
-      {
-        dir: "seed/pw-report-smoke",
-        repo: "repo-web",
-        framework: "playwright",
-      },
-      {
-        dir: "seed/pw-report-with-failed",
-        repo: "repo-web",
-        framework: "playwright",
-      },
-      {
-        dir: "seed/pw-report-with-skipped",
-        repo: "repo-web",
-        framework: "playwright",
-      },
-      {
-        dir: "seed/cy-mochawesome-report-1",
-        repo: "repo-web",
-        framework: "cypress",
-      },
-      {
-        dir: "seed/cy-mochawesome-report-2",
-        repo: "repo-web",
-        framework: "cypress",
-      },
-      { dir: "seed/detox-android-many", repo: "repo-mobile", framework: "detox", platform: "android" },
-      { dir: "seed/detox-android-one", repo: "repo-mobile", framework: "detox", platform: "android" },
+      { dir: "seed/playwright-report", framework: "playwright" },
+      { dir: "seed/cypress-report", framework: "cypress" },
+      { dir: "seed/cypress-report-with-empty", framework: "cypress" },
+      { dir: "seed/detox-android-report", framework: "detox" },
     ];
 
-    for (const { dir, repo, framework, platform } of seedConfigs) {
-      await uploadDirectory(path.join(projectRoot, dir), repo, framework, platform);
+    for (const { dir, framework } of seedConfigs) {
+      await uploadReport(path.join(projectRoot, dir), framework);
     }
   }
 
-  console.log("");
+  console.log("\n" + "=".repeat(60));
   console.log("Done!");
 }
 

@@ -278,7 +278,7 @@ Reports and their files are automatically cleaned up based on retention settings
 Start the development infrastructure:
 
 ```bash
-docker compose -f deploy/docker-compose.dev.yml up -d
+docker compose -f docker/docker-compose.dev.yml up -d
 ```
 
 This provides:

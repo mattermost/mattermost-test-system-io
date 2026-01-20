@@ -1,4 +1,4 @@
-import { useReports } from '../services/api';
+import { useReports, useClientConfig } from '../services/api';
 import { ReportCard } from './report_card';
 import { EmptyState } from './empty_state';
 import { useState } from 'react';
@@ -8,6 +8,7 @@ export function ReportList() {
   const [page, setPage] = useState(1);
   const limit = 100;
   const { data, isLoading, error } = useReports(page, limit);
+  const { data: config } = useClientConfig();
 
   if (isLoading) {
     return (
@@ -41,7 +42,12 @@ export function ReportList() {
     <div className="space-y-4">
       <div className="space-y-2">
         {reports.map((report, index) => (
-          <ReportCard key={report.id} report={report} rowNumber={(page - 1) * limit + index + 1} />
+          <ReportCard
+            key={report.id}
+            report={report}
+            rowNumber={(page - 1) * limit + index + 1}
+            uploadTimeoutMs={config?.upload_timeout_ms}
+          />
         ))}
       </div>
 

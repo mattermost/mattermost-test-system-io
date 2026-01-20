@@ -3,11 +3,10 @@
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
-#[sea_orm(table_name = "api_key")]
+#[sea_orm(table_name = "api_keys")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
-    #[sea_orm(unique)]
     pub key_hash: String,
     pub key_prefix: String,
     pub name: String,
@@ -15,6 +14,7 @@ pub struct Model {
     pub expires_at: Option<DateTimeUtc>,
     pub last_used_at: Option<DateTimeUtc>,
     pub created_at: DateTimeUtc,
+    pub updated_at: DateTimeUtc,
     pub deleted_at: Option<DateTimeUtc>,
 }
 

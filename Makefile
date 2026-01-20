@@ -440,14 +440,14 @@ docker-stop: ## Stop Docker container
 	docker rm rust-report-viewer 2>/dev/null || true
 
 docker-logs: ## Show Docker container logs
-	docker compose -f $(ROOT_DIR)/deploy/docker-compose.dev.yml logs -f
+	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml logs -f
 
 docker-shell: ## Open shell in running container
 	docker exec -it rust-report-viewer /bin/bash
 
 docker-up: ## Start with docker-compose
 	@echo "$(CYAN)Starting docker (PostgreSQL + MinIO + Adminer)...$(RESET)"
-	docker compose -f $(ROOT_DIR)/deploy/docker-compose.dev.yml up -d
+	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml up -d
 	@echo ""
 	@echo "$(GREEN)Development infrastructure started!$(RESET)"
 	@echo "  PostgreSQL: localhost:6432"
@@ -456,11 +456,11 @@ docker-up: ## Start with docker-compose
 
 docker-down: ## Stop docker-compose services
 	@echo "$(CYAN)Stopping docker-compose services...$(RESET)"
-	docker compose -f $(ROOT_DIR)/deploy/docker-compose.dev.yml down
+	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down
 
 docker-down-volumes: ## Stop and remove volumes
 	@echo "$(YELLOW)Stopping services and removing volumes...$(RESET)"
-	docker compose -f $(ROOT_DIR)/deploy/docker-compose.dev.yml down -v
+	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down -v
 
 docker-clean: ## Remove Docker image and volumes
 	@echo "$(YELLOW)Cleaning Docker resources...$(RESET)"

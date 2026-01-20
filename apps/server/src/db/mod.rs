@@ -1,8 +1,12 @@
 //! Database module providing connection management, migrations, and queries.
 
 pub mod api_keys;
-pub mod queries;
-pub mod upload_files;
+pub mod html_files;
+pub mod json_files;
+pub mod screenshots;
+pub mod test_jobs;
+pub mod test_reports;
+pub mod test_results;
 
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use std::time::Duration;
@@ -22,20 +26,28 @@ pub struct DbPool {
 impl DbPool {
     /// Create a new database pool from configuration.
     pub async fn new(config: &Config) -> AppResult<Self> {
+        let db_config = &config.db;
+
         let mut opt = ConnectOptions::new(&config.database_url);
-        opt.max_connections(100)
-            .min_connections(5)
-            .connect_timeout(Duration::from_secs(10))
-            .acquire_timeout(Duration::from_secs(10))
-            .idle_timeout(Duration::from_secs(600))
-            .max_lifetime(Duration::from_secs(1800))
+        opt.max_connections(db_config.max_connections)
+            .min_connections(db_config.min_connections)
+            .connect_timeout(Duration::from_secs(db_config.connect_timeout_secs))
+            .acquire_timeout(Duration::from_secs(db_config.acquire_timeout_secs))
+            .idle_timeout(Duration::from_secs(db_config.idle_timeout_secs))
+            .max_lifetime(Duration::from_secs(db_config.max_lifetime_secs))
             .sqlx_logging(false);
 
         let conn = Database::connect(opt)
             .await
             .map_err(|e| AppError::Database(format!("Failed to connect to database: {}", e)))?;
 
-        info!("Database connection established");
+        info!(
+            "Database connection pool: max={}, min={}, idle_timeout={}s, max_lifetime={}s",
+            db_config.max_connections,
+            db_config.min_connections,
+            db_config.idle_timeout_secs,
+            db_config.max_lifetime_secs
+        );
 
         Ok(DbPool { conn })
     }

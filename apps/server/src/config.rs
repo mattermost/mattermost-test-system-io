@@ -15,10 +15,9 @@ pub mod defaults {
     pub const DEV_ADMIN_KEY: &str = "dev-admin-key-do-not-use-in-production";
     pub const DEV_HOST: &str = "127.0.0.1";
     pub const DEV_PORT: u16 = 8080;
-    pub const DEV_MAX_UPLOAD_SIZE: usize = 52_428_800; // 50MB total per report
-    pub const DEV_MAX_FILES_PER_REQUEST: usize = 20; // Max files per upload request (batching)
-    pub const DEV_MAX_CONCURRENT_UPLOADS: usize = 10; // Max concurrent upload requests
-    pub const DEV_UPLOAD_QUEUE_TIMEOUT_SECS: u64 = 30; // Queue timeout before rejecting
+    pub const DEV_MAX_UPLOAD_SIZE: usize = 10_485_760; // 10MB max for JSON payloads
+    pub const DEV_UPLOAD_TIMEOUT_MS: u64 = 3_600_000; // 1 hour default for upload timeout
+    pub const DEV_MIN_SEARCH_LENGTH: usize = 3; // Minimum characters for search API
 
     // S3/MinIO defaults for development
     pub const DEV_S3_ENDPOINT: &str = "http://localhost:9100";
@@ -26,6 +25,28 @@ pub mod defaults {
     pub const DEV_S3_REGION: &str = "us-east-1";
     pub const DEV_S3_ACCESS_KEY: &str = "minioadmin";
     pub const DEV_S3_SECRET_KEY: &str = "minioadmin";
+
+    // Database pool defaults (smaller in dev to avoid "too many open files")
+    pub const DEV_DB_MAX_CONNECTIONS: u32 = 20;
+    pub const DEV_DB_MIN_CONNECTIONS: u32 = 2;
+    pub const DEV_DB_IDLE_TIMEOUT_SECS: u64 = 300;
+    pub const DEV_DB_MAX_LIFETIME_SECS: u64 = 1800;
+    pub const DEV_DB_CONNECT_TIMEOUT_SECS: u64 = 10;
+    pub const DEV_DB_ACQUIRE_TIMEOUT_SECS: u64 = 10;
+
+    // Production database pool defaults
+    pub const PROD_DB_MAX_CONNECTIONS: u32 = 50;
+    pub const PROD_DB_MIN_CONNECTIONS: u32 = 5;
+
+    // Actix server defaults (smaller in dev to avoid "too many open files")
+    pub const DEV_SERVER_WORKERS: usize = 4;
+    pub const DEV_SERVER_BACKLOG: u32 = 128;
+    pub const DEV_SERVER_MAX_CONNECTIONS: usize = 256;
+    pub const DEV_SERVER_MAX_CONNECTION_RATE: usize = 256;
+
+    // Production Actix server defaults
+    pub const PROD_SERVER_BACKLOG: u32 = 2048;
+    pub const PROD_SERVER_MAX_CONNECTIONS: usize = 25000;
 }
 
 /// Runtime environment.
@@ -80,6 +101,36 @@ pub struct S3Config {
     pub secret_key: String,
 }
 
+/// Database pool configuration.
+#[derive(Debug, Clone)]
+pub struct DbConfig {
+    /// Maximum number of connections in the pool
+    pub max_connections: u32,
+    /// Minimum number of connections in the pool
+    pub min_connections: u32,
+    /// Connection timeout in seconds
+    pub connect_timeout_secs: u64,
+    /// Acquire timeout in seconds
+    pub acquire_timeout_secs: u64,
+    /// Idle connection timeout in seconds
+    pub idle_timeout_secs: u64,
+    /// Maximum connection lifetime in seconds
+    pub max_lifetime_secs: u64,
+}
+
+/// HTTP server configuration.
+#[derive(Debug, Clone)]
+pub struct ServerConfig {
+    /// Number of worker threads (0 = number of CPUs)
+    pub workers: usize,
+    /// Maximum pending connections in the accept queue
+    pub backlog: u32,
+    /// Maximum concurrent connections per worker
+    pub max_connections: usize,
+    /// Maximum new connections per second per worker
+    pub max_connection_rate: usize,
+}
+
 /// Application configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -95,16 +146,20 @@ pub struct Config {
     pub static_dir: Option<PathBuf>,
     /// Admin key for bootstrap operations (creating first API key)
     pub admin_key: Option<String>,
-    /// Maximum upload size in bytes (default: 50MB)
+    /// Maximum JSON payload size in bytes (default: 10MB)
     pub max_upload_size: usize,
-    /// Maximum files per upload request for batching (default: 20)
-    pub max_files_per_request: usize,
-    /// Maximum concurrent upload batches (limits disk I/O, default: 10)
-    pub max_concurrent_uploads: usize,
-    /// Upload queue timeout in seconds (default: 30s)
-    pub upload_queue_timeout_secs: u64,
+    /// Upload timeout in milliseconds (default: 1 hour)
+    pub upload_timeout_ms: u64,
     /// S3 storage configuration
     pub s3: S3Config,
+    /// Database pool configuration
+    pub db: DbConfig,
+    /// HTTP server configuration
+    pub server: ServerConfig,
+    /// Enable HTML view tabs in the frontend (default: true)
+    pub enable_html_view: bool,
+    /// Minimum characters required for search API (default: 3)
+    pub min_search_length: usize,
 }
 
 impl Config {
@@ -126,15 +181,25 @@ impl Config {
     /// - `DATABASE_URL`: PostgreSQL connection string (required in production)
     /// - `RRV_ADMIN_KEY`: Admin key for bootstrap operations (optional)
     /// - `RRV_STATIC_DIR`: Static assets directory for production
-    /// - `RRV_MAX_UPLOAD_SIZE`: Max upload size in bytes (default: 50MB)
-    /// - `RRV_MAX_FILES_PER_REQUEST`: Max files per batch upload (default: 20)
-    /// - `RRV_MAX_CONCURRENT_UPLOADS`: Max concurrent upload batches (default: 10)
-    /// - `RRV_UPLOAD_QUEUE_TIMEOUT_SECS`: Upload queue timeout in seconds (default: 30)
+    /// - `RRV_MAX_UPLOAD_SIZE`: Max JSON payload size in bytes (default: 10MB)
+    /// - `RRV_UPLOAD_TIMEOUT_MS`: Upload timeout in milliseconds (default: 1 hour)
+    /// - `RRV_ENABLE_HTML_VIEW`: Enable HTML view tabs in frontend (default: true)
+    /// - `RRV_MIN_SEARCH_LENGTH`: Minimum characters for search API (default: 3)
     /// - `S3_ENDPOINT`: S3 endpoint URL (for MinIO/custom S3)
     /// - `S3_BUCKET`: S3 bucket name
     /// - `S3_REGION`: S3 region
     /// - `S3_ACCESS_KEY`: S3 access key ID
     /// - `S3_SECRET_KEY`: S3 secret access key
+    /// - `RRV_DB_MAX_CONNECTIONS`: Max database connections (default: 20 dev, 50 prod)
+    /// - `RRV_DB_MIN_CONNECTIONS`: Min database connections (default: 2 dev, 5 prod)
+    /// - `RRV_DB_IDLE_TIMEOUT_SECS`: Idle connection timeout (default: 300)
+    /// - `RRV_DB_MAX_LIFETIME_SECS`: Max connection lifetime (default: 1800)
+    /// - `RRV_DB_CONNECT_TIMEOUT_SECS`: Connection timeout (default: 10)
+    /// - `RRV_DB_ACQUIRE_TIMEOUT_SECS`: Acquire timeout (default: 10)
+    /// - `RRV_SERVER_WORKERS`: Number of worker threads, 0=auto (default: 4 dev, 0 prod)
+    /// - `RRV_SERVER_BACKLOG`: Pending connection queue size (default: 128 dev, 2048 prod)
+    /// - `RRV_SERVER_MAX_CONNECTIONS`: Max connections per worker (default: 256 dev, 25000 prod)
+    /// - `RRV_SERVER_MAX_CONNECTION_RATE`: Max new connections/sec/worker (default: 256)
     pub fn from_env() -> Result<Self, ConfigError> {
         // Parse environment - required
         let env_str = env::var("RUST_ENV").map_err(|_| ConfigError::MissingEnvVar("RUST_ENV"))?;
@@ -166,28 +231,21 @@ impl Config {
             .parse::<usize>()
             .map_err(|_| ConfigError::InvalidValue("RRV_MAX_UPLOAD_SIZE must be a valid number"))?;
 
-        let max_files_per_request = env::var("RRV_MAX_FILES_PER_REQUEST")
-            .unwrap_or_else(|_| defaults::DEV_MAX_FILES_PER_REQUEST.to_string())
-            .parse::<usize>()
-            .map_err(|_| {
-                ConfigError::InvalidValue("RRV_MAX_FILES_PER_REQUEST must be a valid number")
-            })?;
-
-        let max_concurrent_uploads = env::var("RRV_MAX_CONCURRENT_UPLOADS")
-            .unwrap_or_else(|_| defaults::DEV_MAX_CONCURRENT_UPLOADS.to_string())
-            .parse::<usize>()
-            .map_err(|_| {
-                ConfigError::InvalidValue("RRV_MAX_CONCURRENT_UPLOADS must be a valid number")
-            })?;
-
-        let upload_queue_timeout_secs = env::var("RRV_UPLOAD_QUEUE_TIMEOUT_SECS")
-            .unwrap_or_else(|_| defaults::DEV_UPLOAD_QUEUE_TIMEOUT_SECS.to_string())
+        let upload_timeout_ms = env::var("RRV_UPLOAD_TIMEOUT_MS")
+            .unwrap_or_else(|_| defaults::DEV_UPLOAD_TIMEOUT_MS.to_string())
             .parse::<u64>()
-            .map_err(|_| {
-                ConfigError::InvalidValue("RRV_UPLOAD_QUEUE_TIMEOUT_SECS must be a valid number")
-            })?;
+            .map_err(|_| ConfigError::InvalidValue("RRV_UPLOAD_TIMEOUT_MS must be a valid number"))?;
 
         let static_dir = env::var("RRV_STATIC_DIR").ok().map(PathBuf::from);
+
+        let enable_html_view = env::var("RRV_ENABLE_HTML_VIEW")
+            .map(|v| v.to_lowercase() != "false" && v != "0")
+            .unwrap_or(true); // Default: true
+
+        let min_search_length = env::var("RRV_MIN_SEARCH_LENGTH")
+            .unwrap_or_else(|_| defaults::DEV_MIN_SEARCH_LENGTH.to_string())
+            .parse::<usize>()
+            .map_err(|_| ConfigError::InvalidValue("RRV_MIN_SEARCH_LENGTH must be a valid number"))?;
 
         // S3 configuration
         let s3 = S3Config {
@@ -206,6 +264,66 @@ impl Config {
                 .unwrap_or_else(|_| defaults::DEV_S3_SECRET_KEY.to_string()),
         };
 
+        // Database pool configuration with environment-specific defaults
+        let (default_max_conn, default_min_conn) = if environment.is_development() {
+            (defaults::DEV_DB_MAX_CONNECTIONS, defaults::DEV_DB_MIN_CONNECTIONS)
+        } else {
+            (defaults::PROD_DB_MAX_CONNECTIONS, defaults::PROD_DB_MIN_CONNECTIONS)
+        };
+
+        let db = DbConfig {
+            max_connections: env::var("RRV_DB_MAX_CONNECTIONS")
+                .unwrap_or_else(|_| default_max_conn.to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("RRV_DB_MAX_CONNECTIONS must be a valid number"))?,
+            min_connections: env::var("RRV_DB_MIN_CONNECTIONS")
+                .unwrap_or_else(|_| default_min_conn.to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("RRV_DB_MIN_CONNECTIONS must be a valid number"))?,
+            connect_timeout_secs: env::var("RRV_DB_CONNECT_TIMEOUT_SECS")
+                .unwrap_or_else(|_| defaults::DEV_DB_CONNECT_TIMEOUT_SECS.to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("RRV_DB_CONNECT_TIMEOUT_SECS must be a valid number"))?,
+            acquire_timeout_secs: env::var("RRV_DB_ACQUIRE_TIMEOUT_SECS")
+                .unwrap_or_else(|_| defaults::DEV_DB_ACQUIRE_TIMEOUT_SECS.to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("RRV_DB_ACQUIRE_TIMEOUT_SECS must be a valid number"))?,
+            idle_timeout_secs: env::var("RRV_DB_IDLE_TIMEOUT_SECS")
+                .unwrap_or_else(|_| defaults::DEV_DB_IDLE_TIMEOUT_SECS.to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("RRV_DB_IDLE_TIMEOUT_SECS must be a valid number"))?,
+            max_lifetime_secs: env::var("RRV_DB_MAX_LIFETIME_SECS")
+                .unwrap_or_else(|_| defaults::DEV_DB_MAX_LIFETIME_SECS.to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("RRV_DB_MAX_LIFETIME_SECS must be a valid number"))?,
+        };
+
+        // HTTP server configuration with environment-specific defaults
+        let (default_workers, default_backlog, default_max_conn_per_worker) = if environment.is_development() {
+            (defaults::DEV_SERVER_WORKERS, defaults::DEV_SERVER_BACKLOG, defaults::DEV_SERVER_MAX_CONNECTIONS)
+        } else {
+            (0, defaults::PROD_SERVER_BACKLOG, defaults::PROD_SERVER_MAX_CONNECTIONS) // 0 = num_cpus
+        };
+
+        let server = ServerConfig {
+            workers: env::var("RRV_SERVER_WORKERS")
+                .unwrap_or_else(|_| default_workers.to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("RRV_SERVER_WORKERS must be a valid number"))?,
+            backlog: env::var("RRV_SERVER_BACKLOG")
+                .unwrap_or_else(|_| default_backlog.to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("RRV_SERVER_BACKLOG must be a valid number"))?,
+            max_connections: env::var("RRV_SERVER_MAX_CONNECTIONS")
+                .unwrap_or_else(|_| default_max_conn_per_worker.to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("RRV_SERVER_MAX_CONNECTIONS must be a valid number"))?,
+            max_connection_rate: env::var("RRV_SERVER_MAX_CONNECTION_RATE")
+                .unwrap_or_else(|_| defaults::DEV_SERVER_MAX_CONNECTION_RATE.to_string())
+                .parse()
+                .map_err(|_| ConfigError::InvalidValue("RRV_SERVER_MAX_CONNECTION_RATE must be a valid number"))?,
+        };
+
         let config = Config {
             environment,
             host,
@@ -214,10 +332,12 @@ impl Config {
             static_dir,
             admin_key,
             max_upload_size,
-            max_files_per_request,
-            max_concurrent_uploads,
-            upload_queue_timeout_secs,
+            upload_timeout_ms,
             s3,
+            db,
+            server,
+            enable_html_view,
+            min_search_length,
         };
 
         // Validate production configuration
@@ -304,6 +424,26 @@ mod tests {
         }
     }
 
+    fn test_db_config() -> DbConfig {
+        DbConfig {
+            max_connections: 20,
+            min_connections: 2,
+            connect_timeout_secs: 10,
+            acquire_timeout_secs: 10,
+            idle_timeout_secs: 300,
+            max_lifetime_secs: 1800,
+        }
+    }
+
+    fn test_server_config() -> ServerConfig {
+        ServerConfig {
+            workers: 4,
+            backlog: 128,
+            max_connections: 256,
+            max_connection_rate: 256,
+        }
+    }
+
     #[test]
     fn test_bind_address() {
         let config = Config {
@@ -314,10 +454,12 @@ mod tests {
             static_dir: None,
             admin_key: Some("test-key".to_string()),
             max_upload_size: 1024,
-            max_files_per_request: 20,
-            max_concurrent_uploads: 10,
-            upload_queue_timeout_secs: 30,
+            upload_timeout_ms: 3600000,
             s3: test_s3_config(),
+            db: test_db_config(),
+            server: test_server_config(),
+            enable_html_view: true,
+            min_search_length: 3,
         };
 
         assert_eq!(config.bind_address(), "0.0.0.0:3000");
@@ -348,9 +490,7 @@ mod tests {
             static_dir: None,
             admin_key: Some(defaults::DEV_ADMIN_KEY.to_string()),
             max_upload_size: 1024,
-            max_files_per_request: 20,
-            max_concurrent_uploads: 10,
-            upload_queue_timeout_secs: 30,
+            upload_timeout_ms: 3600000,
             s3: S3Config {
                 endpoint: None,
                 bucket: "reports".to_string(),
@@ -358,6 +498,10 @@ mod tests {
                 access_key: defaults::DEV_S3_ACCESS_KEY.to_string(),
                 secret_key: defaults::DEV_S3_SECRET_KEY.to_string(),
             },
+            db: test_db_config(),
+            server: test_server_config(),
+            enable_html_view: true,
+            min_search_length: 3,
         };
 
         let result = config.validate_production();
@@ -378,9 +522,7 @@ mod tests {
             static_dir: Some(PathBuf::from("/app/static")),
             admin_key: None,
             max_upload_size: 1024,
-            max_files_per_request: 20,
-            max_concurrent_uploads: 10,
-            upload_queue_timeout_secs: 30,
+            upload_timeout_ms: 3600000,
             s3: S3Config {
                 endpoint: None, // Use AWS S3 in production
                 bucket: "prod-reports".to_string(),
@@ -388,6 +530,10 @@ mod tests {
                 access_key: "AKIA...".to_string(),
                 secret_key: "secret...".to_string(),
             },
+            db: test_db_config(),
+            server: test_server_config(),
+            enable_html_view: true,
+            min_search_length: 3,
         };
 
         let result = config.validate_production();

@@ -1,5 +1,5 @@
 # Development infrastructure only (PostgreSQL + MinIO)
-# Start with: docker compose -f deploy/docker-compose.dev.yml up -d
+# Start with: docker compose -f docker/docker-compose.dev.yml up -d
 
 services:
   postgres:
@@ -11,7 +11,7 @@ services:
     ports:
       - "6432:5432"
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rrv"]
       interval: 5s

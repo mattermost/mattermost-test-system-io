@@ -8,7 +8,7 @@ use crate::{api, error, models, services};
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "Rust Report Server",
+        title = "Test System IO Server",
         version = "0.1.0",
         description = "API server for uploading and viewing test reports (Playwright, Cypress, Detox) with job-based artifact upload"
     ),

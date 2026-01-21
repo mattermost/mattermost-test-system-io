@@ -1,6 +1,6 @@
-//! Rust Report Server library.
+//! Test System IO Server library.
 //!
-//! This library provides the core functionality for the report server,
+//! This library provides the core functionality for the TSIO server,
 //! including database operations, authentication, and API services.
 
 pub mod api;

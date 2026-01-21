@@ -5,10 +5,10 @@
 
 use std::env;
 
-use rust_report_server::config::Config;
-use rust_report_server::db::DbPool;
-use rust_report_server::models::ApiKeyRole;
-use rust_report_server::services::api_key;
+use tsio::config::Config;
+use tsio::db::DbPool;
+use tsio::models::ApiKeyRole;
+use tsio::services::api_key;
 
 #[tokio::main]
 async fn main() {

@@ -8,7 +8,7 @@ use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
 use tracing::info;
 
-use crate::config::S3Config;
+use crate::config::StorageSettings;
 use crate::error::{AppError, AppResult};
 
 /// S3 storage client wrapper.
@@ -20,13 +20,13 @@ pub struct Storage {
 
 impl Storage {
     /// Create a new S3 storage client from configuration.
-    pub async fn new(config: &S3Config) -> AppResult<Self> {
+    pub async fn new(config: &StorageSettings) -> AppResult<Self> {
         let credentials = Credentials::new(
             &config.access_key,
             &config.secret_key,
             None,
             None,
-            "rust-report-server",
+            "tsio",
         );
 
         let region = Region::new(config.region.clone());

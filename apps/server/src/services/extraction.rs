@@ -1083,7 +1083,7 @@ fn normalize_attachment_path(path: &str) -> String {
     let mut result = path;
 
     // Check for configurable prefix from environment
-    if let Ok(prefix) = std::env::var("RRV_ATTACHMENT_PATH_PREFIX")
+    if let Ok(prefix) = std::env::var("TSIO_ATTACHMENT_PATH_PREFIX")
         && result.starts_with(&prefix)
     {
         result = &result[prefix.len()..];

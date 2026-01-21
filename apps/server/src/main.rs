@@ -1,4 +1,4 @@
-//! Rust Report Server - Main entry point.
+//! Test System IO Server - Main entry point.
 //!
 //! Starts the Actix-web server with configured routes and middleware.
 
@@ -76,20 +76,20 @@ async fn main() -> std::io::Result<()> {
             error!("");
             error!("Please check your environment variables:");
             error!("  - RUST_ENV must be set to 'development' or 'production'");
-            error!("  - In production, RRV_DATABASE_URL and RRV_API_KEY must be set");
+            error!("  - In production, TSIO_DATABASE_URL and TSIO_API_KEY must be set");
             error!("  - In production, values must not match development defaults");
             std::process::exit(1);
         }
     };
 
     info!("========================================");
-    info!("  Rust Report Server");
+    info!("  Test System IO Server");
     info!("  Environment: {}", config.environment);
     info!("========================================");
 
     if config.is_development() {
         warn!("Running in DEVELOPMENT mode - do not use in production!");
-        info!("Using development defaults for DATABASE_URL and API_KEY");
+        info!("Using development defaults for TSIO_DATABASE_URL and TSIO_API_KEY");
     }
 
     // Initialize database (async)
@@ -105,16 +105,16 @@ async fn main() -> std::io::Result<()> {
     info!("Database migrations complete");
 
     // Initialize S3 storage
-    let storage = Storage::new(&config.s3)
+    let storage = Storage::new(&config.storage)
         .await
         .expect("Failed to initialize S3 storage");
-    info!("S3 storage initialized: bucket={}", config.s3.bucket);
+    info!("S3 storage initialized: bucket={}", config.storage.bucket);
 
     // Prepare shared state
-    let bind_address = config.bind_address();
-    let admin_key = AdminKey::new(config.admin_key.clone());
-    let max_upload_size = config.max_upload_size;
-    let static_dir = config.static_dir.clone();
+    let bind_address = config.server.bind_address();
+    let admin_key = AdminKey::new(config.auth.admin_key.clone());
+    let max_upload_size = config.upload.max_size;
+    let static_dir = config.server.static_dir.clone();
     let is_development = config.is_development();
     let client_config = config; // Move config for sharing with the app
 

@@ -46,7 +46,7 @@ cargo run --bin generate-api-key -- \
 # Role:    contributor
 # Expires: 2027-01-14T00:00:00Z
 #
-# Key:     rrv_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
+# Key:     tsio_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
 #
 # ⚠️  Save this key! It cannot be retrieved later.
 # ────────────────────────────────────────
@@ -64,7 +64,7 @@ curl -X POST http://localhost:8080/api/v1/auth/keys \
 # Response includes the key (only shown once):
 # {
 #   "id": "...",
-#   "key": "rrv_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6",
+#   "key": "tsio_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6",
 #   "name": "CI Upload Key",
 #   ...
 # }
@@ -74,14 +74,14 @@ curl -X POST http://localhost:8080/api/v1/auth/keys \
 
 ```bash
 # Set the API key
-export RRV_API_KEY=rrv_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
+export TSIO_API_KEY=tsio_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
 
 # Upload using the script
 node scripts/upload-seed.js path/to/report
 
 # Or use curl directly
 curl -X POST http://localhost:8080/api/v1/reports \
-  -H "X-API-Key: $RRV_API_KEY" \
+  -H "X-API-Key: $TSIO_API_KEY" \
   -F "files=@report/index.html"
 ```
 
@@ -91,7 +91,7 @@ Create a `.env` file to store your API key:
 
 ```bash
 # .env
-export RRV_API_KEY=rrv_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
+export TSIO_API_KEY=tsio_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
 export API_BASE=http://localhost:8080/api/v1
 ```
 
@@ -110,10 +110,10 @@ See [API Keys Documentation](./api-keys.md) for full details on listing, revokin
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `API_BASE` | `http://localhost:8080/api/v1` | API base URL |
-| `RRV_API_KEY` | (none) | Database-backed API key (use for production) |
-| `RRV_ADMIN_KEY` | `dev-admin-key-do-not-use-in-production` | Admin key (for development bootstrap) |
+| `TSIO_API_KEY` | (none) | Database-backed API key (use for production) |
+| `TSIO_ADMIN_KEY` | `dev-admin-key-do-not-use-in-production` | Admin key (for development bootstrap) |
 
-In development, the script uses `X-Admin-Key` header by default. In production, set `RRV_API_KEY` with a valid database-backed API key.
+In development, the script uses `X-Admin-Key` header by default. In production, set `TSIO_API_KEY` with a valid database-backed API key.
 
 ## Supported Frameworks
 

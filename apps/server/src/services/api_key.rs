@@ -9,7 +9,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::{ApiKey, ApiKeyRole, AuthenticatedCaller};
 
 /// API key prefix.
-const KEY_PREFIX: &str = "rrv_";
+const KEY_PREFIX: &str = "tsio_";
 /// Length of random part of the key.
 const KEY_RANDOM_LENGTH: usize = 32;
 /// Length of the key prefix stored for identification.
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_hash_key() {
-        let key = "rrv_test123";
+        let key = "tsio_test123";
         let hash1 = hash_key(key);
         let hash2 = hash_key(key);
 

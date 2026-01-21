@@ -1,4 +1,4 @@
-//! Domain error types for the Rust Report Server.
+//! Domain error types for Test System IO.
 //!
 //! Uses thiserror for ergonomic error handling with automatic Display implementations.
 

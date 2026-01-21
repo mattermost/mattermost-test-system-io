@@ -14,7 +14,7 @@ export function App() {
               <div className="flex items-center justify-between py-4">
                 <h1 className="text-xl font-semibold text-gray-900 dark:text-white">
                   <a href="/" className="hover:text-gray-700 dark:hover:text-gray-300">
-                    Rust Report Viewer
+                    Test System IO
                   </a>
                 </h1>
                 <ThemeToggle />

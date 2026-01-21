@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useReportWithJobs, useReportSuites, useClientConfig } from '../services/api';
-import { JobPanel } from '../components/report/JobPanel';
+import { JobPanel } from '../components/report/job_panel';
 import { TestSuitesView } from '../components/test_suites_view';
 import {
   Loader2,
@@ -20,9 +20,34 @@ import {
   FileText,
   Code,
 } from 'lucide-react';
-import type { ReportStatus } from '../types';
+import type { ReportStatus, JobSummary } from '../types';
 
 type MainTab = 'results' | 'html';
+
+// Move formatDate outside component to avoid recreation
+function formatDate(dateString: string): string {
+  const date = new Date(dateString);
+  return date.toLocaleString();
+}
+
+// Sort key extractor for job names
+function getJobSortKey(name: string): { num: number; str: string } {
+  const lastDash = name.lastIndexOf('-');
+  if (lastDash === -1) return { num: NaN, str: name };
+  const suffix = name.slice(lastDash + 1);
+  const num = parseInt(suffix, 10);
+  return { num, str: suffix };
+}
+
+// Job comparator for sorting
+function compareJobs(a: JobSummary, b: JobSummary): number {
+  const keyA = getJobSortKey(a.display_name);
+  const keyB = getJobSortKey(b.display_name);
+  if (!isNaN(keyA.num) && !isNaN(keyB.num)) {
+    return keyA.num - keyB.num;
+  }
+  return keyA.str.localeCompare(keyB.str);
+}
 
 export function JobReportPage() {
   const { id } = useParams<{ id: string }>();
@@ -80,6 +105,23 @@ export function JobReportPage() {
     return () => window.removeEventListener('resize', updateScrollIndicators);
   }, [updateScrollIndicators, report?.jobs]);
 
+  // Memoize derived values - must be before any early returns
+  const activeJob = useMemo(
+    () => report?.jobs.find((j) => j.id === activeJobId) || null,
+    [report?.jobs, activeJobId]
+  );
+
+  const completedJobs = useMemo(
+    () => report?.jobs.filter((j) => j.status === 'complete').length ?? 0,
+    [report?.jobs]
+  );
+
+  // Memoize sorted jobs for tabs
+  const sortedJobs = useMemo(
+    () => report?.jobs ? [...report.jobs].sort(compareJobs) : [],
+    [report?.jobs]
+  );
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -102,14 +144,6 @@ export function JobReportPage() {
       </div>
     );
   }
-
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleString();
-  };
-
-  const activeJob = report.jobs.find((j) => j.id === activeJobId) || null;
-  const completedJobs = report.jobs.filter((j) => j.status === 'complete').length;
 
   return (
     <div className="space-y-6">
@@ -262,23 +296,7 @@ export function JobReportPage() {
             Test Results
           </button>
           {enableHtmlView &&
-            [...report.jobs]
-              .sort((a, b) => {
-                const getSortKey = (name: string) => {
-                  const lastDash = name.lastIndexOf('-');
-                  if (lastDash === -1) return { num: NaN, str: name };
-                  const suffix = name.slice(lastDash + 1);
-                  const num = parseInt(suffix, 10);
-                  return { num, str: suffix };
-                };
-                const keyA = getSortKey(a.display_name);
-                const keyB = getSortKey(b.display_name);
-                if (!isNaN(keyA.num) && !isNaN(keyB.num)) {
-                  return keyA.num - keyB.num;
-                }
-                return keyA.str.localeCompare(keyB.str);
-              })
-              .map((job) => (
+            sortedJobs.map((job) => (
               <button
                 key={job.id}
                 type="button"

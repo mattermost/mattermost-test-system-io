@@ -5,15 +5,15 @@ services:
   postgres:
     image: postgres:18.1
     environment:
-      POSTGRES_USER: rrv
-      POSTGRES_PASSWORD: rrv
-      POSTGRES_DB: rrv
+      POSTGRES_USER: tsio
+      POSTGRES_PASSWORD: tsio
+      POSTGRES_DB: tsio
     ports:
       - "6432:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rrv"]
+      test: ["CMD-SHELL", "pg_isready -U tsio"]
       interval: 5s
       timeout: 5s
       retries: 5

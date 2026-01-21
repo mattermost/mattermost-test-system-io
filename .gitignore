@@ -49,7 +49,7 @@ apps/server/data/
 seed/
 
 #claude
-.claude/commands
+.claude
 
 # specify
 .specify/

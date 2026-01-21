@@ -26,15 +26,15 @@ pub struct DbPool {
 impl DbPool {
     /// Create a new database pool from configuration.
     pub async fn new(config: &Config) -> AppResult<Self> {
-        let db_config = &config.db;
+        let db = &config.database;
 
-        let mut opt = ConnectOptions::new(&config.database_url);
-        opt.max_connections(db_config.max_connections)
-            .min_connections(db_config.min_connections)
-            .connect_timeout(Duration::from_secs(db_config.connect_timeout_secs))
-            .acquire_timeout(Duration::from_secs(db_config.acquire_timeout_secs))
-            .idle_timeout(Duration::from_secs(db_config.idle_timeout_secs))
-            .max_lifetime(Duration::from_secs(db_config.max_lifetime_secs))
+        let mut opt = ConnectOptions::new(&db.url);
+        opt.max_connections(db.max_connections)
+            .min_connections(db.min_connections)
+            .connect_timeout(Duration::from_secs(db.connect_timeout_secs))
+            .acquire_timeout(Duration::from_secs(db.acquire_timeout_secs))
+            .idle_timeout(Duration::from_secs(db.idle_timeout_secs))
+            .max_lifetime(Duration::from_secs(db.max_lifetime_secs))
             .sqlx_logging(false);
 
         let conn = Database::connect(opt)
@@ -43,10 +43,10 @@ impl DbPool {
 
         info!(
             "Database connection pool: max={}, min={}, idle_timeout={}s, max_lifetime={}s",
-            db_config.max_connections,
-            db_config.min_connections,
-            db_config.idle_timeout_secs,
-            db_config.max_lifetime_secs
+            db.max_connections,
+            db.min_connections,
+            db.idle_timeout_secs,
+            db.max_lifetime_secs
         );
 
         Ok(DbPool { conn })

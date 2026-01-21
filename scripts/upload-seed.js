@@ -8,8 +8,8 @@
  *
  * Environment variables:
  *   API_BASE - Base URL (default: http://localhost:8080/api/v1)
- *   RRV_API_KEY - API key for authentication
- *   RRV_ADMIN_KEY - Admin key fallback (default: dev-admin-key-do-not-use-in-production)
+ *   TSIO_API_KEY - API key for authentication
+ *   TSIO_ADMIN_KEY - Admin key fallback (default: dev-admin-key-do-not-use-in-production)
  *   BATCH_SIZE - Number of files per upload batch (default: 50)
  *
  * Framework-specific folder structures:
@@ -26,9 +26,9 @@ const crypto = require("crypto");
 
 // Configuration
 const API_BASE = process.env.API_BASE || "http://localhost:8080/api/v1";
-const API_KEY = process.env.RRV_API_KEY;
+const API_KEY = process.env.TSIO_API_KEY;
 const ADMIN_KEY =
-  process.env.RRV_ADMIN_KEY || "dev-admin-key-do-not-use-in-production";
+  process.env.TSIO_ADMIN_KEY || "dev-admin-key-do-not-use-in-production";
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "50", 10);
 
 // Sample data for random generation

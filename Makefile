@@ -1,4 +1,4 @@
-# Rust Report Viewer - Development Makefile
+# Test System IO - Development Makefile
 # ================================================
 #
 # Usage: make <target>
@@ -45,7 +45,7 @@ WEB_PORT := 3000
 
 help: ## Show this help message
 	@echo ""
-	@echo "$(CYAN)Rust Report Viewer - Development Commands$(RESET)"
+	@echo "$(CYAN)Test System IO - Development Commands$(RESET)"
 	@echo "================================================"
 	@echo ""
 	@echo "$(GREEN)Usage:$(RESET) make $(YELLOW)<target>$(RESET)"
@@ -132,11 +132,11 @@ dev: ## Run both server and web in development mode (requires tmux or two termin
 dev-server: clean-debug-if-large ## Run Rust server in development mode with auto-reload
 	@echo "$(CYAN)Starting Rust server (with cargo-watch if available)...$(RESET)"
 	@if command -v cargo-watch >/dev/null 2>&1; then \
-		cd $(SERVER_DIR) && cargo watch -x 'run --bin server'; \
+		cd $(SERVER_DIR) && cargo watch -x 'run --bin tsio'; \
 	else \
 		echo "$(YELLOW)cargo-watch not installed. Running without auto-reload.$(RESET)"; \
 		echo "$(YELLOW)Install with: cargo install cargo-watch$(RESET)"; \
-		cd $(SERVER_DIR) && cargo run --bin server; \
+		cd $(SERVER_DIR) && cargo run --bin tsio; \
 	fi
 
 dev-web: ## Run Vite dev server with HMR
@@ -147,7 +147,7 @@ run: run-server run-web ## Run both server and web (no auto-reload)
 
 run-server: clean-debug-if-large ## Run Rust server (no auto-reload)
 	@echo "$(CYAN)Starting Rust server...$(RESET)"
-	cd $(SERVER_DIR) && cargo run --bin server
+	cd $(SERVER_DIR) && cargo run --bin tsio
 
 run-web: ## Run Vite preview server (serves built assets)
 	@echo "$(CYAN)Starting Vite preview server...$(RESET)"
@@ -414,11 +414,11 @@ pre-commit: fmt lint check typecheck ## Run pre-commit checks
 
 docker-build: ## Build Docker image
 	@echo "$(CYAN)Building Docker image...$(RESET)"
-	docker build -t rust-report-viewer:latest .
+	docker build -t tsio:latest .
 
 docker-build-no-cache: ## Build Docker image without cache
 	@echo "$(CYAN)Building Docker image (no cache)...$(RESET)"
-	docker build --no-cache -t rust-report-viewer:latest .
+	docker build --no-cache -t tsio:latest .
 
 docker-run: ## Run Docker container (requires API_KEY env var)
 	@echo "$(CYAN)Starting Docker container...$(RESET)"
@@ -428,22 +428,22 @@ docker-run: ## Run Docker container (requires API_KEY env var)
 		exit 1; \
 	fi
 	docker run -d \
-		--name rust-report-viewer \
+		--name tsio \
 		-p 8080:8080 \
 		-e API_KEY="$$API_KEY" \
-		-v rust_report_data:/app/data \
-		rust-report-viewer:latest
+		-v tsio_data:/app/data \
+		tsio:latest
 
 docker-stop: ## Stop Docker container
 	@echo "$(CYAN)Stopping Docker container...$(RESET)"
-	docker stop rust-report-viewer 2>/dev/null || true
-	docker rm rust-report-viewer 2>/dev/null || true
+	docker stop tsio 2>/dev/null || true
+	docker rm tsio 2>/dev/null || true
 
 docker-logs: ## Show Docker container logs
 	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml logs -f
 
 docker-shell: ## Open shell in running container
-	docker exec -it rust-report-viewer /bin/bash
+	docker exec -it tsio /bin/bash
 
 docker-up: ## Start with docker-compose
 	@echo "$(CYAN)Starting docker (PostgreSQL + MinIO + Adminer)...$(RESET)"
@@ -464,10 +464,10 @@ docker-down-volumes: ## Stop and remove volumes
 
 docker-clean: ## Remove Docker image and volumes
 	@echo "$(YELLOW)Cleaning Docker resources...$(RESET)"
-	docker stop rust-report-viewer 2>/dev/null || true
-	docker rm rust-report-viewer 2>/dev/null || true
-	docker rmi rust-report-viewer:latest 2>/dev/null || true
-	docker volume rm rust_report_data 2>/dev/null || true
+	docker stop tsio 2>/dev/null || true
+	docker rm tsio 2>/dev/null || true
+	docker rmi tsio:latest 2>/dev/null || true
+	docker volume rm tsio_data 2>/dev/null || true
 	@echo "$(GREEN)Docker resources cleaned$(RESET)"
 
 # ============================================================================

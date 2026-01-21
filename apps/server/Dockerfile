@@ -30,7 +30,7 @@ COPY apps/server/Cargo.toml apps/server/Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 
 # Build dependencies (this layer will be cached)
-RUN cargo build --release && rm -rf src target/release/deps/rust_report_server*
+RUN cargo build --release && rm -rf src target/release/deps/tsio*
 
 # Copy actual source code
 COPY apps/server/src ./src
@@ -47,7 +47,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary from server builder
-COPY --from=server-builder /app/target/release/server /app/server
+COPY --from=server-builder /app/target/release/tsio /app/tsio
 
 # Copy web assets from web builder
 COPY --from=web-builder /app/web/dist /app/static
@@ -59,4 +59,4 @@ RUN mkdir -p /app/data
 EXPOSE 8080
 
 # Run the binary
-CMD ["/app/server"]
+CMD ["/app/tsio"]

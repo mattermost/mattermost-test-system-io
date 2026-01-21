@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   ChevronRight,
@@ -15,14 +15,22 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import type { TestSuite, ReportStats, TestSpec, TestSpecListResponse, TestAttachment, JobInfo } from '../types';
+import type { TestSuite, ReportStats, TestSpec, TestSpecListResponse, JobInfo } from '../types';
 import { ScreenshotGallery } from './ui/screenshot-gallery';
 import { useSearchTestCases, useClientConfig, type SearchSuiteResult } from '../services/api';
+import {
+  StatPill,
+  ProgressBar,
+  HighlightText,
+  InlineErrorDisplay,
+  AttachmentsDisplay,
+  calcPassRate,
+  formatDuration,
+  type StatusFilter,
+} from './test_suites';
 
 const API_BASE = '/api/v1';
-const SEARCH_DEBOUNCE_MS = 1000; // 1 second debounce for search API
-
-type StatusFilter = 'all' | 'passed' | 'failed' | 'flaky' | 'skipped';
+const SEARCH_DEBOUNCE_MS = 500; // 500ms debounce for both client and API search
 
 interface TestSuitesViewProps {
   reportId: string;
@@ -39,14 +47,15 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
   const [jobDropdownOpen, setJobDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [effectiveSearch, setEffectiveSearch] = useState(''); // Search ready for rendering
   const jobDropdownRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Get client config for min_search_length
   const { data: clientConfig } = useClientConfig();
-  const minSearchLength = clientConfig?.min_search_length ?? 3;
+  const minSearchLength = clientConfig?.min_search_length ?? 2;
 
-  // Debounce search query for API calls (1 second)
+  // Single debounce for both client-side filtering and API calls (500ms)
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(searchQuery.trim());
@@ -62,6 +71,21 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
     500 // Get more results for better grouping
   );
 
+  // Update effectiveSearch only when ready to render:
+  // - Immediately for searches below minSearchLength (client-side only)
+  // - After API returns for searches >= minSearchLength (consolidated render)
+  useEffect(() => {
+    const needsApiSearch = debouncedSearch.length >= minSearchLength;
+
+    if (!needsApiSearch) {
+      // Below min length - client-side filtering only, update immediately
+      setEffectiveSearch(debouncedSearch);
+    } else if (!isSearching) {
+      // API search complete - safe to update for consolidated render
+      setEffectiveSearch(debouncedSearch);
+    }
+  }, [debouncedSearch, minSearchLength, isSearching]);
+
   // Build a map of suite_id -> SearchSuiteResult from API response
   const searchResultsBySuite = useMemo(() => {
     if (!searchData?.results) return new Map<string, SearchSuiteResult>();
@@ -72,8 +96,8 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
     return map;
   }, [searchData?.results]);
 
-  // Check if we have active API search results
-  const hasApiSearchResults = debouncedSearch.length >= minSearchLength && searchData?.results && searchData.results.length > 0;
+  // Check if we have active API search results (use effectiveSearch for consistency)
+  const hasApiSearchResults = effectiveSearch.length >= minSearchLength && searchData?.results && searchData.results.length > 0;
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -89,7 +113,7 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
     }
   }, [jobDropdownOpen]);
 
-  const handleSuiteClick = (suiteId: number) => {
+  const handleSuiteClick = useCallback((suiteId: number) => {
     setExpandedSuiteIds((prev) => {
       const next = new Set(prev);
       if (next.has(suiteId)) {
@@ -99,10 +123,14 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
       }
       return next;
     });
-  };
+  }, []);
 
   // Normalize search query for case-insensitive client-side matching
-  const normalizedSearch = searchQuery.toLowerCase().trim();
+  // Uses effectiveSearch which only updates when API is ready (single render)
+  const normalizedSearch = useMemo(
+    () => effectiveSearch.toLowerCase(),
+    [effectiveSearch]
+  );
 
   // Filter and sort suites by start_time (actual test execution time)
   // Two-tier search:
@@ -179,19 +207,24 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
   };
 
   // Calculate totals from suites (use filtered suites for accurate counts)
-  const suitesForTotals = selectedJobs.size > 0
-    ? suites.filter((s) => s.job_id && selectedJobs.has(s.job_id))
-    : suites;
-  const totals = suitesForTotals.reduce(
-    (acc, suite) => ({
-      passed: acc.passed + (suite.passed_count ?? 0),
-      failed: acc.failed + (suite.failed_count ?? 0),
-      flaky: acc.flaky + (suite.flaky_count ?? 0),
-      skipped: acc.skipped + (suite.skipped_count ?? 0),
-    }),
-    { passed: 0, failed: 0, flaky: 0, skipped: 0 }
-  );
-  const totalTests = totals.passed + totals.failed + totals.flaky + totals.skipped;
+  const { totals, totalTests } = useMemo(() => {
+    const suitesForTotals = selectedJobs.size > 0
+      ? suites.filter((s) => s.job_id && selectedJobs.has(s.job_id))
+      : suites;
+    const calculated = suitesForTotals.reduce(
+      (acc, suite) => ({
+        passed: acc.passed + (suite.passed_count ?? 0),
+        failed: acc.failed + (suite.failed_count ?? 0),
+        flaky: acc.flaky + (suite.flaky_count ?? 0),
+        skipped: acc.skipped + (suite.skipped_count ?? 0),
+      }),
+      { passed: 0, failed: 0, flaky: 0, skipped: 0 }
+    );
+    return {
+      totals: calculated,
+      totalTests: calculated.passed + calculated.failed + calculated.flaky + calculated.skipped,
+    };
+  }, [suites, selectedJobs]);
 
   return (
     <div className="space-y-3">
@@ -311,6 +344,7 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
                 onClick={() => {
                   setSearchQuery('');
                   setDebouncedSearch('');
+                  setEffectiveSearch('');
                   searchInputRef.current?.focus();
                 }}
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-600 dark:hover:text-gray-300"
@@ -469,20 +503,27 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
           </p>
         ) : (
           <div className="divide-y divide-gray-100 dark:divide-gray-700">
-            {filteredSuites.map((suite, index) => (
-              <SuiteRow
-                key={suite.id}
-                suite={suite}
-                reportId={reportId}
-                isExpanded={expandedSuiteIds.has(suite.id)}
-                onToggle={() => handleSuiteClick(suite.id)}
-                statusFilter={statusFilter}
-                rowNumber={index + 1}
-                hasMultipleJobs={!!jobs && jobs.length > 1}
-                searchQuery={normalizedSearch}
-                searchSuiteResult={searchResultsBySuite.get(String(suite.id))}
-              />
-            ))}
+            {filteredSuites.map((suite, index) => {
+              // Check if suite itself matched by title/file_path (vs matched by API test cases)
+              const suiteMatchedByPath = normalizedSearch
+                ? (suite.title?.toLowerCase().includes(normalizedSearch) ||
+                   suite.file_path?.toLowerCase().includes(normalizedSearch))
+                : false;
+              return (
+                <SuiteRow
+                  key={suite.id}
+                  suite={suite}
+                  reportId={reportId}
+                  isExpanded={expandedSuiteIds.has(suite.id)}
+                  onToggle={() => handleSuiteClick(suite.id)}
+                  statusFilter={statusFilter}
+                  rowNumber={index + 1}
+                  hasMultipleJobs={!!jobs && jobs.length > 1}
+                  searchQuery={normalizedSearch}
+                  suiteMatchedByPath={suiteMatchedByPath}
+                />
+              );
+            })}
           </div>
         )}
 
@@ -537,10 +578,11 @@ interface SuiteRowProps {
   rowNumber: number;
   hasMultipleJobs: boolean;
   searchQuery: string;
-  searchSuiteResult?: SearchSuiteResult;
+  /** True if suite matched by its own title/file_path, false if matched only by API test cases */
+  suiteMatchedByPath: boolean;
 }
 
-function SuiteRow({
+const SuiteRow = memo(function SuiteRow({
   suite,
   reportId,
   isExpanded,
@@ -549,14 +591,40 @@ function SuiteRow({
   rowNumber,
   hasMultipleJobs,
   searchQuery,
-  searchSuiteResult,
+  suiteMatchedByPath,
 }: SuiteRowProps) {
-  const hasFlaky = (suite.flaky_count ?? 0) > 0;
-  const hasFailed = suite.failed_count > 0;
-  const hasSkipped = (suite.skipped_count ?? 0) > 0;
-  const hasPassed = suite.passed_count > 0;
-  // Suite is skipped-only if it has skipped tests but no passed, failed, or flaky
-  const isSkippedOnly = hasSkipped && !hasPassed && !hasFailed && !hasFlaky;
+  // Memoize status calculations
+  const { hasFlaky, hasFailed, hasSkipped, StatusIcon, statusIconColor } = useMemo(() => {
+    const flaky = (suite.flaky_count ?? 0) > 0;
+    const failed = suite.failed_count > 0;
+    const skipped = (suite.skipped_count ?? 0) > 0;
+    const passed = suite.passed_count > 0;
+    const skippedOnly = skipped && !passed && !failed && !flaky;
+
+    // Status icon based on suite state (priority: failed > flaky > skipped-only > passed)
+    const Icon = failed
+      ? XCircle
+      : flaky
+        ? AlertTriangle
+        : skippedOnly
+          ? MinusCircle
+          : CheckCircle2;
+    const iconColor = failed
+      ? 'text-red-500'
+      : flaky
+        ? 'text-yellow-500'
+        : skippedOnly
+          ? 'text-gray-400'
+          : 'text-green-500';
+
+    return {
+      hasFlaky: flaky,
+      hasFailed: failed,
+      hasSkipped: skipped,
+      StatusIcon: Icon,
+      statusIconColor: iconColor,
+    };
+  }, [suite.flaky_count, suite.failed_count, suite.skipped_count, suite.passed_count]);
 
   // Fetch specs when expanded
   const { data: specsData, isLoading, isFetched } = useQuery<TestSpecListResponse>({
@@ -573,31 +641,18 @@ function SuiteRow({
   // Only show expanded content when data is ready (not loading)
   const showExpanded = isExpanded && isFetched && !isLoading;
 
-  // Build a set of matched test case IDs and match tokens from search results
-  const matchedTestCaseIds = useMemo(() => {
-    if (!searchSuiteResult?.matches || searchSuiteResult.matches.length === 0) return null;
-    return new Set(searchSuiteResult.matches.map(tc => tc.test_case_id));
-  }, [searchSuiteResult]);
+  // Filter specs based on status filter and search query - memoized
+  const filteredSpecs = useMemo(() => {
+    if (!specsData?.specs) return [];
 
-  // Filter specs based on status filter and search query
-  const filteredSpecs =
-    specsData?.specs?.filter((spec) => {
-      // If we have matched test cases from search API, filter by those
-      if (matchedTestCaseIds) {
-        // Check if this spec's ID matches any of the search results
-        const specIdStr = spec.id.toString();
-        if (!matchedTestCaseIds.has(specIdStr)) {
-          // Also match by title for cases where IDs might not align
-          const matchedByTitle = searchSuiteResult?.matches?.some(tc =>
-            tc.title.toLowerCase() === spec.title?.toLowerCase() ||
-            tc.full_title.toLowerCase() === spec.file_path?.toLowerCase()
-          );
-          if (!matchedByTitle) return false;
+    return specsData.specs.filter((spec) => {
+      // Search filter - only filter specs if suite was matched by API test cases
+      // If suite matched by its own title/file_path, show all specs in that suite
+      if (searchQuery && !suiteMatchedByPath) {
+        const specTitleLower = spec.title?.toLowerCase() || '';
+        if (!specTitleLower.includes(searchQuery)) {
+          return false;
         }
-      } else if (searchQuery) {
-        // Fallback to local search for short queries
-        const titleMatch = spec.title?.toLowerCase().includes(searchQuery);
-        if (!titleMatch) return false;
       }
 
       if (statusFilter === 'all') return true;
@@ -626,23 +681,8 @@ function SuiteRow({
         default:
           return true;
       }
-    }) || [];
-
-  // Status icon based on suite state (priority: failed > flaky > skipped-only > passed)
-  const StatusIcon = hasFailed
-    ? XCircle
-    : hasFlaky
-      ? AlertTriangle
-      : isSkippedOnly
-        ? MinusCircle
-        : CheckCircle2;
-  const statusIconColor = hasFailed
-    ? 'text-red-500'
-    : hasFlaky
-      ? 'text-yellow-500'
-      : isSkippedOnly
-        ? 'text-gray-400'
-        : 'text-green-500';
+    });
+  }, [specsData?.specs, searchQuery, suiteMatchedByPath, statusFilter]);
 
   return (
     <div
@@ -755,7 +795,7 @@ function SuiteRow({
       )}
     </div>
   );
-}
+});
 
 interface SpecRowProps {
   spec: TestSpec;
@@ -763,59 +803,65 @@ interface SpecRowProps {
   searchQuery: string;
 }
 
-function SpecRow({ spec, rowLabel, searchQuery }: SpecRowProps) {
-  const latestResult = spec.results[spec.results.length - 1];
-
-  // Determine status icon based on actual status
-  const isSkipped = latestResult?.status === 'skipped';
-  const latestPassed = latestResult?.status === 'passed';
-  const hadFailedAttempt = spec.results.some((r) => r.status === 'failed');
-  // Flaky conditions:
-  // 1. Has multiple attempts with at least one failure and eventually passed
-  // 2. spec.ok is true (server says passed) but we have a failed result (retry data may be incomplete)
-  const isFlaky = (spec.ok && hadFailedAttempt) || (latestPassed && hadFailedAttempt);
-
-  let StatusIcon = CheckCircle2;
-  let statusColor = 'text-green-500';
-
-  if (isSkipped) {
-    StatusIcon = MinusCircle;
-    statusColor = 'text-gray-400';
-  } else if (isFlaky) {
-    // Check flaky BEFORE failed - flaky tests should show warning, not error
-    StatusIcon = AlertTriangle;
-    statusColor = 'text-yellow-500';
-  } else if (!spec.ok) {
-    StatusIcon = XCircle;
-    statusColor = 'text-red-500';
-  }
-
-  // Show individual attempts for flaky tests (multiple results)
-  const hasMultipleAttempts = spec.results.length > 1;
-
-  // Check if single-attempt test has attachments or errors to display
-  const singleResultHasContent =
-    !hasMultipleAttempts &&
-    latestResult &&
-    (latestResult.errors_json ||
-      (latestResult.attachments && latestResult.attachments.length > 0));
-
-  // Determine if this spec has expandable content (failed, flaky, or skipped with details)
-  const hasExpandableContent =
-    hasMultipleAttempts ||
-    singleResultHasContent ||
-    (spec.screenshots && spec.screenshots.length > 0);
-
-  // Only make expandable if not passed (failed, flaky, or skipped)
-  const isExpandable = hasExpandableContent && (!spec.ok || isFlaky || isSkipped);
-
+const SpecRow = memo(function SpecRow({ spec, rowLabel, searchQuery }: SpecRowProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const handleToggle = () => {
-    if (isExpandable) {
-      setIsExpanded(!isExpanded);
+  // Memoize all derived status values
+  const {
+    latestResult,
+    StatusIcon,
+    statusColor,
+    hasMultipleAttempts,
+    singleResultHasContent,
+    isExpandable,
+  } = useMemo(() => {
+    const latest = spec.results[spec.results.length - 1];
+    const skipped = latest?.status === 'skipped';
+    const latestPassed = latest?.status === 'passed';
+    const hadFailedAttempt = spec.results.some((r) => r.status === 'failed');
+    const flaky = (spec.ok && hadFailedAttempt) || (latestPassed && hadFailedAttempt);
+
+    let Icon = CheckCircle2;
+    let color = 'text-green-500';
+
+    if (skipped) {
+      Icon = MinusCircle;
+      color = 'text-gray-400';
+    } else if (flaky) {
+      Icon = AlertTriangle;
+      color = 'text-yellow-500';
+    } else if (!spec.ok) {
+      Icon = XCircle;
+      color = 'text-red-500';
     }
-  };
+
+    const multipleAttempts = spec.results.length > 1;
+    const singleHasContent =
+      !multipleAttempts &&
+      latest &&
+      (latest.errors_json ||
+        (latest.attachments && latest.attachments.length > 0));
+    const hasExpandable =
+      multipleAttempts ||
+      singleHasContent ||
+      (spec.screenshots && spec.screenshots.length > 0);
+    const expandable = hasExpandable && (!spec.ok || flaky || skipped);
+
+    return {
+      latestResult: latest,
+      StatusIcon: Icon,
+      statusColor: color,
+      hasMultipleAttempts: multipleAttempts,
+      singleResultHasContent: singleHasContent,
+      isExpandable: expandable,
+    };
+  }, [spec]);
+
+  const handleToggle = useCallback(() => {
+    if (isExpandable) {
+      setIsExpanded((prev) => !prev);
+    }
+  }, [isExpandable]);
 
   const ExpandIcon = isExpanded ? ChevronDown : ChevronRight;
 
@@ -904,7 +950,7 @@ function SpecRow({ spec, rowLabel, searchQuery }: SpecRowProps) {
         </div>
       )}
       {/* Show errors and attachments for single-attempt tests */}
-      {isExpanded && singleResultHasContent && (
+      {isExpanded && singleResultHasContent && latestResult && (
         <div className="ml-16 mt-1 space-y-2">
           {latestResult.errors_json && (
             <InlineErrorDisplay errorsJson={latestResult.errors_json} />
@@ -931,194 +977,4 @@ function SpecRow({ spec, rowLabel, searchQuery }: SpecRowProps) {
       )}
     </div>
   );
-}
-
-interface ErrorInfo {
-  message?: string;
-  estack?: string;
-  diff?: string | null;
-}
-
-/** Compact inline error display for individual attempt errors */
-function InlineErrorDisplay({ errorsJson }: { errorsJson: string }) {
-  let errorText = '';
-
-  try {
-    const parsed = JSON.parse(errorsJson);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      if (typeof parsed[0] === 'string') {
-        // Jest-stare/Detox/Playwright JUnit format: array of full error strings
-        errorText = parsed.join('\n\n');
-      } else {
-        // Playwright format: array of error objects
-        errorText = parsed
-          .map((e: ErrorInfo) => {
-            const parts = [e.message];
-            if (e.estack) parts.push(e.estack);
-            return parts.join('\n');
-          })
-          .join('\n\n');
-      }
-    } else if (parsed && typeof parsed === 'object' && parsed.message) {
-      // Cypress format: single error object
-      const parts = [parsed.message];
-      if (parsed.estack) parts.push(parsed.estack);
-      errorText = parts.join('\n');
-    }
-  } catch {
-    // Invalid JSON
-  }
-
-  if (!errorText) return null;
-
-  return (
-    <div className="ml-5 rounded border border-red-200 bg-gray-900 dark:border-red-800 overflow-hidden">
-      <pre className="p-3 overflow-x-auto text-xs font-mono text-gray-100 whitespace-pre-wrap">
-        {errorText}
-      </pre>
-    </div>
-  );
-}
-
-/** Display attachments (screenshots) for a test result */
-function AttachmentsDisplay({ attachments }: { attachments?: TestAttachment[] }) {
-  if (!attachments || attachments.length === 0) return null;
-
-  // Filter to only show image attachments that have s3_key (found in storage)
-  const imageAttachments = attachments.filter(
-    (a) => a.content_type?.startsWith('image/') && a.s3_key && !a.missing
-  );
-
-  if (imageAttachments.length === 0) return null;
-
-  // Sort by sequence to preserve original JUnit XML order
-  const sortedAttachments = [...imageAttachments].sort((a, b) => a.sequence - b.sequence);
-
-  return (
-    <div className="ml-5 mt-2">
-      <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
-        Screenshots ({sortedAttachments.length})
-      </p>
-      <ScreenshotGallery screenshots={sortedAttachments} />
-    </div>
-  );
-}
-
-type StatVariant = 'default' | 'success' | 'error' | 'warning' | 'muted';
-
-interface StatPillProps {
-  label: string;
-  value: number;
-  variant: StatVariant;
-  isActive: boolean;
-  onClick: () => void;
-}
-
-function StatPill({ label, value, variant, isActive, onClick }: StatPillProps) {
-  const variants: Record<StatVariant, string> = {
-    default: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200',
-    success: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400',
-    error: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400',
-    warning: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400',
-    muted: 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
-  };
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors ${variants[variant]} ${
-        isActive
-          ? 'ring-1 ring-blue-500 ring-offset-1 dark:ring-offset-gray-800'
-          : 'hover:opacity-80'
-      }`}
-    >
-      <span className="font-semibold">{value}</span>
-      <span className="opacity-70">{label}</span>
-    </button>
-  );
-}
-
-function ProgressBar({ stats }: { stats: ReportStats }) {
-  const total = stats.expected + stats.unexpected + stats.flaky + stats.skipped;
-  if (total === 0) return <div className="h-2 rounded-full bg-gray-200 dark:bg-gray-700" />;
-
-  return (
-    <div className="flex h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-      {stats.expected > 0 && (
-        <div
-          className="h-full bg-green-500"
-          style={{ width: `${(stats.expected / total) * 100}%` }}
-        />
-      )}
-      {stats.flaky > 0 && (
-        <div
-          className="h-full bg-yellow-500"
-          style={{ width: `${(stats.flaky / total) * 100}%` }}
-        />
-      )}
-      {stats.unexpected > 0 && (
-        <div
-          className="h-full bg-red-500"
-          style={{ width: `${(stats.unexpected / total) * 100}%` }}
-        />
-      )}
-      {stats.skipped > 0 && (
-        <div
-          className="h-full bg-gray-400 dark:bg-gray-500"
-          style={{ width: `${(stats.skipped / total) * 100}%` }}
-        />
-      )}
-    </div>
-  );
-}
-
-function calcPassRate(stats: ReportStats): string {
-  // Pass rate excludes skipped tests: (passed + flaky) / (passed + flaky + failed)
-  const countedTotal = stats.expected + stats.flaky + stats.unexpected;
-  if (countedTotal === 0) return '0';
-  return (((stats.expected + stats.flaky) / countedTotal) * 100).toFixed(1);
-}
-
-function formatDuration(ms: number): string {
-  const totalSeconds = ms / 1000;
-  const minutes = Math.floor(totalSeconds / 60);
-  const hours = Math.floor(minutes / 60);
-
-  if (hours > 0) {
-    return `${hours}h ${minutes % 60}m ${Math.floor(totalSeconds % 60)}s`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${Math.floor(totalSeconds % 60)}s`;
-  }
-  return `${totalSeconds.toFixed(2)}s`;
-}
-
-/** Highlight matching text in a string */
-function HighlightText({ text, search }: { text: string; search: string }) {
-  if (!search || !text) {
-    return <>{text}</>;
-  }
-
-  const lowerText = text.toLowerCase();
-  const lowerSearch = search.toLowerCase();
-  const index = lowerText.indexOf(lowerSearch);
-
-  if (index === -1) {
-    return <>{text}</>;
-  }
-
-  const before = text.slice(0, index);
-  const match = text.slice(index, index + search.length);
-  const after = text.slice(index + search.length);
-
-  return (
-    <>
-      {before}
-      <mark className="bg-yellow-200 text-yellow-900 dark:bg-yellow-500/40 dark:text-yellow-100">
-        {match}
-      </mark>
-      {after && <HighlightText text={after} search={search} />}
-    </>
-  );
-}
+});

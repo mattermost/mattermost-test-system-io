@@ -5,11 +5,11 @@ The server uses database-backed API keys for authentication. Keys are securely h
 ## Key Format
 
 ```
-rrv_<32 random alphanumeric characters>
+tsio_<32 random alphanumeric characters>
 
-Example: rrv_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
-         ^^^^^^^^
-         prefix (stored, shown in logs)
+Example: tsio_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
+          ^^^^^
+          prefix (stored, shown in logs)
                  ^^^^^^^^^^^^^^^^^^^^^^^^
                  secret part (only hash stored)
 ```
@@ -54,7 +54,7 @@ Name:    CI - GitHub Actions
 Role:    contributor
 Expires: 2026-04-14T00:00:00Z
 
-Key:     rrv_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
+Key:     tsio_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
 
 ⚠️  Save this key! It cannot be retrieved later.
 ────────────────────────────────────────
@@ -75,7 +75,7 @@ curl -X POST http://localhost:8080/api/v1/auth/keys \
 
 # Using existing admin API key
 curl -X POST http://localhost:8080/api/v1/auth/keys \
-  -H "X-API-Key: rrv_your_admin_key_here" \
+  -H "X-API-Key: tsio_your_admin_key_here" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "New Contributor Key",
@@ -87,7 +87,7 @@ curl -X POST http://localhost:8080/api/v1/auth/keys \
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
-  "key": "rrv_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6",
+  "key": "tsio_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6",
   "name": "CI - GitHub Actions",
   "role": "contributor",
   "expires_at": "2027-01-14T00:00:00Z",
@@ -106,11 +106,11 @@ cargo run --bin manage-api-keys -- list
 
 **Output:**
 ```
-ID                                   PREFIX       NAME                 ROLE         STATUS
+ID                                   PREFIX        NAME                 ROLE         STATUS
 ────────────────────────────────────────────────────────────────────────────────────────────
-5eff8caa-3f9f-44e4-aa80-96745f9af0fd rrv_ASWr     Admin Key            admin        active
-a1b2c3d4-5678-90ab-cdef-1234567890ab rrv_xYz9     CI - GitHub Actions  contributor  active
-b2c3d4e5-6789-0abc-def1-234567890abc rrv_pQr7     Old Key              contributor  revoked
+5eff8caa-3f9f-44e4-aa80-96745f9af0fd tsio_ASWr     Admin Key            admin        active
+a1b2c3d4-5678-90ab-cdef-1234567890ab tsio_xYz9     CI - GitHub Actions  contributor  active
+b2c3d4e5-6789-0abc-def1-234567890abc tsio_pQr7     Old Key              contributor  revoked
 ```
 
 ### HTTP API
@@ -126,7 +126,7 @@ curl http://localhost:8080/api/v1/auth/keys \
   "keys": [
     {
       "id": "550e8400-e29b-41d4-a716-446655440000",
-      "key_prefix": "rrv_a1B2",
+      "key_prefix": "tsio_a1B2",
       "name": "CI - GitHub Actions",
       "role": "contributor",
       "expires_at": "2027-01-14T00:00:00Z",
@@ -187,7 +187,7 @@ curl -X POST http://localhost:8080/api/v1/auth/keys/550e8400-e29b-41d4-a716-4466
 ### Environment Variable
 
 ```bash
-export RRV_API_KEY=rrv_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
+export TSIO_API_KEY=tsio_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6
 
 # Upload script will use this automatically
 node scripts/upload-seed.js path/to/report
@@ -197,7 +197,7 @@ node scripts/upload-seed.js path/to/report
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/reports \
-  -H "X-API-Key: rrv_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6" \
+  -H "X-API-Key: tsio_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6" \
   -F "files=@report/index.html"
 ```
 
@@ -207,12 +207,12 @@ curl -X POST http://localhost:8080/api/v1/reports \
 2. **Show once**: Full key is only displayed at creation - save it immediately
 3. **Cannot recover**: Lost keys cannot be retrieved, generate a new one
 4. **Prefix for logs**: Only the 8-char prefix appears in logs for identification
-5. **Admin key bootstrap**: Remove `RRV_ADMIN_KEY` from production after creating first admin API key
+5. **Admin key bootstrap**: Remove `TSIO_ADMIN_KEY` from production after creating first admin API key
 
 ## Authentication Flow
 
 ```
-Request with X-API-Key: rrv_a1B2c3D4...
+Request with X-API-Key: tsio_a1B2c3D4...
     │
     ├─1─► Hash the full key (SHA-256)
     │
@@ -234,8 +234,8 @@ Request with X-API-Key: rrv_a1B2c3D4...
 
 ```bash
 # 1. Start server with admin key set
-export RRV_ADMIN_KEY=your-secure-bootstrap-key
-cargo run --bin server
+export TSIO_ADMIN_KEY=your-secure-bootstrap-key
+cargo run --bin tsio
 
 # 2. Create first admin API key
 curl -X POST http://localhost:8080/api/v1/auth/keys \
@@ -247,10 +247,10 @@ curl -X POST http://localhost:8080/api/v1/auth/keys \
 
 # 3. Create contributor keys using the admin API key
 curl -X POST http://localhost:8080/api/v1/auth/keys \
-  -H "X-API-Key: rrv_your_admin_key" \
+  -H "X-API-Key: tsio_your_admin_key" \
   -H "Content-Type: application/json" \
   -d '{"name": "CI Upload", "role": "contributor", "expires_in": "365d"}'
 
-# 4. Remove RRV_ADMIN_KEY from environment (optional but recommended)
-unset RRV_ADMIN_KEY
+# 4. Remove TSIO_ADMIN_KEY from environment (optional but recommended)
+unset TSIO_ADMIN_KEY
 ```

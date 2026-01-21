@@ -1,6 +1,4 @@
-# Rust Report Server Architecture
-
-API server for uploading and viewing test reports from Playwright, Cypress, and Detox frameworks.
+# Test System IO Architecture
 
 ## Table of Contents
 
@@ -23,13 +21,17 @@ API server for uploading and viewing test reports from Playwright, Cypress, and 
 - **Web Framework:** Actix-web 4.x (async Rust)
 - **Database:** PostgreSQL via SeaORM 1.1.19 (async ORM with migrations)
 - **File Storage:** S3-compatible (AWS S3 or MinIO)
-- **Authentication:** API key-based with RBAC
-- **Serialization:** Serde + serde_json
+- **Authentication:** API key-based with RBAC (machine-to-machine, primary interaction via CI)
 - **API Docs:** Utoipa (OpenAPI/Swagger)
 
-### Design Philosophy: Cloud-Native & Scalable
+**Development Environment:**
 
-The server uses cloud-native infrastructure for production deployments:
+For local development, Docker Compose provides:
+- PostgreSQL 18.1 on port 6432
+- MinIO (S3-compatible) on ports 9100 (API) and 9101 (console)
+- Adminer database UI on port 8081
+
+### Design Philosophy
 
 | Component | Choice | Purpose |
 |-----------|--------|---------|
@@ -43,13 +45,6 @@ The server uses cloud-native infrastructure for production deployments:
 - **Durability** - PostgreSQL and S3 provide reliable data persistence
 - **Separation of Concerns** - Database for metadata, S3 for large artifacts
 - **Flexibility** - Use AWS S3 in cloud, MinIO for self-hosted deployments
-
-**Development Environment:**
-
-For local development, Docker Compose provides the full infrastructure:
-- PostgreSQL 18.1 on port 6432
-- MinIO (S3-compatible) on ports 9100 (API) and 9101 (console)
-- Adminer database UI on port 8081
 
 ## Architecture Pattern
 
@@ -135,14 +130,14 @@ The server uses API key authentication designed for machine-to-machine (M2M) com
 
 ### API Keys
 
-- **Format:** `rrv_` prefix + 32 alphanumeric characters
+- **Format:** `tsio_` prefix + 32 alphanumeric characters
 - **Storage:** SHA-256 hash stored in database (original key shown only once at creation)
 - **Headers:** `X-API-Key` for standard auth, `X-Admin-Key` for bootstrap
 - **Roles:** Admin, Contributor, Viewer for role-based access control
 
 ### Bootstrap Flow
 
-1. Server starts with `RRV_ADMIN_KEY` environment variable
+1. Server starts with `TSIO_ADMIN_KEY` environment variable
 2. Use admin key to create the first API key via `/api/v1/auth/keys`
 3. Store generated API key as CI secret (e.g., GitHub Actions secret)
 4. CI pipelines use the API key for uploads
@@ -211,7 +206,7 @@ Files are stored in S3 with the following key structure:
 
 Reports and their files are automatically cleaned up based on retention settings:
 
-1. **Discovery** - Background service queries for reports older than `RRV_ARTIFACT_RETENTION_HOURS`
+1. **Discovery** - Background service queries for reports older than `TSIO_ARTIFACT_RETENTION_HOURS`
 2. **S3 Deletion** - Objects with the report prefix are deleted from S3
 3. **Database Update** - `files_deleted_at` timestamp is set (report metadata retained)
 4. **Screenshot Markers** - Detox screenshots marked as deleted for UI display
@@ -240,36 +235,80 @@ Reports and their files are automatically cleaned up based on retention settings
 
 ## Configuration
 
+Configuration is organized into logical groups for maintainability. The `Config` struct in `src/config.rs` contains:
+
+- `DatabaseSettings` - PostgreSQL connection and pool settings
+- `StorageSettings` - S3/MinIO object storage configuration
+- `ServerSettings` - HTTP server and worker settings
+- `UploadSettings` - Upload size and timeout limits
+- `AuthSettings` - Authentication and feature flags
+
 ### Environment Variables
+
+**Required:**
+
+| Variable | Description |
+|----------|-------------|
+| `RUST_ENV` | `development` or `production` (required) |
+
+**Server Settings:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUST_ENV` | required | `development` or `production` |
-| `RRV_HOST` | 127.0.0.1 | Bind address |
-| `RRV_PORT` | 8080 | Server port |
-| `DATABASE_URL` | (dev default) | PostgreSQL connection string |
-| `RRV_ADMIN_KEY` | (dev default) | Bootstrap admin key |
-| `RRV_DATA_DIR` | ./data/files | Temporary file storage |
-| `RRV_BACKUP_DIR` | ./data/backups | Backup directory |
-| `RRV_STATIC_DIR` | - | Frontend assets (prod) |
-| `RRV_MAX_UPLOAD_SIZE` | 52428800 | Max size per report (50MB) |
-| `RRV_MAX_FILES_PER_REQUEST` | 20 | Files per batch |
-| `RRV_MAX_CONCURRENT_UPLOADS` | 10 | Concurrent batches |
-| `RRV_UPLOAD_QUEUE_TIMEOUT_SECS` | 30 | Queue wait timeout |
-| `RRV_ARTIFACT_RETENTION_HOURS` | 1 (dev) / 168 (prod) | Cleanup retention |
-| `S3_ENDPOINT` | http://localhost:9100 | S3/MinIO endpoint |
-| `S3_BUCKET` | reports | S3 bucket name |
-| `S3_REGION` | us-east-1 | S3 region |
-| `S3_ACCESS_KEY` | (dev default) | S3 access key |
-| `S3_SECRET_KEY` | (dev default) | S3 secret key |
+| `TSIO_HOST` | 127.0.0.1 | Server bind address |
+| `TSIO_PORT` | 8080 | Server port |
+| `TSIO_STATIC_DIR` | - | Frontend assets directory (production) |
+| `TSIO_SERVER_WORKERS` | 4 (dev) / 0 (prod) | Worker threads (0 = CPU count) |
+| `TSIO_SERVER_BACKLOG` | 128 (dev) / 2048 (prod) | Pending connection queue size |
+| `TSIO_SERVER_MAX_CONNECTIONS` | 256 (dev) / 25000 (prod) | Max connections per worker |
+| `TSIO_SERVER_MAX_CONNECTION_RATE` | 256 | Max new connections/sec/worker |
+
+**Database Settings:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TSIO_DATABASE_URL` | (dev default) | PostgreSQL connection string |
+| `TSIO_DB_MAX_CONNECTIONS` | 20 (dev) / 50 (prod) | Maximum pool connections |
+| `TSIO_DB_MIN_CONNECTIONS` | 2 (dev) / 5 (prod) | Minimum pool connections |
+| `TSIO_DB_CONNECT_TIMEOUT_SECS` | 10 | Connection timeout |
+| `TSIO_DB_ACQUIRE_TIMEOUT_SECS` | 10 | Connection acquire timeout |
+| `TSIO_DB_IDLE_TIMEOUT_SECS` | 300 | Idle connection timeout |
+| `TSIO_DB_MAX_LIFETIME_SECS` | 1800 | Maximum connection lifetime |
+
+**Storage Settings:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TSIO_S3_ENDPOINT` | http://localhost:9100 (dev) | S3/MinIO endpoint URL |
+| `TSIO_S3_BUCKET` | reports | S3 bucket name |
+| `TSIO_S3_REGION` | us-east-1 | S3 region |
+| `TSIO_S3_ACCESS_KEY` | (dev default) | S3 access key ID |
+| `TSIO_S3_SECRET_KEY` | (dev default) | S3 secret access key |
+
+**Upload Settings:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TSIO_MAX_UPLOAD_SIZE` | 10485760 | Max JSON payload size (10MB) |
+| `TSIO_UPLOAD_TIMEOUT_MS` | 3600000 | Upload timeout (1 hour) |
+
+**Auth Settings:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TSIO_ADMIN_KEY` | (dev default) | Bootstrap admin key for creating API keys |
+| `TSIO_ENABLE_HTML_VIEW` | true | Enable HTML report tabs in frontend |
+| `TSIO_MIN_SEARCH_LENGTH` | 3 | Minimum characters for search API |
 
 ### Mode Differences
 
 | Feature | Development | Production |
 |---------|-------------|------------|
 | CORS | Permissive (localhost:3000) | Same-origin only |
-| Workers | 4 | CPU count |
-| Retention | 1 hour | 7 days (168h) |
+| Workers | 4 | CPU count (auto) |
+| DB Pool | 20 max / 2 min | 50 max / 5 min |
+| Server Backlog | 128 | 2048 |
+| Max Connections | 256/worker | 25000/worker |
 | Defaults | Uses dev defaults | Requires explicit config |
 | S3 Endpoint | MinIO (localhost:9100) | AWS S3 or configured |
 
@@ -282,7 +321,7 @@ docker compose -f docker/docker-compose.dev.yml up -d
 ```
 
 This provides:
-- PostgreSQL on `localhost:6432` (user: rrv, password: rrv, database: rrv)
+- PostgreSQL on `localhost:6432` (user: tsio, password: tsio, database: tsio)
 - MinIO on `localhost:9100` (API) and `localhost:9101` (console)
 - Adminer on `localhost:8081` for database management
 

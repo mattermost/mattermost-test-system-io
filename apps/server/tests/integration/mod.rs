@@ -1,4 +1,4 @@
-//! Integration tests for the Rust Report Server.
+//! Integration tests for Test System IO.
 
 mod auth_tests;
 mod detox_tests;

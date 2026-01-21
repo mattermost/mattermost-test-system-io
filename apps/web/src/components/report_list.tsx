@@ -1,14 +1,18 @@
+import { useState, useMemo } from 'react';
+import { Loader2 } from 'lucide-react';
 import { useReports, useClientConfig } from '../services/api';
 import { ReportCard } from './report_card';
 import { EmptyState } from './empty_state';
-import { useState } from 'react';
-import { Loader2 } from 'lucide-react';
 
 export function ReportList() {
   const [page, setPage] = useState(1);
   const limit = 100;
   const { data, isLoading, error } = useReports(page, limit);
   const { data: config } = useClientConfig();
+
+  // Memoize current timestamp - must be before early returns
+  // Updates when data changes (new fetch)
+  const now = useMemo(() => Date.now(), [data]);
 
   if (isLoading) {
     return (
@@ -47,6 +51,7 @@ export function ReportList() {
             report={report}
             rowNumber={(page - 1) * limit + index + 1}
             uploadTimeoutMs={config?.upload_timeout_ms}
+            now={now}
           />
         ))}
       </div>
@@ -59,15 +64,19 @@ export function ReportList() {
           </div>
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1}
+              aria-label="Go to previous page"
               className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
             >
               Previous
             </button>
             <button
+              type="button"
               onClick={() => setPage((p) => Math.min(pagination.total_pages, p + 1))}
               disabled={page >= pagination.total_pages}
+              aria-label="Go to next page"
               className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
             >
               Next

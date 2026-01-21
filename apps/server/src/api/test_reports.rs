@@ -673,7 +673,7 @@ pub async fn search_test_cases(
 ) -> AppResult<HttpResponse> {
     let report_id = path.into_inner();
     let search_query = query.into_inner();
-    let min_search_length = config.min_search_length;
+    let min_search_length = config.auth.min_search_length;
 
     // Validate query length
     let q = search_query.q.trim();

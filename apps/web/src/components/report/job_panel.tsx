@@ -83,6 +83,7 @@ export function JobPanel({ job }: JobPanelProps) {
         src={job.html_url}
         className="h-[700px] w-full bg-white"
         title={`HTML Report - ${job.display_name}`}
+        sandbox="allow-scripts allow-same-origin"
       />
     </div>
   );

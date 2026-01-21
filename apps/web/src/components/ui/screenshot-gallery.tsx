@@ -28,14 +28,18 @@ function getFilename(attachment: TestAttachment): string {
   return attachment.path.split('/').pop() ?? 'screenshot.png';
 }
 
-export function ScreenshotGallery({ screenshots, className }: ScreenshotGalleryProps) {
+export const ScreenshotGallery = React.memo(function ScreenshotGallery({ screenshots, className }: ScreenshotGalleryProps) {
   const [isOpen, setIsOpen] = React.useState(false);
   const [currentIndex, setCurrentIndex] = React.useState(0);
 
-  const openLightbox = (index: number) => {
+  const openLightbox = React.useCallback((index: number) => {
     setCurrentIndex(index);
     setIsOpen(true);
-  };
+  }, []);
+
+  const closeLightbox = React.useCallback(() => {
+    setIsOpen(false);
+  }, []);
 
   const goToPrevious = React.useCallback(() => {
     setCurrentIndex((prev) => (prev === 0 ? screenshots.length - 1 : prev - 1));
@@ -90,17 +94,17 @@ export function ScreenshotGallery({ screenshots, className }: ScreenshotGalleryP
       </div>
 
       {/* Lightbox Dialog */}
-      <Dialog open={isOpen} onOpenChange={setIsOpen}>
+      <Dialog open={isOpen} onOpenChange={closeLightbox}>
         <DialogPortal>
           <DialogOverlay className="bg-black/90" />
           <DialogPrimitive.Content
             className="fixed inset-0 z-50 flex items-center justify-center focus:outline-none"
-            onPointerDownOutside={() => setIsOpen(false)}
+            onPointerDownOutside={closeLightbox}
           >
             {/* Close button */}
             <button
               type="button"
-              onClick={() => setIsOpen(false)}
+              onClick={closeLightbox}
               className="absolute right-4 top-4 z-50 rounded-full bg-black/50 p-2 text-white transition-colors hover:bg-black/70 focus:outline-none focus:ring-2 focus:ring-white"
               aria-label="Close"
             >
@@ -187,4 +191,4 @@ export function ScreenshotGallery({ screenshots, className }: ScreenshotGalleryP
       </Dialog>
     </>
   );
-}
+});

@@ -1,4 +1,4 @@
-//! Domain models for the Rust Report Viewer.
+//! Domain models for Test System IO.
 
 pub mod api_key;
 pub mod job;

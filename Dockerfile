@@ -1,5 +1,5 @@
 # ==============================================================================
-# Rust Report Viewer - Production Dockerfile
+# Test System IO - Production Dockerfile
 # ==============================================================================
 # Multi-stage build for minimal image size
 # Final image: ~100MB (Rust binary + static assets + minimal runtime)
@@ -34,17 +34,17 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app/server
 
 # Create a dummy project to cache dependencies
-RUN cargo init --name rust-report-server
+RUN cargo init --name tsio
 COPY apps/server/Cargo.toml apps/server/Cargo.lock* ./
 
 # Build dependencies only (cache layer)
-RUN cargo build --release && rm -rf src target/release/deps/rust_report* target/release/server*
+RUN cargo build --release && rm -rf src target/release/deps/tsio* target/release/tsio*
 
 # Copy actual source code
 COPY apps/server/src ./src
 
 # Build the actual application
-RUN cargo build --release --bin server
+RUN cargo build --release --bin tsio
 
 # ------------------------------------------------------------------------------
 # Stage 3: Production Runtime
@@ -61,26 +61,22 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy the compiled binary
-COPY --from=backend-builder /app/server/target/release/server /app/server
+COPY --from=backend-builder /app/server/target/release/tsio /app/tsio
 
 # Copy frontend static assets
 COPY --from=frontend-builder /app/web/dist /app/static
 
-# Create data directories
-RUN mkdir -p /app/data/files /app/data/backups \
-    && chown -R appuser:appuser /app
+# Set ownership
+RUN chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
 
 # Environment variables with defaults
 ENV RUST_ENV=production \
-    RRV_HOST=0.0.0.0 \
-    RRV_PORT=8080 \
-    RRV_DATABASE_URL=file:/app/data/reports.db \
-    RRV_DATA_DIR=/app/data/files \
-    RRV_BACKUP_DIR=/app/data/backups \
-    RRV_STATIC_DIR=/app/static \
+    TSIO_HOST=0.0.0.0 \
+    TSIO_PORT=8080 \
+    TSIO_STATIC_DIR=/app/static \
     RUST_LOG=info,actix_web=info
 
 # Expose port
@@ -88,7 +84,7 @@ EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD ["/app/server", "--health-check"] || exit 1
+    CMD ["/app/tsio", "--health-check"] || exit 1
 
 # Run the server
-CMD ["/app/server"]
+CMD ["/app/tsio"]

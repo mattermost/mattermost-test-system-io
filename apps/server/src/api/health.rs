@@ -97,9 +97,9 @@ pub async fn ready(pool: web::Data<DbPool>) -> HttpResponse {
 #[get("/config")]
 pub async fn client_config(config: web::Data<Config>) -> HttpResponse {
     HttpResponse::Ok().json(ClientConfigResponse {
-        upload_timeout_ms: config.upload_timeout_ms,
-        enable_html_view: config.enable_html_view,
-        min_search_length: config.min_search_length,
+        upload_timeout_ms: config.upload.timeout_ms,
+        enable_html_view: config.auth.enable_html_view,
+        min_search_length: config.auth.min_search_length,
     })
 }
 

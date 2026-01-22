@@ -582,6 +582,8 @@ interface SuiteRowProps {
   suiteMatchedByPath: boolean;
 }
 
+const LOADING_DELAY_MS = 1000;
+
 const SuiteRow = memo(function SuiteRow({
   suite,
   reportId,
@@ -637,6 +639,17 @@ const SuiteRow = memo(function SuiteRow({
     enabled: isExpanded,
     staleTime: 60000,
   });
+
+  // Delay showing loader by 1 second - if data arrives faster, skip the loader entirely
+  const [showLoader, setShowLoader] = useState(false);
+  useEffect(() => {
+    if (isLoading) {
+      const timer = setTimeout(() => setShowLoader(true), LOADING_DELAY_MS);
+      return () => clearTimeout(timer);
+    } else {
+      setShowLoader(false);
+    }
+  }, [isLoading]);
 
   // Only show expanded content when data is ready (not loading)
   const showExpanded = isExpanded && isFetched && !isLoading;
@@ -702,7 +715,7 @@ const SuiteRow = memo(function SuiteRow({
             <span className="w-6 text-xs text-gray-400 dark:text-gray-500 text-right flex-shrink-0">
               {rowNumber}
             </span>
-            {isLoading ? (
+            {showLoader ? (
               <Loader2 className="h-4 w-4 flex-shrink-0 text-blue-500 animate-spin" />
             ) : (
               <ChevronRight

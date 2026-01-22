@@ -3,6 +3,7 @@
 pub mod api_key;
 pub mod job;
 pub mod report;
+pub mod ws_event;
 
 // Re-export commonly used types
 pub use api_key::{
@@ -21,3 +22,4 @@ pub use report::{
     Framework, GitHubMetadata, ListReportsQuery, RegisterReportRequest, RegisterReportResponse,
     ReportDetailResponse, ReportListResponse, ReportStatus, ReportSummary, TestStats,
 };
+pub use ws_event::{WsEvent, WsEventMessage};

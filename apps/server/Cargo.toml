@@ -12,6 +12,7 @@ actix-web = "4.12.1"
 actix-multipart = "0.7.2"
 actix-files = "0.6.9"
 actix-cors = "0.7.1"
+actix-ws = "0.3.1"
 
 # Async runtime (via actix)
 tokio = { version = "1.48.0", features = ["full"] }

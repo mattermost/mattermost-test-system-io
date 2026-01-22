@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use crate::db::test_results::{NewTestCase, NewTestSuite};
 use crate::db::DbPool;
-use crate::models::JobStatus;
-use crate::services::Storage;
+use crate::models::{JobStatus, WsEvent, WsEventMessage};
+use crate::services::{EventBroadcaster, Storage};
 
 // ============================================================================
 // Cypress / Mochawesome JSON Structures
@@ -252,7 +252,13 @@ struct ExtractedTestSuite {
 ///
 /// This function is called asynchronously after JSON files are uploaded.
 /// It fetches the files from S3, parses them, and stores the results.
-pub async fn extract_job(pool: &DbPool, storage: &Storage, job_id: Uuid, framework: &str) {
+pub async fn extract_job(
+    pool: &DbPool,
+    storage: &Storage,
+    broadcaster: &EventBroadcaster,
+    job_id: Uuid,
+    framework: &str,
+) {
     info!("Starting JSON extraction for job_id={}, framework={}", job_id, framework);
 
     // Get job to verify it exists and get report_id
@@ -457,9 +463,17 @@ pub async fn extract_job(pool: &DbPool, storage: &Storage, job_id: Uuid, framewo
         return;
     }
 
-    // Check if all jobs for the report are complete
+    // Broadcast job_updated event
     let report_id = job.test_report_id;
-    if let Err(e) = check_report_completion(pool, report_id).await {
+    let event = WsEventMessage::new(WsEvent::job_updated(report_id, job_id, "complete".to_string()));
+    broadcaster.send(event);
+
+    // Broadcast suites_available event
+    let suites_event = WsEventMessage::new(WsEvent::suites_available(report_id, suite_count));
+    broadcaster.send(suites_event);
+
+    // Check if all jobs for the report are complete
+    if let Err(e) = check_report_completion(pool, broadcaster, report_id).await {
         error!("Failed to check report {} completion: {}", report_id, e);
     }
 
@@ -1186,7 +1200,11 @@ fn count_statuses(test_cases: &[ExtractedTestCase]) -> (i32, i32, i32, i32, i32)
 }
 
 /// Check if all jobs for a report are complete and update report status.
-async fn check_report_completion(pool: &DbPool, report_id: Uuid) -> Result<(), String> {
+async fn check_report_completion(
+    pool: &DbPool,
+    broadcaster: &EventBroadcaster,
+    report_id: Uuid,
+) -> Result<(), String> {
     let report = pool
         .get_report_by_id(report_id)
         .await
@@ -1204,11 +1222,20 @@ async fn check_report_completion(pool: &DbPool, report_id: Uuid) -> Result<(), S
         pool.update_report_status(report_id, crate::models::ReportStatus::Complete)
             .await
             .map_err(|e| e.to_string())?;
+
+        // Broadcast report_updated event for completion
+        let event = WsEventMessage::new(WsEvent::report_updated(report_id));
+        broadcaster.send(event);
+
         info!(
             "Report {} marked as complete ({}/{} jobs)",
             report_id, completed, expected
         );
     } else {
+        // Broadcast report_updated for progress update
+        let event = WsEventMessage::new(WsEvent::report_updated(report_id));
+        broadcaster.send(event);
+
         info!(
             "Report {} progress: {}/{} jobs complete",
             report_id, completed, expected

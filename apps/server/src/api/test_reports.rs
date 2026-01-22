@@ -11,8 +11,9 @@ use crate::error::{AppError, AppResult};
 use crate::models::{
     Framework, GitHubMetadata, JobGitHubMetadata, JobStatus, JobSummary, ListReportsQuery,
     RegisterReportRequest, RegisterReportResponse, ReportDetailResponse, ReportListResponse,
-    ReportStatus, ReportSummary,
+    ReportStatus, ReportSummary, WsEvent, WsEventMessage,
 };
+use crate::services::EventBroadcaster;
 
 /// Response for test suite (simplified for report-level aggregation).
 #[derive(Debug, Serialize, ToSchema)]
@@ -167,6 +168,7 @@ pub struct SearchResponse {
 )]
 pub async fn register_report(
     pool: web::Data<DbPool>,
+    broadcaster: web::Data<EventBroadcaster>,
     body: web::Json<RegisterReportRequest>,
 ) -> AppResult<HttpResponse> {
     let req = body.into_inner();
@@ -192,6 +194,10 @@ pub async fn register_report(
         req.framework.as_str(),
         req.expected_jobs
     );
+
+    // Broadcast report_created event
+    let event = WsEventMessage::new(WsEvent::report_created(report_id));
+    broadcaster.send(event);
 
     let response = RegisterReportResponse {
         report_id: report.id,

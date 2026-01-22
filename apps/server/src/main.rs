@@ -27,7 +27,7 @@ use crate::api::ApiDoc;
 use crate::auth::AdminKey;
 use crate::config::Config;
 use crate::db::DbPool;
-use crate::services::Storage;
+use crate::services::{EventBroadcaster, Storage};
 
 /// SPA fallback handler - serves index.html for client-side routing.
 async fn spa_fallback(req: HttpRequest) -> ActixResult<NamedFile> {
@@ -110,6 +110,10 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to initialize S3 storage");
     info!("S3 storage initialized: bucket={}", config.storage.bucket);
 
+    // Initialize event broadcaster for WebSocket real-time updates
+    let event_broadcaster = EventBroadcaster::new();
+    info!("Event broadcaster initialized for WebSocket connections");
+
     // Prepare shared state
     let bind_address = config.server.bind_address();
     let admin_key = AdminKey::new(config.auth.admin_key.clone());
@@ -181,6 +185,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(admin_key.clone()))
             .app_data(web::Data::new(max_upload_size))
             .app_data(web::Data::new(client_config.clone()))
+            .app_data(web::Data::new(event_broadcaster.clone()))
             // JSON payload limit for upload_json endpoint
             .app_data(web::PayloadConfig::new(max_upload_size))
             // Configure API routes
@@ -190,6 +195,7 @@ async fn main() -> std::io::Result<()> {
                     .configure(api::configure_report_routes)
                     .configure(api::configure_job_routes)
                     .configure(api::configure_test_results_routes)
+                    .configure(api::configure_websocket_routes)
                     .configure(services::configure_auth_routes),
             )
             // Swagger UI

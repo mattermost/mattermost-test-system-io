@@ -17,10 +17,10 @@ use crate::models::{
     InitJobResponse, InitJsonRequest, InitJsonResponse, InitScreenshotsRequest,
     InitScreenshotsResponse, JobDetailResponse, JobGitHubMetadata, JobListResponse, JobStatus,
     JsonUploadProgress, JsonUploadResponse, QueryJobsParams, RejectedFile, ReportStatus,
-    ScreenshotUploadResponse,
+    ScreenshotUploadResponse, WsEvent, WsEventMessage,
 };
 use crate::services::extraction;
-use crate::services::Storage;
+use crate::services::{EventBroadcaster, Storage};
 
 /// Allowed file extensions for HTML report uploads.
 const ALLOWED_EXTENSIONS: &[&str] = &[
@@ -124,6 +124,7 @@ fn infer_content_type(path: &str) -> &'static str {
 )]
 pub async fn init_job(
     pool: web::Data<DbPool>,
+    broadcaster: web::Data<EventBroadcaster>,
     path: web::Path<Uuid>,
     body: web::Json<InitJobRequest>,
 ) -> AppResult<HttpResponse> {
@@ -180,7 +181,14 @@ pub async fn init_job(
     if current_status == Some(ReportStatus::Initializing) {
         pool.update_report_status(report_id, ReportStatus::Uploading)
             .await?;
+        // Broadcast report_updated event for status change
+        let event = WsEventMessage::new(WsEvent::report_updated(report_id));
+        broadcaster.send(event);
     }
+
+    // Broadcast job_created event
+    let event = WsEventMessage::new(WsEvent::job_created(report_id, job_id));
+    broadcaster.send(event);
 
     info!(
         "Job initialized: report_id={}, job_id={}, github_job_name={:?}",
@@ -1166,6 +1174,7 @@ pub async fn get_json_progress(
 pub async fn upload_json(
     pool: web::Data<DbPool>,
     storage: web::Data<Storage>,
+    broadcaster: web::Data<EventBroadcaster>,
     path: web::Path<(Uuid, Uuid)>,
     mut payload: Multipart,
 ) -> AppResult<HttpResponse> {
@@ -1259,15 +1268,20 @@ pub async fn upload_json(
         pool.update_job_status(job_id, JobStatus::Processing, None)
             .await?;
 
+        // Broadcast job_updated event for status change to processing
+        let event = WsEventMessage::new(WsEvent::job_updated(report_id, job_id, "processing".to_string()));
+        broadcaster.send(event);
+
         // Get report info for framework
         let report = pool.get_report_by_id(report_id).await?.unwrap();
 
         // Spawn extraction task (per-job, non-blocking)
         let pool_clone = pool.get_ref().clone();
         let storage_clone = storage.get_ref().clone();
+        let broadcaster_clone = broadcaster.get_ref().clone();
         let framework = report.framework.clone();
         tokio::spawn(async move {
-            extraction::extract_job(&pool_clone, &storage_clone, job_id, &framework).await;
+            extraction::extract_job(&pool_clone, &storage_clone, &broadcaster_clone, job_id, &framework).await;
         });
 
         extraction_triggered = true;

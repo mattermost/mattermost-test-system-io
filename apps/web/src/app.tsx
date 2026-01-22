@@ -3,6 +3,7 @@ import { HomePage } from './pages/home_page';
 import { JobReportPage } from './pages/job_report_page';
 import { ThemeProvider } from './contexts/theme_context';
 import { ThemeToggle } from './components/theme_toggle';
+import { ConnectionStatus } from './components/connection_status';
 
 export function App() {
   return (
@@ -17,7 +18,10 @@ export function App() {
                     Test System IO
                   </a>
                 </h1>
-                <ThemeToggle />
+                <div className="flex items-center gap-3">
+                  <ConnectionStatus />
+                  <ThemeToggle />
+                </div>
               </div>
             </div>
           </header>

@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './app';
+import { WebSocketProvider } from './contexts/websocket_context';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -21,7 +22,9 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      <WebSocketProvider>
+        <App />
+      </WebSocketProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

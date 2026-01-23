@@ -48,12 +48,16 @@ apps/server/data/
 # seed
 seed/
 
-#claude
-.claude
-
 # specify
 .specify/
 specs/
 
 # docker
 docker/data/
+
+# agents
+.claude/
+.agent/
+.agents/
+.cursor/
+.gemini/

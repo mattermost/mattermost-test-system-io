@@ -91,7 +91,6 @@ impl Storage {
     }
 
     /// Get the content type for a file based on its extension.
-    #[allow(dead_code)]
     pub fn content_type_for_extension(ext: &str) -> &'static str {
         match ext.to_lowercase().as_str() {
             "html" | "htm" => "text/html",
@@ -206,45 +205,6 @@ impl Storage {
         format!("reports/{}/jobs/{}/{}", report_id, job_id, filename)
     }
 
-    /// Build an S3 key for a report file (legacy format).
-    ///
-    /// # Arguments
-    /// * `report_id` - The report UUID
-    /// * `filename` - The filename within the report
-    #[allow(dead_code)]
-    pub fn report_key(report_id: &str, filename: &str) -> String {
-        format!("reports/{}/{}", report_id, filename)
-    }
-
-    /// Extract report ID and job ID from an S3 key.
-    ///
-    /// # Arguments
-    /// * `key` - The S3 object key in format: reports/{report_id}/jobs/{job_id}/{filename}
-    ///
-    /// # Returns
-    /// Tuple of (report_id, job_id) if the key matches the expected format
-    #[allow(dead_code)]
-    pub fn extract_job_ids(key: &str) -> Option<(&str, &str)> {
-        // Key format: reports/{report_id}/jobs/{job_id}/{filename}
-        let parts: Vec<&str> = key.splitn(5, '/').collect();
-        if parts.len() >= 4 && parts[0] == "reports" && parts[2] == "jobs" {
-            Some((parts[1], parts[3]))
-        } else {
-            None
-        }
-    }
-
-    /// Extract report ID from an S3 key.
-    #[allow(dead_code)]
-    pub fn extract_report_id(key: &str) -> Option<&str> {
-        // Key format: reports/{report_id}/... or reports/{report_id}/jobs/{job_id}/...
-        let parts: Vec<&str> = key.splitn(3, '/').collect();
-        if parts.len() >= 2 && parts[0] == "reports" {
-            Some(parts[1])
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -261,43 +221,6 @@ mod tests {
     fn test_job_key() {
         let key = Storage::job_key("report-123", "job-456", "index.html");
         assert_eq!(key, "reports/report-123/jobs/job-456/index.html");
-    }
-
-    #[test]
-    fn test_report_key() {
-        let key = Storage::report_key("abc-123", "index.html");
-        assert_eq!(key, "reports/abc-123/index.html");
-    }
-
-    #[test]
-    fn test_extract_job_ids() {
-        assert_eq!(
-            Storage::extract_job_ids("reports/report-123/jobs/job-456/index.html"),
-            Some(("report-123", "job-456"))
-        );
-        assert_eq!(
-            Storage::extract_job_ids("reports/report-123/jobs/job-456/assets/style.css"),
-            Some(("report-123", "job-456"))
-        );
-        assert_eq!(Storage::extract_job_ids("reports/abc-123/index.html"), None);
-        assert_eq!(Storage::extract_job_ids("other/path"), None);
-    }
-
-    #[test]
-    fn test_extract_report_id() {
-        assert_eq!(
-            Storage::extract_report_id("reports/abc-123/index.html"),
-            Some("abc-123")
-        );
-        assert_eq!(
-            Storage::extract_report_id("reports/abc-123/jobs/job-456/index.html"),
-            Some("abc-123")
-        );
-        assert_eq!(
-            Storage::extract_report_id("reports/abc-123/data/trace.zip"),
-            Some("abc-123")
-        );
-        assert_eq!(Storage::extract_report_id("other/path"), None);
     }
 
     #[test]

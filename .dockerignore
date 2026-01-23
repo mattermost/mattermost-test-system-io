@@ -35,9 +35,6 @@ apps/web/.env
 
 # Runtime data
 data/
-*.db
-*.db-shm
-*.db-wal
 
 # Test files (not needed in production)
 **/tests/

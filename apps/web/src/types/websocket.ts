@@ -115,37 +115,3 @@ export type WsEventMessage =
   | JobUpdatedEvent
   | SuitesAvailableEvent;
 
-// Type guard functions
-export function isReportCreatedEvent(event: WsEventMessage): event is ReportCreatedEvent {
-  return event.type === 'report_created';
-}
-
-export function isReportUpdatedEvent(event: WsEventMessage): event is ReportUpdatedEvent {
-  return event.type === 'report_updated';
-}
-
-export function isJobCreatedEvent(event: WsEventMessage): event is JobCreatedEvent {
-  return event.type === 'job_created';
-}
-
-export function isJobUpdatedEvent(event: WsEventMessage): event is JobUpdatedEvent {
-  return event.type === 'job_updated';
-}
-
-export function isSuitesAvailableEvent(event: WsEventMessage): event is SuitesAvailableEvent {
-  return event.type === 'suites_available';
-}
-
-// Helper to check if an event is related to a specific report
-export function isEventForReport(event: WsEventMessage, reportId: string): boolean {
-  switch (event.type) {
-    case 'report_created':
-    case 'report_updated':
-    case 'job_created':
-    case 'job_updated':
-    case 'suites_available':
-      return event.payload.report_id === reportId;
-    default:
-      return false;
-  }
-}

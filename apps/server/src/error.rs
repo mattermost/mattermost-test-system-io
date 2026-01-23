@@ -12,10 +12,6 @@ pub enum AppError {
     #[error("Database error: {0}")]
     Database(String),
 
-    /// File system operation failed
-    #[error("File system error: {0}")]
-    FileSystem(String),
-
     /// Resource not found
     #[error("{0} not found")]
     NotFound(String),
@@ -39,10 +35,6 @@ impl ResponseError for AppError {
             AppError::Database(_) => (
                 actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "DATABASE_ERROR",
-            ),
-            AppError::FileSystem(_) => (
-                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "FILESYSTEM_ERROR",
             ),
             AppError::NotFound(_) => (actix_web::http::StatusCode::NOT_FOUND, "NOT_FOUND"),
             AppError::InvalidInput(_) => {
@@ -81,12 +73,6 @@ impl fmt::Display for ErrorResponse {
 pub type AppResult<T> = Result<T, AppError>;
 
 // Conversion implementations for common error types
-
-impl From<std::io::Error> for AppError {
-    fn from(err: std::io::Error) -> Self {
-        AppError::FileSystem(err.to_string())
-    }
-}
 
 impl From<serde_json::Error> for AppError {
     fn from(err: serde_json::Error) -> Self {

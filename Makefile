@@ -9,8 +9,7 @@
         test test-server test-web lint lint-server lint-web fmt fmt-server fmt-web \
         clean clean-server clean-web clean-all check typecheck \
         db-reset run run-server run-web \
-        docker-build docker-build-no-cache docker-run docker-stop docker-logs \
-        docker-shell docker-up docker-down docker-down-volumes docker-clean \
+        docker-build docker-build-no-cache docker-up docker-down docker-down-volumes docker-logs \
         outdated outdated-server outdated-web update update-server update-web \
         check-target-size clean-debug-if-large clean-release-if-large \
         kill-ports kill-server-port kill-web-port kill-port
@@ -29,7 +28,6 @@ RESET := \033[0m
 ROOT_DIR := $(shell pwd)
 SERVER_DIR := $(ROOT_DIR)/apps/server
 WEB_DIR := $(ROOT_DIR)/apps/web
-DATA_DIR := $(ROOT_DIR)/data
 
 # Size threshold for auto-cleanup (5GB in KB for macOS compatibility)
 SIZE_THRESHOLD_GB := 5
@@ -205,8 +203,8 @@ lint-server: ## Run Clippy (Rust linter)
 	@echo "$(CYAN)Running Clippy...$(RESET)"
 	cd $(SERVER_DIR) && cargo clippy -- -D warnings
 
-lint-web: ## Run ESLint
-	@echo "$(CYAN)Running ESLint...$(RESET)"
+lint-web: ## Run oxlint
+	@echo "$(CYAN)Running oxlint...$(RESET)"
 	cd $(WEB_DIR) && npm run lint
 
 fmt: fmt-server fmt-web ## Format all code
@@ -215,7 +213,7 @@ fmt-server: ## Format Rust code
 	@echo "$(CYAN)Formatting Rust code...$(RESET)"
 	cd $(SERVER_DIR) && cargo fmt
 
-fmt-web: ## Format frontend code with Prettier
+fmt-web: ## Format frontend code with oxfmt
 	@echo "$(CYAN)Formatting frontend code...$(RESET)"
 	cd $(WEB_DIR) && npm run format
 
@@ -225,9 +223,9 @@ fmt-check-server: ## Check Rust formatting
 	@echo "$(CYAN)Checking Rust formatting...$(RESET)"
 	cd $(SERVER_DIR) && cargo fmt --check
 
-fmt-check-web: ## Check frontend formatting
+fmt-check-web: ## Check frontend formatting (oxfmt)
 	@echo "$(CYAN)Checking frontend formatting...$(RESET)"
-	cd $(WEB_DIR) && npx prettier --check "src/**/*.{ts,tsx}"
+	cd $(WEB_DIR) && npx oxfmt ./src --check
 
 check: check-server typecheck ## Run all checks (compile check + typecheck)
 
@@ -262,7 +260,7 @@ clean-web: ## Clean frontend build artifacts
 	rm -rf $(WEB_DIR)/coverage
 	@echo "$(GREEN)Cleaned frontend build artifacts$(RESET)"
 
-clean-all: clean-server-all clean-web-all clean-data ## Deep clean everything (WARNING: removes all caches)
+clean-all: clean-server-all clean-web-all ## Deep clean everything (WARNING: removes all caches)
 	@echo "$(GREEN)All build artifacts and caches removed$(RESET)"
 
 clean-server-all: ## Deep clean Rust (removes entire target directory)
@@ -277,15 +275,6 @@ clean-web-all: ## Deep clean frontend (removes node_modules)
 	rm -rf $(WEB_DIR)/dist
 	rm -rf $(WEB_DIR)/coverage
 	@echo "$(GREEN)Removed node_modules and build artifacts$(RESET)"
-
-clean-data: ## Clean runtime data (reports, backups, database)
-	@echo "$(YELLOW)Cleaning runtime data...$(RESET)"
-	rm -rf $(DATA_DIR)/reports/*
-	rm -rf $(DATA_DIR)/backups/*
-	rm -f $(DATA_DIR)/*.db
-	rm -f $(DATA_DIR)/*.db-shm
-	rm -f $(DATA_DIR)/*.db-wal
-	@echo "$(GREEN)Cleaned runtime data$(RESET)"
 
 # ============================================================================
 # Size Analysis & Maintenance
@@ -381,12 +370,11 @@ update-web-latest: ## Update npm dependencies to latest (may break semver)
 # Database
 # ============================================================================
 
-db-reset: ## Reset database (delete and recreate on next run)
+db-reset: ## Reset database (removes PostgreSQL Docker volumes)
 	@echo "$(YELLOW)Resetting database...$(RESET)"
-	rm -f $(DATA_DIR)/*.db
-	rm -f $(DATA_DIR)/*.db-shm
-	rm -f $(DATA_DIR)/*.db-wal
-	@echo "$(GREEN)Database files removed. Will be recreated on next server start.$(RESET)"
+	@echo "$(YELLOW)Stopping services and removing database volumes...$(RESET)"
+	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down -v
+	@echo "$(GREEN)Database volumes removed. Run 'make docker-up' to recreate.$(RESET)"
 
 # ============================================================================
 # Documentation
@@ -420,32 +408,7 @@ docker-build-no-cache: ## Build Docker image without cache
 	@echo "$(CYAN)Building Docker image (no cache)...$(RESET)"
 	docker build --no-cache -t tsio:latest .
 
-docker-run: ## Run Docker container (requires API_KEY env var)
-	@echo "$(CYAN)Starting Docker container...$(RESET)"
-	@if [ -z "$$API_KEY" ]; then \
-		echo "$(RED)Error: API_KEY environment variable is required$(RESET)"; \
-		echo "Usage: API_KEY=your-key make docker-run"; \
-		exit 1; \
-	fi
-	docker run -d \
-		--name tsio \
-		-p 8080:8080 \
-		-e API_KEY="$$API_KEY" \
-		-v tsio_data:/app/data \
-		tsio:latest
-
-docker-stop: ## Stop Docker container
-	@echo "$(CYAN)Stopping Docker container...$(RESET)"
-	docker stop tsio 2>/dev/null || true
-	docker rm tsio 2>/dev/null || true
-
-docker-logs: ## Show Docker container logs
-	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml logs -f
-
-docker-shell: ## Open shell in running container
-	docker exec -it tsio /bin/bash
-
-docker-up: ## Start with docker-compose
+docker-up: ## Start dev services (PostgreSQL + MinIO + Adminer)
 	@echo "$(CYAN)Starting docker (PostgreSQL + MinIO + Adminer)...$(RESET)"
 	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml up -d
 	@echo ""
@@ -454,31 +417,26 @@ docker-up: ## Start with docker-compose
 	@echo "  MinIO:      localhost:9100 (UI: http://localhost:9101)"
 	@echo "  Adminer:    http://localhost:8081"
 
-docker-down: ## Stop docker-compose services
+docker-down: ## Stop dev services
 	@echo "$(CYAN)Stopping docker-compose services...$(RESET)"
 	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down
 
-docker-down-volumes: ## Stop and remove volumes
+docker-down-volumes: ## Stop dev services and remove volumes
 	@echo "$(YELLOW)Stopping services and removing volumes...$(RESET)"
 	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down -v
 
-docker-clean: ## Remove Docker image and volumes
-	@echo "$(YELLOW)Cleaning Docker resources...$(RESET)"
-	docker stop tsio 2>/dev/null || true
-	docker rm tsio 2>/dev/null || true
-	docker rmi tsio:latest 2>/dev/null || true
-	docker volume rm tsio_data 2>/dev/null || true
-	@echo "$(GREEN)Docker resources cleaned$(RESET)"
+docker-logs: ## Show dev services logs
+	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml logs -f
 
 # ============================================================================
 # Utilities
 # ============================================================================
 
-setup: install setup-env setup-dirs ## Initial project setup
+setup: install setup-env ## Initial project setup
 	@echo "$(GREEN)Project setup complete!$(RESET)"
 	@echo ""
 	@echo "Next steps:"
-	@echo "  1. Copy .env.example to .env and configure"
+	@echo "  1. Run 'make docker-up' to start PostgreSQL and MinIO"
 	@echo "  2. Run 'make dev-server' in one terminal"
 	@echo "  3. Run 'make dev-web' in another terminal"
 
@@ -496,11 +454,6 @@ setup-env: ## Create .env files from examples
 		echo "$(YELLOW)apps/web/.env already exists, skipping$(RESET)"; \
 	fi
 
-setup-dirs: ## Create required directories
-	@mkdir -p $(DATA_DIR)/reports
-	@mkdir -p $(DATA_DIR)/backups
-	@echo "$(GREEN)Created data directories$(RESET)"
-
 info: ## Show project information
 	@echo ""
 	@echo "$(CYAN)Project Information$(RESET)"
@@ -517,7 +470,6 @@ info: ## Show project information
 	@echo "$(GREEN)Directories:$(RESET)"
 	@echo "  Server: $(SERVER_DIR)"
 	@echo "  Web: $(WEB_DIR)"
-	@echo "  Data: $(DATA_DIR)"
 	@echo ""
 	@if [ -d "$(SERVER_DIR)/target" ]; then \
 		echo "$(GREEN)Rust target size:$(RESET) $$(du -sh $(SERVER_DIR)/target | cut -f1)"; \

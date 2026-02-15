@@ -66,9 +66,10 @@ impl DbPool {
                 deleted_at: Set(None),
             };
 
-            let result = model.insert(self.connection()).await.map_err(|e| {
-                AppError::Database(format!("Failed to insert JSON file: {}", e))
-            })?;
+            let result = model
+                .insert(self.connection())
+                .await
+                .map_err(|e| AppError::Database(format!("Failed to insert JSON file: {}", e)))?;
 
             inserted.push(result);
         }
@@ -124,7 +125,9 @@ impl DbPool {
             .filter(json_file::Column::DeletedAt.is_null())
             .exec(self.connection())
             .await
-            .map_err(|e| AppError::Database(format!("Failed to mark JSON files uploaded: {}", e)))?;
+            .map_err(|e| {
+                AppError::Database(format!("Failed to mark JSON files uploaded: {}", e))
+            })?;
 
         Ok(result.rows_affected)
     }
@@ -142,10 +145,9 @@ impl DbPool {
         active.extraction_error = Set(None);
         active.updated_at = Set(Utc::now());
 
-        let result = active
-            .update(self.connection())
-            .await
-            .map_err(|e| AppError::Database(format!("Failed to mark JSON file extracted: {}", e)))?;
+        let result = active.update(self.connection()).await.map_err(|e| {
+            AppError::Database(format!("Failed to mark JSON file extracted: {}", e))
+        })?;
 
         Ok(result)
     }
@@ -158,7 +160,9 @@ impl DbPool {
             .filter(json_file::Column::DeletedAt.is_null())
             .count(self.connection())
             .await
-            .map_err(|e| AppError::Database(format!("Failed to count pending JSON files: {}", e)))?;
+            .map_err(|e| {
+                AppError::Database(format!("Failed to count pending JSON files: {}", e))
+            })?;
 
         Ok(count)
     }

@@ -280,7 +280,6 @@ pub struct JobStatusResponse {
     pub jobs_expected: Option<i32>,
 }
 
-
 /// Job summary for report detail responses.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct JobSummary {

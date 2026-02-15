@@ -15,9 +15,9 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import type { TestSuite, ReportStats, TestSpec, TestSpecListResponse, JobInfo } from '../types';
-import { ScreenshotGallery } from './ui/screenshot-gallery';
-import { useSearchTestCases, useClientConfig, type SearchSuiteResult } from '../services/api';
+import type { TestSuite, ReportStats, TestSpec, TestSpecListResponse, JobInfo } from '@/types';
+import { ScreenshotGallery } from '@/components/ui/screenshot-gallery';
+import { useSearchTestCases, useClientConfig, type SearchSuiteResult } from '@/services/api';
 import {
   StatPill,
   ProgressBar,
@@ -51,9 +51,9 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
   const jobDropdownRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Get client config for min_search_length
+  // Get client config for search_min_length
   const { data: clientConfig } = useClientConfig();
-  const minSearchLength = clientConfig?.min_search_length ?? 2;
+  const minSearchLength = clientConfig?.search_min_length ?? 2;
 
   // Single debounce for both client-side filtering and API calls (500ms)
   useEffect(() => {
@@ -68,7 +68,7 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
     reportId,
     debouncedSearch,
     minSearchLength,
-    500 // Get more results for better grouping
+    500, // Get more results for better grouping
   );
 
   // Update effectiveSearch only when ready to render:
@@ -97,7 +97,10 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
   }, [searchData?.results]);
 
   // Check if we have active API search results (use effectiveSearch for consistency)
-  const hasApiSearchResults = effectiveSearch.length >= minSearchLength && searchData?.results && searchData.results.length > 0;
+  const hasApiSearchResults =
+    effectiveSearch.length >= minSearchLength &&
+    searchData?.results &&
+    searchData.results.length > 0;
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -127,10 +130,7 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
 
   // Normalize search query for case-insensitive client-side matching
   // Uses effectiveSearch which only updates when API is ready (single render)
-  const normalizedSearch = useMemo(
-    () => effectiveSearch.toLowerCase(),
-    [effectiveSearch]
-  );
+  const normalizedSearch = useMemo(() => effectiveSearch.toLowerCase(), [effectiveSearch]);
 
   // Filter and sort suites by start_time (actual test execution time)
   // Two-tier search:
@@ -185,7 +185,14 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
         }
         return 0;
       });
-  }, [suites, selectedJobs, normalizedSearch, statusFilter, hasApiSearchResults, searchResultsBySuite]);
+  }, [
+    suites,
+    selectedJobs,
+    normalizedSearch,
+    statusFilter,
+    hasApiSearchResults,
+    searchResultsBySuite,
+  ]);
 
   // Toggle job selection
   const toggleJob = (jobId: string) => {
@@ -208,9 +215,8 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
 
   // Calculate totals from suites (use filtered suites for accurate counts)
   const { totals, totalTests } = useMemo(() => {
-    const suitesForTotals = selectedJobs.size > 0
-      ? suites.filter((s) => s.job_id && selectedJobs.has(s.job_id))
-      : suites;
+    const suitesForTotals =
+      selectedJobs.size > 0 ? suites.filter((s) => s.job_id && selectedJobs.has(s.job_id)) : suites;
     const calculated = suitesForTotals.reduce(
       (acc, suite) => ({
         passed: acc.passed + (suite.passed_count ?? 0),
@@ -218,7 +224,7 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
         flaky: acc.flaky + (suite.flaky_count ?? 0),
         skipped: acc.skipped + (suite.skipped_count ?? 0),
       }),
-      { passed: 0, failed: 0, flaky: 0, skipped: 0 }
+      { passed: 0, failed: 0, flaky: 0, skipped: 0 },
     );
     return {
       totals: calculated,
@@ -320,7 +326,7 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
           {/* Section 1: Title (fixed width) */}
           <h3 className="w-40 flex-shrink-0 text-sm font-medium text-gray-900 dark:text-white">
             Test Suites ({filteredSuites.length}
-            {(statusFilter !== 'all' || normalizedSearch) ? ` of ${suites.length}` : ''})
+            {statusFilter !== 'all' || normalizedSearch ? ` of ${suites.length}` : ''})
           </h3>
 
           {/* Section 2: Search input (fixed width, centered) */}
@@ -438,59 +444,67 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
 
             {/* Job filter dropdown - only show when multiple jobs */}
             {jobs && jobs.length > 1 && (
-            <div ref={jobDropdownRef} className="relative">
-              <button
-                type="button"
-                onClick={() => setJobDropdownOpen(!jobDropdownOpen)}
-                className={`cursor-pointer inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition-colors w-28 justify-center ${
-                  selectedJobs.size > 0
-                    ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600'
-                }`}
-              >
-                <Filter className="h-3 w-3" />
-                {selectedJobs.size > 0 ? `${selectedJobs.size} job${selectedJobs.size > 1 ? 's' : ''}` : 'All Jobs'}
-                <ChevronDown className={`h-3 w-3 transition-transform ${jobDropdownOpen ? 'rotate-180' : ''}`} />
-              </button>
+              <div ref={jobDropdownRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setJobDropdownOpen(!jobDropdownOpen)}
+                  className={`cursor-pointer inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition-colors w-28 justify-center ${
+                    selectedJobs.size > 0
+                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600'
+                  }`}
+                >
+                  <Filter className="h-3 w-3" />
+                  {selectedJobs.size > 0
+                    ? `${selectedJobs.size} job${selectedJobs.size > 1 ? 's' : ''}`
+                    : 'All Jobs'}
+                  <ChevronDown
+                    className={`h-3 w-3 transition-transform ${jobDropdownOpen ? 'rotate-180' : ''}`}
+                  />
+                </button>
 
-              {jobDropdownOpen && (
-                <div className="absolute right-0 z-10 mt-1 w-80 max-w-[90vw] rounded-md border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
-                  <div className="p-2 max-h-64 overflow-y-auto">
-                    <button
-                      type="button"
-                      onClick={selectAllJobs}
-                      className={`w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
-                        selectedJobs.size === 0
-                          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                          : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700'
-                      }`}
-                    >
-                      All Jobs
-                    </button>
-                    <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-                    {[...jobs].sort((a, b) => a.job_number - b.job_number).map((job) => (
+                {jobDropdownOpen && (
+                  <div className="absolute right-0 z-10 mt-1 w-80 max-w-[90vw] rounded-md border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
+                    <div className="p-2 max-h-64 overflow-y-auto">
                       <button
-                        key={job.job_id}
                         type="button"
-                        onClick={() => toggleJob(job.job_id)}
+                        onClick={selectAllJobs}
                         className={`w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
-                          selectedJobs.has(job.job_id)
+                          selectedJobs.size === 0
                             ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
                             : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700'
                         }`}
                       >
-                        <span className="flex items-center gap-2 min-w-0">
-                          <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-gray-200 px-1 text-[10px] font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-300">
-                            {job.job_number}
-                          </span>
-                          <span className="truncate" title={job.job_name}>{job.job_name}</span>
-                        </span>
+                        All Jobs
                       </button>
-                    ))}
+                      <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                      {[...jobs]
+                        .sort((a, b) => a.job_number - b.job_number)
+                        .map((job) => (
+                          <button
+                            key={job.job_id}
+                            type="button"
+                            onClick={() => toggleJob(job.job_id)}
+                            className={`w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
+                              selectedJobs.has(job.job_id)
+                                ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                                : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700'
+                            }`}
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-gray-200 px-1 text-[10px] font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-300">
+                                {job.job_number}
+                              </span>
+                              <span className="truncate" title={job.job_name}>
+                                {job.job_name}
+                              </span>
+                            </span>
+                          </button>
+                        ))}
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -506,8 +520,8 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
             {filteredSuites.map((suite, index) => {
               // Check if suite itself matched by title/file_path (vs matched by API test cases)
               const suiteMatchedByPath = normalizedSearch
-                ? (suite.title?.toLowerCase().includes(normalizedSearch) ||
-                   suite.file_path?.toLowerCase().includes(normalizedSearch))
+                ? suite.title?.toLowerCase().includes(normalizedSearch) ||
+                  suite.file_path?.toLowerCase().includes(normalizedSearch)
                 : false;
               return (
                 <SuiteRow
@@ -629,7 +643,11 @@ const SuiteRow = memo(function SuiteRow({
   }, [suite.flaky_count, suite.failed_count, suite.skipped_count, suite.passed_count]);
 
   // Fetch specs when expanded
-  const { data: specsData, isLoading, isFetched } = useQuery<TestSpecListResponse>({
+  const {
+    data: specsData,
+    isLoading,
+    isFetched,
+  } = useQuery<TestSpecListResponse>({
     queryKey: ['suite-specs', reportId, suite.id],
     queryFn: async () => {
       const res = await fetch(`${API_BASE}/reports/${reportId}/suites/${suite.id}/specs`);
@@ -852,12 +870,9 @@ const SpecRow = memo(function SpecRow({ spec, rowLabel, searchQuery }: SpecRowPr
     const singleHasContent =
       !multipleAttempts &&
       latest &&
-      (latest.errors_json ||
-        (latest.attachments && latest.attachments.length > 0));
+      (latest.errors_json || (latest.attachments && latest.attachments.length > 0));
     const hasExpandable =
-      multipleAttempts ||
-      singleHasContent ||
-      (spec.screenshots && spec.screenshots.length > 0);
+      multipleAttempts || singleHasContent || (spec.screenshots && spec.screenshots.length > 0);
     const expandable = hasExpandable && (!spec.ok || flaky || skipped);
 
     return {
@@ -946,15 +961,11 @@ const SpecRow = memo(function SpecRow({ spec, rowLabel, searchQuery }: SpecRowPr
                     {formatDuration(result.duration_ms)}
                   </span>
                   {result.project_name && result.project_name !== 'default' && (
-                    <span className="text-gray-600 dark:text-gray-400">
-                      {result.project_name}
-                    </span>
+                    <span className="text-gray-600 dark:text-gray-400">{result.project_name}</span>
                   )}
                 </div>
                 {/* Inline error display for this attempt */}
-                {result.errors_json && (
-                  <InlineErrorDisplay errorsJson={result.errors_json} />
-                )}
+                {result.errors_json && <InlineErrorDisplay errorsJson={result.errors_json} />}
                 {/* Attachments (screenshots) for this attempt */}
                 <AttachmentsDisplay attachments={result.attachments} />
               </div>
@@ -965,9 +976,7 @@ const SpecRow = memo(function SpecRow({ spec, rowLabel, searchQuery }: SpecRowPr
       {/* Show errors and attachments for single-attempt tests */}
       {isExpanded && singleResultHasContent && latestResult && (
         <div className="ml-16 mt-1 space-y-2">
-          {latestResult.errors_json && (
-            <InlineErrorDisplay errorsJson={latestResult.errors_json} />
-          )}
+          {latestResult.errors_json && <InlineErrorDisplay errorsJson={latestResult.errors_json} />}
           <AttachmentsDisplay attachments={latestResult.attachments} />
         </div>
       )}

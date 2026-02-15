@@ -10,8 +10,8 @@ import {
 } from 'lucide-react';
 import { Dialog, DialogPortal, DialogOverlay } from './dialog';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { cn } from '../../lib/utils';
-import type { TestAttachment } from '../../types';
+import { cn } from '@/lib/utils';
+import type { TestAttachment } from '@/types';
 
 interface ScreenshotGalleryProps {
   screenshots: TestAttachment[];
@@ -28,7 +28,10 @@ function getFilename(attachment: TestAttachment): string {
   return attachment.path.split('/').pop() ?? 'screenshot.png';
 }
 
-export const ScreenshotGallery = React.memo(function ScreenshotGallery({ screenshots, className }: ScreenshotGalleryProps) {
+export const ScreenshotGallery = React.memo(function ScreenshotGallery({
+  screenshots,
+  className,
+}: ScreenshotGalleryProps) {
   const [isOpen, setIsOpen] = React.useState(false);
   const [currentIndex, setCurrentIndex] = React.useState(0);
 
@@ -177,7 +180,6 @@ export const ScreenshotGallery = React.memo(function ScreenshotGallery({ screens
                   )}
                 </div>
               </div>
-
             </div>
 
             {/* Keyboard hint */}

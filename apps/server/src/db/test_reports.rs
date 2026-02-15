@@ -96,18 +96,20 @@ impl DbPool {
             select = select.filter(report::Column::Status.eq(status.as_str()));
         }
 
-        // JSONB filtering for github_repo
-        if let Some(ref github_repo) = query.github_repo {
-            select = select.filter(
-                Expr::cust_with_values("github_metadata->>'repo' = $1", [github_repo.clone()]),
-            );
+        // JSONB filtering for repository
+        if let Some(ref repository) = query.repository {
+            select = select.filter(Expr::cust_with_values(
+                "github_metadata->>'repository' = $1",
+                [repository.clone()],
+            ));
         }
 
-        // JSONB filtering for github_branch
-        if let Some(ref github_branch) = query.github_branch {
-            select = select.filter(
-                Expr::cust_with_values("github_metadata->>'branch' = $1", [github_branch.clone()]),
-            );
+        // JSONB filtering for ref
+        if let Some(ref git_ref) = query.git_ref {
+            select = select.filter(Expr::cust_with_values(
+                "github_metadata->>'ref' = $1",
+                [git_ref.clone()],
+            ));
         }
 
         // Count total before pagination

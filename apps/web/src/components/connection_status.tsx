@@ -7,8 +7,8 @@
  */
 
 import { useState, useEffect } from 'react';
-import { useWebSocketStatus } from '../contexts/websocket_context';
-import type { ConnectionStatus as Status } from '../services/websocket';
+import { useWebSocketStatus } from '@/contexts/websocket_context';
+import type { ConnectionStatus as Status } from '@/services/websocket';
 
 const statusConfig: Record<
   Status,

@@ -34,8 +34,10 @@ impl MigrationTrait for Migration {
                     status VARCHAR(20) NOT NULL DEFAULT 'initializing'
                         CHECK (status IN ('initializing', 'uploading', 'processing', 'complete', 'failed')),
 
-                    -- Metadata as JSONB (flexible schema)
-                    -- {repo, branch, commit, pr_number, pr_author, workflow, run_id, run_attempt}
+                    -- Metadata as JSONB (flexible schema, field names match GitHub OIDC claims)
+                    -- {repository, repository_owner, ref, ref_type, sha, actor, workflow,
+                    --  event_name, run_id, run_number, run_attempt, head_ref, base_ref,
+                    --  job_workflow_ref, pr_number}
                     github_metadata JSONB,
 
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

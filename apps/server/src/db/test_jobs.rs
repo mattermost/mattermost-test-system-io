@@ -135,10 +135,9 @@ impl DbPool {
         active.html_upload_status = Set(status.map(|s| s.to_string()));
         active.updated_at = Set(Utc::now());
 
-        let result = active
-            .update(self.connection())
-            .await
-            .map_err(|e| AppError::Database(format!("Failed to update html_upload_status: {}", e)))?;
+        let result = active.update(self.connection()).await.map_err(|e| {
+            AppError::Database(format!("Failed to update html_upload_status: {}", e))
+        })?;
 
         Ok(result)
     }
@@ -158,12 +157,9 @@ impl DbPool {
         active.screenshots_upload_status = Set(status.map(|s| s.to_string()));
         active.updated_at = Set(Utc::now());
 
-        let result = active
-            .update(self.connection())
-            .await
-            .map_err(|e| {
-                AppError::Database(format!("Failed to update screenshots_upload_status: {}", e))
-            })?;
+        let result = active.update(self.connection()).await.map_err(|e| {
+            AppError::Database(format!("Failed to update screenshots_upload_status: {}", e))
+        })?;
 
         Ok(result)
     }
@@ -183,12 +179,9 @@ impl DbPool {
         active.json_upload_status = Set(status.map(|s| s.to_string()));
         active.updated_at = Set(Utc::now());
 
-        let result = active
-            .update(self.connection())
-            .await
-            .map_err(|e| {
-                AppError::Database(format!("Failed to update json_upload_status: {}", e))
-            })?;
+        let result = active.update(self.connection()).await.map_err(|e| {
+            AppError::Database(format!("Failed to update json_upload_status: {}", e))
+        })?;
 
         Ok(result)
     }
@@ -283,11 +276,9 @@ impl DbPool {
             .map(|id| sea_orm::Value::Uuid(Some(*id)))
             .collect();
 
-        let results: Vec<CountResult> = CountResult::find_by_statement(Statement::from_sql_and_values(
-            sea_orm::DatabaseBackend::Postgres,
-            &sql,
-            values,
-        ))
+        let results: Vec<CountResult> = CountResult::find_by_statement(
+            Statement::from_sql_and_values(sea_orm::DatabaseBackend::Postgres, &sql, values),
+        )
         .all(self.connection())
         .await
         .map_err(|e| AppError::Database(format!("Failed to batch count completed jobs: {}", e)))?;

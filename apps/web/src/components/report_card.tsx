@@ -1,7 +1,7 @@
 import { memo, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { FlaskConical, ChevronRight, Clock, Timer } from 'lucide-react';
-import type { ReportSummary } from '../types';
+import type { ReportSummary } from '@/types';
 import {
   StatusIcon,
   JobsStatusIcon,
@@ -26,37 +26,44 @@ interface ReportCardProps {
 
 const DEFAULT_UPLOAD_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour default
 
-export const ReportCard = memo(function ReportCard({ report, rowNumber, uploadTimeoutMs, now }: ReportCardProps) {
+export const ReportCard = memo(function ReportCard({
+  report,
+  rowNumber,
+  uploadTimeoutMs,
+  now,
+}: ReportCardProps) {
   // Memoize derived values
-  const { frameworkDisplay, allJobsComplete, isTimedOut, passRate, passRateColorClass } = useMemo(() => {
-    // Framework display name
-    const framework = {
-      playwright: 'Playwright',
-      cypress: 'Cypress',
-      detox: 'Detox',
-    }[report.framework] || report.framework;
+  const { frameworkDisplay, allJobsComplete, isTimedOut, passRate, passRateColorClass } =
+    useMemo(() => {
+      // Framework display name
+      const framework =
+        {
+          playwright: 'Playwright',
+          cypress: 'Cypress',
+          detox: 'Detox',
+        }[report.framework] || report.framework;
 
-    // Jobs progress and upload status
-    const complete = report.jobs_complete >= report.expected_jobs;
+      // Jobs progress and upload status
+      const complete = report.jobs_complete >= report.expected_jobs;
 
-    // Check if report is timed out (not complete after timeout period)
-    const timeoutMs = uploadTimeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS;
-    const createdAt = new Date(report.created_at).getTime();
-    const currentTime = now ?? Date.now();
-    const timedOut = !complete && (currentTime - createdAt > timeoutMs);
+      // Check if report is timed out (not complete after timeout period)
+      const timeoutMs = uploadTimeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS;
+      const createdAt = new Date(report.created_at).getTime();
+      const currentTime = now ?? Date.now();
+      const timedOut = !complete && currentTime - createdAt > timeoutMs;
 
-    // Pass rate calculation
-    const rate = report.test_stats ? calculatePassRate(report.test_stats) : null;
-    const rateColorClass = getPassRateColorClass(rate);
+      // Pass rate calculation
+      const rate = report.test_stats ? calculatePassRate(report.test_stats) : null;
+      const rateColorClass = getPassRateColorClass(rate);
 
-    return {
-      frameworkDisplay: framework,
-      allJobsComplete: complete,
-      isTimedOut: timedOut,
-      passRate: rate,
-      passRateColorClass: rateColorClass,
-    };
-  }, [report, uploadTimeoutMs, now]);
+      return {
+        frameworkDisplay: framework,
+        allJobsComplete: complete,
+        isTimedOut: timedOut,
+        passRate: rate,
+        passRateColorClass: rateColorClass,
+      };
+    }, [report, uploadTimeoutMs, now]);
 
   return (
     <Link
@@ -95,7 +102,9 @@ export const ReportCard = memo(function ReportCard({ report, rowNumber, uploadTi
           <div className="flex flex-col items-end gap-0.5">
             {report.test_stats && <TestStatsDisplay stats={report.test_stats} compact />}
             {passRate !== null && (
-              <span className={`text-center rounded-md px-1.5 py-0.5 text-xs font-medium ${passRateColorClass}`}>
+              <span
+                className={`text-center rounded-md px-1.5 py-0.5 text-xs font-medium ${passRateColorClass}`}
+              >
                 {passRate}%
               </span>
             )}
@@ -140,10 +149,14 @@ export const ReportCard = memo(function ReportCard({ report, rowNumber, uploadTi
 
           {/* Duration (sm to <lg) + Short Date */}
           <div className="flex-shrink-0 lg:hidden">
-            {report.test_stats && report.test_stats.duration_ms != null && report.test_stats.duration_ms > 0 ? (
+            {report.test_stats &&
+            report.test_stats.duration_ms != null &&
+            report.test_stats.duration_ms > 0 ? (
               <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
                 <Timer className="h-3 w-3 text-gray-400 dark:text-gray-500" />
-                {report.expected_jobs > 1 && report.test_stats.wall_clock_ms && report.test_stats.wall_clock_ms > 1000
+                {report.expected_jobs > 1 &&
+                report.test_stats.wall_clock_ms &&
+                report.test_stats.wall_clock_ms > 1000
                   ? formatDuration(report.test_stats.wall_clock_ms)
                   : formatDuration(report.test_stats.duration_ms)}
               </div>
@@ -157,14 +170,18 @@ export const ReportCard = memo(function ReportCard({ report, rowNumber, uploadTi
 
           {/* Wall Clock + Duration (lg+) + Full Date */}
           <div className="hidden lg:block flex-shrink-0">
-            {report.test_stats && report.test_stats.duration_ms != null && report.test_stats.duration_ms > 0 ? (
+            {report.test_stats &&
+            report.test_stats.duration_ms != null &&
+            report.test_stats.duration_ms > 0 ? (
               <div className="flex flex-col gap-0.5 text-xs text-gray-500 dark:text-gray-400">
-                {report.expected_jobs > 1 && report.test_stats.wall_clock_ms && report.test_stats.wall_clock_ms > 1000 && (
-                  <div className="flex items-center gap-1">
-                    <Clock className="h-3 w-3 text-gray-400 dark:text-gray-500" />
-                    {formatDuration(report.test_stats.wall_clock_ms)}
-                  </div>
-                )}
+                {report.expected_jobs > 1 &&
+                  report.test_stats.wall_clock_ms &&
+                  report.test_stats.wall_clock_ms > 1000 && (
+                    <div className="flex items-center gap-1">
+                      <Clock className="h-3 w-3 text-gray-400 dark:text-gray-500" />
+                      {formatDuration(report.test_stats.wall_clock_ms)}
+                    </div>
+                  )}
                 <div className="flex items-center gap-1">
                   <Timer className="h-3 w-3 text-gray-400 dark:text-gray-500" />
                   {formatDuration(report.test_stats.duration_ms)}
@@ -179,9 +196,10 @@ export const ReportCard = memo(function ReportCard({ report, rowNumber, uploadTi
           </div>
 
           {/* Git context */}
-          {report.github_metadata && (report.github_metadata.repo || report.github_metadata.pr_number) && (
-            <GitMetadataDesktop metadata={report.github_metadata} />
-          )}
+          {report.github_metadata &&
+            (report.github_metadata.repository || report.github_metadata.pr_number) && (
+              <GitMetadataDesktop metadata={report.github_metadata} />
+            )}
         </div>
 
         {/* Right section */}
@@ -189,7 +207,9 @@ export const ReportCard = memo(function ReportCard({ report, rowNumber, uploadTi
           <div className="flex flex-col items-end gap-0.5 md:flex-row md:items-center md:gap-2 flex-nowrap">
             {report.test_stats && <TestStatsDisplay stats={report.test_stats} />}
             {passRate !== null && (
-              <span className={`w-12 text-center rounded-md px-2 py-0.5 text-xs font-medium ${passRateColorClass}`}>
+              <span
+                className={`w-12 text-center rounded-md px-2 py-0.5 text-xs font-medium ${passRateColorClass}`}
+              >
                 {passRate}%
               </span>
             )}

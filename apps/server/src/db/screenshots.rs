@@ -3,7 +3,9 @@
 //! Follows the same request-then-transfer pattern as job_files.
 
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+};
 use uuid::Uuid;
 
 use crate::entity::screenshot::{self, ActiveModel, Entity as Screenshot};
@@ -68,9 +70,10 @@ impl DbPool {
                 deleted_at: Set(None),
             };
 
-            let result = model.insert(self.connection()).await.map_err(|e| {
-                AppError::Database(format!("Failed to insert screenshot: {}", e))
-            })?;
+            let result = model
+                .insert(self.connection())
+                .await
+                .map_err(|e| AppError::Database(format!("Failed to insert screenshot: {}", e)))?;
 
             inserted.push(result);
         }
@@ -107,7 +110,11 @@ impl DbPool {
     }
 
     /// Mark screenshots as uploaded.
-    pub async fn mark_screenshots_uploaded(&self, job_id: Uuid, filenames: &[String]) -> AppResult<u64> {
+    pub async fn mark_screenshots_uploaded(
+        &self,
+        job_id: Uuid,
+        filenames: &[String],
+    ) -> AppResult<u64> {
         let now = Utc::now();
 
         let result = Screenshot::update_many()
@@ -123,7 +130,9 @@ impl DbPool {
             .filter(screenshot::Column::Filename.is_in(filenames))
             .exec(self.connection())
             .await
-            .map_err(|e| AppError::Database(format!("Failed to mark screenshots uploaded: {}", e)))?;
+            .map_err(|e| {
+                AppError::Database(format!("Failed to mark screenshots uploaded: {}", e))
+            })?;
 
         Ok(result.rows_affected)
     }
@@ -135,7 +144,9 @@ impl DbPool {
             .filter(screenshot::Column::Status.eq(ScreenshotStatus::Pending.as_str()))
             .count(self.connection())
             .await
-            .map_err(|e| AppError::Database(format!("Failed to count pending screenshots: {}", e)))?;
+            .map_err(|e| {
+                AppError::Database(format!("Failed to count pending screenshots: {}", e))
+            })?;
 
         Ok(count)
     }

@@ -4,7 +4,7 @@
  * Provides automatic reconnection with exponential backoff.
  */
 
-import type { WsEventMessage } from '../types/websocket';
+import type { WsEventMessage } from '@/types/websocket';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
 
@@ -23,7 +23,9 @@ export interface WebSocketClientOptions {
   onError?: (error: Event) => void;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<WebSocketClientOptions, 'onStatusChange' | 'onMessage' | 'onError'>> = {
+const DEFAULT_OPTIONS: Required<
+  Omit<WebSocketClientOptions, 'onStatusChange' | 'onMessage' | 'onError'>
+> = {
   baseReconnectDelay: 1000,
   maxReconnectDelay: 30000,
   maxReconnectAttempts: 10,
@@ -35,7 +37,9 @@ const DEFAULT_OPTIONS: Required<Omit<WebSocketClientOptions, 'onStatusChange' | 
 export class ReconnectingWebSocket {
   private ws: WebSocket | null = null;
   private url: string;
-  private options: Required<Omit<WebSocketClientOptions, 'onStatusChange' | 'onMessage' | 'onError'>> &
+  private options: Required<
+    Omit<WebSocketClientOptions, 'onStatusChange' | 'onMessage' | 'onError'>
+  > &
     Pick<WebSocketClientOptions, 'onStatusChange' | 'onMessage' | 'onError'>;
   private reconnectAttempts = 0;
   private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;

@@ -32,7 +32,11 @@ export function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
-export function calculatePassRate(stats: { passed: number; failed: number; flaky: number }): number | null {
+export function calculatePassRate(stats: {
+  passed: number;
+  failed: number;
+  flaky: number;
+}): number | null {
   const passed = stats.passed + stats.flaky;
   const failed = stats.failed;
   const total = passed + failed;

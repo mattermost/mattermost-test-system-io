@@ -5,12 +5,12 @@
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::db::test_results::{NewTestCase, NewTestSuite};
 use crate::db::DbPool;
+use crate::db::test_results::{NewTestCase, NewTestSuite};
 use crate::models::{JobStatus, WsEvent, WsEventMessage};
 use crate::services::{EventBroadcaster, Storage};
 
@@ -259,7 +259,10 @@ pub async fn extract_job(
     job_id: Uuid,
     framework: &str,
 ) {
-    info!("Starting JSON extraction for job_id={}, framework={}", job_id, framework);
+    info!(
+        "Starting JSON extraction for job_id={}, framework={}",
+        job_id, framework
+    );
 
     // Get job to verify it exists and get report_id
     let job = match pool.get_job_by_id(job_id).await {
@@ -280,7 +283,11 @@ pub async fn extract_job(
         Err(e) => {
             error!("Failed to get JSON files for job {}: {}", job_id, e);
             if let Err(e) = pool
-                .update_job_status(job_id, JobStatus::Failed, Some(format!("Failed to get JSON files: {}", e)))
+                .update_job_status(
+                    job_id,
+                    JobStatus::Failed,
+                    Some(format!("Failed to get JSON files: {}", e)),
+                )
                 .await
             {
                 error!("Failed to update job status: {}", e);
@@ -292,7 +299,11 @@ pub async fn extract_job(
     if json_files.is_empty() {
         error!("Job {} has no uploaded JSON files", job_id);
         if let Err(e) = pool
-            .update_job_status(job_id, JobStatus::Failed, Some("No JSON files uploaded".to_string()))
+            .update_job_status(
+                job_id,
+                JobStatus::Failed,
+                Some("No JSON files uploaded".to_string()),
+            )
             .await
         {
             error!("Failed to update job status: {}", e);
@@ -342,20 +353,31 @@ pub async fn extract_job(
         let suites = match framework.to_lowercase().as_str() {
             "cypress" => extract_cypress(&json_content, &screenshot_map, &mut global_sequence),
             "detox" => extract_detox(&json_content, &screenshot_map, &mut global_sequence),
-            "playwright" => extract_playwright(&json_content, &screenshot_map, &mut global_sequence),
+            "playwright" => {
+                extract_playwright(&json_content, &screenshot_map, &mut global_sequence)
+            }
             _ => {
                 // Try to auto-detect format
-                if let Some(suites) = try_auto_detect(&json_content, &screenshot_map, &mut global_sequence) {
+                if let Some(suites) =
+                    try_auto_detect(&json_content, &screenshot_map, &mut global_sequence)
+                {
                     suites
                 } else {
-                    warn!("Unknown framework '{}' and auto-detection failed for {}", framework, file.s3_key);
+                    warn!(
+                        "Unknown framework '{}' and auto-detection failed for {}",
+                        framework, file.s3_key
+                    );
                     continue;
                 }
             }
         };
 
         for suite in suites {
-            total_duration_ms += suite.test_cases.iter().map(|tc| tc.duration_ms as i64).sum::<i64>();
+            total_duration_ms += suite
+                .test_cases
+                .iter()
+                .map(|tc| tc.duration_ms as i64)
+                .sum::<i64>();
             all_suites.push(suite);
         }
 
@@ -367,7 +389,9 @@ pub async fn extract_job(
 
     info!(
         "Parsed JSON files for job_id={}: {} suites, {} total duration ms",
-        job_id, all_suites.len(), total_duration_ms
+        job_id,
+        all_suites.len(),
+        total_duration_ms
     );
 
     // Insert test suites and cases into database
@@ -400,19 +424,25 @@ pub async fn extract_job(
                     let attachments_json = if test_case.attachments.is_empty() {
                         None
                     } else {
-                        Some(json!(test_case.attachments.iter().map(|a| {
-                            let mut obj = json!({
-                                "path": a.path,
-                                "content_type": a.content_type,
-                                "retry": a.retry,
-                                "missing": a.missing,
-                                "sequence": a.sequence
-                            });
-                            if let Some(ref key) = a.s3_key {
-                                obj["s3_key"] = json!(key);
-                            }
-                            obj
-                        }).collect::<Vec<_>>()))
+                        Some(json!(
+                            test_case
+                                .attachments
+                                .iter()
+                                .map(|a| {
+                                    let mut obj = json!({
+                                        "path": a.path,
+                                        "content_type": a.content_type,
+                                        "retry": a.retry,
+                                        "missing": a.missing,
+                                        "sequence": a.sequence
+                                    });
+                                    if let Some(ref key) = a.s3_key {
+                                        obj["s3_key"] = json!(key);
+                                    }
+                                    obj
+                                })
+                                .collect::<Vec<_>>()
+                        ))
                     };
 
                     let new_case = NewTestCase {
@@ -443,7 +473,9 @@ pub async fn extract_job(
 
     // Update job duration if we have stats
     if (total_duration_ms > 0 || earliest_time.is_some())
-        && let Err(e) = pool.update_job_duration(job_id, Some(total_duration_ms), earliest_time).await
+        && let Err(e) = pool
+            .update_job_duration(job_id, Some(total_duration_ms), earliest_time)
+            .await
     {
         error!("Failed to update job {} duration: {}", job_id, e);
     }
@@ -465,7 +497,11 @@ pub async fn extract_job(
 
     // Broadcast job_updated event
     let report_id = job.test_report_id;
-    let event = WsEventMessage::new(WsEvent::job_updated(report_id, job_id, "complete".to_string()));
+    let event = WsEventMessage::new(WsEvent::job_updated(
+        report_id,
+        job_id,
+        "complete".to_string(),
+    ));
     broadcaster.send(event);
 
     // Broadcast suites_available event
@@ -616,7 +652,13 @@ fn extract_cypress(
 
         // Process nested suites
         for suite in result.suites {
-            let extracted = extract_cypress_suite(&suite, file_path.as_deref(), screenshot_map, global_sequence, report_start_time);
+            let extracted = extract_cypress_suite(
+                &suite,
+                file_path.as_deref(),
+                screenshot_map,
+                global_sequence,
+                report_start_time,
+            );
             suites.push(extracted);
         }
 
@@ -671,7 +713,13 @@ fn extract_cypress_suite(
 
     // Recursively process nested suites
     for nested in &suite.suites {
-        let nested_suite = extract_cypress_suite(nested, file_path.as_deref(), screenshot_map, global_sequence, report_start_time);
+        let nested_suite = extract_cypress_suite(
+            nested,
+            file_path.as_deref(),
+            screenshot_map,
+            global_sequence,
+            report_start_time,
+        );
         test_cases.extend(nested_suite.test_cases);
     }
 
@@ -699,9 +747,10 @@ fn extract_cypress_test(
         test.state.clone()
     };
 
-    let error_message = test.err.as_ref().and_then(|e| {
-        e.message.clone().or_else(|| e.estack.clone())
-    });
+    let error_message = test
+        .err
+        .as_ref()
+        .and_then(|e| e.message.clone().or_else(|| e.estack.clone()));
 
     // Parse screenshot context if available
     let attachments = parse_cypress_context(&test.context, screenshot_map, sequence);
@@ -742,7 +791,9 @@ fn parse_cypress_context(
     let mut seq = 0;
 
     if let Some(path) = value.get("value").and_then(|v| v.as_str()) {
-        let decoded_path = urlencoding::decode(path).unwrap_or_else(|_| path.into()).to_string();
+        let decoded_path = urlencoding::decode(path)
+            .unwrap_or_else(|_| path.into())
+            .to_string();
         let (s3_key, missing) = lookup_screenshot(&decoded_path, screenshot_map);
 
         attachments.push(ExtractedAttachment {
@@ -760,7 +811,9 @@ fn parse_cypress_context(
     if let Some(arr) = value.as_array() {
         for item in arr {
             if let Some(path) = item.get("value").and_then(|v| v.as_str()) {
-                let decoded_path = urlencoding::decode(path).unwrap_or_else(|_| path.into()).to_string();
+                let decoded_path = urlencoding::decode(path)
+                    .unwrap_or_else(|_| path.into())
+                    .to_string();
                 let (s3_key, missing) = lookup_screenshot(&decoded_path, screenshot_map);
 
                 attachments.push(ExtractedAttachment {
@@ -801,7 +854,9 @@ fn extract_detox(
         } else {
             // Extract relative path from full path
             let path = &file_result.test_file_path;
-            let relative = path.rsplit_once("/e2e/").map(|(_, rest)| rest.to_string())
+            let relative = path
+                .rsplit_once("/e2e/")
+                .map(|(_, rest)| rest.to_string())
                 .unwrap_or_else(|| path.clone());
             Some(relative)
         };
@@ -929,10 +984,7 @@ fn extract_playwright_suite(
 
     if !test_cases.is_empty() || !suite.title.is_empty() {
         // Compute earliest start_time from test cases
-        let start_time = test_cases
-            .iter()
-            .filter_map(|tc| tc.start_time)
-            .min();
+        let start_time = test_cases.iter().filter_map(|tc| tc.start_time).min();
 
         result.push(ExtractedTestSuite {
             title: if suite.title.is_empty() {
@@ -948,7 +1000,11 @@ fn extract_playwright_suite(
 
     // Process nested suites
     for nested in &suite.suites {
-        result.extend(extract_playwright_suite(nested, screenshot_map, global_sequence));
+        result.extend(extract_playwright_suite(
+            nested,
+            screenshot_map,
+            global_sequence,
+        ));
     }
 
     result
@@ -983,15 +1039,23 @@ fn extract_playwright_test(
         let error_message = if result.errors.is_empty() {
             None
         } else {
-            let msg = result.errors.iter()
+            let msg = result
+                .errors
+                .iter()
                 .filter_map(|e| e.message.clone().or_else(|| e.stack.clone()))
                 .collect::<Vec<_>>()
                 .join("\n");
-            if msg.is_empty() { None } else { Some(truncate_message(&msg, 2000)) }
+            if msg.is_empty() {
+                None
+            } else {
+                Some(truncate_message(&msg, 2000))
+            }
         };
 
         // Extract attachments
-        let attachments = result.attachments.iter()
+        let attachments = result
+            .attachments
+            .iter()
             .filter(|a| a.path.is_some())
             .enumerate()
             .map(|(idx, a)| {
@@ -1072,7 +1136,11 @@ fn try_auto_detect(
 
     // Check for Playwright indicators
     if value.get("config").is_some() && value.get("suites").is_some() {
-        return Some(extract_playwright(json_content, screenshot_map, global_sequence));
+        return Some(extract_playwright(
+            json_content,
+            screenshot_map,
+            global_sequence,
+        ));
     }
 
     // Check for Detox/Jest indicators
@@ -1082,7 +1150,11 @@ fn try_auto_detect(
 
     // Check for Cypress/mochawesome indicators
     if value.get("stats").is_some() && value.get("results").is_some() {
-        return Some(extract_cypress(json_content, screenshot_map, global_sequence));
+        return Some(extract_cypress(
+            json_content,
+            screenshot_map,
+            global_sequence,
+        ));
     }
 
     None

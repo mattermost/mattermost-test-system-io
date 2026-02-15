@@ -16,6 +16,9 @@ mod m20260118_000005_create_test_suites;
 mod m20260118_000006_create_test_cases;
 mod m20260118_000007_create_screenshots;
 mod m20260118_000008_create_json_files;
+mod m20260129_000009_create_github_oidc_policies;
+mod m20260129_000010_create_users;
+mod m20260129_000011_create_refresh_tokens;
 
 pub struct Migrator;
 
@@ -31,6 +34,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260118_000006_create_test_cases::Migration),
             Box::new(m20260118_000007_create_screenshots::Migration),
             Box::new(m20260118_000008_create_json_files::Migration),
+            Box::new(m20260129_000009_create_github_oidc_policies::Migration),
+            Box::new(m20260129_000010_create_users::Migration),
+            Box::new(m20260129_000011_create_refresh_tokens::Migration),
         ]
     }
 }

@@ -1,7 +1,10 @@
 //! Database queries for test suites and test cases.
 
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set,
+};
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
@@ -146,7 +149,9 @@ impl DbPool {
             .order_by_asc(test_suite::Column::Id) // UUIDv7 is time-ordered
             .all(self.connection())
             .await
-            .map_err(|e| AppError::Database(format!("Failed to get test suites by report: {}", e)))?;
+            .map_err(|e| {
+                AppError::Database(format!("Failed to get test suites by report: {}", e))
+            })?;
 
         Ok(result)
     }
@@ -167,10 +172,7 @@ impl DbPool {
     }
 
     /// Get test cases by job ID.
-    pub async fn get_test_cases_by_job_id(
-        &self,
-        job_id: Uuid,
-    ) -> AppResult<Vec<test_case::Model>> {
+    pub async fn get_test_cases_by_job_id(&self, job_id: Uuid) -> AppResult<Vec<test_case::Model>> {
         let result = TestCase::find()
             .filter(test_case::Column::TestJobId.eq(job_id))
             .order_by_asc(test_case::Column::Sequence)
@@ -279,8 +281,14 @@ impl DbPool {
             .filter(test_job::Column::TestReportId.eq(report_id))
             .filter(
                 sea_orm::Condition::any()
-                    .add(Expr::col((test_case::Entity, test_case::Column::Title)).ilike(&search_pattern))
-                    .add(Expr::col((test_case::Entity, test_case::Column::FullTitle)).ilike(&search_pattern)),
+                    .add(
+                        Expr::col((test_case::Entity, test_case::Column::Title))
+                            .ilike(&search_pattern),
+                    )
+                    .add(
+                        Expr::col((test_case::Entity, test_case::Column::FullTitle))
+                            .ilike(&search_pattern),
+                    ),
             )
             .order_by_asc(test_case::Column::TestSuiteId)
             .order_by_asc(test_case::Column::Sequence)
@@ -353,8 +361,14 @@ impl DbPool {
 
         // Build placeholders for two IN clauses (one for each subquery)
         let n = report_ids.len();
-        let in_clause_1: String = (1..=n).map(|i| format!("${}", i)).collect::<Vec<_>>().join(", ");
-        let in_clause_2: String = (n+1..=2*n).map(|i| format!("${}", i)).collect::<Vec<_>>().join(", ");
+        let in_clause_1: String = (1..=n)
+            .map(|i| format!("${}", i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let in_clause_2: String = (n + 1..=2 * n)
+            .map(|i| format!("${}", i))
+            .collect::<Vec<_>>()
+            .join(", ");
 
         // Use subqueries to aggregate job stats and test_suite stats separately
         // This avoids multiplying job duration by the number of test suites per job
@@ -411,11 +425,9 @@ impl DbPool {
             .map(|id| sea_orm::Value::Uuid(Some(*id)))
             .collect();
 
-        let results: Vec<StatsResult> = StatsResult::find_by_statement(Statement::from_sql_and_values(
-            sea_orm::DatabaseBackend::Postgres,
-            &sql,
-            values,
-        ))
+        let results: Vec<StatsResult> = StatsResult::find_by_statement(
+            Statement::from_sql_and_values(sea_orm::DatabaseBackend::Postgres, &sql, values),
+        )
         .all(self.connection())
         .await
         .map_err(|e| AppError::Database(format!("Failed to get test stats: {}", e)))?;

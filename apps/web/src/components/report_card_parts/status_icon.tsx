@@ -1,5 +1,5 @@
 import { CheckCircle2, XCircle, Clock } from 'lucide-react';
-import type { TestStats } from '../../types';
+import type { TestStats } from '@/types';
 
 interface StatusIconProps {
   testStats?: TestStats;

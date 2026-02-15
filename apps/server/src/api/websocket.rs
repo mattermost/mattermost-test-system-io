@@ -2,7 +2,7 @@
 //!
 //! Handles WebSocket upgrade requests and streams events to connected clients.
 
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{HttpRequest, HttpResponse, web};
 use actix_ws::Message;
 use futures_util::StreamExt;
 use std::time::{Duration, Instant};

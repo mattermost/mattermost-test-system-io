@@ -1,5 +1,5 @@
-import type { TestAttachment } from '../../types';
-import { ScreenshotGallery } from '../ui/screenshot-gallery';
+import type { TestAttachment } from '@/types';
+import { ScreenshotGallery } from '@/components/ui/screenshot-gallery';
 
 interface AttachmentsDisplayProps {
   attachments?: TestAttachment[];
@@ -11,7 +11,7 @@ export function AttachmentsDisplay({ attachments }: AttachmentsDisplayProps) {
 
   // Filter to only show image attachments that have s3_key (found in storage)
   const imageAttachments = attachments.filter(
-    (a) => a.content_type?.startsWith('image/') && a.s3_key && !a.missing
+    (a) => a.content_type?.startsWith('image/') && a.s3_key && !a.missing,
   );
 
   if (imageAttachments.length === 0) return null;

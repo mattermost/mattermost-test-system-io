@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useReportWithJobs, useReportSuites, useClientConfig } from '../services/api';
-import { JobPanel } from '../components/report/job_panel';
-import { TestSuitesView } from '../components/test_suites_view';
+import { useReportWithJobs, useReportSuites, useClientConfig } from '@/services/api';
+import { JobPanel } from '@/components/report/job_panel';
+import { TestSuitesView } from '@/components/test_suites_view';
 import {
   Loader2,
   ChevronRight,
@@ -20,7 +20,7 @@ import {
   FileText,
   Code,
 } from 'lucide-react';
-import type { ReportStatus, JobSummary } from '../types';
+import type { ReportStatus, JobSummary } from '@/types';
 
 type MainTab = 'results' | 'html';
 
@@ -64,8 +64,8 @@ export function JobReportPage() {
   const [canScrollRight, setCanScrollRight] = useState(false);
   const navRef = useRef<HTMLElement>(null);
 
-  // Get enable_html_view from config (default: true)
-  const enableHtmlView = config?.enable_html_view ?? true;
+  // Get html_view_enabled from config (default: true)
+  const enableHtmlView = config?.html_view_enabled ?? true;
 
   // Check scroll position and update indicators
   const updateScrollIndicators = useCallback(() => {
@@ -108,18 +108,18 @@ export function JobReportPage() {
   // Memoize derived values - must be before any early returns
   const activeJob = useMemo(
     () => report?.jobs.find((j) => j.id === activeJobId) || null,
-    [report?.jobs, activeJobId]
+    [report?.jobs, activeJobId],
   );
 
   const completedJobs = useMemo(
     () => report?.jobs.filter((j) => j.status === 'complete').length ?? 0,
-    [report?.jobs]
+    [report?.jobs],
   );
 
   // Memoize sorted jobs for tabs
   const sortedJobs = useMemo(
-    () => report?.jobs ? [...report.jobs].sort(compareJobs) : [],
-    [report?.jobs]
+    () => (report?.jobs ? [...report.jobs].sort(compareJobs) : []),
+    [report?.jobs],
   );
 
   if (isLoading) {
@@ -185,69 +185,73 @@ export function JobReportPage() {
           </div>
 
           {/* GitHub Context Badges */}
-          <div className="flex flex-wrap items-center gap-1.5 mt-3">
-            {report.github_repo && (
-              <a
-                href={`https://github.com/${report.github_repo}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 px-2 py-1 bg-gray-100 rounded-md text-xs text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 transition-colors"
-              >
-                <Folder className="h-3 w-3" />
-                {report.github_repo}
-              </a>
-            )}
-            {report.github_branch && (
-              <span className="inline-flex items-center gap-1.5 px-2 py-1 bg-blue-100 rounded-md text-xs text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
-                <GitBranch className="h-3 w-3" />
-                {report.github_branch}
-              </span>
-            )}
-            {report.github_pr_number && (
-              <a
-                href={
-                  report.github_repo
-                    ? `https://github.com/${report.github_repo}/pull/${report.github_pr_number}`
-                    : '#'
-                }
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 px-2 py-1 bg-purple-100 rounded-md text-xs text-purple-700 hover:bg-purple-200 dark:bg-purple-900/50 dark:text-purple-300 dark:hover:bg-purple-900/70 transition-colors"
-              >
-                <GitPullRequest className="h-3 w-3" />#{report.github_pr_number}
-              </a>
-            )}
-            {report.github_commit && (
-              <a
-                href={
-                  report.github_repo
-                    ? `https://github.com/${report.github_repo}/commit/${report.github_commit}`
-                    : '#'
-                }
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 px-2 py-1 bg-gray-100 rounded-md text-xs font-mono text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 transition-colors"
-              >
-                <GitCommit className="h-3 w-3" />
-                {report.github_commit.slice(0, 7)}
-              </a>
-            )}
-            {report.github_run_id && (
-              <a
-                href={
-                  report.github_repo
-                    ? `https://github.com/${report.github_repo}/actions/runs/${report.github_run_id}`
-                    : '#'
-                }
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 px-2 py-1 bg-green-100 rounded-md text-xs text-green-700 hover:bg-green-200 dark:bg-green-900/50 dark:text-green-300 dark:hover:bg-green-900/70 transition-colors"
-              >
-                <Play className="h-3 w-3" />
-                Run {report.github_run_id}
-              </a>
-            )}
-          </div>
+          {report.github_metadata && (
+            <div className="flex flex-wrap items-center gap-1.5 mt-3">
+              {report.github_metadata.repository && (
+                <a
+                  href={`https://github.com/${report.github_metadata.repository}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-2 py-1 bg-gray-100 rounded-md text-xs text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 transition-colors"
+                >
+                  <Folder className="h-3 w-3" />
+                  {report.github_metadata.repository}
+                </a>
+              )}
+              {report.github_metadata.ref && (
+                <span className="inline-flex items-center gap-1.5 px-2 py-1 bg-blue-100 rounded-md text-xs text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
+                  <GitBranch className="h-3 w-3" />
+                  {report.github_metadata.ref
+                    .replace(/^refs\/heads\//, '')
+                    .replace(/^refs\/tags\//, '')}
+                </span>
+              )}
+              {report.github_metadata.pr_number && (
+                <a
+                  href={
+                    report.github_metadata.repository
+                      ? `https://github.com/${report.github_metadata.repository}/pull/${report.github_metadata.pr_number}`
+                      : '#'
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-2 py-1 bg-purple-100 rounded-md text-xs text-purple-700 hover:bg-purple-200 dark:bg-purple-900/50 dark:text-purple-300 dark:hover:bg-purple-900/70 transition-colors"
+                >
+                  <GitPullRequest className="h-3 w-3" />#{report.github_metadata.pr_number}
+                </a>
+              )}
+              {report.github_metadata.sha && (
+                <a
+                  href={
+                    report.github_metadata.repository
+                      ? `https://github.com/${report.github_metadata.repository}/commit/${report.github_metadata.sha}`
+                      : '#'
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-2 py-1 bg-gray-100 rounded-md text-xs font-mono text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 transition-colors"
+                >
+                  <GitCommit className="h-3 w-3" />
+                  {report.github_metadata.sha.slice(0, 7)}
+                </a>
+              )}
+              {report.github_metadata.run_id && (
+                <a
+                  href={
+                    report.github_metadata.repository
+                      ? `https://github.com/${report.github_metadata.repository}/actions/runs/${report.github_metadata.run_id}`
+                      : '#'
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-2 py-1 bg-green-100 rounded-md text-xs text-green-700 hover:bg-green-200 dark:bg-green-900/50 dark:text-green-300 dark:hover:bg-green-900/70 transition-colors"
+                >
+                  <Play className="h-3 w-3" />
+                  Run {report.github_metadata.run_id}
+                </a>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -357,9 +361,7 @@ export function JobReportPage() {
             <AlertCircle className="h-5 w-5 text-red-500 dark:text-red-400 flex-shrink-0 mt-0.5" />
             <div>
               <p className="text-sm font-medium text-red-800 dark:text-red-300">Report Error</p>
-              <p className="mt-1 text-sm text-red-700 dark:text-red-400">
-                {report.error_message}
-              </p>
+              <p className="mt-1 text-sm text-red-700 dark:text-red-400">{report.error_message}</p>
             </div>
           </div>
         </div>

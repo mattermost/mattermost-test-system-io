@@ -28,15 +28,17 @@ pub struct ReportCreatedPayload {
     pub framework: String,
     pub expected_jobs: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_repo: Option<String>,
+    pub repository: Option<String>,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_branch: Option<String>,
+    pub sha: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_pr_number: Option<i32>,
+    pub actor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_commit: Option<String>,
+    pub run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_run_id: Option<String>,
+    pub pr_number: Option<i32>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -121,11 +123,12 @@ impl WsEvent {
             report_id,
             framework: "playwright".to_string(),
             expected_jobs: 1,
-            github_repo: None,
-            github_branch: None,
-            github_pr_number: None,
-            github_commit: None,
-            github_run_id: None,
+            repository: None,
+            git_ref: None,
+            sha: None,
+            actor: None,
+            run_id: None,
+            pr_number: None,
             created_at: Utc::now(),
         })
     }

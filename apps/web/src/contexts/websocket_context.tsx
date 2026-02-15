@@ -19,8 +19,8 @@ import {
   type ConnectionStatus,
   ReconnectingWebSocket,
   getWebSocketUrl,
-} from '../services/websocket';
-import type { WsEventMessage } from '../types/websocket';
+} from '@/services/websocket';
+import type { WsEventMessage } from '@/types/websocket';
 
 interface WebSocketContextValue {
   /** Current connection status */

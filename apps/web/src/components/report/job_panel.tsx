@@ -1,5 +1,5 @@
 import { Code, ExternalLink, FileWarning, Clock, AlertCircle } from 'lucide-react';
-import type { JobSummary } from '../../types';
+import type { JobSummary } from '@/types';
 
 interface JobPanelProps {
   job: JobSummary | null;

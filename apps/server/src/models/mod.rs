@@ -1,8 +1,10 @@
 //! Domain models for Test System IO.
 
 pub mod api_key;
+pub mod github_oidc;
 pub mod job;
 pub mod report;
+pub mod user;
 pub mod ws_event;
 
 // Re-export commonly used types

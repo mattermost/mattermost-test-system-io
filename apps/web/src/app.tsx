@@ -1,9 +1,10 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { HomePage } from './pages/home_page';
-import { JobReportPage } from './pages/job_report_page';
-import { ThemeProvider } from './contexts/theme_context';
-import { ThemeToggle } from './components/theme_toggle';
-import { ConnectionStatus } from './components/connection_status';
+import { HomePage } from '@/pages/home_page';
+import { JobReportPage } from '@/pages/job_report_page';
+import { ThemeProvider } from '@/contexts/theme_context';
+import { ThemeToggle } from '@/components/theme_toggle';
+import { ConnectionStatus } from '@/components/connection_status';
+import { LoginButton } from '@/components/login_button';
 
 export function App() {
   return (
@@ -20,6 +21,7 @@ export function App() {
                 </h1>
                 <div className="flex items-center gap-3">
                   <ConnectionStatus />
+                  <LoginButton />
                   <ThemeToggle />
                 </div>
               </div>

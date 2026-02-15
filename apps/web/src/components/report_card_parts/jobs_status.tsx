@@ -23,7 +23,13 @@ interface JobsProgressProps {
   showLabel?: boolean;
 }
 
-export function JobsProgress({ complete, expected, allComplete, isTimedOut, showLabel }: JobsProgressProps) {
+export function JobsProgress({
+  complete,
+  expected,
+  allComplete,
+  isTimedOut,
+  showLabel,
+}: JobsProgressProps) {
   const colorClass = allComplete
     ? 'text-green-600 dark:text-green-400'
     : isTimedOut

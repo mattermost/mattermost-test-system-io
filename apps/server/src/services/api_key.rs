@@ -118,6 +118,7 @@ pub async fn verify_key(pool: &DbPool, key: &str) -> AppResult<AuthenticatedCall
     Ok(AuthenticatedCaller {
         key_id: api_key.id,
         role,
+        oidc_claims: None,
     })
 }
 

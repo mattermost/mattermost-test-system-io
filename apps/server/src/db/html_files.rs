@@ -63,9 +63,10 @@ impl DbPool {
                 deleted_at: Set(None),
             };
 
-            let result = model.insert(self.connection()).await.map_err(|e| {
-                AppError::Database(format!("Failed to insert HTML file: {}", e))
-            })?;
+            let result = model
+                .insert(self.connection())
+                .await
+                .map_err(|e| AppError::Database(format!("Failed to insert HTML file: {}", e)))?;
 
             inserted.push(result);
         }
@@ -87,7 +88,11 @@ impl DbPool {
     }
 
     /// Mark HTML files as uploaded.
-    pub async fn mark_html_files_uploaded(&self, job_id: Uuid, filenames: &[String]) -> AppResult<u64> {
+    pub async fn mark_html_files_uploaded(
+        &self,
+        job_id: Uuid,
+        filenames: &[String],
+    ) -> AppResult<u64> {
         let now = Utc::now();
 
         let result = HtmlFile::update_many()
@@ -104,7 +109,9 @@ impl DbPool {
             .filter(html_file::Column::DeletedAt.is_null())
             .exec(self.connection())
             .await
-            .map_err(|e| AppError::Database(format!("Failed to mark HTML files uploaded: {}", e)))?;
+            .map_err(|e| {
+                AppError::Database(format!("Failed to mark HTML files uploaded: {}", e))
+            })?;
 
         Ok(result.rows_affected)
     }
@@ -117,7 +124,9 @@ impl DbPool {
             .filter(html_file::Column::DeletedAt.is_null())
             .count(self.connection())
             .await
-            .map_err(|e| AppError::Database(format!("Failed to count pending HTML files: {}", e)))?;
+            .map_err(|e| {
+                AppError::Database(format!("Failed to count pending HTML files: {}", e))
+            })?;
 
         Ok(count)
     }

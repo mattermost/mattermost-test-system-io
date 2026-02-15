@@ -5,12 +5,12 @@ import { BrowserRouter } from 'react-router-dom';
 import { ReportList } from './report_list';
 
 // Mock the API module
-vi.mock('../services/api', () => ({
+vi.mock('@/services/api', () => ({
   useReports: vi.fn(),
   useClientConfig: vi.fn(() => ({ data: { base_url: 'http://localhost:8080' } })),
 }));
 
-import { useReports } from '../services/api';
+import { useReports } from '@/services/api';
 
 const createWrapper = () => {
   const queryClient = new QueryClient({
@@ -81,7 +81,7 @@ describe('ReportList', () => {
             expected_jobs: 5,
             jobs_complete: 5,
             github_metadata: {
-              branch: 'main',
+              ref: 'refs/heads/main',
               pr_number: 123,
             },
           },
@@ -114,7 +114,7 @@ describe('ReportList', () => {
             expected_jobs: 10,
             jobs_complete: 8,
             github_metadata: {
-              branch: 'develop',
+              ref: 'refs/heads/develop',
             },
           },
         ],

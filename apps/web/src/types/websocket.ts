@@ -24,11 +24,12 @@ export interface ReportCreatedPayload {
   report_id: string;
   framework: string;
   expected_jobs: number;
-  github_repo?: string;
-  github_branch?: string;
-  github_pr_number?: number;
-  github_commit?: string;
-  github_run_id?: string;
+  repository?: string;
+  ref?: string;
+  sha?: string;
+  actor?: string;
+  run_id?: string;
+  pr_number?: number;
   created_at: string;
 }
 
@@ -114,4 +115,3 @@ export type WsEventMessage =
   | JobCreatedEvent
   | JobUpdatedEvent
   | SuitesAvailableEvent;
-

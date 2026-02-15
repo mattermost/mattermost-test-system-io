@@ -21,13 +21,8 @@ pub struct Storage {
 impl Storage {
     /// Create a new S3 storage client from configuration.
     pub async fn new(config: &StorageSettings) -> AppResult<Self> {
-        let credentials = Credentials::new(
-            &config.access_key,
-            &config.secret_key,
-            None,
-            None,
-            "tsio",
-        );
+        let credentials =
+            Credentials::new(&config.access_key, &config.secret_key, None, None, "tsio");
 
         let region = Region::new(config.region.clone());
 
@@ -119,12 +114,7 @@ impl Storage {
     /// * `key` - The S3 object key where the file will be uploaded
     /// * `data` - The file contents as bytes
     /// * `content_type` - Optional content type for the upload
-    pub async fn put(
-        &self,
-        key: &str,
-        data: Vec<u8>,
-        content_type: Option<&str>,
-    ) -> AppResult<()> {
+    pub async fn put(&self, key: &str, data: Vec<u8>, content_type: Option<&str>) -> AppResult<()> {
         let body = aws_sdk_s3::primitives::ByteStream::from(data);
         let mut request = self
             .client
@@ -137,9 +127,10 @@ impl Storage {
             request = request.content_type(ct);
         }
 
-        request.send().await.map_err(|e| {
-            AppError::Storage(format!("Failed to upload file to S3: {}", e))
-        })?;
+        request
+            .send()
+            .await
+            .map_err(|e| AppError::Storage(format!("Failed to upload file to S3: {}", e)))?;
 
         Ok(())
     }
@@ -204,7 +195,6 @@ impl Storage {
     pub fn job_key(report_id: &str, job_id: &str, filename: &str) -> String {
         format!("reports/{}/jobs/{}/{}", report_id, job_id, filename)
     }
-
 }
 
 #[cfg(test)]

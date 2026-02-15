@@ -74,9 +74,9 @@ USER appuser
 
 # Environment variables with defaults
 ENV RUST_ENV=production \
-    TSIO_HOST=0.0.0.0 \
-    TSIO_PORT=8080 \
-    TSIO_STATIC_DIR=/app/static \
+    TSIO_SERVER_HOST=0.0.0.0 \
+    TSIO_SERVER_PORT=8080 \
+    TSIO_SERVER_STATIC_DIR=/app/static \
     RUST_LOG=info,actix_web=info
 
 # Expose port

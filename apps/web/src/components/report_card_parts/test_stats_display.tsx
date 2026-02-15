@@ -1,5 +1,5 @@
 import { CheckCircle2, XCircle, SkipForward, CircleDot } from 'lucide-react';
-import type { TestStats } from '../../types';
+import type { TestStats } from '@/types';
 
 interface TestStatsDisplayProps {
   stats: TestStats;
@@ -16,7 +16,9 @@ export function TestStatsDisplay({ stats, compact }: TestStatsDisplayProps) {
       </span>
       {stats.failed > 0 && (
         <>
-          {compact && <span className="min-[480px]:hidden text-gray-300 dark:text-gray-600">|</span>}
+          {compact && (
+            <span className="min-[480px]:hidden text-gray-300 dark:text-gray-600">|</span>
+          )}
           <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
             {!compact && <XCircle className="h-3 w-3" />}
             {compact && <XCircle className="hidden min-[480px]:inline h-3 w-3" />}

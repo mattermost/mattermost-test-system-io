@@ -24,14 +24,18 @@ pub struct ReadyResponse {
 }
 
 /// Client configuration response.
+///
+/// Field naming follows `{group}_{name}` convention (see `FeatureSettings`).
 #[derive(Serialize, ToSchema)]
 pub struct ClientConfigResponse {
     /// Upload timeout in milliseconds (how long before a report is considered timed out).
     upload_timeout_ms: u64,
     /// Whether HTML view tabs are enabled in the frontend.
-    enable_html_view: bool,
+    html_view_enabled: bool,
     /// Minimum characters required for search API.
-    min_search_length: usize,
+    search_min_length: usize,
+    /// Whether GitHub OAuth login is enabled.
+    github_oauth_enabled: bool,
 }
 
 /// Health check endpoint.
@@ -97,9 +101,10 @@ pub async fn ready(pool: web::Data<DbPool>) -> HttpResponse {
 #[get("/config")]
 pub async fn client_config(config: web::Data<Config>) -> HttpResponse {
     HttpResponse::Ok().json(ClientConfigResponse {
-        upload_timeout_ms: config.upload.timeout_ms,
-        enable_html_view: config.auth.enable_html_view,
-        min_search_length: config.auth.min_search_length,
+        upload_timeout_ms: config.features.upload_timeout_ms,
+        html_view_enabled: config.features.html_view_enabled,
+        search_min_length: config.features.search_min_length,
+        github_oauth_enabled: config.github_oauth.enabled,
     })
 }
 

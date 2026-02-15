@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::db::test_results::{QueryTestCasesParams, QueryTestSuitesParams};
 use crate::db::DbPool;
+use crate::db::test_results::{QueryTestCasesParams, QueryTestSuitesParams};
 use crate::error::AppResult;
 
 /// Extract short ID from UUIDv7 (timestamp portion: first 13 chars).

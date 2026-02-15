@@ -1,4 +1,4 @@
-import { ReportList } from '../components/report_list';
+import { ReportList } from '@/components/report_list';
 
 export function HomePage() {
   return (

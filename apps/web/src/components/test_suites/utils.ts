@@ -1,4 +1,4 @@
-import type { ReportStats } from '../../types';
+import type { ReportStats } from '@/types';
 
 export function calcPassRate(stats: ReportStats): string {
   // Pass rate excludes skipped tests: (passed + flaky) / (passed + flaky + failed)

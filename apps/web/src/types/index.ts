@@ -3,8 +3,43 @@
 // Client configuration from server
 export interface ClientConfig {
   upload_timeout_ms: number;
-  enable_html_view: boolean;
-  min_search_length: number;
+  html_view_enabled: boolean;
+  search_min_length: number;
+  github_oauth_enabled?: boolean;
+}
+
+// User from /auth/me
+export interface AuthUser {
+  id: string;
+  username: string;
+  display_name?: string;
+  avatar_url?: string;
+  role: string;
+}
+
+/** GitHub metadata stored with reports — field names match GitHub OIDC claims. */
+export interface GitHubMetadata {
+  sub?: string;
+  repository?: string;
+  repository_owner?: string;
+  repository_owner_id?: string;
+  repository_visibility?: string;
+  repository_id?: string;
+  actor?: string;
+  actor_id?: string;
+  ref?: string;
+  ref_type?: string;
+  sha?: string;
+  workflow?: string;
+  event_name?: string;
+  run_id?: string;
+  run_number?: string;
+  run_attempt?: string;
+  runner_environment?: string;
+  head_ref?: string;
+  base_ref?: string;
+  job_workflow_ref?: string;
+  pr_number?: number;
 }
 
 export type TestStatus = 'passed' | 'failed' | 'skipped' | 'timedOut' | 'flaky';
@@ -38,15 +73,7 @@ export interface ReportSummary {
   expected_jobs: number;
   jobs_complete: number;
   test_stats?: TestStats;
-  github_metadata?: {
-    repo?: string;
-    branch?: string;
-    commit?: string;
-    pr_number?: number;
-    workflow?: string;
-    run_id?: number;
-    run_attempt?: number;
-  };
+  github_metadata?: GitHubMetadata;
   created_at: string;
 }
 
@@ -171,15 +198,9 @@ export interface ReportWithJobs {
   framework: Framework;
   status: ReportStatus;
   expected_jobs: number;
-  github_repo?: string;
-  github_branch?: string;
-  github_commit?: string;
-  github_pr_number?: number;
-  github_workflow?: string;
-  github_run_id?: string;
+  github_metadata?: GitHubMetadata;
   created_at: string;
   updated_at: string;
   jobs: JobSummary[];
   error_message?: string;
 }
-

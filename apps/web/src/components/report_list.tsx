@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
-import { useReports, useClientConfig } from '../services/api';
+import { useReports, useClientConfig } from '@/services/api';
 import { ReportCard } from './report_card';
 import { EmptyState } from './empty_state';
 

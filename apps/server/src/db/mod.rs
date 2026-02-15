@@ -1,12 +1,15 @@
 //! Database module providing connection management, migrations, and queries.
 
 pub mod api_keys;
+pub mod github_oidc_policies;
 pub mod html_files;
 pub mod json_files;
+pub mod refresh_tokens;
 pub mod screenshots;
 pub mod test_jobs;
 pub mod test_reports;
 pub mod test_results;
+pub mod users;
 
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use std::time::Duration;
@@ -43,10 +46,7 @@ impl DbPool {
 
         info!(
             "Database connection pool: max={}, min={}, idle_timeout={}s, max_lifetime={}s",
-            db.max_connections,
-            db.min_connections,
-            db.idle_timeout_secs,
-            db.max_lifetime_secs
+            db.max_connections, db.min_connections, db.idle_timeout_secs, db.max_lifetime_secs
         );
 
         Ok(DbPool { conn })

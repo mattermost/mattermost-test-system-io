@@ -6,6 +6,7 @@ use tracing::info;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::auth::ApiKeyAuth;
 use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
 use crate::models::{
@@ -142,7 +143,7 @@ pub struct SearchResponse {
     /// The search query.
     pub query: String,
     /// Minimum search length configured on server.
-    pub min_search_length: usize,
+    pub search_min_length: usize,
     /// Total number of matching test cases across all suites.
     pub total_matches: usize,
     /// Results grouped by suite.
@@ -167,6 +168,7 @@ pub struct SearchResponse {
     )
 )]
 pub async fn register_report(
+    auth: ApiKeyAuth,
     pool: web::Data<DbPool>,
     broadcaster: web::Data<EventBroadcaster>,
     body: web::Json<RegisterReportRequest>,
@@ -180,12 +182,51 @@ pub async fn register_report(
         ));
     }
 
+    // Build github_metadata: OIDC claims provide defaults, request body overrides
+    let github_metadata = match (&auth.caller.oidc_claims, req.github_metadata) {
+        // OIDC + explicit metadata: merge (explicit fields take precedence)
+        (Some(claims), Some(explicit)) => {
+            let from_oidc = claims.to_github_metadata();
+            Some(GitHubMetadata {
+                sub: explicit.sub.or(from_oidc.sub),
+                repository: explicit.repository.or(from_oidc.repository),
+                repository_owner: explicit.repository_owner.or(from_oidc.repository_owner),
+                repository_owner_id: explicit
+                    .repository_owner_id
+                    .or(from_oidc.repository_owner_id),
+                repository_visibility: explicit
+                    .repository_visibility
+                    .or(from_oidc.repository_visibility),
+                repository_id: explicit.repository_id.or(from_oidc.repository_id),
+                actor: explicit.actor.or(from_oidc.actor),
+                actor_id: explicit.actor_id.or(from_oidc.actor_id),
+                git_ref: explicit.git_ref.or(from_oidc.git_ref),
+                ref_type: explicit.ref_type.or(from_oidc.ref_type),
+                sha: explicit.sha.or(from_oidc.sha),
+                workflow: explicit.workflow.or(from_oidc.workflow),
+                event_name: explicit.event_name.or(from_oidc.event_name),
+                run_id: explicit.run_id.or(from_oidc.run_id),
+                run_number: explicit.run_number.or(from_oidc.run_number),
+                run_attempt: explicit.run_attempt.or(from_oidc.run_attempt),
+                runner_environment: explicit.runner_environment.or(from_oidc.runner_environment),
+                head_ref: explicit.head_ref.or(from_oidc.head_ref),
+                base_ref: explicit.base_ref.or(from_oidc.base_ref),
+                job_workflow_ref: explicit.job_workflow_ref.or(from_oidc.job_workflow_ref),
+                pr_number: explicit.pr_number,
+            })
+        }
+        // OIDC only: auto-populate from token
+        (Some(claims), None) => Some(claims.to_github_metadata()),
+        // No OIDC: use whatever the request provided
+        (None, explicit) => explicit,
+    };
+
     // Generate report ID (UUIDv7 for time-ordered sorting)
     let report_id = Uuid::now_v7();
 
     // Insert report with JSONB github_metadata
     let report = pool
-        .insert_report(report_id, req.expected_jobs, req.framework, req.github_metadata)
+        .insert_report(report_id, req.expected_jobs, req.framework, github_metadata)
         .await?;
 
     info!(
@@ -251,13 +292,10 @@ pub async fn list_reports(
             let short_id = r.id.to_string()[..13].to_string();
 
             // Get test stats, only include if there are any tests
-            let test_stats = test_stats_map.get(&r.id).cloned().and_then(|stats| {
-                if stats.total > 0 {
-                    Some(stats)
-                } else {
-                    None
-                }
-            });
+            let test_stats = test_stats_map
+                .get(&r.id)
+                .cloned()
+                .and_then(|stats| if stats.total > 0 { Some(stats) } else { None });
 
             ReportSummary {
                 id: r.id,
@@ -524,7 +562,10 @@ pub async fn get_suite_specs(
     pool: web::Data<DbPool>,
     path: web::Path<SuiteSpecsPath>,
 ) -> AppResult<HttpResponse> {
-    let SuiteSpecsPath { report_id, suite_id } = path.into_inner();
+    let SuiteSpecsPath {
+        report_id,
+        suite_id,
+    } = path.into_inner();
 
     // Verify report exists
     let _report = pool
@@ -564,7 +605,9 @@ pub async fn get_suite_specs(
 
             // Determine if spec passed (last result is passed/flaky or all passed)
             // "flaky" status means test passed after retries, so it's also considered passed
-            let ok = cases.iter().any(|c| c.status == "passed" || c.status == "flaky");
+            let ok = cases
+                .iter()
+                .any(|c| c.status == "passed" || c.status == "flaky");
 
             // Create results from all cases (retries)
             let results: Vec<TestResultResponse> = cases
@@ -679,14 +722,14 @@ pub async fn search_test_cases(
 ) -> AppResult<HttpResponse> {
     let report_id = path.into_inner();
     let search_query = query.into_inner();
-    let min_search_length = config.auth.min_search_length;
+    let search_min_length = config.features.search_min_length;
 
     // Validate query length
     let q = search_query.q.trim();
-    if q.is_empty() || q.len() < min_search_length {
+    if q.is_empty() || q.len() < search_min_length {
         return Ok(HttpResponse::Ok().json(SearchResponse {
             query: search_query.q,
-            min_search_length,
+            search_min_length,
             total_matches: 0,
             results: vec![],
         }));
@@ -702,7 +745,9 @@ pub async fn search_test_cases(
     let limit = search_query.limit.min(500);
 
     // Search for test cases
-    let results = pool.search_test_cases_by_report(report_id, q, limit).await?;
+    let results = pool
+        .search_test_cases_by_report(report_id, q, limit)
+        .await?;
 
     // Group results by suite and extract match tokens
     let mut suite_map: std::collections::HashMap<Uuid, SearchSuiteResult> =
@@ -741,7 +786,7 @@ pub async fn search_test_cases(
 
     let response = SearchResponse {
         query: search_query.q,
-        min_search_length,
+        search_min_length,
         total_matches,
         results,
     };
@@ -807,6 +852,9 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     )
     .service(web::resource("/reports/{report_id}").route(web::get().to(get_report)))
     .service(web::resource("/reports/{report_id}/suites").route(web::get().to(get_report_suites)))
-    .service(web::resource("/reports/{report_id}/suites/{suite_id}/specs").route(web::get().to(get_suite_specs)))
+    .service(
+        web::resource("/reports/{report_id}/suites/{suite_id}/specs")
+            .route(web::get().to(get_suite_specs)),
+    )
     .service(web::resource("/reports/{report_id}/search").route(web::get().to(search_test_cases)));
 }

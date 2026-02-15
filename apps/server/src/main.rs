@@ -27,7 +27,7 @@ use crate::api::ApiDoc;
 use crate::auth::AdminKey;
 use crate::config::Config;
 use crate::db::DbPool;
-use crate::services::{EventBroadcaster, Storage};
+use crate::services::{EventBroadcaster, GitHubOidcVerifier, Storage};
 
 /// SPA fallback handler - serves index.html for client-side routing.
 async fn spa_fallback(req: HttpRequest) -> ActixResult<NamedFile> {
@@ -76,7 +76,7 @@ async fn main() -> std::io::Result<()> {
             error!("");
             error!("Please check your environment variables:");
             error!("  - RUST_ENV must be set to 'development' or 'production'");
-            error!("  - In production, TSIO_DATABASE_URL and TSIO_API_KEY must be set");
+            error!("  - In production, TSIO_DB_URL must be set");
             error!("  - In production, values must not match development defaults");
             std::process::exit(1);
         }
@@ -89,7 +89,7 @@ async fn main() -> std::io::Result<()> {
 
     if config.is_development() {
         warn!("Running in DEVELOPMENT mode - do not use in production!");
-        info!("Using development defaults for TSIO_DATABASE_URL and TSIO_API_KEY");
+        info!("Using development defaults for TSIO_DB_URL and TSIO_AUTH_ADMIN_KEY");
     }
 
     // Initialize database (async)
@@ -104,6 +104,13 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to run migrations");
     info!("Database migrations complete");
 
+    // Cleanup expired/revoked refresh tokens
+    match crate::db::refresh_tokens::cleanup_expired(pool.connection(), 86400).await {
+        Ok(count) if count > 0 => info!("Cleaned up {} expired/revoked refresh tokens", count),
+        Ok(_) => {}
+        Err(e) => warn!("Failed to cleanup refresh tokens: {}", e),
+    }
+
     // Initialize S3 storage
     let storage = Storage::new(&config.storage)
         .await
@@ -114,12 +121,29 @@ async fn main() -> std::io::Result<()> {
     let event_broadcaster = EventBroadcaster::new();
     info!("Event broadcaster initialized for WebSocket connections");
 
+    // Initialize GitHub OIDC verifier (if enabled)
+    let oidc_verifier = if config.github_oidc.enabled {
+        let verifier = GitHubOidcVerifier::new(&config.github_oidc);
+        info!("GitHub OIDC authentication enabled");
+        Some(verifier)
+    } else {
+        info!("GitHub OIDC authentication disabled");
+        None
+    };
+
+    if config.github_oauth.enabled {
+        info!("GitHub OAuth login enabled");
+    } else {
+        info!("GitHub OAuth login disabled");
+    }
+
     // Prepare shared state
     let bind_address = config.server.bind_address();
     let admin_key = AdminKey::new(config.auth.admin_key.clone());
-    let max_upload_size = config.upload.max_size;
+    let max_upload_size = config.features.upload_max_size;
     let static_dir = config.server.static_dir.clone();
     let is_development = config.is_development();
+    let oidc_verifier_clone = oidc_verifier.clone();
     let client_config = config; // Move config for sharing with the app
 
     info!("JSON payload limit: {}MB", max_upload_size / 1024 / 1024);
@@ -174,7 +198,7 @@ async fn main() -> std::io::Result<()> {
                 .max_age(3600)
         };
 
-        let mut app = App::new()
+        let app = App::new()
             // Add CORS middleware (must be before other middleware)
             .wrap(cors)
             // Add request logging middleware
@@ -185,7 +209,16 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(admin_key.clone()))
             .app_data(web::Data::new(max_upload_size))
             .app_data(web::Data::new(client_config.clone()))
-            .app_data(web::Data::new(event_broadcaster.clone()))
+            .app_data(web::Data::new(event_broadcaster.clone()));
+
+        // Add OIDC verifier as app data if enabled
+        let app = if let Some(ref verifier) = oidc_verifier_clone {
+            app.app_data(web::Data::new(verifier.clone()))
+        } else {
+            app
+        };
+
+        let mut app = app
             // JSON payload limit for upload_json endpoint
             .app_data(web::PayloadConfig::new(max_upload_size))
             // Configure API routes
@@ -196,7 +229,9 @@ async fn main() -> std::io::Result<()> {
                     .configure(api::configure_job_routes)
                     .configure(api::configure_test_results_routes)
                     .configure(api::configure_websocket_routes)
-                    .configure(services::configure_auth_routes),
+                    .configure(services::configure_auth_routes)
+                    .configure(services::configure_oauth_routes)
+                    .configure(services::configure_oidc_policy_routes),
             )
             // Swagger UI
             .service(

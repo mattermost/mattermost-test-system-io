@@ -34,16 +34,11 @@ pub async fn serve_file(
         Storage::content_type_for_extension(ext).to_string()
     });
 
-    Ok(HttpResponse::Ok()
-        .content_type(content_type)
-        .body(data))
+    Ok(HttpResponse::Ok().content_type(content_type).body(data))
 }
 
 /// Configure file routes.
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     // Serve files from S3: /files/{s3_key:.*}
-    cfg.service(
-        web::resource("/files/{key:.*}")
-            .route(web::get().to(serve_file)),
-    );
+    cfg.service(web::resource("/files/{key:.*}").route(web::get().to(serve_file)));
 }

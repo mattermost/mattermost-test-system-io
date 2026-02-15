@@ -7,40 +7,98 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// GitHub metadata for reports (stored as JSONB).
+///
+/// Field names are aligned with GitHub OIDC token claims.
+/// See: <https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct GitHubMetadata {
-    /// GitHub repository (e.g., owner/repo).
+    /// Subject (e.g., "repo:org/repo:ref:refs/heads/main").
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub repo: Option<String>,
-    /// GitHub branch.
+    pub sub: Option<String>,
+    /// Repository (e.g., "octo-org/octo-repo").
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    /// GitHub commit SHA.
+    pub repository: Option<String>,
+    /// Repository owner (e.g., "octo-org").
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-    /// GitHub PR number.
+    pub repository_owner: Option<String>,
+    /// Repository owner numeric ID.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pr_number: Option<i32>,
-    /// GitHub workflow name.
+    pub repository_owner_id: Option<String>,
+    /// Repository visibility ("public", "private", "internal").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_visibility: Option<String>,
+    /// Repository numeric ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_id: Option<String>,
+    /// Actor (GitHub username who triggered the workflow).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// Actor numeric ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<String>,
+    /// Git ref (e.g., "refs/heads/main") — stored as-is.
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
+    /// Ref type ("branch" or "tag").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ref_type: Option<String>,
+    /// Commit SHA.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+    /// Workflow name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow: Option<String>,
-    /// GitHub run ID (large integer).
+    /// Event name (e.g., "push", "pull_request", "workflow_dispatch").
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<i64>,
-    /// GitHub run attempt number.
+    pub event_name: Option<String>,
+    /// Run ID.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_attempt: Option<i32>,
+    pub run_id: Option<String>,
+    /// Run number (increments per workflow).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_number: Option<String>,
+    /// Run attempt number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_attempt: Option<String>,
+    /// Runner environment (e.g., "github-hosted").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runner_environment: Option<String>,
+    /// Head ref (source branch for PRs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_ref: Option<String>,
+    /// Base ref (target branch for PRs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
+    /// Full workflow ref (e.g., "org/repo/.github/workflows/ci.yml@refs/heads/main").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_workflow_ref: Option<String>,
+    /// PR number (not from OIDC — provided by the client).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<i32>,
 }
 
 impl GitHubMetadata {
     pub fn is_empty(&self) -> bool {
-        self.repo.is_none()
-            && self.branch.is_none()
-            && self.commit.is_none()
-            && self.pr_number.is_none()
+        self.sub.is_none()
+            && self.repository.is_none()
+            && self.repository_owner.is_none()
+            && self.repository_owner_id.is_none()
+            && self.repository_visibility.is_none()
+            && self.repository_id.is_none()
+            && self.actor.is_none()
+            && self.actor_id.is_none()
+            && self.git_ref.is_none()
+            && self.sha.is_none()
             && self.workflow.is_none()
+            && self.event_name.is_none()
             && self.run_id.is_none()
+            && self.run_number.is_none()
             && self.run_attempt.is_none()
+            && self.runner_environment.is_none()
+            && self.head_ref.is_none()
+            && self.base_ref.is_none()
+            && self.job_workflow_ref.is_none()
+            && self.pr_number.is_none()
     }
 
     pub fn to_json(&self) -> Option<JsonValue> {
@@ -249,12 +307,12 @@ pub struct ListReportsQuery {
     /// Filter by status.
     #[serde(default)]
     pub status: Option<ReportStatus>,
-    /// Filter by GitHub repository.
+    /// Filter by GitHub repository (e.g., "org/repo").
     #[serde(default)]
-    pub github_repo: Option<String>,
-    /// Filter by GitHub branch.
-    #[serde(default)]
-    pub github_branch: Option<String>,
+    pub repository: Option<String>,
+    /// Filter by git ref (e.g., "refs/heads/main").
+    #[serde(rename = "ref", default)]
+    pub git_ref: Option<String>,
     /// Maximum results to return.
     #[serde(default = "default_limit")]
     pub limit: i32,

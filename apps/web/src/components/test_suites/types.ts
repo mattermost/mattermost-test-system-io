@@ -1,4 +1,4 @@
-import type { ReportStats } from '../../types';
+import type { ReportStats } from '@/types';
 
 export type StatusFilter = 'all' | 'passed' | 'failed' | 'flaky' | 'skipped';
 

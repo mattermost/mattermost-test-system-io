@@ -5,9 +5,9 @@ import type {
   RawReportListResponse,
   TestSuiteListResponse,
   ReportWithJobs,
-} from '../types';
+} from '@/types';
 
-const API_URL = import.meta.env.VITE_API_URL || '/api/v1';
+export const API_URL = import.meta.env.VITE_API_URL || '/api/v1';
 
 // Error handling
 class ApiError extends Error {
@@ -118,7 +118,7 @@ export interface SearchSuiteResult {
 
 export interface SearchResponse {
   query: string;
-  min_search_length: number;
+  search_min_length: number;
   total_matches: number;
   results: SearchSuiteResult[];
 }

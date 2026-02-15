@@ -6,10 +6,10 @@ use futures_util::StreamExt;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::db::DbPool;
 use crate::db::html_files::HtmlFileEntry;
 use crate::db::json_files::JsonFileEntry;
 use crate::db::screenshots::ScreenshotEntry;
-use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
 use crate::models::{
     AcceptedHtmlFile, AcceptedJsonFile, AcceptedScreenshot, EnvironmentMetadata,
@@ -138,10 +138,7 @@ pub async fn init_job(
         .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
 
     // Check for existing job with same github_job_id (idempotency)
-    let github_job_id = req
-        .github_metadata
-        .as_ref()
-        .and_then(|m| m.job_id.as_ref());
+    let github_job_id = req.github_metadata.as_ref().and_then(|m| m.job_id.as_ref());
     if let Some(github_job_id) = github_job_id
         && let Some(existing_job) = pool.find_job_by_github_id(report_id, github_job_id).await?
     {
@@ -265,8 +262,7 @@ pub async fn init_html(
                 reason,
             });
         } else {
-            let s3_key =
-                Storage::job_key(&report_id.to_string(), &job_id.to_string(), &file.path);
+            let s3_key = Storage::job_key(&report_id.to_string(), &job_id.to_string(), &file.path);
             let content_type = file
                 .content_type
                 .clone()
@@ -301,7 +297,10 @@ pub async fn init_html(
 
     info!(
         "HTML files initialized: report_id={}, job_id={}, files_accepted={}, files_rejected={}",
-        report_id, job_id, accepted_files.len(), rejected_files.len()
+        report_id,
+        job_id,
+        accepted_files.len(),
+        rejected_files.len()
     );
 
     let response = InitHtmlResponse {
@@ -538,10 +537,12 @@ pub async fn upload_html(
 
     // Process each file in the multipart form
     while let Some(item) = payload.next().await {
-        let mut field = item.map_err(|e| AppError::InvalidInput(format!("Multipart error: {}", e)))?;
+        let mut field =
+            item.map_err(|e| AppError::InvalidInput(format!("Multipart error: {}", e)))?;
 
         // Get the filename from Content-Disposition header
-        let filename = field.content_disposition()
+        let filename = field
+            .content_disposition()
             .and_then(|cd| cd.get_filename())
             .ok_or_else(|| AppError::InvalidInput("Missing filename in multipart".to_string()))?
             .to_string();
@@ -593,7 +594,8 @@ pub async fn upload_html(
     if all_uploaded {
         let html_path = Storage::job_key_prefix(&report_id.to_string(), &job_id.to_string());
         pool.update_job_html_path(job_id, html_path).await?;
-        pool.set_html_upload_status(job_id, Some("completed")).await?;
+        pool.set_html_upload_status(job_id, Some("completed"))
+            .await?;
 
         info!(
             "All HTML files uploaded: report_id={}, job_id={}",
@@ -782,7 +784,10 @@ pub async fn init_screenshots(
 
     info!(
         "Screenshots initialized: report_id={}, job_id={}, files_accepted={}, files_rejected={}",
-        report_id, job_id, accepted_files.len(), rejected_files.len()
+        report_id,
+        job_id,
+        accepted_files.len(),
+        rejected_files.len()
     );
 
     let response = InitScreenshotsResponse {
@@ -840,15 +845,18 @@ pub async fn upload_screenshots(
 
     // Get pending screenshots for this job
     let pending_screenshots = pool.get_pending_screenshots(job_id).await?;
-    let pending_filenames: std::collections::HashSet<_> =
-        pending_screenshots.iter().map(|s| s.filename.as_str()).collect();
+    let pending_filenames: std::collections::HashSet<_> = pending_screenshots
+        .iter()
+        .map(|s| s.filename.as_str())
+        .collect();
 
     let mut files_uploaded_this_request = 0u64;
     let mut uploaded_filenames: Vec<String> = Vec::new();
 
     // Process each file in the multipart form
     while let Some(item) = payload.next().await {
-        let mut field = item.map_err(|e| AppError::InvalidInput(format!("Multipart error: {}", e)))?;
+        let mut field =
+            item.map_err(|e| AppError::InvalidInput(format!("Multipart error: {}", e)))?;
 
         // Get the filename from Content-Disposition header
         let filename = field
@@ -892,7 +900,8 @@ pub async fn upload_screenshots(
 
     // Mark screenshots as uploaded in database
     if !uploaded_filenames.is_empty() {
-        pool.mark_screenshots_uploaded(job_id, &uploaded_filenames).await?;
+        pool.mark_screenshots_uploaded(job_id, &uploaded_filenames)
+            .await?;
 
         // Try to link uploaded screenshots to existing test cases
         // (test cases may already exist if JSON was uploaded first)
@@ -1083,7 +1092,10 @@ pub async fn init_json(
 
     info!(
         "JSON files initialized: report_id={}, job_id={}, files_accepted={}, files_rejected={}",
-        report_id, job_id, accepted_files.len(), rejected_files.len()
+        report_id,
+        job_id,
+        accepted_files.len(),
+        rejected_files.len()
     );
 
     let response = InitJsonResponse {
@@ -1228,8 +1240,7 @@ pub async fn upload_json(
         // Collect file data
         let mut data = Vec::new();
         while let Some(chunk) = field.next().await {
-            let chunk =
-                chunk.map_err(|e| AppError::InvalidInput(format!("Read error: {}", e)))?;
+            let chunk = chunk.map_err(|e| AppError::InvalidInput(format!("Read error: {}", e)))?;
             data.extend_from_slice(&chunk);
         }
 
@@ -1269,7 +1280,11 @@ pub async fn upload_json(
             .await?;
 
         // Broadcast job_updated event for status change to processing
-        let event = WsEventMessage::new(WsEvent::job_updated(report_id, job_id, "processing".to_string()));
+        let event = WsEventMessage::new(WsEvent::job_updated(
+            report_id,
+            job_id,
+            "processing".to_string(),
+        ));
         broadcaster.send(event);
 
         // Get report info for framework
@@ -1281,7 +1296,14 @@ pub async fn upload_json(
         let broadcaster_clone = broadcaster.get_ref().clone();
         let framework = report.framework.clone();
         tokio::spawn(async move {
-            extraction::extract_job(&pool_clone, &storage_clone, &broadcaster_clone, job_id, &framework).await;
+            extraction::extract_job(
+                &pool_clone,
+                &storage_clone,
+                &broadcaster_clone,
+                job_id,
+                &framework,
+            )
+            .await;
         });
 
         extraction_triggered = true;

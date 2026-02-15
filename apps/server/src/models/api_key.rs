@@ -133,11 +133,13 @@ pub struct CreateApiKeyRequest {
     pub expires_in: Option<String>,
 }
 
-/// Authenticated caller information extracted from API key.
+/// Authenticated caller information extracted from API key, OIDC token, or session.
 #[derive(Debug, Clone)]
 pub struct AuthenticatedCaller {
     pub key_id: String,
     pub role: ApiKeyRole,
+    /// GitHub OIDC claims, present when authenticated via GitHub Actions OIDC.
+    pub oidc_claims: Option<super::github_oidc::GitHubOidcClaims>,
 }
 
 impl AuthenticatedCaller {

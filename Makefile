@@ -130,11 +130,11 @@ dev: ## Run both server and web in development mode (requires tmux or two termin
 dev-server: clean-debug-if-large ## Run Rust server in development mode with auto-reload
 	@echo "$(CYAN)Starting Rust server (with cargo-watch if available)...$(RESET)"
 	@if command -v cargo-watch >/dev/null 2>&1; then \
-		cd $(SERVER_DIR) && cargo watch -x 'run --bin tsio'; \
+		cd $(SERVER_DIR) && cargo watch -x 'run --bin mattermost-tsio'; \
 	else \
 		echo "$(YELLOW)cargo-watch not installed. Running without auto-reload.$(RESET)"; \
 		echo "$(YELLOW)Install with: cargo install cargo-watch$(RESET)"; \
-		cd $(SERVER_DIR) && cargo run --bin tsio; \
+		cd $(SERVER_DIR) && cargo run --bin mattermost-tsio; \
 	fi
 
 dev-web: ## Run Vite dev server with HMR
@@ -145,7 +145,7 @@ run: run-server run-web ## Run both server and web (no auto-reload)
 
 run-server: clean-debug-if-large ## Run Rust server (no auto-reload)
 	@echo "$(CYAN)Starting Rust server...$(RESET)"
-	cd $(SERVER_DIR) && cargo run --bin tsio
+	cd $(SERVER_DIR) && cargo run --bin mattermost-tsio
 
 run-web: ## Run Vite preview server (serves built assets)
 	@echo "$(CYAN)Starting Vite preview server...$(RESET)"
@@ -402,11 +402,11 @@ pre-commit: fmt lint check typecheck ## Run pre-commit checks
 
 docker-build: ## Build Docker image
 	@echo "$(CYAN)Building Docker image...$(RESET)"
-	docker build -t tsio:latest .
+	docker build -t mattermost-test-system-io:latest .
 
 docker-build-no-cache: ## Build Docker image without cache
 	@echo "$(CYAN)Building Docker image (no cache)...$(RESET)"
-	docker build --no-cache -t tsio:latest .
+	docker build --no-cache -t mattermost-test-system-io:latest .
 
 docker-up: ## Start dev services (PostgreSQL + MinIO + Adminer)
 	@echo "$(CYAN)Starting docker (PostgreSQL + MinIO + Adminer)...$(RESET)"

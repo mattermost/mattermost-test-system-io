@@ -69,7 +69,7 @@ name = "tsio"
 path = "src/lib.rs"
 
 [[bin]]
-name = "tsio"
+name = "mattermost-tsio"
 path = "src/main.rs"
 
 [[bin]]

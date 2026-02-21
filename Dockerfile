@@ -38,13 +38,13 @@ RUN cargo init --name tsio
 COPY apps/server/Cargo.toml apps/server/Cargo.lock* ./
 
 # Build dependencies only (cache layer)
-RUN cargo build --release && rm -rf src target/release/deps/tsio* target/release/tsio*
+RUN cargo build --release && rm -rf src target/release/deps/mattermost_tsio* target/release/mattermost-tsio*
 
 # Copy actual source code
 COPY apps/server/src ./src
 
 # Build the actual application
-RUN cargo build --release --bin tsio
+RUN cargo build --release --bin mattermost-tsio
 
 # ------------------------------------------------------------------------------
 # Stage 3: Production Runtime
@@ -61,7 +61,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy the compiled binary
-COPY --from=backend-builder /app/server/target/release/tsio /app/tsio
+COPY --from=backend-builder /app/server/target/release/mattermost-tsio /app/mattermost-tsio
 
 # Copy frontend static assets
 COPY --from=frontend-builder /app/web/dist /app/static
@@ -84,7 +84,7 @@ EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD ["/app/tsio", "--health-check"] || exit 1
+    CMD ["/app/mattermost-tsio", "--health-check"] || exit 1
 
 # Run the server
-CMD ["/app/tsio"]
+CMD ["/app/mattermost-tsio"]

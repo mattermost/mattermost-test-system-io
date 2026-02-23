@@ -1,7 +1,7 @@
 # ==============================================================================
 # Test System IO - Production Dockerfile
 # ==============================================================================
-# Multi-stage build for minimal image size
+# Multi-stage build using cargo-chef for reliable dependency caching
 # Final image: ~100MB (Rust binary + static assets + minimal runtime)
 # ==============================================================================
 
@@ -21,11 +21,13 @@ COPY apps/web/ ./
 RUN npm run build
 
 # ------------------------------------------------------------------------------
-# Stage 2: Build Backend (Rust)
+# Stage 2: Chef — install cargo-chef on the Rust base image
 # ------------------------------------------------------------------------------
-FROM rust:1.92-slim-bookworm AS backend-builder
+FROM rust:1.93.1-slim-trixie AS chef
 
-# Install build dependencies (clear stale apt lists from base image first)
+RUN cargo install cargo-chef
+
+# Install build dependencies
 RUN rm -rf /var/lib/apt/lists/* \
     && apt-get update && apt-get install -y \
     pkg-config \
@@ -35,44 +37,52 @@ RUN rm -rf /var/lib/apt/lists/* \
 
 WORKDIR /app/server
 
-# Create dummy project to cache dependencies
-RUN cargo init --name tsio --lib
-RUN echo 'fn main() {}' > src/main.rs && \
-    mkdir -p src/bin && \
-    echo 'fn main() {}' > src/bin/generate_api_key.rs && \
-    echo 'fn main() {}' > src/bin/manage_api_keys.rs
-COPY apps/server/Cargo.toml apps/server/Cargo.lock* ./
+# ------------------------------------------------------------------------------
+# Stage 3: Planner — generate recipe.json (dependency-only build plan)
+# ------------------------------------------------------------------------------
+FROM chef AS planner
 
-# Build dependencies only (cache layer)
-RUN cargo build --release && rm -rf src target/release/deps/mattermost_tsio* target/release/mattermost-tsio* target/release/deps/libtsio*
-
-# Copy actual source code
-COPY apps/server/src ./src
-
-# Build the actual application
-RUN cargo build --release --bin mattermost-tsio
+COPY apps/server/ .
+RUN cargo chef prepare --recipe-path recipe.json
 
 # ------------------------------------------------------------------------------
-# Stage 3: Production Runtime
+# Stage 4: Builder — cook dependencies (cached), then build source
+# ------------------------------------------------------------------------------
+FROM chef AS builder
+
+# Cook dependencies from recipe (only re-runs when Cargo.toml/Cargo.lock change)
+COPY --from=planner /app/server/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo chef cook --release --recipe-path recipe.json
+
+# Copy actual source code and build
+COPY apps/server/ .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo build --release --bin mattermost-tsio
+
+# ------------------------------------------------------------------------------
+# Stage 5: Production Runtime
 # ------------------------------------------------------------------------------
 # Build info args (passed from CI/CD workflow)
 ARG BUILD_VERSION=dev
 ARG BUILD_SHA=unknown
 ARG BUILD_TIME=unknown
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl3 \
+    libssl3t64 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -s /bin/false appuser
 
 WORKDIR /app
 
 # Copy the compiled binary
-COPY --from=backend-builder /app/server/target/release/mattermost-tsio /app/mattermost-tsio
+COPY --from=builder /app/server/target/release/mattermost-tsio /app/mattermost-tsio
 
 # Copy frontend static assets
 COPY --from=frontend-builder /app/web/dist /app/static

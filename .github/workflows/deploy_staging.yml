@@ -43,11 +43,18 @@ jobs:
           echo "No other staging deployments in progress. Proceeding."
 
   # ---------------------------------------------------------------------------
-  # Job 2: Build Docker image, push with beta tag, create GitHub prerelease
+  # Job 2: Run CI checks (lint, test, typecheck)
+  # ---------------------------------------------------------------------------
+  ci:
+    needs: check-concurrent
+    uses: ./.github/workflows/ci.yml
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Build Docker image, push with beta tag, create GitHub prerelease
   # ---------------------------------------------------------------------------
   build-and-tag:
-    needs: check-concurrent
-    runs-on: ubuntu-latest-8-cores
+    needs: [check-concurrent, ci]
+    runs-on: ubuntu-latest
     outputs:
       beta_tag: ${{ steps.meta.outputs.beta_tag }}
     steps:
@@ -86,12 +93,14 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.beta_tag }}
           build-args: |
             BUILD_SHA=${{ github.sha }}
             BUILD_TIME=${{ steps.meta.outputs.build_time }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 
       - name: Create GitHub prerelease
         env:

@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_call:
 
 permissions:
   contents: read
@@ -28,7 +29,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # master
         with:
-          toolchain: "1.92"
+          toolchain: "1.93"
           components: rustfmt, clippy
 
       - name: Cache Cargo registry and build artifacts

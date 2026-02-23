@@ -39,8 +39,8 @@ See the [local deployment guide](https://github.com/mattermost/mattermost-test-s
 
 ## Image Details
 
-- **Base**: `debian:bookworm-slim`
-- **Architecture**: `linux/amd64`, `linux/arm64`
+- **Base**: `debian:trixie-slim`
+- **Architecture**: `linux/amd64`
 - **User**: Non-root (`appuser`)
 - **Port**: `8080`
 

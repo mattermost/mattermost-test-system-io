@@ -2,7 +2,7 @@
 name = "mattermost-test-system-io-server"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.93"
 description = "API server for uploading and viewing test reports"
 license = "MIT"
 
@@ -79,3 +79,7 @@ path = "src/bin/generate_api_key.rs"
 [[bin]]
 name = "manage-api-keys"
 path = "src/bin/manage_api_keys.rs"
+
+[profile.release]
+strip = true
+lto = "thin"

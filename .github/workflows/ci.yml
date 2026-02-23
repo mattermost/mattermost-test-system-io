@@ -81,6 +81,37 @@ jobs:
       - name: Run tests
         run: npm run test
 
+  infra-checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npx oxfmt ./lib ./bin ./test --check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm run test
+
   docker-build:
     runs-on: ubuntu-latest
     steps:

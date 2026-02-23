@@ -267,7 +267,12 @@ Configuration is organized into logical groups for maintainability. The `Config`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TSIO_DATABASE_URL` | (dev default) | PostgreSQL connection string |
+| `TSIO_DB_URL` | (dev default) | PostgreSQL connection string (or use individual vars below) |
+| `TSIO_DB_HOST` | `localhost` | Database host (used when `TSIO_DB_URL` is not set) |
+| `TSIO_DB_PORT` | `5432` | Database port |
+| `TSIO_DB_USER` | `tsio` | Database user |
+| `TSIO_DB_PASSWORD` | — | Database password (required if `TSIO_DB_URL` is not set) |
+| `TSIO_DB_NAME` | `tsio` | Database name |
 | `TSIO_DB_MAX_CONNECTIONS` | 20 (dev) / 50 (prod) | Maximum pool connections |
 | `TSIO_DB_MIN_CONNECTIONS` | 2 (dev) / 5 (prod) | Minimum pool connections |
 | `TSIO_DB_CONNECT_TIMEOUT_SECS` | 10 | Connection timeout |

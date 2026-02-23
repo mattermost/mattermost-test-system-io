@@ -1,6 +1,6 @@
 {
   "name": "mattermost-test-system-io-infra",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "lint": "oxlint ./lib ./bin ./test",
@@ -17,15 +17,15 @@
     "aws-cdk-lib": "2.239.0",
     "constructs": "10.5.1",
     "dotenv": "17.3.1",
-    "oxfmt": "0.34.0",
-    "oxlint": "1.49.0"
+    "oxfmt": "0.35.0",
+    "oxlint": "1.50.0"
   },
   "engines": {
     "node": ">=24"
   },
   "devDependencies": {
     "@types/node": "25.3.0",
-    "aws-cdk": "2.1106.1",
+    "aws-cdk": "2.1107.0",
     "ts-node": "10.9.2",
     "typescript": "5.9.3",
     "vitest": "4.0.18"

@@ -73,6 +73,7 @@ export class EcsAppService extends Construct {
         streamPrefix: `${prefix}-${props.serviceName}`,
       }),
       essential: true,
+      readonlyRootFilesystem: true,
     });
 
     // Init container: wait for Postgres to be ready before starting the app
@@ -117,6 +118,7 @@ export class EcsAppService extends Construct {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       healthCheckGracePeriod,
       circuitBreaker: { rollback: true },
+      enableExecuteCommand: false,
     });
 
     // Target group

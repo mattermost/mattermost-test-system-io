@@ -19,7 +19,12 @@ See the [local deployment guide](https://github.com/mattermost/mattermost-test-s
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `RUST_ENV` | Yes | `production` | `development` or `production` |
-| `TSIO_DB_URL` | Production | — | PostgreSQL connection string |
+| `TSIO_DB_URL` | Production* | — | PostgreSQL connection string (*or use individual vars below) |
+| `TSIO_DB_HOST` | Production* | `localhost` | Database host (*required if `TSIO_DB_URL` is not set) |
+| `TSIO_DB_PORT` | No | `5432` | Database port |
+| `TSIO_DB_USER` | No | `tsio` | Database user |
+| `TSIO_DB_PASSWORD` | Production* | — | Database password (*required if `TSIO_DB_URL` is not set) |
+| `TSIO_DB_NAME` | No | `tsio` | Database name |
 | `TSIO_API_KEY` | Production | — | API key (min 32 characters) |
 | `TSIO_SERVER_HOST` | No | `0.0.0.0` | Server bind address |
 | `TSIO_SERVER_PORT` | No | `8080` | Server port |

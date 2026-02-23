@@ -25,9 +25,15 @@ export class StorageBucket extends Construct {
       bucketName: `${props.projectName}-${props.bucketSuffix}-${props.environment}`,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
       versioned,
       removalPolicy,
       autoDeleteObjects,
+      lifecycleRules: [
+        {
+          abortIncompleteMultipartUploadAfter: cdk.Duration.days(7),
+        },
+      ],
     });
   }
 }

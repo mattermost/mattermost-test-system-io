@@ -19,15 +19,17 @@ export interface EcsPostgresProps {
   readonly namespace: servicediscovery.INamespace;
   readonly dbName?: string;
   readonly dbUser?: string;
-  readonly dbPassword?: string;
-  readonly dbPasswordSecret?: secretsmanager.ISecret;
   readonly appSecurityGroup: ec2.ISecurityGroup;
 }
 
 export class EcsPostgres extends Construct {
   public readonly service: ecs.FargateService;
   public readonly connectionEndpoint: string;
-  public readonly databaseUrl: string;
+  public readonly dbPasswordSecret: secretsmanager.ISecret;
+  public readonly dbHost: string;
+  public readonly dbPort: string;
+  public readonly dbUser: string;
+  public readonly dbName: string;
 
   constructor(scope: Construct, id: string, props: EcsPostgresProps) {
     super(scope, id);
@@ -38,12 +40,17 @@ export class EcsPostgres extends Construct {
     const ephemeralStorageGiB = props.ephemeralStorageGiB ?? 30;
     const dbName = props.dbName ?? "tsio";
     const dbUser = props.dbUser ?? "tsio";
-    const dbPassword = props.dbPassword ?? "tsio";
     const prefix = `${props.projectName}-${props.environment}`;
 
-    if (!props.dbPassword && !props.dbPasswordSecret) {
-      throw new Error("Either dbPassword or dbPasswordSecret must be provided");
-    }
+    // Generate a random password stored in Secrets Manager
+    const passwordSecret = new secretsmanager.Secret(this, "DbPasswordSecret", {
+      secretName: `${prefix}-postgres-password`,
+      generateSecretString: {
+        excludePunctuation: true,
+        passwordLength: 32,
+      },
+    });
+    this.dbPasswordSecret = passwordSecret;
 
     // Security group allowing port 5432 from appSecurityGroup only
     const postgresSecurityGroup = new ec2.SecurityGroup(this, "PostgresSecurityGroup", {
@@ -66,24 +73,17 @@ export class EcsPostgres extends Construct {
       ephemeralStorageGiB,
     });
 
-    // Postgres container
-    const containerSecrets: Record<string, ecs.Secret> = {};
-    const containerEnv: Record<string, string> = {
-      POSTGRES_DB: dbName,
-      POSTGRES_USER: dbUser,
-    };
-
-    if (props.dbPasswordSecret) {
-      containerSecrets.POSTGRES_PASSWORD = ecs.Secret.fromSecretsManager(props.dbPasswordSecret);
-    } else {
-      containerEnv.POSTGRES_PASSWORD = dbPassword;
-    }
-
+    // Postgres container — password injected via Secrets Manager at runtime
     const container = taskDefinition.addContainer("postgres", {
       containerName: "postgres",
       image: ecs.ContainerImage.fromRegistry(`postgres:${postgresVersion}`),
-      environment: containerEnv,
-      secrets: containerSecrets,
+      environment: {
+        POSTGRES_DB: dbName,
+        POSTGRES_USER: dbUser,
+      },
+      secrets: {
+        POSTGRES_PASSWORD: ecs.Secret.fromSecretsManager(passwordSecret),
+      },
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: `${prefix}-${props.serviceName}`,
         logRetention: logs.RetentionDays.TWO_WEEKS,
@@ -121,9 +121,12 @@ export class EcsPostgres extends Construct {
       },
     });
 
-    // Derive the Cloud Map DNS name for the service
+    // Expose connection details for the app service
     const namespaceName = props.namespace.namespaceName ?? "mattermost-test-io.internal";
     this.connectionEndpoint = `${props.serviceName}.${namespaceName}:5432`;
-    this.databaseUrl = `postgres://${dbUser}:${dbPassword}@${props.serviceName}.${namespaceName}:5432/${dbName}`;
+    this.dbHost = `${props.serviceName}.${namespaceName}`;
+    this.dbPort = "5432";
+    this.dbUser = dbUser;
+    this.dbName = dbName;
   }
 }

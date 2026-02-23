@@ -19,7 +19,9 @@ export interface ProductionDataStackProps extends cdk.StackProps {
 export class ProductionDataStack extends cdk.Stack {
   public readonly rdsInstance: rds.DatabaseInstance;
   public readonly rdsSecret: secretsmanager.ISecret;
-  public readonly databaseUrl: string;
+  public readonly rdsDbName: string;
+  public readonly rdsDbUsername: string;
+  public readonly rdsEndpoint: rds.Endpoint;
   public readonly bucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props: ProductionDataStackProps) {
@@ -27,7 +29,7 @@ export class ProductionDataStack extends cdk.Stack {
 
     const { projectName, production } = props;
 
-    // RDS PostgreSQL (persistent, RETAIN on delete)
+    // RDS PostgreSQL (persistent, RETAIN on delete, encrypted, deletion-protected)
     const rdsPostgres = new RdsPostgres(this, "Rds", {
       environment: "production",
       projectName,
@@ -37,11 +39,15 @@ export class ProductionDataStack extends cdk.Stack {
       allocatedStorage: production.dbAllocatedStorage,
       backupRetention: cdk.Duration.days(production.dbBackupRetentionDays),
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+      multiAz: true,
+      deletionProtection: true,
     });
 
     this.rdsInstance = rdsPostgres.instance;
     this.rdsSecret = rdsPostgres.secret;
-    this.databaseUrl = rdsPostgres.databaseUrl;
+    this.rdsDbName = rdsPostgres.dbName;
+    this.rdsDbUsername = rdsPostgres.dbUsername;
+    this.rdsEndpoint = rdsPostgres.endpoint;
 
     // S3 bucket (persistent, RETAIN on delete, versioned)
     const storageBucket = new StorageBucket(this, "StorageBucket", {

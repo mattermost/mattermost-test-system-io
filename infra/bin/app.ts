@@ -62,6 +62,8 @@ new ProductionAppStack(app, "ProductionAppStack", {
   hostedZone: networkingStack.hostedZone,
   rdsInstance: productionDataStack.rdsInstance,
   rdsSecret: productionDataStack.rdsSecret,
-  databaseUrl: productionDataStack.databaseUrl,
+  rdsEndpoint: productionDataStack.rdsEndpoint,
+  rdsDbName: productionDataStack.rdsDbName,
+  rdsDbUsername: productionDataStack.rdsDbUsername,
   bucket: productionDataStack.bucket,
 });

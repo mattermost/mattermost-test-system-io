@@ -16,13 +16,16 @@ export interface RdsPostgresProps {
   readonly dbUsername?: string;
   readonly backupRetention?: cdk.Duration;
   readonly removalPolicy?: cdk.RemovalPolicy;
+  readonly multiAz?: boolean;
+  readonly deletionProtection?: boolean;
 }
 
 export class RdsPostgres extends Construct {
   public readonly instance: rds.DatabaseInstance;
   public readonly secret: secretsmanager.ISecret;
   public readonly endpoint: rds.Endpoint;
-  public readonly databaseUrl: string;
+  public readonly dbName: string;
+  public readonly dbUsername: string;
 
   constructor(scope: Construct, id: string, props: RdsPostgresProps) {
     super(scope, id);
@@ -35,6 +38,8 @@ export class RdsPostgres extends Construct {
     const dbUsername = props.dbUsername ?? "tsio";
     const backupRetention = props.backupRetention ?? cdk.Duration.days(7);
     const removalPolicy = props.removalPolicy ?? cdk.RemovalPolicy.RETAIN;
+    const multiAz = props.multiAz ?? false;
+    const deletionProtection = props.deletionProtection ?? false;
 
     const securityGroup = new ec2.SecurityGroup(this, "SecurityGroup", {
       vpc: props.vpc,
@@ -60,28 +65,16 @@ export class RdsPostgres extends Construct {
       databaseName: dbName,
       allocatedStorage,
       publiclyAccessible: false,
+      storageEncrypted: true,
+      multiAz,
+      deletionProtection,
       backupRetention,
       removalPolicy,
-      instanceIdentifier: `${props.projectName}-${props.environment}`,
     });
 
     this.secret = this.instance.secret!;
-
     this.endpoint = this.instance.instanceEndpoint;
-
-    // Constructs the URL with CloudFormation token references.
-    // The password is resolved at deploy time via the Secrets Manager dynamic reference.
-    this.databaseUrl = cdk.Fn.join("", [
-      "postgres://",
-      dbUsername,
-      ":",
-      this.secret.secretValueFromJson("password").toString(),
-      "@",
-      this.endpoint.hostname,
-      ":",
-      cdk.Token.asString(this.endpoint.port),
-      "/",
-      dbName,
-    ]);
+    this.dbName = dbName;
+    this.dbUsername = dbUsername;
   }
 }

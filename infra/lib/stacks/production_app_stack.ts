@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as route53 from "aws-cdk-lib/aws-route53";
@@ -20,7 +21,9 @@ export interface ProductionAppStackProps extends cdk.StackProps {
   readonly hostedZone: route53.IHostedZone;
   readonly rdsInstance: rds.DatabaseInstance;
   readonly rdsSecret: secretsmanager.ISecret;
-  readonly databaseUrl: string;
+  readonly rdsEndpoint: rds.Endpoint;
+  readonly rdsDbName: string;
+  readonly rdsDbUsername: string;
   readonly bucket: s3.Bucket;
 }
 
@@ -29,7 +32,10 @@ export class ProductionAppStack extends cdk.Stack {
     super(scope, id, props);
 
     const { config } = props;
-    const imageTag = this.node.tryGetContext("imageTag") ?? "latest";
+    const imageTag = this.node.tryGetContext("imageTag");
+    if (!imageTag) {
+      throw new Error("imageTag context variable is required (e.g., -c imageTag=0.1.0)");
+    }
 
     const ecsCluster = new EcsCluster(this, "EcsCluster", {
       environment: "production",
@@ -58,13 +64,18 @@ export class ProductionAppStack extends cdk.Stack {
       maximumPercent: config.production.maximumPercent,
       environmentVariables: {
         RUST_ENV: "production",
-        TSIO_DB_URL: props.databaseUrl,
+        TSIO_DB_HOST: props.rdsEndpoint.hostname,
+        TSIO_DB_PORT: cdk.Token.asString(props.rdsEndpoint.port),
+        TSIO_DB_USER: props.rdsDbUsername,
+        TSIO_DB_NAME: props.rdsDbName,
         TSIO_S3_BUCKET: props.bucket.bucketName,
+      },
+      secrets: {
+        TSIO_DB_PASSWORD: ecs.Secret.fromSecretsManager(props.rdsSecret, "password"),
       },
       healthCheckGracePeriod: cdk.Duration.seconds(300),
     });
 
-    props.rdsSecret.grantRead(appService.taskDefinition.taskRole);
     props.bucket.grantReadWrite(appService.taskDefinition.taskRole);
   }
 }

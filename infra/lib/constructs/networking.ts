@@ -1,7 +1,10 @@
+import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import { Construct } from "constructs";
 
 export interface NetworkingProps {
@@ -49,6 +52,18 @@ export class Networking extends Construct {
       ],
     });
 
+    // VPC Flow Logs to CloudWatch for network traffic visibility
+    this.vpc.addFlowLog("FlowLog", {
+      destination: ec2.FlowLogDestination.toCloudWatchLogs(
+        new logs.LogGroup(this, "VpcFlowLogGroup", {
+          logGroupName: `/vpc/${prefix}/flow-logs`,
+          retention: logs.RetentionDays.ONE_MONTH,
+          removalPolicy: cdk.RemovalPolicy.DESTROY,
+        }),
+      ),
+      trafficType: ec2.FlowLogTrafficType.ALL,
+    });
+
     // Look up Route 53 hosted zone
     this.hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, "HostedZone", {
       hostedZoneId: props.route53ZoneId,
@@ -63,7 +78,7 @@ export class Networking extends Construct {
       validation: acm.CertificateValidation.fromDns(this.hostedZone),
     });
 
-    // ALB security group
+    // ALB security group — allow HTTPS/HTTP from anywhere (IPv4 + IPv6)
     const albSecurityGroup = new ec2.SecurityGroup(this, "AlbSecurityGroup", {
       vpc: this.vpc,
       securityGroupName: `${prefix}-alb-sg`,
@@ -73,13 +88,38 @@ export class Networking extends Construct {
     albSecurityGroup.addIngressRule(
       ec2.Peer.anyIpv4(),
       ec2.Port.tcp(443),
-      "Allow HTTPS from anywhere",
+      "Allow HTTPS from anywhere (IPv4)",
+    );
+    albSecurityGroup.addIngressRule(
+      ec2.Peer.anyIpv6(),
+      ec2.Port.tcp(443),
+      "Allow HTTPS from anywhere (IPv6)",
     );
     albSecurityGroup.addIngressRule(
       ec2.Peer.anyIpv4(),
       ec2.Port.tcp(80),
-      "Allow HTTP from anywhere (redirects to HTTPS)",
+      "Allow HTTP from anywhere (IPv4, redirects to HTTPS)",
     );
+    albSecurityGroup.addIngressRule(
+      ec2.Peer.anyIpv6(),
+      ec2.Port.tcp(80),
+      "Allow HTTP from anywhere (IPv6, redirects to HTTPS)",
+    );
+
+    // S3 bucket for ALB access logs
+    const albAccessLogBucket = new s3.Bucket(this, "AlbAccessLogBucket", {
+      bucketName: `${props.projectName}-alb-access-logs`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(90),
+          abortIncompleteMultipartUploadAfter: cdk.Duration.days(7),
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
 
     // Application Load Balancer (internet-facing, in public subnets)
     this.alb = new elbv2.ApplicationLoadBalancer(this, "Alb", {
@@ -88,7 +128,10 @@ export class Networking extends Construct {
       internetFacing: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroup: albSecurityGroup,
+      dropInvalidHeaderFields: true,
     });
+
+    this.alb.logAccessLogs(albAccessLogBucket, "alb-logs");
 
     // HTTPS listener (port 443) with the ACM cert, TLS 1.3 policy
     this.httpsListener = this.alb.addListener("HttpsListener", {

@@ -76,7 +76,7 @@ async fn main() -> std::io::Result<()> {
             error!("");
             error!("Please check your environment variables:");
             error!("  - RUST_ENV must be set to 'development' or 'production'");
-            error!("  - In production, TSIO_DB_URL must be set");
+            error!("  - In production, TSIO_DB_URL or TSIO_DB_PASSWORD must be set");
             error!("  - In production, values must not match development defaults");
             std::process::exit(1);
         }

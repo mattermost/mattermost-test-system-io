@@ -8,8 +8,8 @@ use crate::{api, error, models, services};
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "Test System IO Server",
-        version = "0.1.0",
+        title = "Mattermost Test System IO",
+        version = "0.2.0",
         description = "API server for uploading and viewing test reports (Playwright, Cypress, Detox) with job-based artifact upload"
     ),
     servers(
@@ -119,9 +119,18 @@ use crate::{api, error, models, services};
         (name = "Test Results", description = "Query test suites and test cases"),
         (name = "Auth", description = "API key management")
     ),
-    modifiers(&SecurityAddon)
+    modifiers(&SecurityAddon, &VersionFromCargo)
 )]
 pub struct ApiDoc;
+
+/// Override the OpenAPI version with the value from Cargo.toml at runtime.
+struct VersionFromCargo;
+
+impl utoipa::Modify for VersionFromCargo {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        openapi.info.version = env!("CARGO_PKG_VERSION").to_string();
+    }
+}
 
 /// Add API key security scheme.
 struct SecurityAddon;

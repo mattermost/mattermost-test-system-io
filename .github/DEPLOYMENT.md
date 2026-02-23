@@ -188,7 +188,7 @@ Wait for the active deployment to finish, then retry.
    ```bash
    aws logs tail /ecs/mattermost-test-system-io-shared --follow
    ```
-3. Verify environment variables (DATABASE_URL, API_KEY, S3_BUCKET)
+3. Verify environment variables (TSIO_DB_HOST, TSIO_DB_PASSWORD, TSIO_S3_BUCKET)
 4. ECS circuit breaker will auto-rollback if the task can't start
 
 ### Beta tag not found during production promotion
@@ -263,7 +263,7 @@ Go to your repo → **Settings**:
 
 Trigger the staging deploy workflow. The `Configure AWS credentials via OIDC` step should succeed. If it fails:
 
-- **"Not authorized to perform sts:AssumeRoleWithWebIdentity"** — check that the trust policy matches your exact repo name and the workflow runs from `main`
+- **"Not authorized to perform sts:AssumeRoleWithWebIdentity"** — check that the trust policy matches your exact repo name and the GitHub Environment names (`staging`, `production`). Deploy jobs use `environment:` which changes the OIDC `sub` claim from `ref:refs/heads/main` to `environment:{name}`
 - **"No OpenIDConnect provider found"** — the `SharedStack` wasn't deployed or was deployed in a different region
 - **"Audience not allowed"** — verify the OIDC provider has `sts.amazonaws.com` as an allowed audience
 

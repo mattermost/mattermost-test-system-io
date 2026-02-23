@@ -260,7 +260,7 @@ impl Config {
     /// - Only RUST_ENV is required
     ///
     /// In production mode (RUST_ENV=production):
-    /// - TSIO_DB_URL is required
+    /// - TSIO_DB_URL or TSIO_DB_PASSWORD is required
     /// - S3 configuration is required
     /// - Server will NOT start if using development defaults
     ///
@@ -277,7 +277,12 @@ impl Config {
     /// - `TSIO_SERVER_MAX_CONNECTION_RATE`: Max new connections/sec/worker (default: 256)
     ///
     /// Database settings (`TSIO_DB_*`):
-    /// - `TSIO_DB_URL`: PostgreSQL connection string (required in production)
+    /// - `TSIO_DB_URL`: PostgreSQL connection string (required in production, or use individual vars below)
+    /// - `TSIO_DB_HOST`: Database host (used when TSIO_DB_URL is not set, default: localhost)
+    /// - `TSIO_DB_PORT`: Database port (default: 5432)
+    /// - `TSIO_DB_USER`: Database user (default: tsio)
+    /// - `TSIO_DB_PASSWORD`: Database password (required if TSIO_DB_URL is not set)
+    /// - `TSIO_DB_NAME`: Database name (default: tsio)
     /// - `TSIO_DB_MAX_CONNECTIONS`: Max database connections (default: 20 dev, 50 prod)
     /// - `TSIO_DB_MIN_CONNECTIONS`: Min database connections (default: 2 dev, 5 prod)
     /// - `TSIO_DB_IDLE_TIMEOUT_SECS`: Idle connection timeout (default: 300)
@@ -424,8 +429,18 @@ impl Config {
     }
 
     fn load_database_settings(environment: &Environment) -> Result<DatabaseSettings, ConfigError> {
-        let url =
-            env::var("TSIO_DB_URL").unwrap_or_else(|_| defaults::DEV_DATABASE_URL.to_string());
+        // Support individual DB env vars (preferred for secrets injection) or single URL
+        let url = if let Ok(url) = env::var("TSIO_DB_URL") {
+            url
+        } else if let Ok(password) = env::var("TSIO_DB_PASSWORD") {
+            let host = env::var("TSIO_DB_HOST").unwrap_or_else(|_| "localhost".to_string());
+            let port = env::var("TSIO_DB_PORT").unwrap_or_else(|_| "5432".to_string());
+            let user = env::var("TSIO_DB_USER").unwrap_or_else(|_| "tsio".to_string());
+            let name = env::var("TSIO_DB_NAME").unwrap_or_else(|_| "tsio".to_string());
+            format!("postgres://{user}:{password}@{host}:{port}/{name}")
+        } else {
+            defaults::DEV_DATABASE_URL.to_string()
+        };
 
         let (default_max_conn, default_min_conn) = if environment.is_development() {
             (

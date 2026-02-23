@@ -15,15 +15,18 @@ AWS Account
     ├── ECS Fargate Cluster (shared)
     ├── Cloud Map Namespace (mattermost-test-io.internal)
     │
+    ├── VPC Flow Logs (CloudWatch, 30-day retention)
+    ├── ALB Access Logs (S3, 90-day retention)
+    │
     ├── Staging (staging-test-io.test.mattermost.com)
-    │   ├── ECS App Service (0.5 vCPU, 1 GiB, 1 task)
-    │   ├── ECS PostgreSQL 18.1 (ephemeral, Cloud Map discovery)
-    │   └── S3 Bucket (uploads)
+    │   ├── ECS App Service (0.5 vCPU, 1 GiB, 1 task, read-only root fs)
+    │   ├── ECS PostgreSQL 18.1 (ephemeral, Cloud Map discovery, Secrets Manager password)
+    │   └── S3 Bucket (uploads, enforceSSL)
     │
     └── Production (test-io.test.mattermost.com)
-        ├── ECS App Service (1 vCPU, 2 GiB, 2 tasks, circuit breaker)
-        ├── RDS PostgreSQL 18 (Secrets Manager auto-generated password)
-        └── S3 Bucket (uploads, versioned)
+        ├── ECS App Service (1 vCPU, 2 GiB, 2 tasks, circuit breaker, read-only root fs)
+        ├── RDS PostgreSQL 18 (encrypted, multi-AZ, deletion protection, Secrets Manager password)
+        └── S3 Bucket (uploads, versioned, enforceSSL)
 ```
 
 ### Environment URLs
@@ -37,7 +40,7 @@ AWS Account
 
 - **CDK over Terraform**: TypeScript (same as frontend), no external state management, CloudFormation auto-rollback.
 - **Staging PostgreSQL as ECS containers**: Ephemeral, destroyed and recreated each deployment. Cheap and fast to reset.
-- **Production PostgreSQL as RDS**: Persistent, managed backups, Secrets Manager password rotation.
+- **Production PostgreSQL as RDS**: Persistent, encrypted at rest, multi-AZ, deletion protection, managed backups, Secrets Manager password.
 - **Single staging environment (migration)**: Validates upgrade paths by deploying the latest release first, then the beta. Fresh installs are implicitly tested since staging starts with an empty database each deployment.
 - **Shared VPC + ALB**: Staging and production share 1 VPC, 1 NAT gateway, and 1 ALB with host-based routing. Saves ~$115/mo vs separate infrastructure. Isolation via security groups.
 - **OIDC for GitHub Actions**: No long-lived AWS credentials. Short-lived tokens per workflow run.
@@ -85,7 +88,7 @@ npm run format             # Format with oxfmt
 npm run typecheck          # Type check with tsc
 npm run cdk:synth          # Synthesize CloudFormation templates
 npm run cdk:diff           # Diff against deployed stacks
-npm run cdk:deploy         # Deploy all stacks
+npm run cdk:deploy         # Deploy all stacks (requires -c imageTag=...)
 ```
 
 Or from the `infra/` directory using npm scripts:
@@ -96,8 +99,10 @@ npm ci                     # Install dependencies
 npm test                   # Run CDK tests
 npm run cdk:synth          # Synthesize templates
 npm run cdk:diff           # Diff against deployed
-npm run cdk:deploy         # Deploy all stacks
+npm run cdk:deploy         # Deploy all stacks (requires -c imageTag=...)
 ```
+
+> **Note**: `imageTag` is a required context variable for deploying app stacks. Pass it via `-c imageTag=0.1.0-abc1234.beta`.
 
 ## Initial Setup
 
@@ -171,10 +176,10 @@ This should complete without errors and output to `cdk.out/`.
 ### 6. Deploy all stacks
 
 ```bash
-npx cdk deploy --all --require-approval never
+npx cdk deploy --all --require-approval never -c imageTag=0.1.0-abc1234.beta
 ```
 
-Deploy order is automatic based on stack dependencies: SharedStack -> AppStack.
+Deploy order is automatic based on stack dependencies: SharedStack -> NetworkingStack -> ProductionDataStack -> StagingAppStack/ProductionAppStack.
 
 ## Updating Infrastructure
 
@@ -221,6 +226,7 @@ npx cdk diff          # Preview changes from CDK upgrade
 
 - No AWS access keys in GitHub secrets
 - No database passwords in code, config, or environment files
+- No database passwords in plaintext ECS task definitions — injected at runtime via Secrets Manager
 - No `.env` files committed (blocked by `.gitignore` + `.gitleaks.toml`)
 
 ### Rotating credentials
@@ -238,16 +244,21 @@ npx cdk diff          # Preview changes from CDK upgrade
 
 - ECS tasks run in **private subnets** (no public IP)
 - RDS is **not publicly accessible** (`publiclyAccessible: false`)
-- S3 buckets have **all public access blocked** (`BlockPublicAccess.BLOCK_ALL`)
-- ALB is the only internet-facing resource, in public subnets
+- S3 buckets have **all public access blocked** (`BlockPublicAccess.BLOCK_ALL`) with **enforceSSL**
+- ALB is the only internet-facing resource, in public subnets, with `dropInvalidHeaderFields` enabled
 - Security groups follow **least privilege**: ALB -> app (port 8080), app -> database (port 5432)
+- **VPC Flow Logs** enabled (all traffic, CloudWatch, 30-day retention)
+- **ALB Access Logs** enabled (S3, 90-day retention)
 
 ### IAM
 
 - GitHub Actions authenticates via **OIDC** — no long-lived keys
-- OIDC trust policy restricted to `repo:mattermost/mattermost-test-system-io:ref:refs/heads/main`
-- Deploy role only has `sts:AssumeRole` on CDK bootstrap roles (not direct AWS permissions)
-- CDK bootstrap roles handle actual resource creation via CloudFormation
+- OIDC trust policy restricted to `environment:staging` and `environment:production` claims only
+- Deploy role has scoped ECS permissions (`DescribeServices`, `UpdateService` on project services only)
+- `RegisterTaskDefinition` restricted by `ecs:task-definition-family` condition
+- `iam:PassRole` restricted to project roles and `ecs-tasks.amazonaws.com` service only
+- CDK bootstrap roles handle resource creation via CloudFormation
+- Session duration limited to 1 hour
 
 ### Code & Repository
 
@@ -257,10 +268,19 @@ npx cdk diff          # Preview changes from CDK upgrade
 - `cdk.out/` is gitignored (contains synthesized templates with resolved values)
 - GitHub Actions SHA-pinned to prevent supply chain attacks
 
+### Container Security
+
+- **Read-only root filesystem** on all app containers (`readonlyRootFilesystem: true`)
+- **ECS Exec disabled** (`enableExecuteCommand: false`) — no shell access to running containers
+- **Non-root user** in Dockerfile (`appuser`)
+- **Deployment circuit breaker** with auto-rollback on health check failure
+
 ### CDK-Specific
 
 - `RemovalPolicy.RETAIN` on production resources (RDS, S3) — prevents accidental deletion
 - `RemovalPolicy.DESTROY` on staging resources — easy cleanup
+- `imageTag` is a **required** context variable — no `latest` fallback to prevent accidental deployments
+- Production RDS has **deletion protection** enabled as an additional guard
 - `skipLibCheck: true` in tsconfig — avoids type conflicts from CDK internal types
 - Test files excluded from `tsc` compilation — Vitest handles them separately
 

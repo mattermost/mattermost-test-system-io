@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import { Construct } from "constructs";
@@ -24,7 +25,12 @@ export class StagingAppStack extends cdk.Stack {
     super(scope, id, props);
 
     const { config } = props;
-    const imageTag = this.node.tryGetContext("imageTag") ?? "latest";
+    const imageTag = this.node.tryGetContext("imageTag");
+    if (!imageTag) {
+      throw new Error(
+        "imageTag context variable is required (e.g., -c imageTag=0.1.0-abc1234.beta)",
+      );
+    }
 
     const ecsCluster = new EcsCluster(this, "EcsCluster", {
       environment: "staging",
@@ -41,7 +47,6 @@ export class StagingAppStack extends cdk.Stack {
       postgresVersion: config.staging.postgresVersion,
       ephemeralStorageGiB: config.staging.postgresEphemeralStorageGiB,
       namespace: ecsCluster.namespace!,
-      dbPassword: "tsio",
       appSecurityGroup: props.appSecurityGroup,
     });
 
@@ -73,8 +78,14 @@ export class StagingAppStack extends cdk.Stack {
       maximumPercent: config.staging.maximumPercent,
       environmentVariables: {
         RUST_ENV: "production",
-        TSIO_DB_URL: postgres.databaseUrl,
+        TSIO_DB_HOST: postgres.dbHost,
+        TSIO_DB_PORT: postgres.dbPort,
+        TSIO_DB_USER: postgres.dbUser,
+        TSIO_DB_NAME: postgres.dbName,
         TSIO_S3_BUCKET: bucket.bucket.bucketName,
+      },
+      secrets: {
+        TSIO_DB_PASSWORD: ecs.Secret.fromSecretsManager(postgres.dbPasswordSecret),
       },
       healthCheckGracePeriod: cdk.Duration.seconds(300),
       dbReadinessCheck: {

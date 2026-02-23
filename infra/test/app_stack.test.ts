@@ -15,7 +15,7 @@ const testConfig: AppConfig = {
 const testEnv = { account: "123456789012", region: "us-east-1" };
 
 function createTemplates() {
-  const app = new cdk.App();
+  const app = new cdk.App({ context: { imageTag: "0.1.0-test123.beta" } });
 
   const networkingStack = new NetworkingStack(app, "TestNetworkingStack", {
     config: testConfig,
@@ -50,7 +50,9 @@ function createTemplates() {
     hostedZone: networkingStack.hostedZone,
     rdsInstance: productionDataStack.rdsInstance,
     rdsSecret: productionDataStack.rdsSecret,
-    databaseUrl: productionDataStack.databaseUrl,
+    rdsEndpoint: productionDataStack.rdsEndpoint,
+    rdsDbName: productionDataStack.rdsDbName,
+    rdsDbUsername: productionDataStack.rdsDbUsername,
     bucket: productionDataStack.bucket,
   });
 

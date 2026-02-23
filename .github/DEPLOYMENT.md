@@ -257,7 +257,7 @@ Go to your repo → **Settings**:
 **Actions permissions** (Settings → Actions → General):
 
 - Allow select actions and reusable workflows
-- Allow: `actions/*`, `aws-actions/*`, `docker/*`, `dtolnay/*`, `peter-evans/*`
+- Allow: `actions/*`, `aws-actions/*`, `docker/*`, `dtolnay/*`
 
 ### 4. Verify OIDC connection
 

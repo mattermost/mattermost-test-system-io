@@ -115,17 +115,6 @@ jobs:
             --title "Release $RELEASE_VERSION" \
             --generate-notes
 
-      - name: Checkout for Docker Hub README
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
-        with:
-          username: ${{ secrets.DOCKERHUB_DEV_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_DEV_TOKEN }}
-          repository: mattermostdevelopment/mattermost-test-system-io
-          readme-filepath: docker/DOCKER_HUB_README.md
-
   # ---------------------------------------------------------------------------
   # Job 3: Deploy to production ECS
   # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ use crate::{api, error, models, services};
         // Health endpoints
         api::health::health,
         api::health::ready,
+        api::health::info,
         // Report endpoints
         api::test_reports::register_report,
         api::test_reports::list_reports,
@@ -55,6 +56,7 @@ use crate::{api, error, models, services};
             // Health
             api::health::HealthResponse,
             api::health::ReadyResponse,
+            api::health::ServerInfoResponse,
             // Reports
             models::Framework,
             models::ReportStatus,

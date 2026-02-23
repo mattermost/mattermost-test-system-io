@@ -1,0 +1,190 @@
+name: Deploy Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      beta_tag:
+        description: "Beta tag to promote (e.g., 0.1.0-abcdefg.beta)"
+        required: true
+        type: string
+
+permissions:
+  id-token: write    # GitHub OIDC for AWS
+  contents: write    # Create Git tags and GitHub releases
+  actions: read      # Check for concurrent workflow runs
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE: mattermostdevelopment/mattermost-test-system-io
+  CLUSTER: mattermost-test-system-io-production-cluster
+  APP_SERVICE: mattermost-test-system-io-production-test-io
+  APP_URL: https://test-io.test.mattermost.com
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Reject if another production deployment is already in progress
+  # ---------------------------------------------------------------------------
+  check-concurrent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for in-progress runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IN_PROGRESS=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/deploy_production.yml/runs?status=in_progress" \
+            --jq '[.workflow_runs[] | select(.id != '${{ github.run_id }}')] | length')
+
+          if [ "$IN_PROGRESS" -gt 0 ]; then
+            echo "::error::Another production deployment is already in progress. Please wait for it to complete."
+            exit 1
+          fi
+
+          echo "No other production deployments in progress. Proceeding."
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Validate beta tag, retag Docker image, create GitHub release
+  # ---------------------------------------------------------------------------
+  validate-and-retag:
+    needs: check-concurrent
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.retag.outputs.release_version }}
+    steps:
+      - name: Validate beta tag exists as GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BETA_TAG: ${{ inputs.beta_tag }}
+        run: |
+          IS_PRERELEASE=$(gh release view "$BETA_TAG" --json isPrerelease --jq '.isPrerelease' 2>/dev/null || echo "not_found")
+
+          if [ "$IS_PRERELEASE" = "not_found" ]; then
+            echo "::error::Beta tag '${BETA_TAG}' does not exist as a GitHub release."
+            exit 1
+          fi
+
+          if [ "$IS_PRERELEASE" != "true" ]; then
+            echo "::error::Tag '${BETA_TAG}' is not a prerelease. Only prereleases can be promoted to production."
+            exit 1
+          fi
+
+          echo "Beta tag '${BETA_TAG}' validated as a prerelease."
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_DEV_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_DEV_TOKEN }}
+
+      - name: Validate beta image exists
+        env:
+          BETA_TAG: ${{ inputs.beta_tag }}
+        run: |
+          docker buildx imagetools inspect "${{ env.IMAGE }}:${BETA_TAG}"
+
+      - name: Retag image and create GitHub release
+        id: retag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BETA_TAG: ${{ inputs.beta_tag }}
+        run: |
+          # Extract release version by stripping -{sha}.beta suffix
+          RELEASE_VERSION=$(echo "$BETA_TAG" | sed 's/-[a-f0-9]*\.beta$//')
+
+          echo "release_version=${RELEASE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${RELEASE_VERSION}"
+
+          # Retag the Docker image as release version and latest
+          docker buildx imagetools create \
+            --tag "${{ env.IMAGE }}:${RELEASE_VERSION}" \
+            --tag "${{ env.IMAGE }}:latest" \
+            "${{ env.IMAGE }}:${BETA_TAG}"
+
+          # Get commit SHA from the prerelease
+          COMMIT_SHA=$(gh release view "$BETA_TAG" --json targetCommitish --jq '.targetCommitish')
+
+          # Create GitHub release
+          gh release create "$RELEASE_VERSION" \
+            --target "$COMMIT_SHA" \
+            --title "Release $RELEASE_VERSION" \
+            --generate-notes
+
+      - name: Checkout for Docker Hub README
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_DEV_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_DEV_TOKEN }}
+          repository: mattermostdevelopment/mattermost-test-system-io
+          readme-filepath: docker/DOCKER_HUB_README.md
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Deploy to production ECS
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: validate-and-retag
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      RELEASE_VERSION: ${{ needs.validate-and-retag.outputs.release_version }}
+    steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Fetch current task definition and update image
+        id: task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "::add-mask::${TASK_DEF_ARN}"
+
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition "$TASK_DEF_ARN" \
+            --query 'taskDefinition')
+
+          NEW_TASK_DEF=$(echo "$TASK_DEF" | \
+            jq --arg IMG "${{ env.IMAGE }}:${RELEASE_VERSION}" \
+            '(.containerDefinitions[] | select(.name == "app")).image = $IMG |
+             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "::add-mask::${NEW_TASK_DEF_ARN}"
+          echo "new_task_def_arn=${NEW_TASK_DEF_ARN}" >> "$GITHUB_OUTPUT"
+
+      - name: Update production service
+        run: |
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$APP_SERVICE" \
+            --task-definition "${{ steps.task-def.outputs.new_task_def_arn }}" \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Wait for service to be stable
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE"
+
+      - name: Health check
+        run: |
+          curl -sf "$APP_URL/api/v1/ready"

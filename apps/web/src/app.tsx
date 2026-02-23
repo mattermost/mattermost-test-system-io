@@ -5,6 +5,7 @@ import { ThemeProvider } from '@/contexts/theme_context';
 import { ThemeToggle } from '@/components/theme_toggle';
 import { ConnectionStatus } from '@/components/connection_status';
 import { LoginButton } from '@/components/login_button';
+import { Footer } from '@/components/footer';
 
 export function App() {
   return (
@@ -34,6 +35,7 @@ export function App() {
               <Route path="/reports/:id" element={<JobReportPage />} />
             </Routes>
           </main>
+          <Footer />
         </div>
       </BrowserRouter>
     </ThemeProvider>

@@ -1,4 +1,4 @@
-//! Health check and config endpoints.
+//! Health check, config, and system info endpoints.
 
 use actix_web::{HttpResponse, get, web};
 use chrono::Utc;
@@ -8,6 +8,12 @@ use utoipa::ToSchema;
 
 use crate::config::Config;
 use crate::db::DbPool;
+
+/// Server version from Cargo.toml.
+const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// GitHub repository URL.
+const REPO_URL: &str = "https://github.com/mattermost/mattermost-test-system-io";
 
 /// Health check response.
 #[derive(Serialize, ToSchema)]
@@ -36,6 +42,21 @@ pub struct ClientConfigResponse {
     search_min_length: usize,
     /// Whether GitHub OAuth login is enabled.
     github_oauth_enabled: bool,
+}
+
+/// Server info response with version, build, and repository metadata.
+#[derive(Serialize, ToSchema)]
+pub struct ServerInfoResponse {
+    /// Server version from Cargo.toml (semver).
+    server_version: &'static str,
+    /// Runtime environment (development, production).
+    environment: String,
+    /// GitHub repository URL.
+    repo_url: &'static str,
+    /// Git commit SHA of the build.
+    commit_sha: String,
+    /// ISO 8601 timestamp of when the image was built.
+    build_time: String,
 }
 
 /// Health check endpoint.
@@ -108,7 +129,36 @@ pub async fn client_config(config: web::Data<Config>) -> HttpResponse {
     })
 }
 
+/// Server info endpoint.
+///
+/// Returns version, build, and repository metadata.
+#[utoipa::path(
+    get,
+    path = "/api/v1/info",
+    tag = "Health",
+    responses(
+        (status = 200, description = "Server info", body = ServerInfoResponse)
+    )
+)]
+#[get("/info")]
+pub async fn info() -> HttpResponse {
+    let environment = std::env::var("RUST_ENV").unwrap_or_default();
+    let commit_sha = std::env::var("TSIO_COMMIT_SHA").unwrap_or_default();
+    let build_time = std::env::var("TSIO_BUILD_TIME").unwrap_or_default();
+
+    HttpResponse::Ok().json(ServerInfoResponse {
+        server_version: SERVER_VERSION,
+        environment,
+        repo_url: REPO_URL,
+        commit_sha,
+        build_time,
+    })
+}
+
 /// Configure health routes.
 pub fn configure_health_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(health).service(ready).service(client_config);
+    cfg.service(health)
+        .service(ready)
+        .service(client_config)
+        .service(info);
 }

@@ -1,0 +1,18 @@
+# CODEOWNERS - Require maintainer review for sensitive files
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# CI/CD workflows
+/.github/workflows/ @saturninoabril
+
+# Infrastructure as code
+/infra/ @saturninoabril
+
+# Container configuration
+/Dockerfile @saturninoabril
+/.dockerignore @saturninoabril
+
+# Security configuration
+/.gitignore @saturninoabril
+/.gitleaks.toml @saturninoabril
+/.github/CODEOWNERS @saturninoabril
+/.github/dependabot.yml @saturninoabril

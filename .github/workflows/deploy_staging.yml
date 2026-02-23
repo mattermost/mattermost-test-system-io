@@ -1,0 +1,252 @@
+name: Deploy Staging
+
+on:
+  workflow_dispatch:
+    # No inputs required — deploys current main branch
+
+permissions:
+  id-token: write    # GitHub OIDC for AWS
+  contents: write    # Create Git tags and GitHub prereleases
+  actions: read      # Check for concurrent workflow runs
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  IMAGE: mattermostdevelopment/mattermost-test-system-io
+  CLUSTER: mattermost-test-system-io-staging-cluster
+  APP_SERVICE: mattermost-test-system-io-staging-staging-test-io
+  PG_SERVICE: mattermost-test-system-io-staging-postgres
+  APP_URL: https://staging-test-io.test.mattermost.com
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Reject if another staging deployment is already in progress
+  # ---------------------------------------------------------------------------
+  check-concurrent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for in-progress runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IN_PROGRESS=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/deploy_staging.yml/runs?status=in_progress" \
+            --jq '[.workflow_runs[] | select(.id != '${{ github.run_id }}')] | length')
+
+          if [ "$IN_PROGRESS" -gt 0 ]; then
+            echo "::error::Another staging deployment is already in progress. Please wait for it to complete."
+            exit 1
+          fi
+
+          echo "No other staging deployments in progress. Proceeding."
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Build Docker image, push with beta tag, create GitHub prerelease
+  # ---------------------------------------------------------------------------
+  build-and-tag:
+    needs: check-concurrent
+    runs-on: ubuntu-latest
+    outputs:
+      beta_tag: ${{ steps.meta.outputs.beta_tag }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+
+      - name: Read VERSION and compute beta tag
+        id: meta
+        run: |
+          VERSION=$(grep '^version' apps/server/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BETA_TAG="${VERSION}-${SHORT_SHA}.beta"
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "beta_tag=${BETA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
+
+          echo "VERSION=${VERSION}"
+          echo "BETA_TAG=${BETA_TAG}"
+          echo "BUILD_TIME=${BUILD_TIME}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_DEV_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_DEV_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.beta_tag }}
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+
+      - name: Create GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BETA_TAG: ${{ steps.meta.outputs.beta_tag }}
+        run: |
+          gh release create "$BETA_TAG" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Beta $BETA_TAG" \
+            --generate-notes
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_DEV_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_DEV_TOKEN }}
+          repository: mattermostdevelopment/mattermost-test-system-io
+          readme-filepath: docker/DOCKER_HUB_README.md
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Deploy to staging (migration path)
+  #   - Fresh PostgreSQL container
+  #   - Deploy latest release first, then deploy beta (exercises migrations)
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: build-and-tag
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      BETA_TAG: ${{ needs.build-and-tag.outputs.beta_tag }}
+    steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Force new PostgreSQL deployment
+        run: |
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$PG_SERVICE" \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Wait for PostgreSQL to be healthy
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$PG_SERVICE"
+
+      - name: Fetch latest release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LATEST_RELEASE=$(gh release list \
+            --exclude-pre-releases \
+            --limit 1 \
+            --json tagName \
+            --jq '.[0].tagName')
+
+          if [ -z "$LATEST_RELEASE" ] || [ "$LATEST_RELEASE" = "null" ]; then
+            echo "::warning::No previous release found. Skipping migration step — deploying beta directly."
+            echo "has_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest_release=${LATEST_RELEASE}" >> "$GITHUB_OUTPUT"
+            echo "has_release=true" >> "$GITHUB_OUTPUT"
+            echo "Latest release: ${LATEST_RELEASE}"
+          fi
+
+      - name: Deploy latest release version first
+        if: steps.release.outputs.has_release == 'true'
+        id: release-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "::add-mask::${TASK_DEF_ARN}"
+
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition "$TASK_DEF_ARN" \
+            --query 'taskDefinition')
+
+          RELEASE_TAG="${{ steps.release.outputs.latest_release }}"
+          RELEASE_TASK_DEF=$(echo "$TASK_DEF" | \
+            jq --arg IMG "${{ env.IMAGE }}:${RELEASE_TAG}" \
+            '(.containerDefinitions[] | select(.name == "app")).image = $IMG |
+             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+
+          RELEASE_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$RELEASE_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "::add-mask::${RELEASE_TASK_DEF_ARN}"
+
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$APP_SERVICE" \
+            --task-definition "$RELEASE_TASK_DEF_ARN" \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Wait for release version to be stable
+        if: steps.release.outputs.has_release == 'true'
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE"
+
+      - name: Deploy beta version
+        id: beta-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "::add-mask::${TASK_DEF_ARN}"
+
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition "$TASK_DEF_ARN" \
+            --query 'taskDefinition')
+
+          BETA_TASK_DEF=$(echo "$TASK_DEF" | \
+            jq --arg IMG "${{ env.IMAGE }}:${BETA_TAG}" \
+            '(.containerDefinitions[] | select(.name == "app")).image = $IMG |
+             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+
+          BETA_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$BETA_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "::add-mask::${BETA_TASK_DEF_ARN}"
+
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$APP_SERVICE" \
+            --task-definition "$BETA_TASK_DEF_ARN" \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Wait for beta version to be stable
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE"
+
+      - name: Health check
+        run: |
+          curl -sf "$APP_URL/api/v1/ready"

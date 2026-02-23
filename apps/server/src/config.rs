@@ -116,10 +116,10 @@ pub struct StorageSettings {
     pub bucket: String,
     /// S3 region
     pub region: String,
-    /// S3 access key ID
-    pub access_key: String,
-    /// S3 secret access key
-    pub secret_key: String,
+    /// S3 access key ID (None = use IAM role / default AWS credential chain)
+    pub access_key: Option<String>,
+    /// S3 secret access key (None = use IAM role / default AWS credential chain)
+    pub secret_key: Option<String>,
 }
 
 /// HTTP server configuration.
@@ -493,10 +493,20 @@ impl Config {
                 .unwrap_or_else(|_| defaults::DEV_S3_BUCKET.to_string()),
             region: env::var("TSIO_S3_REGION")
                 .unwrap_or_else(|_| defaults::DEV_S3_REGION.to_string()),
-            access_key: env::var("TSIO_S3_ACCESS_KEY")
-                .unwrap_or_else(|_| defaults::DEV_S3_ACCESS_KEY.to_string()),
-            secret_key: env::var("TSIO_S3_SECRET_KEY")
-                .unwrap_or_else(|_| defaults::DEV_S3_SECRET_KEY.to_string()),
+            access_key: env::var("TSIO_S3_ACCESS_KEY").ok().or_else(|| {
+                if environment.is_development() {
+                    Some(defaults::DEV_S3_ACCESS_KEY.to_string())
+                } else {
+                    None
+                }
+            }),
+            secret_key: env::var("TSIO_S3_SECRET_KEY").ok().or_else(|| {
+                if environment.is_development() {
+                    Some(defaults::DEV_S3_SECRET_KEY.to_string())
+                } else {
+                    None
+                }
+            }),
         }
     }
 
@@ -649,12 +659,12 @@ impl Config {
             ));
         }
 
-        // Check if using dev S3 credentials in production
-        if self.storage.access_key == defaults::DEV_S3_ACCESS_KEY
-            || self.storage.secret_key == defaults::DEV_S3_SECRET_KEY
+        // Check if using dev S3 credentials in production (None = IAM role, which is fine)
+        if self.storage.access_key.as_deref() == Some(defaults::DEV_S3_ACCESS_KEY)
+            || self.storage.secret_key.as_deref() == Some(defaults::DEV_S3_SECRET_KEY)
         {
             errors.push(
-                "TSIO_S3_ACCESS_KEY/TSIO_S3_SECRET_KEY are using development defaults. Set production S3 credentials."
+                "TSIO_S3_ACCESS_KEY/TSIO_S3_SECRET_KEY are using development defaults. Set production S3 credentials or remove them to use IAM role."
                     .to_string(),
             );
         }
@@ -725,8 +735,8 @@ mod tests {
             endpoint: Some("http://localhost:9000".to_string()),
             bucket: "test".to_string(),
             region: "us-east-1".to_string(),
-            access_key: "testkey".to_string(),
-            secret_key: "testsecret".to_string(),
+            access_key: Some("testkey".to_string()),
+            secret_key: Some("testsecret".to_string()),
         }
     }
 
@@ -820,8 +830,8 @@ mod tests {
                 endpoint: None,
                 bucket: "reports".to_string(),
                 region: "us-east-1".to_string(),
-                access_key: defaults::DEV_S3_ACCESS_KEY.to_string(),
-                secret_key: defaults::DEV_S3_SECRET_KEY.to_string(),
+                access_key: Some(defaults::DEV_S3_ACCESS_KEY.to_string()),
+                secret_key: Some(defaults::DEV_S3_SECRET_KEY.to_string()),
             },
             server: test_server_settings(),
             auth: AuthSettings {
@@ -849,11 +859,11 @@ mod tests {
                 ..test_database_settings()
             },
             storage: StorageSettings {
-                endpoint: None, // Use AWS S3 in production
+                endpoint: None, // Use AWS S3 with IAM role
                 bucket: "prod-reports".to_string(),
                 region: "us-west-2".to_string(),
-                access_key: "AKIA...".to_string(),
-                secret_key: "secret...".to_string(),
+                access_key: None,
+                secret_key: None,
             },
             server: ServerSettings {
                 static_dir: Some(PathBuf::from("/app/static")),

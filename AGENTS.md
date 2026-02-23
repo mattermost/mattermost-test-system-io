@@ -1,4 +1,4 @@
-# Playwright Report Viewer
+# Test System IO
 
 Rust API + React frontend for viewing Playwright test reports.
 

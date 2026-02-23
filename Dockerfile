@@ -25,20 +25,26 @@ RUN npm run build
 # ------------------------------------------------------------------------------
 FROM rust:1.92-slim-bookworm AS backend-builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
+# Install build dependencies (clear stale apt lists from base image first)
+RUN rm -rf /var/lib/apt/lists/* \
+    && apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/server
 
-# Create a dummy project to cache dependencies
-RUN cargo init --name tsio
+# Create dummy project to cache dependencies
+RUN cargo init --name tsio --lib
+RUN echo 'fn main() {}' > src/main.rs && \
+    mkdir -p src/bin && \
+    echo 'fn main() {}' > src/bin/generate_api_key.rs && \
+    echo 'fn main() {}' > src/bin/manage_api_keys.rs
 COPY apps/server/Cargo.toml apps/server/Cargo.lock* ./
 
 # Build dependencies only (cache layer)
-RUN cargo build --release && rm -rf src target/release/deps/mattermost_tsio* target/release/mattermost-tsio*
+RUN cargo build --release && rm -rf src target/release/deps/mattermost_tsio* target/release/mattermost-tsio* target/release/deps/libtsio*
 
 # Copy actual source code
 COPY apps/server/src ./src
@@ -49,6 +55,11 @@ RUN cargo build --release --bin mattermost-tsio
 # ------------------------------------------------------------------------------
 # Stage 3: Production Runtime
 # ------------------------------------------------------------------------------
+# Build info args (passed from CI/CD workflow)
+ARG BUILD_VERSION=dev
+ARG BUILD_SHA=unknown
+ARG BUILD_TIME=unknown
+
 FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies
@@ -72,11 +83,18 @@ RUN chown -R appuser:appuser /app
 # Switch to non-root user
 USER appuser
 
+# Re-declare ARGs after FROM (Docker resets ARGs across stages)
+ARG BUILD_VERSION=dev
+ARG BUILD_SHA=unknown
+ARG BUILD_TIME=unknown
+
 # Environment variables with defaults
 ENV RUST_ENV=production \
     TSIO_SERVER_HOST=0.0.0.0 \
     TSIO_SERVER_PORT=8080 \
     TSIO_SERVER_STATIC_DIR=/app/static \
+    TSIO_COMMIT_SHA=${BUILD_SHA} \
+    TSIO_BUILD_TIME=${BUILD_TIME} \
     RUST_LOG=info,actix_web=info
 
 # Expose port

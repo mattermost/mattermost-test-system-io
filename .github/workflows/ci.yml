@@ -98,5 +98,9 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: false
           tags: mattermostdevelopment/mattermost-test-system-io:${{ steps.sha.outputs.short_sha }}
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp }}

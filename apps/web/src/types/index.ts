@@ -8,6 +8,15 @@ export interface ClientConfig {
   github_oauth_enabled?: boolean;
 }
 
+// Server info (version, build, and repository metadata)
+export interface ServerInfo {
+  server_version: string;
+  environment: string;
+  repo_url: string;
+  commit_sha: string;
+  build_time: string;
+}
+
 // User from /auth/me
 export interface AuthUser {
   id: string;

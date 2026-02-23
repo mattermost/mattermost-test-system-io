@@ -1,0 +1,28 @@
+# Gitleaks configuration for secret scanning
+# https://github.com/gitleaks/gitleaks
+
+title = "mattermost-test-system-io secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "postgres-connection-string"
+description = "PostgreSQL connection string"
+regex = '''postgres(ql)?:\/\/[^:]+:[^@]+@[^\/]+\/\w+'''
+tags = ["database", "credential"]
+
+[[rules]]
+id = "generic-database-url"
+description = "Database URL with credentials"
+regex = '''(?i)(database[_-]?url|db[_-]?url)\s*=\s*\S+:\/\/[^:]+:[^@]+@'''
+tags = ["database", "credential"]
+
+[allowlist]
+paths = [
+  '''.env.example''',
+  '''specs/''',
+  '''.specify/''',
+  '''seed/''',
+  '''docs/''',
+]

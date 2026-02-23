@@ -54,7 +54,21 @@ docker-compose*.yml
 # Seed data (not for production)
 seed/
 
+# Infrastructure (not needed in app container)
+infra/
+cdk.out/
+
+# Security config
+.gitleaks.toml
+
 # Claude/AI context files
 .claude/
 .specify/
 CLAUDE.md
+AGENTS.md
+
+# Agent directories
+.agent/
+.agents/
+.cursor/
+.gemini/

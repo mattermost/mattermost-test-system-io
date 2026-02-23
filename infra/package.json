@@ -1,0 +1,30 @@
+{
+  "name": "mattermost-test-system-io-infra",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "lint": "oxlint ./lib ./bin ./test",
+    "format": "oxfmt ./lib ./bin ./test --write",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run format && npm run typecheck",
+    "test": "vitest run",
+    "outdated": "npm outdated",
+    "cdk:synth": "cdk synth",
+    "cdk:diff": "cdk diff",
+    "cdk:deploy": "cdk deploy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.239.0",
+    "constructs": "10.5.1",
+    "dotenv": "17.3.1",
+    "oxfmt": "0.34.0",
+    "oxlint": "1.49.0"
+  },
+  "devDependencies": {
+    "@types/node": "25.3.0",
+    "aws-cdk": "2.1106.1",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3",
+    "vitest": "4.0.18"
+  }
+}

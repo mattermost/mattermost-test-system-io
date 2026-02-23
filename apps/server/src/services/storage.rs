@@ -20,25 +20,38 @@ pub struct Storage {
 
 impl Storage {
     /// Create a new S3 storage client from configuration.
+    ///
+    /// When `access_key` and `secret_key` are provided, uses static credentials (for MinIO/dev).
+    /// When they are absent, uses the default AWS credential chain (IAM role, env vars, etc.).
     pub async fn new(config: &StorageSettings) -> AppResult<Self> {
-        let credentials =
-            Credentials::new(&config.access_key, &config.secret_key, None, None, "tsio");
-
         let region = Region::new(config.region.clone());
 
-        let mut s3_config_builder = aws_sdk_s3::Config::builder()
-            .behavior_version(BehaviorVersion::latest())
-            .region(region)
-            .credentials_provider(credentials)
-            .force_path_style(true); // Required for MinIO
+        let client = if let (Some(access_key), Some(secret_key)) =
+            (&config.access_key, &config.secret_key)
+        {
+            // Static credentials (MinIO / explicit keys)
+            let credentials = Credentials::new(access_key, secret_key, None, None, "tsio");
 
-        // Use custom endpoint for MinIO in development
-        if let Some(ref endpoint) = config.endpoint {
-            s3_config_builder = s3_config_builder.endpoint_url(endpoint);
-        }
+            let mut s3_config_builder = aws_sdk_s3::Config::builder()
+                .behavior_version(BehaviorVersion::latest())
+                .region(region)
+                .credentials_provider(credentials)
+                .force_path_style(true); // Required for MinIO
 
-        let s3_config = s3_config_builder.build();
-        let client = Client::from_conf(s3_config);
+            if let Some(ref endpoint) = config.endpoint {
+                s3_config_builder = s3_config_builder.endpoint_url(endpoint);
+            }
+
+            Client::from_conf(s3_config_builder.build())
+        } else {
+            // IAM role / default AWS credential chain
+            let aws_config = aws_config::defaults(BehaviorVersion::latest())
+                .region(aws_config::Region::new(config.region.clone()))
+                .load()
+                .await;
+
+            Client::new(&aws_config)
+        };
 
         let storage = Self {
             client,

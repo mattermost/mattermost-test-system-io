@@ -121,11 +121,9 @@ check-target-size: ## Check and report target directory sizes
 # Development
 # ============================================================================
 
-dev: ## Run both server and web in development mode (requires tmux or two terminals)
-	@echo "$(YELLOW)Note: Run 'make dev-server' and 'make dev-web' in separate terminals$(RESET)"
-	@echo ""
-	@echo "Terminal 1: make dev-server"
-	@echo "Terminal 2: make dev-web"
+dev: ## Run both server and web in development mode concurrently
+	@echo "$(CYAN)Starting server and web concurrently...$(RESET)"
+	@$(MAKE) dev-server & $(MAKE) dev-web & wait
 
 dev-server: clean-debug-if-large ## Run Rust server in development mode with auto-reload
 	@echo "$(CYAN)Starting Rust server (with cargo-watch if available)...$(RESET)"
@@ -141,7 +139,8 @@ dev-web: ## Run Vite dev server with HMR
 	@echo "$(CYAN)Starting Vite dev server...$(RESET)"
 	cd $(WEB_DIR) && npm run dev
 
-run: run-server run-web ## Run both server and web (no auto-reload)
+run: ## Run both server and web concurrently (no auto-reload)
+	@$(MAKE) run-server & $(MAKE) run-web & wait
 
 run-server: clean-debug-if-large ## Run Rust server (no auto-reload)
 	@echo "$(CYAN)Starting Rust server...$(RESET)"
@@ -503,6 +502,10 @@ kill-web-port: ## Kill process on web port (3000)
 	else \
 		echo "$(GREEN)No process running on port $(WEB_PORT)$(RESET)"; \
 	fi
+
+# ============================================================================
+# Utilities
+# ============================================================================
 
 kill-port: ## Kill process on specific port (usage: make kill-port PORT=8080)
 	@if [ -z "$(PORT)" ]; then \

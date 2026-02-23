@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type {
   ClientConfig,
+  ServerInfo,
   ReportListResponse,
   RawReportListResponse,
   TestSuiteListResponse,
@@ -43,6 +44,18 @@ export function useClientConfig() {
     queryFn: async () => {
       const response = await fetch(`${API_URL}/config`);
       return handleResponse<ClientConfig>(response);
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+}
+
+// Server info (version, build metadata)
+export function useServerInfo() {
+  return useQuery({
+    queryKey: ['server-info'],
+    queryFn: async () => {
+      const response = await fetch(`${API_URL}/info`);
+      return handleResponse<ServerInfo>(response);
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
   });

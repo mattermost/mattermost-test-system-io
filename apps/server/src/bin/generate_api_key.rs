@@ -5,10 +5,10 @@
 
 use std::env;
 
-use tsio::config::Config;
-use tsio::db::DbPool;
-use tsio::models::ApiKeyRole;
-use tsio::services::api_key;
+use mattermost_tsio_lib::config::Config;
+use mattermost_tsio_lib::db::DbPool;
+use mattermost_tsio_lib::models::ApiKeyRole;
+use mattermost_tsio_lib::services::api_key;
 
 #[tokio::main]
 async fn main() {

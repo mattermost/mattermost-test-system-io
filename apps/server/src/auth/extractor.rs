@@ -172,28 +172,26 @@ impl FromRequest for ApiKeyAuth {
             }
 
             // 4. Check session cookie (GitHub OAuth session)
-            if let Some(ref token) = session_token {
-                if let Some(ref cfg) = config {
-                    if cfg.github_oauth.enabled {
-                        match crate::services::github_oauth::verify_session_token(
-                            token,
-                            &cfg.github_oauth.session_secret,
-                        ) {
-                            Ok(claims) => {
-                                let role =
-                                    ApiKeyRole::parse(&claims.role).unwrap_or(ApiKeyRole::Viewer);
-                                return Ok(ApiKeyAuth {
-                                    caller: AuthenticatedCaller {
-                                        key_id: format!("session:{}", claims.user_id),
-                                        role,
-                                        oidc_claims: None,
-                                    },
-                                });
-                            }
-                            Err(_) => {
-                                // Invalid session, fall through to error
-                            }
-                        }
+            if let Some(ref token) = session_token
+                && let Some(ref cfg) = config
+                && cfg.github_oauth.enabled
+            {
+                match crate::services::github_oauth::verify_session_token(
+                    token,
+                    &cfg.github_oauth.session_secret,
+                ) {
+                    Ok(claims) => {
+                        let role = ApiKeyRole::parse(&claims.role).unwrap_or(ApiKeyRole::Viewer);
+                        return Ok(ApiKeyAuth {
+                            caller: AuthenticatedCaller {
+                                key_id: format!("session:{}", claims.user_id),
+                                role,
+                                oidc_claims: None,
+                            },
+                        });
+                    }
+                    Err(_) => {
+                        // Invalid session, fall through to error
                     }
                 }
             }

@@ -47,7 +47,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-and-tag:
     needs: check-concurrent
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     outputs:
       beta_tag: ${{ steps.meta.outputs.beta_tag }}
     steps:

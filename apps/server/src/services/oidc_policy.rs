@@ -190,13 +190,13 @@ pub async fn update_policy(
     }
 
     // Validate role if provided
-    if let Some(ref role_str) = body.role {
-        if ApiKeyRole::parse(role_str).is_none() {
-            return Err(AppError::InvalidInput(format!(
-                "Invalid role '{}'. Must be admin, contributor, or viewer",
-                role_str
-            )));
-        }
+    if let Some(ref role_str) = body.role
+        && ApiKeyRole::parse(role_str).is_none()
+    {
+        return Err(AppError::InvalidInput(format!(
+            "Invalid role '{}'. Must be admin, contributor, or viewer",
+            role_str
+        )));
     }
 
     let updated = crate::db::github_oidc_policies::update(

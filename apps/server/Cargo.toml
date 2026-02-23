@@ -1,5 +1,5 @@
 [package]
-name = "tsio"
+name = "mattermost-test-system-io-server"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
@@ -65,7 +65,7 @@ tokio-test = "0.4.4"
 tempfile = "3.20.0"
 
 [lib]
-name = "tsio"
+name = "mattermost_tsio_lib"
 path = "src/lib.rs"
 
 [[bin]]

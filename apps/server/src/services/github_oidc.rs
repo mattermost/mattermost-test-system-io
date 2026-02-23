@@ -156,13 +156,7 @@ impl GitHubOidcVerifier {
         );
 
         // Check repository against policies (cached DB + env fallback)
-        let role = self
-            .resolve_role(&claims.repository, pool)
-            .await
-            .map_err(|e| {
-                // This is an authorization error, not an auth error — safe to return details
-                e
-            })?;
+        let role = self.resolve_role(&claims.repository, pool).await?;
 
         Ok(AuthenticatedCaller {
             key_id: format!("github-oidc:{}:{}", claims.repository, claims.actor),
@@ -235,10 +229,10 @@ impl GitHubOidcVerifier {
     ) -> Result<Vec<(String, DecodingKey)>, String> {
         if !force_refresh {
             let cache = self.jwks_cache.read().await;
-            if let Some(ref cached) = *cache {
-                if cached.fetched_at.elapsed() < JWKS_CACHE_TTL {
-                    return Ok(cached.keys.clone());
-                }
+            if let Some(ref cached) = *cache
+                && cached.fetched_at.elapsed() < JWKS_CACHE_TTL
+            {
+                return Ok(cached.keys.clone());
             }
         }
 
@@ -306,10 +300,10 @@ impl GitHubOidcVerifier {
     async fn get_or_fetch_policies(&self, pool: &DbPool) -> Result<Vec<OidcPolicy>, String> {
         {
             let cache = self.policy_cache.read().await;
-            if let Some(ref cached) = *cache {
-                if cached.fetched_at.elapsed() < POLICY_CACHE_TTL {
-                    return Ok(cached.policies.clone());
-                }
+            if let Some(ref cached) = *cache
+                && cached.fetched_at.elapsed() < POLICY_CACHE_TTL
+            {
+                return Ok(cached.policies.clone());
             }
         }
 

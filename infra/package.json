@@ -20,6 +20,9 @@
     "oxfmt": "0.34.0",
     "oxlint": "1.49.0"
   },
+  "engines": {
+    "node": ">=24"
+  },
   "devDependencies": {
     "@types/node": "25.3.0",
     "aws-cdk": "2.1106.1",

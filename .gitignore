@@ -12,8 +12,7 @@ apps/web/coverage/
 .npm/
 .pnpm-debug.log*
 
-# npm
-package-lock.json
+# npm (allow package-lock.json for reproducible builds)
 
 # Environment files
 .env

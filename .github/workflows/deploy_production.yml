@@ -54,6 +54,9 @@ jobs:
     outputs:
       release_version: ${{ steps.retag.outputs.release_version }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
       - name: Validate beta tag exists as GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -88,10 +91,9 @@ jobs:
         run: |
           docker buildx imagetools inspect "${{ env.IMAGE }}:${BETA_TAG}"
 
-      - name: Retag image and create GitHub release
+      - name: Extract release version
         id: retag
         env:
-          GH_TOKEN: ${{ github.token }}
           BETA_TAG: ${{ inputs.beta_tag }}
         run: |
           # Extract release version by stripping -{sha}.beta suffix
@@ -100,16 +102,26 @@ jobs:
           echo "release_version=${RELEASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Release version: ${RELEASE_VERSION}"
 
-          # Retag the Docker image as release version and latest
+      - name: Retag Docker image
+        env:
+          BETA_TAG: ${{ inputs.beta_tag }}
+          RELEASE_VERSION: ${{ steps.retag.outputs.release_version }}
+        run: |
           docker buildx imagetools create \
             --tag "${{ env.IMAGE }}:${RELEASE_VERSION}" \
             --tag "${{ env.IMAGE }}:latest" \
             "${{ env.IMAGE }}:${BETA_TAG}"
 
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BETA_TAG: ${{ inputs.beta_tag }}
+          RELEASE_VERSION: ${{ steps.retag.outputs.release_version }}
+        run: |
           # Get commit SHA from the prerelease
           COMMIT_SHA=$(gh release view "$BETA_TAG" --json targetCommitish --jq '.targetCommitish')
+          echo "Commit SHA: ${COMMIT_SHA}"
 
-          # Create GitHub release
           gh release create "$RELEASE_VERSION" \
             --target "$COMMIT_SHA" \
             --title "Release $RELEASE_VERSION" \
@@ -149,7 +161,7 @@ jobs:
           NEW_TASK_DEF=$(echo "$TASK_DEF" | \
             jq --arg IMG "${{ env.IMAGE }}:${RELEASE_VERSION}" \
             '(.containerDefinitions[] | select(.name == "app")).image = $IMG |
-             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)')
 
           NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
             --cli-input-json "$NEW_TASK_DEF" \

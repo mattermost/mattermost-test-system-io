@@ -58,18 +58,14 @@ export class GithubOidc extends Construct {
       }),
     );
 
-    // ECS task definition management (cannot be resource-scoped, restricted by family condition)
+    // ECS task definition registration (RegisterTaskDefinition does not support
+    // resource-level permissions or ecs:task-definition-family condition key)
     this.deployRole.addToPolicy(
       new iam.PolicyStatement({
-        sid: "EcsTaskDefinitions",
+        sid: "EcsRegisterTaskDefinition",
         effect: iam.Effect.ALLOW,
-        actions: ["ecs:DescribeTaskDefinition", "ecs:RegisterTaskDefinition"],
+        actions: ["ecs:RegisterTaskDefinition"],
         resources: ["*"],
-        conditions: {
-          StringLike: {
-            "ecs:task-definition-family": `${props.projectName}-*`,
-          },
-        },
       }),
     );
 

@@ -16,8 +16,7 @@ pub fn hash_token(token: &str) -> String {
 
 /// Generate a random refresh token string.
 pub fn generate_token() -> String {
-    use rand::Rng;
-    let random_bytes: [u8; 32] = rand::thread_rng().r#gen();
+    let random_bytes: [u8; 32] = rand::random();
     format!("tsio_rt_{}", hex::encode(random_bytes))
 }
 

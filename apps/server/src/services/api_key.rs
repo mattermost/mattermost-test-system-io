@@ -1,7 +1,7 @@
 //! API Key service for generation, verification, and management.
 
 use chrono::{Duration, Utc};
-use rand::Rng;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 
 use crate::db::{DbPool, api_keys as db};
@@ -24,8 +24,8 @@ pub fn generate_key(
     expires_in: Option<&str>,
 ) -> AppResult<(String, ApiKey)> {
     // Generate random key
-    let random_part: String = rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
+    let random_part: String = rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
         .take(KEY_RANDOM_LENGTH)
         .map(char::from)
         .collect();

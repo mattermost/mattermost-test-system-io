@@ -57,8 +57,7 @@ fn build_http_client() -> reqwest::Client {
 
 /// Generate a cryptographically random string.
 fn generate_random_hex() -> String {
-    use rand::Rng;
-    let random_bytes: [u8; 32] = rand::thread_rng().r#gen();
+    let random_bytes: [u8; 32] = rand::random();
     hex::encode(random_bytes)
 }
 

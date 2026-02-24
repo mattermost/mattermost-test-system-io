@@ -1,6 +1,6 @@
 [package]
 name = "mattermost-test-system-io-server"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.93"
 description = "API server for uploading and viewing test reports"
@@ -8,36 +8,36 @@ license = "MIT"
 
 [dependencies]
 # Web framework
-actix-web = "4.12.1"
+actix-web = "4.13.0"
 actix-multipart = "0.7.2"
-actix-files = "0.6.9"
+actix-files = "0.6.10"
 actix-cors = "0.7.1"
 actix-ws = "0.3.1"
 
 # Async runtime (via actix)
-tokio = { version = "1.48.0", features = ["full"] }
+tokio = { version = "1.49.0", features = ["full"] }
 
 # Database (PostgreSQL via SeaORM)
-sea-orm = { version = "=2.0.0-rc.28", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros"] }
-sea-orm-migration = { version = "=2.0.0-rc.28", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+sea-orm = { version = "=2.0.0-rc.34", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros"] }
+sea-orm-migration = { version = "=2.0.0-rc.34", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
 
 # S3 object storage
-aws-sdk-s3 = "1.119.0"
-aws-config = "1.8.12"
+aws-sdk-s3 = "1.124.0"
+aws-config = "1.8.14"
 
 # Async trait for SeaORM migrations
-async-trait = "0.1.88"
+async-trait = "0.1.89"
 
 # Serialization
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.140"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 
 # Error handling
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 
 # Logging/tracing
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 # OpenAPI / Swagger UI
 utoipa = { version = "5.4.0", features = ["actix_extras", "chrono", "uuid"] }
@@ -48,21 +48,21 @@ jsonwebtoken = "10.3.0"
 reqwest = { version = "0.13.2", features = ["json"] }
 
 # Utilities
-uuid = { version = "1.18.1", features = ["v4", "v7", "serde"] }
+uuid = { version = "1.21.0", features = ["v4", "v7", "serde"] }
 sha2 = "0.10.9"
-rand = "0.8.5"
+rand = "0.10.0"
 hex = "0.4.3"
 secrecy = { version = "0.10.3", features = ["serde"] }
-chrono = { version = "0.4.41", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 dotenvy = "0.15.7"
-futures-util = "0.3.31"
-num_cpus = "1.16.0"
+futures-util = "0.3.32"
+num_cpus = "1.17.0"
 urlencoding = "2.1.3"
 
 [dev-dependencies]
-actix-rt = "2.10.0"
-tokio-test = "0.4.4"
-tempfile = "3.20.0"
+actix-rt = "2.11.0"
+tokio-test = "0.4.5"
+tempfile = "3.26.0"
 
 [lib]
 name = "mattermost_tsio_lib"

@@ -7,11 +7,11 @@ use uuid::Uuid;
 use crate::auth::ApiKeyAuth;
 use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
-use crate::models::ApiKeyRole;
 use crate::models::github_oidc::{
     CreateOidcPolicyRequest, OidcPolicy, OidcPolicyListResponse, OidcPolicyResponse,
     UpdateOidcPolicyRequest,
 };
+use crate::models::{ApiKeyRole, OIDC_ADMIN_DENIED_MSG};
 
 /// Configure OIDC policy routes.
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
@@ -37,6 +37,9 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
 )]
 #[get("/auth/oidc-policies")]
 pub async fn list_policies(auth: ApiKeyAuth, pool: web::Data<DbPool>) -> AppResult<HttpResponse> {
+    if auth.caller.is_oidc() {
+        return Err(AppError::Unauthorized(OIDC_ADMIN_DENIED_MSG.to_string()));
+    }
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
             "Admin role required to list OIDC policies".to_string(),
@@ -71,6 +74,9 @@ pub async fn create_policy(
     body: web::Json<CreateOidcPolicyRequest>,
     pool: web::Data<DbPool>,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.is_oidc() {
+        return Err(AppError::Unauthorized(OIDC_ADMIN_DENIED_MSG.to_string()));
+    }
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
             "Admin role required to create OIDC policies".to_string(),
@@ -90,12 +96,18 @@ pub async fn create_policy(
         ));
     }
 
-    // Validate role
+    // Validate role — admin is not permitted for OIDC policies
     let role = body
         .role
         .as_ref()
         .and_then(|r| ApiKeyRole::parse(r))
         .unwrap_or(ApiKeyRole::Contributor);
+
+    if role == ApiKeyRole::Admin {
+        return Err(AppError::InvalidInput(
+            "OIDC policies only support 'contributor' and 'viewer' roles. Admin access is not permitted via OIDC.".to_string(),
+        ));
+    }
 
     let policy = OidcPolicy {
         id: Uuid::new_v4().to_string(),
@@ -133,6 +145,9 @@ pub async fn get_policy(
     path: web::Path<String>,
     pool: web::Data<DbPool>,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.is_oidc() {
+        return Err(AppError::Unauthorized(OIDC_ADMIN_DENIED_MSG.to_string()));
+    }
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
             "Admin role required to view OIDC policies".to_string(),
@@ -170,6 +185,9 @@ pub async fn update_policy(
     body: web::Json<UpdateOidcPolicyRequest>,
     pool: web::Data<DbPool>,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.is_oidc() {
+        return Err(AppError::Unauthorized(OIDC_ADMIN_DENIED_MSG.to_string()));
+    }
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
             "Admin role required to update OIDC policies".to_string(),
@@ -189,14 +207,22 @@ pub async fn update_policy(
         }
     }
 
-    // Validate role if provided
-    if let Some(ref role_str) = body.role
-        && ApiKeyRole::parse(role_str).is_none()
-    {
-        return Err(AppError::InvalidInput(format!(
-            "Invalid role '{}'. Must be admin, contributor, or viewer",
-            role_str
-        )));
+    // Validate role if provided — admin is not permitted for OIDC policies
+    if let Some(ref role_str) = body.role {
+        match ApiKeyRole::parse(role_str) {
+            Some(ApiKeyRole::Admin) => {
+                return Err(AppError::InvalidInput(
+                    "OIDC policies only support 'contributor' and 'viewer' roles. Admin access is not permitted via OIDC.".to_string(),
+                ));
+            }
+            None => {
+                return Err(AppError::InvalidInput(format!(
+                    "Invalid role '{}'. Must be contributor or viewer",
+                    role_str
+                )));
+            }
+            _ => {}
+        }
     }
 
     let updated = crate::db::github_oidc_policies::update(
@@ -241,6 +267,9 @@ pub async fn delete_policy(
     path: web::Path<String>,
     pool: web::Data<DbPool>,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.is_oidc() {
+        return Err(AppError::Unauthorized(OIDC_ADMIN_DENIED_MSG.to_string()));
+    }
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
             "Admin role required to delete OIDC policies".to_string(),

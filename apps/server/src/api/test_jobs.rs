@@ -123,11 +123,18 @@ fn infer_content_type(path: &str) -> &'static str {
     )
 )]
 pub async fn init_job(
+    auth: crate::auth::ApiKeyAuth,
     pool: web::Data<DbPool>,
     broadcaster: web::Data<EventBroadcaster>,
     path: web::Path<Uuid>,
     body: web::Json<InitJobRequest>,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.role == crate::models::ApiKeyRole::Viewer {
+        return Err(AppError::Unauthorized(
+            "Viewer role cannot initialize jobs".to_string(),
+        ));
+    }
+
     let report_id = path.into_inner();
     let req = body.into_inner();
 
@@ -223,10 +230,17 @@ pub async fn init_job(
     )
 )]
 pub async fn init_html(
+    auth: crate::auth::ApiKeyAuth,
     pool: web::Data<DbPool>,
     path: web::Path<(Uuid, Uuid)>,
     body: web::Json<InitHtmlRequest>,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.role == crate::models::ApiKeyRole::Viewer {
+        return Err(AppError::Unauthorized(
+            "Viewer role cannot initialize HTML uploads".to_string(),
+        ));
+    }
+
     let (report_id, job_id) = path.into_inner();
     let req = body.into_inner();
 
@@ -507,11 +521,18 @@ pub async fn get_job(
     )
 )]
 pub async fn upload_html(
+    auth: crate::auth::ApiKeyAuth,
     pool: web::Data<DbPool>,
     storage: web::Data<Storage>,
     path: web::Path<(Uuid, Uuid)>,
     mut payload: Multipart,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.role == crate::models::ApiKeyRole::Viewer {
+        return Err(AppError::Unauthorized(
+            "Viewer role cannot upload HTML files".to_string(),
+        ));
+    }
+
     let (report_id, job_id) = path.into_inner();
 
     // Verify job exists and belongs to report
@@ -697,11 +718,18 @@ fn extract_test_name(path: &str) -> String {
     )
 )]
 pub async fn init_screenshots(
+    auth: crate::auth::ApiKeyAuth,
     pool: web::Data<DbPool>,
     _storage: web::Data<Storage>,
     path: web::Path<(Uuid, Uuid)>,
     body: web::Json<InitScreenshotsRequest>,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.role == crate::models::ApiKeyRole::Viewer {
+        return Err(AppError::Unauthorized(
+            "Viewer role cannot initialize screenshot uploads".to_string(),
+        ));
+    }
+
     let (report_id, job_id) = path.into_inner();
     let req = body.into_inner();
 
@@ -823,11 +851,18 @@ pub async fn init_screenshots(
     )
 )]
 pub async fn upload_screenshots(
+    auth: crate::auth::ApiKeyAuth,
     pool: web::Data<DbPool>,
     storage: web::Data<Storage>,
     path: web::Path<(Uuid, Uuid)>,
     mut payload: Multipart,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.role == crate::models::ApiKeyRole::Viewer {
+        return Err(AppError::Unauthorized(
+            "Viewer role cannot upload screenshots".to_string(),
+        ));
+    }
+
     let (report_id, job_id) = path.into_inner();
 
     // Verify job exists and belongs to report
@@ -1014,10 +1049,17 @@ fn validate_json_file(path: &str, size: Option<i64>) -> Option<String> {
     )
 )]
 pub async fn init_json(
+    auth: crate::auth::ApiKeyAuth,
     pool: web::Data<DbPool>,
     path: web::Path<(Uuid, Uuid)>,
     body: web::Json<InitJsonRequest>,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.role == crate::models::ApiKeyRole::Viewer {
+        return Err(AppError::Unauthorized(
+            "Viewer role cannot initialize JSON uploads".to_string(),
+        ));
+    }
+
     let (report_id, job_id) = path.into_inner();
     let req = body.into_inner();
 
@@ -1184,12 +1226,19 @@ pub async fn get_json_progress(
     )
 )]
 pub async fn upload_json(
+    auth: crate::auth::ApiKeyAuth,
     pool: web::Data<DbPool>,
     storage: web::Data<Storage>,
     broadcaster: web::Data<EventBroadcaster>,
     path: web::Path<(Uuid, Uuid)>,
     mut payload: Multipart,
 ) -> AppResult<HttpResponse> {
+    if auth.caller.role == crate::models::ApiKeyRole::Viewer {
+        return Err(AppError::Unauthorized(
+            "Viewer role cannot upload JSON files".to_string(),
+        ));
+    }
+
     let (report_id, job_id) = path.into_inner();
 
     // Verify job exists and belongs to report

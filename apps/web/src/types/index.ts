@@ -51,6 +51,28 @@ export interface GitHubMetadata {
   pr_number?: number;
 }
 
+/** OIDC claims stored separately from report metadata (token-derived). */
+export interface ReportOidcClaims {
+  sub?: string;
+  repository?: string;
+  repository_owner?: string;
+  actor?: string;
+  sha?: string;
+  ref?: string;
+  ref_type?: string;
+  workflow?: string;
+  event_name?: string;
+  run_id?: string;
+  run_number?: string;
+  run_attempt?: string;
+  head_ref?: string;
+  base_ref?: string;
+  resolved_role: string;
+  api_path: string;
+  http_method: string;
+  created_at: string;
+}
+
 export type TestStatus = 'passed' | 'failed' | 'skipped' | 'timedOut' | 'flaky';
 
 export interface ReportStats {
@@ -83,6 +105,7 @@ export interface ReportSummary {
   jobs_complete: number;
   test_stats?: TestStats;
   github_metadata?: GitHubMetadata;
+  oidc_claims?: ReportOidcClaims;
   created_at: string;
 }
 
@@ -208,6 +231,7 @@ export interface ReportWithJobs {
   status: ReportStatus;
   expected_jobs: number;
   github_metadata?: GitHubMetadata;
+  oidc_claims?: ReportOidcClaims;
   created_at: string;
   updated_at: string;
   jobs: JobSummary[];

@@ -23,7 +23,7 @@ use super::AdminKey;
 use crate::config::{ADMIN_KEY_HEADER, API_KEY_HEADER, Config};
 use crate::db::DbPool;
 use crate::error::ErrorResponse;
-use crate::models::{ApiKeyRole, AuthenticatedCaller};
+use crate::models::{ApiKeyRole, AuthenticatedCaller, OIDC_ADMIN_DENIED_MSG};
 use crate::services::api_key;
 use crate::services::github_oidc::GitHubOidcVerifier;
 
@@ -157,8 +157,38 @@ impl FromRequest for ApiKeyAuth {
             if let Some(ref token_secret) = bearer_token {
                 if let Some(ref verifier) = oidc_verifier {
                     match verifier.verify_token(token_secret, pool.get_ref()).await {
-                        Ok(caller) => return Ok(ApiKeyAuth { caller }),
+                        Ok(caller) => {
+                            // Enforce admin-denial at auth layer: OIDC callers
+                            // MUST NOT be granted admin role (defense-in-depth).
+                            if caller.role == ApiKeyRole::Admin {
+                                tracing::warn!(
+                                    repository = caller
+                                        .oidc_claims
+                                        .as_ref()
+                                        .map(|c| c.repository.as_str())
+                                        .unwrap_or("unknown"),
+                                    "OIDC caller resolved to admin role — rejecting"
+                                );
+                                return Err(AuthError {
+                                    message: OIDC_ADMIN_DENIED_MSG.to_string(),
+                                });
+                            }
+                            // Log successful OIDC auth (FR-013)
+                            if let Some(ref claims) = caller.oidc_claims {
+                                tracing::info!(
+                                    repository = %claims.repository,
+                                    actor = %claims.actor,
+                                    role = %caller.role,
+                                    "OIDC authentication successful"
+                                );
+                            }
+                            return Ok(ApiKeyAuth { caller });
+                        }
                         Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "OIDC authentication failed"
+                            );
                             return Err(AuthError {
                                 message: format!("OIDC authentication failed: {}", e),
                             });

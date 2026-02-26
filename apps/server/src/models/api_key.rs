@@ -133,6 +133,9 @@ pub struct CreateApiKeyRequest {
     pub expires_in: Option<String>,
 }
 
+/// Error message returned when an OIDC-authenticated caller attempts an admin operation.
+pub const OIDC_ADMIN_DENIED_MSG: &str = "Insufficient permissions for this operation.";
+
 /// Authenticated caller information extracted from API key, OIDC token, or session.
 #[derive(Debug, Clone)]
 pub struct AuthenticatedCaller {
@@ -146,5 +149,10 @@ impl AuthenticatedCaller {
     /// Check if the caller has admin role.
     pub fn is_admin(&self) -> bool {
         matches!(self.role, ApiKeyRole::Admin)
+    }
+
+    /// Check if the caller authenticated via GitHub OIDC.
+    pub fn is_oidc(&self) -> bool {
+        self.oidc_claims.is_some()
     }
 }

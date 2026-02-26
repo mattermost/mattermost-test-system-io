@@ -19,6 +19,7 @@ mod m20260118_000008_create_json_files;
 mod m20260129_000009_create_github_oidc_policies;
 mod m20260129_000010_create_users;
 mod m20260129_000011_create_refresh_tokens;
+mod m20260226_000012_create_report_oidc_claims;
 
 pub struct Migrator;
 
@@ -37,6 +38,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260129_000009_create_github_oidc_policies::Migration),
             Box::new(m20260129_000010_create_users::Migration),
             Box::new(m20260129_000011_create_refresh_tokens::Migration),
+            Box::new(m20260226_000012_create_report_oidc_claims::Migration),
         ]
     }
 }

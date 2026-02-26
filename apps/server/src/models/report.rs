@@ -256,9 +256,12 @@ pub struct ReportSummary {
     /// Test statistics aggregated from all jobs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_stats: Option<TestStats>,
-    /// GitHub metadata.
+    /// GitHub metadata (caller-supplied).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github_metadata: Option<GitHubMetadata>,
+    /// OIDC claims (token-derived, stored separately).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oidc_claims: Option<super::report_oidc_claim::ReportOidcClaimsResponse>,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
 }
@@ -274,9 +277,12 @@ pub struct ReportDetailResponse {
     pub framework: Framework,
     /// Expected number of jobs.
     pub expected_jobs: i32,
-    /// GitHub metadata.
+    /// GitHub metadata (caller-supplied).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github_metadata: Option<GitHubMetadata>,
+    /// OIDC claims (token-derived, stored separately).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oidc_claims: Option<super::report_oidc_claim::ReportOidcClaimsResponse>,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.

@@ -18,7 +18,7 @@ impl MigrationTrait for Migration {
                     id UUID PRIMARY KEY,
                     repository_pattern VARCHAR(255) NOT NULL,
                     role VARCHAR(20) NOT NULL DEFAULT 'contributor'
-                        CHECK (role IN ('admin', 'contributor', 'viewer')),
+                        CHECK (role IN ('contributor', 'viewer')),
                     description VARCHAR(500),
                     enabled BOOLEAN NOT NULL DEFAULT TRUE,
 

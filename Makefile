@@ -6,7 +6,7 @@
 # Run `make help` to see all available targets.
 
 .PHONY: help install dev dev-server dev-web build build-server build-web \
-        test test-server test-web lint lint-server lint-web fmt fmt-server fmt-web \
+        test test-server test-server-oidc test-web lint lint-server lint-web fmt fmt-server fmt-web \
         clean clean-server clean-web clean-all check typecheck \
         db-reset run run-server run-web \
         docker-build docker-build-no-cache docker-up docker-down docker-down-volumes docker-logs \
@@ -176,9 +176,15 @@ build-server-dev: clean-debug-if-large ## Build Rust server (debug mode)
 
 test: test-server test-web ## Run all tests
 
-test-server: ## Run Rust tests
-	@echo "$(CYAN)Running Rust tests...$(RESET)"
-	cd $(SERVER_DIR) && cargo test
+test-server: ## Run Rust tests (unit + E2E)
+	@echo "$(CYAN)Running Rust unit tests...$(RESET)"
+	cd $(SERVER_DIR) && RUST_ENV=development cargo test --lib --bins
+	@echo "$(CYAN)Running OIDC E2E tests...$(RESET)"
+	cd $(SERVER_DIR) && ulimit -n 4096 2>/dev/null; RUST_ENV=development cargo test --test oidc_e2e -- --test-threads=1
+
+test-server-oidc: ## Run OIDC E2E tests only (requires running PostgreSQL)
+	@echo "$(CYAN)Running OIDC E2E tests...$(RESET)"
+	cd $(SERVER_DIR) && ulimit -n 4096 2>/dev/null; RUST_ENV=development cargo test --test oidc_e2e -- --test-threads=1
 
 test-web: ## Run frontend tests with Vitest
 	@echo "$(CYAN)Running frontend tests...$(RESET)"

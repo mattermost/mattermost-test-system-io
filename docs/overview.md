@@ -31,7 +31,7 @@ docker compose -f docker/docker-compose.dev.yml up -d
 
 ```bash
 # Set environment and run
-RUST_ENV=development cargo run --bin tsio
+RUST_ENV=development cargo run --bin mattermost-tsio
 ```
 
 Server starts at `http://localhost:8080`

@@ -7,7 +7,9 @@ use utoipa::ToSchema;
 use crate::auth::ApiKeyAuth;
 use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
-use crate::models::{ApiKeyCreateResponse, ApiKeyListItem, ApiKeyRole, CreateApiKeyRequest};
+use crate::models::{
+    ApiKeyCreateResponse, ApiKeyListItem, ApiKeyRole, CreateApiKeyRequest, OIDC_ADMIN_DENIED_MSG,
+};
 use crate::services::api_key;
 
 /// Configure auth admin routes.
@@ -44,6 +46,9 @@ pub async fn create_api_key(
     pool: web::Data<DbPool>,
 ) -> AppResult<HttpResponse> {
     // Check admin permission
+    if auth.caller.is_oidc() {
+        return Err(AppError::Unauthorized(OIDC_ADMIN_DENIED_MSG.to_string()));
+    }
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
             "Admin role required to create API keys".to_string(),
@@ -95,6 +100,9 @@ pub async fn create_api_key(
 #[get("/auth/keys")]
 pub async fn list_api_keys(auth: ApiKeyAuth, pool: web::Data<DbPool>) -> AppResult<HttpResponse> {
     // Check admin permission
+    if auth.caller.is_oidc() {
+        return Err(AppError::Unauthorized(OIDC_ADMIN_DENIED_MSG.to_string()));
+    }
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
             "Admin role required to list API keys".to_string(),
@@ -134,6 +142,9 @@ pub async fn get_api_key(
     pool: web::Data<DbPool>,
 ) -> AppResult<HttpResponse> {
     // Check admin permission
+    if auth.caller.is_oidc() {
+        return Err(AppError::Unauthorized(OIDC_ADMIN_DENIED_MSG.to_string()));
+    }
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
             "Admin role required to view API key details".to_string(),
@@ -175,6 +186,9 @@ pub async fn revoke_api_key(
     pool: web::Data<DbPool>,
 ) -> AppResult<HttpResponse> {
     // Check admin permission
+    if auth.caller.is_oidc() {
+        return Err(AppError::Unauthorized(OIDC_ADMIN_DENIED_MSG.to_string()));
+    }
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
             "Admin role required to revoke API keys".to_string(),
@@ -232,6 +246,9 @@ pub async fn restore_api_key(
     pool: web::Data<DbPool>,
 ) -> AppResult<HttpResponse> {
     // Check admin permission
+    if auth.caller.is_oidc() {
+        return Err(AppError::Unauthorized(OIDC_ADMIN_DENIED_MSG.to_string()));
+    }
     if !auth.caller.is_admin() {
         return Err(AppError::Unauthorized(
             "Admin role required to restore API keys".to_string(),

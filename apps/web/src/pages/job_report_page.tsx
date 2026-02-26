@@ -20,6 +20,7 @@ import {
   FileText,
   Code,
 } from 'lucide-react';
+import { OidcClaimsSection } from '@/components/report_card_parts/oidc_claims';
 import type { ReportStatus, JobSummary } from '@/types';
 
 type MainTab = 'results' | 'html';
@@ -254,6 +255,13 @@ export function JobReportPage() {
           )}
         </div>
       </div>
+
+      {/* OIDC Provenance (shown when report was uploaded via OIDC) */}
+      {report.oidc_claims && (
+        <div className="px-4 sm:px-6 pb-4">
+          <OidcClaimsSection claims={report.oidc_claims} />
+        </div>
+      )}
 
       {/* Main Tabs: Test Results vs HTML Views */}
       <div className="relative border-b border-gray-200 dark:border-gray-700">

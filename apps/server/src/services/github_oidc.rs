@@ -193,6 +193,16 @@ impl GitHubOidcVerifier {
         for policy in &policies {
             if matches_pattern(&policy.repository_pattern, repository) {
                 let role = ApiKeyRole::parse(&policy.role).unwrap_or(ApiKeyRole::Contributor);
+                // OIDC policies must never grant admin — clamp to contributor
+                let role = if role == ApiKeyRole::Admin {
+                    warn!(
+                        "OIDC policy '{}' has admin role — clamping to contributor",
+                        policy.repository_pattern
+                    );
+                    ApiKeyRole::Contributor
+                } else {
+                    role
+                };
                 debug!(
                     "OIDC policy matched: pattern='{}', role={}, repo={}",
                     policy.repository_pattern, policy.role, repository

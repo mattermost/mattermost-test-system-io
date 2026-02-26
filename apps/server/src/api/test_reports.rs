@@ -173,6 +173,13 @@ pub async fn register_report(
     broadcaster: web::Data<EventBroadcaster>,
     body: web::Json<RegisterReportRequest>,
 ) -> AppResult<HttpResponse> {
+    // Viewers cannot upload reports
+    if auth.caller.role == crate::models::ApiKeyRole::Viewer {
+        return Err(AppError::Unauthorized(
+            "Viewer role cannot upload reports. Contributor or admin role required.".to_string(),
+        ));
+    }
+
     let req = body.into_inner();
 
     // Validate expected_jobs range
@@ -182,52 +189,44 @@ pub async fn register_report(
         ));
     }
 
-    // Build github_metadata: OIDC claims provide defaults, request body overrides
-    let github_metadata = match (&auth.caller.oidc_claims, req.github_metadata) {
-        // OIDC + explicit metadata: merge (explicit fields take precedence)
-        (Some(claims), Some(explicit)) => {
-            let from_oidc = claims.to_github_metadata();
-            Some(GitHubMetadata {
-                sub: explicit.sub.or(from_oidc.sub),
-                repository: explicit.repository.or(from_oidc.repository),
-                repository_owner: explicit.repository_owner.or(from_oidc.repository_owner),
-                repository_owner_id: explicit
-                    .repository_owner_id
-                    .or(from_oidc.repository_owner_id),
-                repository_visibility: explicit
-                    .repository_visibility
-                    .or(from_oidc.repository_visibility),
-                repository_id: explicit.repository_id.or(from_oidc.repository_id),
-                actor: explicit.actor.or(from_oidc.actor),
-                actor_id: explicit.actor_id.or(from_oidc.actor_id),
-                git_ref: explicit.git_ref.or(from_oidc.git_ref),
-                ref_type: explicit.ref_type.or(from_oidc.ref_type),
-                sha: explicit.sha.or(from_oidc.sha),
-                workflow: explicit.workflow.or(from_oidc.workflow),
-                event_name: explicit.event_name.or(from_oidc.event_name),
-                run_id: explicit.run_id.or(from_oidc.run_id),
-                run_number: explicit.run_number.or(from_oidc.run_number),
-                run_attempt: explicit.run_attempt.or(from_oidc.run_attempt),
-                runner_environment: explicit.runner_environment.or(from_oidc.runner_environment),
-                head_ref: explicit.head_ref.or(from_oidc.head_ref),
-                base_ref: explicit.base_ref.or(from_oidc.base_ref),
-                job_workflow_ref: explicit.job_workflow_ref.or(from_oidc.job_workflow_ref),
-                pr_number: explicit.pr_number,
-            })
-        }
-        // OIDC only: auto-populate from token
-        (Some(claims), None) => Some(claims.to_github_metadata()),
-        // No OIDC: use whatever the request provided
-        (None, explicit) => explicit,
-    };
+    // Keep github_metadata from request body only — OIDC claims stored separately
+    let github_metadata = req.github_metadata;
 
     // Generate report ID (UUIDv7 for time-ordered sorting)
     let report_id = Uuid::now_v7();
 
-    // Insert report with JSONB github_metadata
+    // Insert report with JSONB github_metadata (caller-supplied only)
     let report = pool
         .insert_report(report_id, req.expected_jobs, req.framework, github_metadata)
         .await?;
+
+    // If authenticated via OIDC, store safe claims in separate table
+    if let Some(ref claims) = auth.caller.oidc_claims {
+        let safe = claims.to_safe_claims(auth.caller.role.as_str(), "/api/v1/reports", "POST");
+        let claim_model = crate::entity::report_oidc_claim::ActiveModel {
+            id: sea_orm::Set(Uuid::now_v7()),
+            report_id: sea_orm::Set(report_id),
+            sub: sea_orm::Set(safe.sub),
+            repository: sea_orm::Set(safe.repository),
+            repository_owner: sea_orm::Set(safe.repository_owner),
+            actor: sea_orm::Set(safe.actor),
+            sha: sea_orm::Set(safe.sha),
+            git_ref: sea_orm::Set(safe.git_ref),
+            ref_type: sea_orm::Set(safe.ref_type),
+            workflow: sea_orm::Set(safe.workflow),
+            event_name: sea_orm::Set(safe.event_name),
+            run_id: sea_orm::Set(safe.run_id),
+            run_number: sea_orm::Set(safe.run_number),
+            run_attempt: sea_orm::Set(safe.run_attempt),
+            head_ref: sea_orm::Set(safe.head_ref),
+            base_ref: sea_orm::Set(safe.base_ref),
+            resolved_role: sea_orm::Set(safe.resolved_role),
+            api_path: sea_orm::Set(safe.api_path),
+            http_method: sea_orm::Set(safe.http_method),
+            created_at: sea_orm::Set(chrono::Utc::now()),
+        };
+        crate::db::report_oidc_claims::insert(pool.connection(), claim_model).await?;
+    }
 
     info!(
         "Report registered: id={}, framework={}, expected_jobs={}",
@@ -273,10 +272,14 @@ pub async fn list_reports(
     let query = query.into_inner();
     let (reports, total) = pool.list_reports(&query).await?;
 
-    // Batch fetch completed job counts and test stats for all reports
+    // Batch fetch completed job counts, test stats, and OIDC claims for all reports
     let report_ids: Vec<uuid::Uuid> = reports.iter().map(|r| r.id).collect();
     let jobs_complete_map = pool.count_completed_jobs_batch(&report_ids).await?;
     let test_stats_map = pool.get_test_stats_by_report_ids(&report_ids).await?;
+    let oidc_claims_list =
+        crate::db::report_oidc_claims::find_by_report_ids(pool.connection(), &report_ids).await?;
+    let oidc_claims_map: std::collections::HashMap<uuid::Uuid, _> =
+        oidc_claims_list.into_iter().collect();
 
     let reports: Vec<ReportSummary> = reports
         .into_iter()
@@ -297,6 +300,8 @@ pub async fn list_reports(
                 .cloned()
                 .and_then(|stats| if stats.total > 0 { Some(stats) } else { None });
 
+            let oidc_claims = oidc_claims_map.get(&r.id).cloned();
+
             ReportSummary {
                 id: r.id,
                 short_id,
@@ -306,6 +311,7 @@ pub async fn list_reports(
                 jobs_complete: *jobs_complete_map.get(&r.id).unwrap_or(&0),
                 test_stats,
                 github_metadata,
+                oidc_claims,
                 created_at: r.created_at,
             }
         })
@@ -523,12 +529,17 @@ pub async fn get_report(pool: web::Data<DbPool>, path: web::Path<Uuid>) -> AppRe
         Some(github_metadata)
     };
 
+    // Fetch OIDC claims for this report (if uploaded via OIDC)
+    let oidc_claims =
+        crate::db::report_oidc_claims::find_by_report_id(pool.connection(), report_id).await?;
+
     let response = ReportDetailResponse {
         id: report.id,
         framework: Framework::parse(&report.framework).unwrap_or(Framework::Playwright),
         status: ReportStatus::parse(&report.status).unwrap_or(ReportStatus::Initializing),
         expected_jobs: report.expected_jobs,
         github_metadata,
+        oidc_claims,
         created_at: report.created_at,
         updated_at: report.updated_at,
         jobs: job_summaries,

@@ -4,10 +4,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// GitHub Actions OIDC JWT claims.
+/// GitHub Actions OIDC JWT claims — safe subset only.
 ///
-/// All fields match the claim names from GitHub's OIDC token:
-/// <https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect#understanding-the-oidc-token>
+/// Contains only the 14 claims we persist plus fields required for
+/// authentication/authorization.
+/// Excluded claims (jti, iss, aud, exp, iat, nbf, repository_visibility,
+/// repository_id, repository_owner_id, actor_id, runner_environment,
+/// job_workflow_ref, workflow_ref, workflow_sha) are silently ignored
+/// during deserialization and never stored.
+///
+/// See: <https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect>
 #[derive(Debug, Clone, Deserialize)]
 pub struct GitHubOidcClaims {
     /// Subject (e.g., "repo:org/repo:ref:refs/heads/main").
@@ -16,20 +22,8 @@ pub struct GitHubOidcClaims {
     pub repository: String,
     /// Repository owner (e.g., "octo-org").
     pub repository_owner: String,
-    /// Repository owner numeric ID.
-    #[serde(default)]
-    pub repository_owner_id: Option<String>,
-    /// Repository visibility ("public", "private", "internal").
-    #[serde(default)]
-    pub repository_visibility: Option<String>,
-    /// Repository numeric ID.
-    #[serde(default)]
-    pub repository_id: Option<String>,
     /// Actor (GitHub username who triggered the workflow).
     pub actor: String,
-    /// Actor numeric ID.
-    #[serde(default)]
-    pub actor_id: Option<String>,
     /// Git ref (e.g., "refs/heads/main") — kept as-is, not stripped.
     #[serde(rename = "ref", default)]
     pub git_ref: Option<String>,
@@ -54,47 +48,44 @@ pub struct GitHubOidcClaims {
     /// Run attempt number.
     #[serde(default)]
     pub run_attempt: Option<String>,
-    /// Runner environment (e.g., "github-hosted").
-    #[serde(default)]
-    pub runner_environment: Option<String>,
     /// Head ref (source branch for PRs, empty otherwise).
     #[serde(default)]
     pub head_ref: Option<String>,
     /// Base ref (target branch for PRs, empty otherwise).
     #[serde(default)]
     pub base_ref: Option<String>,
-    /// Full workflow ref (e.g., "org/repo/.github/workflows/ci.yml@refs/heads/main").
-    #[serde(default)]
-    pub job_workflow_ref: Option<String>,
 }
 
 impl GitHubOidcClaims {
-    /// Convert OIDC claims to report-level `GitHubMetadata`.
+    /// Extract only the 13 safe, non-sensitive claims for persistence.
     ///
-    /// All claim values are transferred as-is (no stripping or parsing).
-    pub fn to_github_metadata(&self) -> super::report::GitHubMetadata {
-        super::report::GitHubMetadata {
+    /// Excluded: jti, sub, iss, aud, exp, iat, nbf, repository_visibility,
+    /// environment, runner_environment, repository_id, repository_owner_id,
+    /// actor_id, workflow_ref, workflow_sha, job_workflow_ref, job_workflow_sha.
+    pub fn to_safe_claims(
+        &self,
+        resolved_role: &str,
+        api_path: &str,
+        http_method: &str,
+    ) -> SafeOidcClaims {
+        SafeOidcClaims {
             sub: Some(self.sub.clone()),
             repository: Some(self.repository.clone()),
             repository_owner: Some(self.repository_owner.clone()),
-            repository_owner_id: self.repository_owner_id.clone(),
-            repository_visibility: self.repository_visibility.clone(),
-            repository_id: self.repository_id.clone(),
             actor: Some(self.actor.clone()),
-            actor_id: self.actor_id.clone(),
+            sha: self.sha.clone(),
             git_ref: self.git_ref.clone(),
             ref_type: self.ref_type.clone(),
-            sha: self.sha.clone(),
             workflow: self.workflow.clone(),
             event_name: self.event_name.clone(),
             run_id: self.run_id.clone(),
             run_number: self.run_number.clone(),
             run_attempt: self.run_attempt.clone(),
-            runner_environment: self.runner_environment.clone(),
             head_ref: self.head_ref.clone(),
             base_ref: self.base_ref.clone(),
-            job_workflow_ref: self.job_workflow_ref.clone(),
-            pr_number: None, // not available in OIDC claims
+            resolved_role: resolved_role.to_string(),
+            api_path: api_path.to_string(),
+            http_method: http_method.to_string(),
         }
     }
 }
@@ -171,4 +162,26 @@ impl From<OidcPolicy> for OidcPolicyResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OidcPolicyListResponse {
     pub policies: Vec<OidcPolicyResponse>,
+}
+
+/// Safe subset of OIDC claims for persistence (13 claims + 3 audit fields).
+#[derive(Debug, Clone)]
+pub struct SafeOidcClaims {
+    pub sub: Option<String>,
+    pub repository: Option<String>,
+    pub repository_owner: Option<String>,
+    pub actor: Option<String>,
+    pub sha: Option<String>,
+    pub git_ref: Option<String>,
+    pub ref_type: Option<String>,
+    pub workflow: Option<String>,
+    pub event_name: Option<String>,
+    pub run_id: Option<String>,
+    pub run_number: Option<String>,
+    pub run_attempt: Option<String>,
+    pub head_ref: Option<String>,
+    pub base_ref: Option<String>,
+    pub resolved_role: String,
+    pub api_path: String,
+    pub http_method: String,
 }

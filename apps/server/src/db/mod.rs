@@ -5,6 +5,7 @@ pub mod github_oidc_policies;
 pub mod html_files;
 pub mod json_files;
 pub mod refresh_tokens;
+pub mod report_oidc_claims;
 pub mod screenshots;
 pub mod test_jobs;
 pub mod test_reports;

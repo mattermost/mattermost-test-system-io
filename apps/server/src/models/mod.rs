@@ -4,13 +4,14 @@ pub mod api_key;
 pub mod github_oidc;
 pub mod job;
 pub mod report;
+pub mod report_oidc_claim;
 pub mod user;
 pub mod ws_event;
 
 // Re-export commonly used types
 pub use api_key::{
     ApiKey, ApiKeyCreateResponse, ApiKeyListItem, ApiKeyRole, AuthenticatedCaller,
-    CreateApiKeyRequest,
+    CreateApiKeyRequest, OIDC_ADMIN_DENIED_MSG,
 };
 pub use job::{
     AcceptedHtmlFile, AcceptedJsonFile, AcceptedScreenshot, EnvironmentMetadata, HtmlFileToUpload,

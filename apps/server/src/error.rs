@@ -31,27 +31,40 @@ pub enum AppError {
 
 impl ResponseError for AppError {
     fn error_response(&self) -> HttpResponse {
-        let (status, error_code) = match self {
-            AppError::Database(_) => (
-                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "DATABASE_ERROR",
+        let (status, error_code, response_message) = match self {
+            AppError::Database(err_str) => {
+                tracing::error!("Database error: {}", err_str);
+                (
+                    actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "DATABASE_ERROR",
+                    "An internal database error occurred".to_string(),
+                )
+            }
+            AppError::NotFound(_) => (
+                actix_web::http::StatusCode::NOT_FOUND,
+                "NOT_FOUND",
+                self.to_string(),
             ),
-            AppError::NotFound(_) => (actix_web::http::StatusCode::NOT_FOUND, "NOT_FOUND"),
-            AppError::InvalidInput(_) => {
-                (actix_web::http::StatusCode::BAD_REQUEST, "INVALID_INPUT")
-            }
-            AppError::Unauthorized(_) => {
-                (actix_web::http::StatusCode::UNAUTHORIZED, "UNAUTHORIZED")
-            }
+            AppError::InvalidInput(_) => (
+                actix_web::http::StatusCode::BAD_REQUEST,
+                "INVALID_INPUT",
+                self.to_string(),
+            ),
+            AppError::Unauthorized(_) => (
+                actix_web::http::StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+                self.to_string(),
+            ),
             AppError::Storage(_) => (
                 actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "STORAGE_ERROR",
+                self.to_string(),
             ),
         };
 
         HttpResponse::build(status).json(ErrorResponse {
             error: error_code.to_string(),
-            message: self.to_string(),
+            message: response_message,
         })
     }
 }

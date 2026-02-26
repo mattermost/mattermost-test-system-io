@@ -131,7 +131,9 @@ jobs:
           gh release create "$RELEASE_TAG" \
             --target "$COMMIT_SHA" \
             --title "Release $RELEASE_VERSION" \
-            --generate-notes
+            --latest \
+            --generate-notes \
+            --notes "Docker image: [\`${{ env.IMAGE }}:${RELEASE_VERSION}\`](https://hub.docker.com/r/${{ env.IMAGE }}/tags?name=${RELEASE_VERSION})"
 
   # ---------------------------------------------------------------------------
   # Job 3: Deploy to production ECS

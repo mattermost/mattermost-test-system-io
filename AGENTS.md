@@ -30,5 +30,28 @@ apps/web/      # React (Vite, TailwindCSS, lucide-react)
 - CSS: TailwindCSS (dark mode supported)
 - Deps: exact versions only
 
+## Testing
+```bash
+make test              # All tests (unit + E2E)
+make test-server       # Rust unit tests + OIDC E2E tests
+make test-server-oidc  # OIDC E2E tests only (requires PostgreSQL)
+make test-web          # Frontend tests
+```
+
+### File Descriptor Limit (macOS)
+E2E tests create DB connections and HTTP servers. macOS defaults to
+256 open files per process, which is too low. The Makefile raises it
+automatically, but if you see `Too many open files` errors:
+```bash
+# Check current limit
+ulimit -n
+
+# Raise for current shell session
+ulimit -n 4096
+
+# Permanent fix: add to ~/.zshrc or ~/.bashrc
+echo 'ulimit -n 4096' >> ~/.zshrc
+```
+
 ## PR
 Run `make ci` then use: `feat(scope): desc` or `fix(scope): desc`

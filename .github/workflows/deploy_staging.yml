@@ -111,7 +111,8 @@ jobs:
             --prerelease \
             --target "$GITHUB_SHA" \
             --title "Beta $BETA_TAG" \
-            --generate-notes
+            --generate-notes \
+            --notes "Docker image: [\`${{ env.IMAGE }}:${BETA_TAG}\`](https://hub.docker.com/r/${{ env.IMAGE }}/tags?name=${BETA_TAG})"
 
   # ---------------------------------------------------------------------------
   # Job 3: Deploy to staging (migration path)

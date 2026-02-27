@@ -139,6 +139,10 @@ pub struct ServerSettings {
     pub max_connections: usize,
     /// Maximum new connections per second per worker
     pub max_connection_rate: usize,
+    /// Allowed CORS origins in production (comma-separated).
+    /// In development, localhost:3000 is always allowed.
+    /// In production, must be set explicitly; empty list = deny all cross-origin requests.
+    pub allowed_origins: Vec<String>,
 }
 
 impl ServerSettings {
@@ -275,6 +279,9 @@ impl Config {
     /// - `TSIO_SERVER_BACKLOG`: Pending connection queue size (default: 128 dev, 2048 prod)
     /// - `TSIO_SERVER_MAX_CONNECTIONS`: Max connections per worker (default: 256 dev, 25000 prod)
     /// - `TSIO_SERVER_MAX_CONNECTION_RATE`: Max new connections/sec/worker (default: 256)
+    /// - `TSIO_SERVER_ALLOWED_ORIGINS`: Comma-separated CORS origin allowlist for production
+    ///   (e.g. "https://tsio.example.com,https://app.example.com"). In development,
+    ///   http://localhost:3000 and http://127.0.0.1:3000 are always permitted.
     ///
     /// Database settings (`TSIO_DB_*`):
     /// - `TSIO_DB_URL`: PostgreSQL connection string (required in production, or use individual vars below)
@@ -395,10 +402,21 @@ impl Config {
             )
         };
 
+        // Parse allowed CORS origins from comma-separated env var
+        let allowed_origins = env::var("TSIO_SERVER_ALLOWED_ORIGINS")
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Ok(ServerSettings {
             host,
             port,
             static_dir,
+            allowed_origins,
             workers: env::var("TSIO_SERVER_WORKERS")
                 .unwrap_or_else(|_| default_workers.to_string())
                 .parse()
@@ -715,6 +733,18 @@ impl Config {
             }
         }
 
+        // Enforce OIDC audience validation in production.
+        // Without an audience claim, OIDC tokens minted for other services could be
+        // replayed against this server (token substitution attack).
+        if self.github_oidc.enabled && self.github_oidc.audience.is_none() {
+            errors.push(
+                "TSIO_GITHUB_OIDC_AUDIENCE is required when GitHub OIDC is enabled in production. \
+                 Set it to this server's URL (e.g. \"https://tsio.example.com\") to prevent \
+                 token substitution attacks."
+                    .to_string(),
+            );
+        }
+
         if !errors.is_empty() {
             return Err(ConfigError::ProductionValidation(errors));
         }
@@ -772,6 +802,7 @@ mod tests {
             host: "0.0.0.0".to_string(),
             port: 3000,
             static_dir: None,
+            allowed_origins: vec![],
             workers: 4,
             backlog: 128,
             max_connections: 256,

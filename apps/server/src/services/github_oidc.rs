@@ -72,13 +72,14 @@ impl GitHubOidcVerifier {
         // Derive JWKS URL from issuer
         let jwks_url = format!("{}/.well-known/jwks", settings.issuer.trim_end_matches('/'));
 
-        // Warn if audience is not configured
+        // Warn if audience is not configured (production enforces this at startup via
+        // Config::validate_production; this warn covers development mode).
         if settings.audience.is_none() {
             warn!(
                 "TSIO_GITHUB_OIDC_AUDIENCE is not set. \
                  Without audience validation, OIDC tokens minted for other services \
                  could be replayed against this server. \
-                 Set TSIO_GITHUB_OIDC_AUDIENCE to your server URL for defense-in-depth."
+                 In production this is a startup error; set it to your server URL."
             );
         }
 

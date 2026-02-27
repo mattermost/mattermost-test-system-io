@@ -1,6 +1,14 @@
 //! WebSocket handler for real-time updates.
 //!
 //! Handles WebSocket upgrade requests and streams events to connected clients.
+//!
+//! # Authentication
+//! The WebSocket endpoint requires authentication before upgrading the connection.
+//! Supported methods (same as REST API, checked in order):
+//! 1. `X-Admin-Key` header
+//! 2. `X-API-Key` header (database-backed)
+//! 3. `Authorization: Bearer <token>` (GitHub Actions OIDC)
+//! 4. `tsio_session` cookie (GitHub OAuth session JWT)
 
 use actix_web::{HttpRequest, HttpResponse, web};
 use actix_ws::Message;
@@ -9,6 +17,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, info, warn};
 
+use crate::auth::ApiKeyAuth;
+use crate::config::{ADMIN_KEY_HEADER, API_KEY_HEADER};
+use crate::db::DbPool;
+use crate::error::ErrorResponse;
 use crate::services::EventBroadcaster;
 
 /// Ping interval for keeping connections alive.
@@ -17,13 +29,39 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// Timeout for receiving pong response.
 const PONG_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// WebSocket handler - upgrades HTTP connection to WebSocket.
+/// WebSocket handler - authenticates then upgrades HTTP connection to WebSocket.
+///
+/// Authentication is performed before the WebSocket upgrade so that unauthenticated
+/// requests are rejected with a proper HTTP 401 response rather than an open socket.
 pub async fn websocket_handler(
     req: HttpRequest,
     stream: web::Payload,
     broadcaster: web::Data<EventBroadcaster>,
+    pool: web::Data<DbPool>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let (response, session, msg_stream) = actix_ws::handle(&req, stream)?;
+    // Authenticate before upgrading. We build and drive the ApiKeyAuth future
+    // manually so we can return a structured 401 without upgrading the socket.
+    use actix_web::dev::Payload;
+    let auth_result = {
+        let mut payload = Payload::None;
+        let fut = <ApiKeyAuth as actix_web::FromRequest>::from_request(&req, &mut payload);
+        fut.await
+    };
+
+    if let Err(auth_err) = auth_result {
+        warn!(
+            client = %req.connection_info().realip_remote_addr().unwrap_or("unknown"),
+            header_key = %req.headers().get(API_KEY_HEADER).is_some(),
+            header_admin = %req.headers().get(ADMIN_KEY_HEADER).is_some(),
+            "WebSocket authentication failed"
+        );
+        return Ok(actix_web::HttpResponse::Unauthorized().json(ErrorResponse {
+            error: "UNAUTHORIZED".to_string(),
+            message: auth_err.to_string(),
+        }));
+    }
+
+    let auth = auth_result.unwrap();
 
     // Get client info for logging
     let client_addr = req
@@ -32,7 +70,14 @@ pub async fn websocket_handler(
         .map(String::from)
         .unwrap_or_else(|| "unknown".to_string());
 
-    info!(client = %client_addr, "WebSocket connection established");
+    let (response, session, msg_stream) = actix_ws::handle(&req, stream)?;
+
+    info!(
+        client = %client_addr,
+        key_id = %auth.caller.key_id,
+        role = %auth.caller.role,
+        "WebSocket connection established"
+    );
 
     // Spawn the connection handler task
     actix_web::rt::spawn(handle_websocket_connection(
@@ -41,6 +86,9 @@ pub async fn websocket_handler(
         broadcaster.get_ref().clone(),
         client_addr,
     ));
+
+    // pool is required by ApiKeyAuth extractor; keep it in scope until auth completes
+    drop(pool);
 
     Ok(response)
 }

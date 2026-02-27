@@ -3,6 +3,7 @@
 mod extractor;
 
 use secrecy::{ExposeSecret, SecretString};
+use subtle::ConstantTimeEq;
 
 pub use extractor::ApiKeyAuth;
 
@@ -24,21 +25,18 @@ impl AdminKey {
     }
 
     /// Securely compare the provided key with the stored admin key.
-    /// Uses constant-time comparison to prevent timing attacks.
+    ///
+    /// Uses `subtle::ConstantTimeEq` which performs a constant-time byte-by-byte
+    /// comparison. Unlike a manual fold, `ConstantTimeEq` also avoids leaking
+    /// the key length through early-exit branching — both buffers are compared
+    /// in full regardless of where they first differ.
     pub fn verify(&self, provided: &str) -> bool {
         match &self.0 {
             Some(secret) => {
                 let expected = secret.expose_secret();
-                // Constant-time comparison
-                if expected.len() != provided.len() {
-                    return false;
-                }
-                expected
-                    .as_bytes()
-                    .iter()
-                    .zip(provided.as_bytes())
-                    .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-                    == 0
+                // ConstantTimeEq requires equal-length slices; it returns 0 (false)
+                // for unequal lengths without any early exit, preventing length oracle.
+                expected.as_bytes().ct_eq(provided.as_bytes()).into()
             }
             None => false,
         }

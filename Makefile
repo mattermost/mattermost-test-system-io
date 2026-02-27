@@ -12,7 +12,8 @@
         docker-build docker-build-no-cache docker-up docker-down docker-down-volumes docker-logs \
         outdated outdated-server outdated-web update update-server update-web \
         check-target-size clean-debug-if-large clean-release-if-large \
-        kill-ports kill-server-port kill-web-port kill-port
+        kill-ports kill-server-port kill-web-port kill-port \
+        audit audit-server
 
 # Default target
 .DEFAULT_GOAL := help
@@ -398,8 +399,20 @@ docs-server: ## Generate Rust documentation
 ci: fmt-check lint test build ## Run all CI checks (format, lint, test, build)
 	@echo "$(GREEN)All CI checks passed!$(RESET)"
 
-pre-commit: fmt lint check typecheck ## Run pre-commit checks
+pre-commit: fmt lint check typecheck audit ## Run pre-commit checks (includes security audit)
 	@echo "$(GREEN)Pre-commit checks passed!$(RESET)"
+
+audit: audit-server ## Run security audits
+
+# RUSTSEC-2023-0071: `rsa` pulled in transitively via sqlx-mysql ← sea-orm
+audit-server: ## Run cargo audit to check for known vulnerabilities
+	@echo "$(CYAN)Running cargo security audit...$(RESET)"
+	@if command -v cargo-audit >/dev/null 2>&1; then \
+		cd $(SERVER_DIR) && cargo audit --ignore RUSTSEC-2023-0071; \
+	else \
+		echo "$(YELLOW)cargo-audit not installed. Install with: cargo install cargo-audit$(RESET)"; \
+		echo "$(YELLOW)Skipping security audit.$(RESET)"; \
+	fi
 
 # ============================================================================
 # Docker

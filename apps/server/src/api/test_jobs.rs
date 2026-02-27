@@ -40,16 +40,53 @@ const MAX_FILE_SIZE: i64 = 50 * 1024 * 1024;
 /// Maximum screenshot file size (10 MB).
 const MAX_SCREENSHOT_SIZE: i64 = 10 * 1024 * 1024;
 
-/// Validate a file path and return rejection reason if invalid.
-fn validate_file(path: &str, size: Option<i64>) -> Option<String> {
-    // Check for path traversal
-    if path.contains("..") {
-        return Some("Path traversal not allowed".to_string());
+/// Check that a caller-supplied relative file path is safe against path traversal.
+///
+/// Normalises the path using `std::path::Path` component iteration and rejects any
+/// path that, after normalisation, would escape the current directory. This catches:
+///
+/// - `..` and `../` components
+/// - Platform path separators (`\` on Windows)
+/// - Null bytes embedded in the path string
+/// - Paths that begin with `/` (absolute) or `//` (protocol-relative)
+///
+/// The check does **not** touch the filesystem; it operates entirely on the string
+/// representation, making it safe to run before any I/O occurs.
+fn is_safe_path(path: &str) -> bool {
+    use std::path::{Component, Path};
+
+    // Reject empty paths and null bytes up-front
+    if path.is_empty() || path.contains('\0') {
+        return false;
     }
 
+    // Reject absolute paths
+    if path.starts_with('/') || path.starts_with('\\') {
+        return false;
+    }
+
+    // Walk the normalised component list; any ParentDir component means traversal
+    for component in Path::new(path).components() {
+        match component {
+            Component::ParentDir => return false,
+            Component::Prefix(_) | Component::RootDir => return false,
+            _ => {}
+        }
+    }
+
+    true
+}
+
+/// Validate a file path and return rejection reason if invalid.
+fn validate_file(path: &str, size: Option<i64>) -> Option<String> {
     // Check empty path
     if path.is_empty() {
         return Some("Empty file path".to_string());
+    }
+
+    // Check for path traversal using normalised component analysis
+    if !is_safe_path(path) {
+        return Some("Path traversal not allowed".to_string());
     }
 
     // Check extension
@@ -642,14 +679,14 @@ pub async fn upload_html(
 
 /// Validate a screenshot file and return rejection reason if invalid.
 fn validate_screenshot(path: &str, size: Option<i64>) -> Option<String> {
-    // Check for path traversal
-    if path.contains("..") {
-        return Some("Path traversal not allowed".to_string());
-    }
-
     // Check empty path
     if path.is_empty() {
         return Some("Empty file path".to_string());
+    }
+
+    // Check for path traversal using normalised component analysis
+    if !is_safe_path(path) {
+        return Some("Path traversal not allowed".to_string());
     }
 
     // Check extension
@@ -989,14 +1026,14 @@ const MAX_JSON_FILE_SIZE: i64 = 50 * 1024 * 1024;
 
 /// Validate a JSON file and return rejection reason if invalid.
 fn validate_json_file(path: &str, size: Option<i64>) -> Option<String> {
-    // Check for path traversal
-    if path.contains("..") {
-        return Some("Path traversal not allowed".to_string());
-    }
-
     // Check empty path
     if path.is_empty() {
         return Some("Empty file path".to_string());
+    }
+
+    // Check for path traversal using normalised component analysis
+    if !is_safe_path(path) {
+        return Some("Path traversal not allowed".to_string());
     }
 
     // Check extension

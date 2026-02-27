@@ -65,6 +65,37 @@ fn generate_random_hex() -> String {
 // Endpoints
 // ============================================================================
 
+/// Default OAuth callback path (relative URL, always safe).
+const DEFAULT_REDIRECT_PATH: &str = "/api/v1/auth/github/callback";
+
+/// Validate that an OAuth redirect URI is safe to use.
+///
+/// Accepts only:
+/// - Relative paths beginning with `/` (e.g. `/api/v1/auth/github/callback`)
+/// - Absolute URLs whose origin matches one of the server's allowed CORS origins
+///
+/// Rejects anything else to prevent open-redirect / token-hijack attacks.
+fn validate_redirect_uri<'a>(
+    uri: &'a str,
+    allowed_origins: &[String],
+) -> Result<&'a str, AppError> {
+    // Relative path — always safe (browser resolves against the current origin)
+    if uri.starts_with('/') && !uri.starts_with("//") {
+        return Ok(uri);
+    }
+    // Absolute URL — must match a configured allowed origin
+    for origin in allowed_origins {
+        if uri.starts_with(origin.as_str()) {
+            return Ok(uri);
+        }
+    }
+    Err(AppError::InvalidInput(format!(
+        "OAuth redirect_url '{}' is not an allowed origin. \
+         Configure TSIO_SERVER_ALLOWED_ORIGINS or use a relative path.",
+        uri
+    )))
+}
+
 /// Redirect to GitHub OAuth authorization page.
 ///
 /// GET /api/v1/auth/github
@@ -81,10 +112,12 @@ pub async fn github_login(config: web::Data<Config>) -> AppResult<HttpResponse> 
         AppError::InvalidInput("GitHub OAuth client ID not configured".to_string())
     })?;
 
-    let redirect_uri = oauth
+    // Validate and resolve the redirect URI
+    let raw_redirect = oauth
         .redirect_url
         .as_deref()
-        .unwrap_or("/api/v1/auth/github/callback");
+        .unwrap_or(DEFAULT_REDIRECT_PATH);
+    let redirect_uri = validate_redirect_uri(raw_redirect, &config.server.allowed_origins)?;
 
     let state = generate_random_hex();
 

@@ -55,11 +55,16 @@ impl ResponseError for AppError {
                 "UNAUTHORIZED",
                 self.to_string(),
             ),
-            AppError::Storage(_) => (
-                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "STORAGE_ERROR",
-                self.to_string(),
-            ),
+            AppError::Storage(err_str) => {
+                // Log the full S3 error server-side but return a generic message to
+                // the client to avoid leaking bucket names, endpoints, or S3 error codes.
+                tracing::error!("Storage error: {}", err_str);
+                (
+                    actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "STORAGE_ERROR",
+                    "An internal storage error occurred".to_string(),
+                )
+            }
         };
 
         HttpResponse::build(status).json(ErrorResponse {

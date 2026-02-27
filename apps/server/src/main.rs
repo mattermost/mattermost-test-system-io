@@ -143,6 +143,7 @@ async fn main() -> std::io::Result<()> {
     let max_upload_size = config.features.upload_max_size;
     let static_dir = config.server.static_dir.clone();
     let is_development = config.is_development();
+    let allowed_origins = config.server.allowed_origins.clone();
     let oidc_verifier_clone = oidc_verifier.clone();
     let client_config = config; // Move config for sharing with the app
 
@@ -172,30 +173,41 @@ async fn main() -> std::io::Result<()> {
     // Start HTTP server
     let server = HttpServer::new(move || {
         // Configure CORS
+        //
+        // Development: always allow the local Vite dev server.
+        // Production: only allow origins listed in TSIO_SERVER_ALLOWED_ORIGINS.
+        //   An empty list means no cross-origin requests are permitted (same-origin only).
+        //   actix-cors does NOT fall back to reflecting the Origin header when
+        //   allowed_origin_fn / allowed_origin are used — unlisted origins receive
+        //   no ACAO header, which browsers treat as a CORS denial.
+        let allowed_methods = vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"];
+        let allowed_headers = vec![
+            header::AUTHORIZATION,
+            header::ACCEPT,
+            header::CONTENT_TYPE,
+            "X-API-Key".parse().unwrap(),
+        ];
+
         let cors = if is_development {
-            // Permissive CORS for development
+            // Development: allow local Vite dev server origins
             Cors::default()
                 .allowed_origin("http://localhost:3000")
                 .allowed_origin("http://127.0.0.1:3000")
-                .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-                .allowed_headers(vec![
-                    header::AUTHORIZATION,
-                    header::ACCEPT,
-                    header::CONTENT_TYPE,
-                    "X-API-Key".parse().unwrap(),
-                ])
+                .allowed_methods(allowed_methods)
+                .allowed_headers(allowed_headers)
+                .supports_credentials()
                 .max_age(3600)
         } else {
-            // Restrictive CORS for production (same-origin only)
-            Cors::default()
-                .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-                .allowed_headers(vec![
-                    header::AUTHORIZATION,
-                    header::ACCEPT,
-                    header::CONTENT_TYPE,
-                    "X-API-Key".parse().unwrap(),
-                ])
-                .max_age(3600)
+            // Production: only allow explicitly configured origins
+            let mut cors_builder = Cors::default()
+                .allowed_methods(allowed_methods)
+                .allowed_headers(allowed_headers)
+                .supports_credentials()
+                .max_age(3600);
+            for origin in &allowed_origins {
+                cors_builder = cors_builder.allowed_origin(origin);
+            }
+            cors_builder
         };
 
         let app = App::new()
@@ -233,13 +245,16 @@ async fn main() -> std::io::Result<()> {
                     .configure(services::configure_oauth_routes)
                     .configure(services::configure_oidc_policy_routes),
             )
-            // Swagger UI
-            .service(
-                SwaggerUi::new("/swagger-ui/{_:.*}")
-                    .url("/api-docs/openapi.json", ApiDoc::openapi()),
-            )
             // File serving from S3 (proxy)
             .configure(api::configure_file_routes);
+
+        // Swagger UI is only available in development to avoid leaking the API schema
+        if is_development {
+            app = app.service(
+                SwaggerUi::new("/swagger-ui/{_:.*}")
+                    .url("/api-docs/openapi.json", ApiDoc::openapi()),
+            );
+        }
 
         // Serve static files in production (when STATIC_DIR is set)
         if let Some(ref dir) = static_dir {

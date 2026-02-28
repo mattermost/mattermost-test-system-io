@@ -6,6 +6,8 @@ import type {
   RawReportListResponse,
   TestSuiteListResponse,
   ReportWithJobs,
+  GroupedReportsResponse,
+  ConsolidatedResultsResponse,
 } from '@/types';
 
 export const API_URL = import.meta.env.VITE_API_URL || '/api/v1';
@@ -58,6 +60,44 @@ export function useServerInfo() {
       return handleResponse<ServerInfo>(response);
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+}
+
+// Grouped reports for landing page
+export function useGroupedReports() {
+  return useQuery({
+    queryKey: ['reports-grouped'],
+    queryFn: async () => {
+      const response = await fetch(`${API_URL}/reports/grouped`);
+      return handleResponse<GroupedReportsResponse>(response);
+    },
+  });
+}
+
+// Consolidated results for filtered view
+export function useConsolidatedResults(
+  repo: string,
+  branch: string,
+  commit: string,
+  framework: string,
+  runAttempt?: number,
+) {
+  return useQuery({
+    queryKey: ['reports-consolidated', repo, branch, commit, framework, runAttempt],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        repository: repo,
+        branch,
+        commit,
+        framework,
+      });
+      if (runAttempt !== undefined) {
+        params.set('run_attempt', String(runAttempt));
+      }
+      const response = await fetch(`${API_URL}/reports/consolidated?${params}`);
+      return handleResponse<ConsolidatedResultsResponse>(response);
+    },
+    enabled: !!repo && !!branch && !!commit && !!framework,
   });
 }
 

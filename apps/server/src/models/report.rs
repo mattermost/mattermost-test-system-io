@@ -6,99 +6,23 @@ use serde_json::Value as JsonValue;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// GitHub metadata for reports (stored as JSONB).
+/// Environment metadata for reports (stored as JSONB).
 ///
-/// Field names are aligned with GitHub OIDC token claims.
-/// See: <https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect>
+/// Flexible key-value structure with namespaced top-level keys.
+/// Currently supports `tool` and `server` namespaces.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
-pub struct GitHubMetadata {
-    /// Subject (e.g., "repo:org/repo:ref:refs/heads/main").
+pub struct ReportEnvironmentMetadata {
+    /// Tool-specific info (name, version, browser, config).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sub: Option<String>,
-    /// Repository (e.g., "octo-org/octo-repo").
+    pub tool: Option<serde_json::Value>,
+    /// Server-under-test info (version, type, edition, build).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub repository: Option<String>,
-    /// Repository owner (e.g., "octo-org").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repository_owner: Option<String>,
-    /// Repository owner numeric ID.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repository_owner_id: Option<String>,
-    /// Repository visibility ("public", "private", "internal").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repository_visibility: Option<String>,
-    /// Repository numeric ID.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repository_id: Option<String>,
-    /// Actor (GitHub username who triggered the workflow).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor: Option<String>,
-    /// Actor numeric ID.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor_id: Option<String>,
-    /// Git ref (e.g., "refs/heads/main") — stored as-is.
-    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
-    pub git_ref: Option<String>,
-    /// Ref type ("branch" or "tag").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ref_type: Option<String>,
-    /// Commit SHA.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sha: Option<String>,
-    /// Workflow name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workflow: Option<String>,
-    /// Event name (e.g., "push", "pull_request", "workflow_dispatch").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_name: Option<String>,
-    /// Run ID.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    /// Run number (increments per workflow).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_number: Option<String>,
-    /// Run attempt number.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_attempt: Option<String>,
-    /// Runner environment (e.g., "github-hosted").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runner_environment: Option<String>,
-    /// Head ref (source branch for PRs).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub head_ref: Option<String>,
-    /// Base ref (target branch for PRs).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_ref: Option<String>,
-    /// Full workflow ref (e.g., "org/repo/.github/workflows/ci.yml@refs/heads/main").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub job_workflow_ref: Option<String>,
-    /// PR number (not from OIDC — provided by the client).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pr_number: Option<i32>,
+    pub server: Option<serde_json::Value>,
 }
 
-impl GitHubMetadata {
+impl ReportEnvironmentMetadata {
     pub fn is_empty(&self) -> bool {
-        self.sub.is_none()
-            && self.repository.is_none()
-            && self.repository_owner.is_none()
-            && self.repository_owner_id.is_none()
-            && self.repository_visibility.is_none()
-            && self.repository_id.is_none()
-            && self.actor.is_none()
-            && self.actor_id.is_none()
-            && self.git_ref.is_none()
-            && self.sha.is_none()
-            && self.workflow.is_none()
-            && self.event_name.is_none()
-            && self.run_id.is_none()
-            && self.run_number.is_none()
-            && self.run_attempt.is_none()
-            && self.runner_environment.is_none()
-            && self.head_ref.is_none()
-            && self.base_ref.is_none()
-            && self.job_workflow_ref.is_none()
-            && self.pr_number.is_none()
+        self.tool.is_none() && self.server.is_none()
     }
 
     pub fn to_json(&self) -> Option<JsonValue> {
@@ -197,9 +121,21 @@ pub struct RegisterReportRequest {
     pub expected_jobs: i32,
     /// Test framework.
     pub framework: Framework,
-    /// GitHub metadata (stored as JSONB).
+    /// Repository (e.g., "org/repo"). Required.
+    pub repository: String,
+    /// Branch or tag name (e.g., "main", "release-1.0"). Required.
+    pub branch: String,
+    /// Commit hash (e.g., "776e302abc..."). Required.
+    pub commit: String,
+    /// GitHub Actions run ID. Optional (empty string if not provided).
     #[serde(default)]
-    pub github_metadata: Option<GitHubMetadata>,
+    pub run_id: Option<String>,
+    /// PR number. Required when event is pull_request.
+    #[serde(default)]
+    pub pr_number: Option<i32>,
+    /// Environment metadata — tool and server info (stored as JSONB).
+    #[serde(default)]
+    pub environment_metadata: Option<ReportEnvironmentMetadata>,
 }
 
 /// Response after registering a report.
@@ -256,12 +192,23 @@ pub struct ReportSummary {
     /// Test statistics aggregated from all jobs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_stats: Option<TestStats>,
-    /// GitHub metadata (caller-supplied).
+    /// Repository (e.g., "org/repo").
+    pub repository: String,
+    /// Branch name (stored as-is, e.g., "main").
+    pub branch: String,
+    /// Commit SHA.
+    pub commit: String,
+    /// GitHub Actions run ID.
+    pub run_id: String,
+    /// PR number.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_metadata: Option<GitHubMetadata>,
+    pub pr_number: Option<i32>,
     /// OIDC claims (token-derived, stored separately).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oidc_claims: Option<super::report_oidc_claim::ReportOidcClaimsResponse>,
+    /// Environment metadata (tool + server info).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment_metadata: Option<ReportEnvironmentMetadata>,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
 }
@@ -277,12 +224,23 @@ pub struct ReportDetailResponse {
     pub framework: Framework,
     /// Expected number of jobs.
     pub expected_jobs: i32,
-    /// GitHub metadata (caller-supplied).
+    /// Repository (e.g., "org/repo").
+    pub repository: String,
+    /// Branch name (stored as-is, e.g., "main").
+    pub branch: String,
+    /// Commit SHA.
+    pub commit: String,
+    /// GitHub Actions run ID.
+    pub run_id: String,
+    /// PR number.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_metadata: Option<GitHubMetadata>,
+    pub pr_number: Option<i32>,
     /// OIDC claims (token-derived, stored separately).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oidc_claims: Option<super::report_oidc_claim::ReportOidcClaimsResponse>,
+    /// Environment metadata (tool + server info).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment_metadata: Option<ReportEnvironmentMetadata>,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
@@ -313,12 +271,15 @@ pub struct ListReportsQuery {
     /// Filter by status.
     #[serde(default)]
     pub status: Option<ReportStatus>,
-    /// Filter by GitHub repository (e.g., "org/repo").
+    /// Filter by repository (e.g., "org/repo").
     #[serde(default)]
     pub repository: Option<String>,
-    /// Filter by git ref (e.g., "refs/heads/main").
-    #[serde(rename = "ref", default)]
-    pub git_ref: Option<String>,
+    /// Filter by branch (e.g., "main").
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Filter by commit SHA (prefix-matched, min 7 chars).
+    #[serde(default)]
+    pub commit: Option<String>,
     /// Maximum results to return.
     #[serde(default = "default_limit")]
     pub limit: i32,
@@ -329,4 +290,99 @@ pub struct ListReportsQuery {
 
 fn default_limit() -> i32 {
     20
+}
+
+/// Maximum number of runs shown per repository on the grouped landing page.
+pub const MAX_RUNS_PER_REPO: usize = 10;
+
+// --- Grouped Reports (landing page) ---
+
+/// A single run entry within a repository group.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RunEntry {
+    pub report_id: Uuid,
+    pub framework: Framework,
+    pub status: ReportStatus,
+    pub branch: String,
+    pub commit: String,
+    pub short_sha: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_attempt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_stats: Option<TestStats>,
+    pub created_at: DateTime<Utc>,
+    pub url_path: String,
+}
+
+/// A repository group with its recent runs.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RepositoryGroup {
+    pub repository: String,
+    pub repository_name: String,
+    pub latest_run_at: DateTime<Utc>,
+    pub runs: Vec<RunEntry>,
+}
+
+/// Response for the grouped reports landing page.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct GroupedReportsResponse {
+    pub groups: Vec<RepositoryGroup>,
+}
+
+// --- Consolidated Results (filtered view) ---
+
+/// Filter parameters for the consolidated view.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ConsolidatedFilters {
+    pub repository: String,
+    pub target_name: String,
+    pub commit_sha: String,
+    pub tool_name: String,
+}
+
+/// A single historical result for a spec across commits/attempts.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SpecHistoryEntry {
+    pub commit_sha: String,
+    pub run_attempt: i32,
+    pub status: String,
+    pub duration_ms: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    pub created_at: String,
+}
+
+/// A single spec in the consolidated view.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ConsolidatedSpec {
+    pub full_title: String,
+    pub status: String,
+    pub source_commit_sha: String,
+    pub source_run_attempt: i32,
+    pub is_from_latest: bool,
+    pub duration_ms: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    /// Full result history for this spec, ordered newest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<SpecHistoryEntry>,
+}
+
+/// Response for the consolidated results endpoint.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ConsolidatedResultsResponse {
+    pub filters: ConsolidatedFilters,
+    pub overall_status: String,
+    pub total_specs: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub flaky: usize,
+    pub contributing_reports: Vec<Uuid>,
+    pub latest_commit_sha: String,
+    pub latest_run_attempt: i32,
+    pub available_run_attempts: Vec<i32>,
+    pub specs: Vec<ConsolidatedSpec>,
 }

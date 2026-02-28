@@ -34,11 +34,16 @@ impl MigrationTrait for Migration {
                     status VARCHAR(20) NOT NULL DEFAULT 'initializing'
                         CHECK (status IN ('initializing', 'uploading', 'processing', 'complete', 'failed')),
 
-                    -- Metadata as JSONB (flexible schema, field names match GitHub OIDC claims)
-                    -- {repository, repository_owner, ref, ref_type, sha, actor, workflow,
-                    --  event_name, run_id, run_number, run_attempt, head_ref, base_ref,
-                    --  job_workflow_ref, pr_number}
-                    github_metadata JSONB,
+                    -- Typed metadata columns (previously stored in github_metadata JSONB)
+                    repository VARCHAR(255) NOT NULL,
+                    branch VARCHAR(255) NOT NULL,
+                    commit VARCHAR(255) NOT NULL,
+                    run_id VARCHAR(100) NOT NULL DEFAULT '',
+                    pr_number INTEGER,
+
+                    -- Environment metadata as JSONB (tool + server info)
+                    -- {tool: {name, version, browser, ...}, server: {version, type, edition, ...}}
+                    environment_metadata JSONB,
 
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -61,8 +66,17 @@ impl MigrationTrait for Migration {
                 CREATE INDEX idx_test_reports_created_at ON test_reports(created_at DESC)
                     WHERE deleted_at IS NULL;
 
-                -- GIN index for JSONB queries (repo, branch searches)
-                CREATE INDEX idx_test_reports_github_metadata ON test_reports USING GIN (github_metadata);
+                -- Index for repository queries (active only)
+                CREATE INDEX idx_test_reports_repository ON test_reports(repository)
+                    WHERE deleted_at IS NULL;
+
+                -- Index for commit prefix searches (active only)
+                CREATE INDEX idx_test_reports_commit ON test_reports(commit)
+                    WHERE deleted_at IS NULL;
+
+                -- Index for run_id lookups
+                CREATE INDEX idx_test_reports_run_id ON test_reports(run_id)
+                    WHERE deleted_at IS NULL;
 
                 -- Trigger to update updated_at
                 CREATE TRIGGER update_test_reports_updated_at

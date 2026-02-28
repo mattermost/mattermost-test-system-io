@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::entity::test_job::{self as job, ActiveModel, Entity as Job};
 use crate::error::{AppError, AppResult};
-use crate::models::{EnvironmentMetadata, JobGitHubMetadata, JobStatus, QueryJobsParams};
+use crate::models::{EnvironmentMetadata, JobStatus, QueryJobsParams};
 
 use super::DbPool;
 
@@ -19,19 +19,20 @@ impl DbPool {
         &self,
         id: Uuid,
         report_id: Uuid,
-        github_metadata: Option<JobGitHubMetadata>,
+        github_job_id: Option<String>,
+        github_job_name: Option<String>,
         environment: Option<EnvironmentMetadata>,
         status: JobStatus,
     ) -> AppResult<job::Model> {
         let now = Utc::now();
 
-        let github_json = github_metadata.and_then(|m: JobGitHubMetadata| m.to_json());
         let env_json = environment.and_then(|e: EnvironmentMetadata| e.to_json());
 
         let model = ActiveModel {
             id: Set(id),
             test_report_id: Set(report_id),
-            github_metadata: Set(github_json),
+            github_job_id: Set(github_job_id),
+            github_job_name: Set(github_job_name),
             status: Set(status.as_str().to_string()),
             html_upload_status: Set(None),
             screenshots_upload_status: Set(None),
@@ -217,14 +218,9 @@ impl DbPool {
         report_id: Uuid,
         github_job_id: &str,
     ) -> AppResult<Option<job::Model>> {
-        use sea_orm::sea_query::Expr;
-
         let result = Job::find()
             .filter(job::Column::TestReportId.eq(report_id))
-            .filter(Expr::cust_with_values(
-                "github_metadata->>'job_id' = $1",
-                [github_job_id.to_string()],
-            ))
+            .filter(job::Column::GithubJobId.eq(github_job_id))
             .one(self.connection())
             .await
             .map_err(|e| AppError::Database(format!("Failed to find job by GitHub ID: {}", e)))?;
@@ -293,8 +289,6 @@ impl DbPool {
 
     /// Query jobs with filtering and pagination.
     pub async fn query_jobs(&self, query: &QueryJobsParams) -> AppResult<(Vec<job::Model>, u64)> {
-        use sea_orm::sea_query::Expr;
-
         let mut select = Job::find();
 
         // Apply filters
@@ -306,12 +300,10 @@ impl DbPool {
             select = select.filter(job::Column::Status.eq(status.as_str()));
         }
 
-        // JSONB filtering for github_job_name (case-insensitive ILIKE)
+        // Typed column filtering for github_job_name (case-insensitive ILIKE)
         if let Some(ref github_job_name) = query.github_job_name {
-            select = select.filter(Expr::cust_with_values(
-                "github_metadata->>'job_name' ILIKE $1",
-                [format!("%{}%", github_job_name)],
-            ));
+            select =
+                select.filter(job::Column::GithubJobName.like(format!("%{}%", github_job_name)));
         }
 
         if let Some(ref from_date) = query.from_date {

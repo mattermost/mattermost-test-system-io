@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { HomePage } from '@/pages/home_page';
+import { FilteredReportPage } from '@/pages/filtered_report_page';
 import { JobReportPage } from '@/pages/job_report_page';
 import { ThemeProvider } from '@/contexts/theme_context';
 import { ThemeToggle } from '@/components/theme_toggle';
@@ -32,6 +33,10 @@ export function App() {
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/reports" element={<HomePage />} />
+              <Route
+                path="/reports/:repo/:target_name/:commit_sha/:tool_name"
+                element={<FilteredReportPage />}
+              />
               <Route path="/reports/:id" element={<JobReportPage />} />
             </Routes>
           </main>

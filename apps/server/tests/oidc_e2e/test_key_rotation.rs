@@ -20,7 +20,7 @@ async fn test_key_rotation_handled() {
     let claims =
         TestOidcClaims::default_for(&mock.issuer_url).with_repository(&format!("{org}/repo"));
     let token1 = mock.issue_token(&claims, &original_key);
-    let (status, _) = upload_report_with_token(&app, &token1, None).await;
+    let (status, _) = upload_report_with_token(&app, &token1, &format!("{org}/repo")).await;
     assert_eq!(status, 201, "First upload with original key should succeed");
 
     // Rotate to a new key and wait for the mock to serve the updated JWKS
@@ -32,7 +32,7 @@ async fn test_key_rotation_handled() {
     let claims2 =
         TestOidcClaims::default_for(&mock.issuer_url).with_repository(&format!("{org}/repo"));
     let token2 = mock.issue_token(&claims2, &new_key);
-    let (status, _) = upload_report_with_token(&app, &token2, None).await;
+    let (status, _) = upload_report_with_token(&app, &token2, &format!("{org}/repo")).await;
 
     // No need to restore original key since this mock is isolated to this test
     // mock.rotate_keys(original_key);

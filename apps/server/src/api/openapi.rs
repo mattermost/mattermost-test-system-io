@@ -60,7 +60,6 @@ use crate::{api, error, models, services};
             // Reports
             models::Framework,
             models::ReportStatus,
-            models::GitHubMetadata,
             models::RegisterReportRequest,
             models::RegisterReportResponse,
             models::ReportSummary,
@@ -70,7 +69,6 @@ use crate::{api, error, models, services};
             // Jobs
             models::JobStatus,
             models::UploadStatus,
-            models::JobGitHubMetadata,
             models::EnvironmentMetadata,
             models::InitJobRequest,
             models::InitJobResponse,

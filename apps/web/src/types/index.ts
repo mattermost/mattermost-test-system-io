@@ -26,31 +26,6 @@ export interface AuthUser {
   role: string;
 }
 
-/** GitHub metadata stored with reports — field names match GitHub OIDC claims. */
-export interface GitHubMetadata {
-  sub?: string;
-  repository?: string;
-  repository_owner?: string;
-  repository_owner_id?: string;
-  repository_visibility?: string;
-  repository_id?: string;
-  actor?: string;
-  actor_id?: string;
-  ref?: string;
-  ref_type?: string;
-  sha?: string;
-  workflow?: string;
-  event_name?: string;
-  run_id?: string;
-  run_number?: string;
-  run_attempt?: string;
-  runner_environment?: string;
-  head_ref?: string;
-  base_ref?: string;
-  job_workflow_ref?: string;
-  pr_number?: number;
-}
-
 /** OIDC claims stored separately from report metadata (token-derived). */
 export interface ReportOidcClaims {
   sub?: string;
@@ -95,6 +70,12 @@ export interface TestStats {
   wall_clock_ms?: number;
 }
 
+/** Environment metadata — tool and server info for the test run. */
+export interface ReportEnvironmentMetadata {
+  tool?: Record<string, unknown>;
+  server?: Record<string, unknown>;
+}
+
 // New job-based report summary (current API)
 export interface ReportSummary {
   id: string;
@@ -104,8 +85,13 @@ export interface ReportSummary {
   expected_jobs: number;
   jobs_complete: number;
   test_stats?: TestStats;
-  github_metadata?: GitHubMetadata;
+  repository: string;
+  branch: string;
+  commit: string;
+  run_id: string;
+  pr_number?: number;
   oidc_claims?: ReportOidcClaims;
+  environment_metadata?: ReportEnvironmentMetadata;
   created_at: string;
 }
 
@@ -215,14 +201,15 @@ export interface JobEnvironment {
 
 export interface JobSummary {
   id: string;
+  short_id: string;
   github_job_id?: string;
   github_job_name?: string;
   display_name: string;
   status: JobStatus;
   html_url?: string;
   environment?: JobEnvironment;
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface ReportWithJobs {
@@ -230,10 +217,86 @@ export interface ReportWithJobs {
   framework: Framework;
   status: ReportStatus;
   expected_jobs: number;
-  github_metadata?: GitHubMetadata;
+  repository: string;
+  branch: string;
+  commit: string;
+  run_id: string;
+  pr_number?: number;
   oidc_claims?: ReportOidcClaims;
+  environment_metadata?: ReportEnvironmentMetadata;
   created_at: string;
   updated_at: string;
   jobs: JobSummary[];
   error_message?: string;
+}
+
+// --- Grouped Reports (landing page) ---
+
+export interface RunEntry {
+  report_id: string;
+  framework: Framework;
+  status: ReportStatus;
+  branch: string;
+  commit: string;
+  short_sha: string;
+  run_number?: string;
+  run_attempt?: string;
+  test_stats?: TestStats;
+  created_at: string;
+  url_path: string;
+}
+
+export interface RepositoryGroup {
+  repository: string;
+  repository_name: string;
+  latest_run_at: string;
+  runs: RunEntry[];
+}
+
+export interface GroupedReportsResponse {
+  groups: RepositoryGroup[];
+}
+
+// --- Consolidated Results (filtered view) ---
+
+export interface SpecHistoryEntry {
+  commit_sha: string;
+  run_attempt: number;
+  status: string;
+  duration_ms: number;
+  error_message?: string;
+  created_at: string;
+}
+
+export interface ConsolidatedSpec {
+  full_title: string;
+  status: string;
+  source_commit_sha: string;
+  source_run_attempt: number;
+  is_from_latest: boolean;
+  duration_ms: number;
+  error_message?: string;
+  history?: SpecHistoryEntry[];
+}
+
+export interface ConsolidatedFilters {
+  repository: string;
+  target_name: string;
+  commit_sha: string;
+  tool_name: string;
+}
+
+export interface ConsolidatedResultsResponse {
+  filters: ConsolidatedFilters;
+  overall_status: string;
+  total_specs: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  flaky: number;
+  contributing_reports: string[];
+  latest_commit_sha: string;
+  latest_run_attempt: number;
+  available_run_attempts: number[];
+  specs: ConsolidatedSpec[];
 }

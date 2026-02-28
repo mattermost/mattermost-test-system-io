@@ -10,9 +10,9 @@ use crate::auth::ApiKeyAuth;
 use crate::db::DbPool;
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    Framework, GitHubMetadata, JobGitHubMetadata, JobStatus, JobSummary, ListReportsQuery,
-    RegisterReportRequest, RegisterReportResponse, ReportDetailResponse, ReportListResponse,
-    ReportStatus, ReportSummary, WsEvent, WsEventMessage,
+    Framework, JobStatus, JobSummary, ListReportsQuery, RegisterReportRequest,
+    RegisterReportResponse, ReportDetailResponse, ReportListResponse, ReportStatus, ReportSummary,
+    WsEvent, WsEventMessage,
 };
 use crate::services::EventBroadcaster;
 
@@ -152,7 +152,7 @@ pub struct SearchResponse {
 
 /// Register a new test report.
 ///
-/// Creates a report with expected job count and optional GitHub metadata.
+/// Creates a report with expected job count and typed metadata columns.
 #[utoipa::path(
     post,
     path = "/reports",
@@ -182,22 +182,50 @@ pub async fn register_report(
 
     let req = body.into_inner();
 
-    // Validate expected_jobs range
+    // Validate required fields
     if req.expected_jobs < 1 || req.expected_jobs > 100 {
         return Err(AppError::InvalidInput(
             "expected_jobs must be between 1 and 100".to_string(),
         ));
     }
+    if req.repository.trim().is_empty() {
+        return Err(AppError::InvalidInput("repository is required".to_string()));
+    }
+    if req.branch.trim().is_empty() {
+        return Err(AppError::InvalidInput("branch is required".to_string()));
+    }
+    if req.commit.trim().is_empty() {
+        return Err(AppError::InvalidInput("commit is required".to_string()));
+    }
 
-    // Keep github_metadata from request body only — OIDC claims stored separately
-    let github_metadata = req.github_metadata;
+    // Validate pr_number for PR events (from OIDC claims)
+    let oidc = &auth.caller.oidc_claims;
+    if oidc.as_ref().and_then(|c| c.event_name.as_deref()) == Some("pull_request")
+        && req.pr_number.is_none()
+    {
+        return Err(AppError::InvalidInput(
+            "pr_number is required for pull_request events".to_string(),
+        ));
+    }
+
+    let run_id = req.run_id.as_deref().unwrap_or("");
 
     // Generate report ID (UUIDv7 for time-ordered sorting)
     let report_id = Uuid::now_v7();
 
-    // Insert report with JSONB github_metadata (caller-supplied only)
+    // Insert report with typed columns
     let report = pool
-        .insert_report(report_id, req.expected_jobs, req.framework, github_metadata)
+        .insert_report(crate::db::test_reports::InsertReportParams {
+            id: report_id,
+            expected_jobs: req.expected_jobs,
+            framework: req.framework,
+            repository: &req.repository,
+            branch: &req.branch,
+            commit: &req.commit,
+            run_id,
+            pr_number: req.pr_number,
+            environment_metadata: req.environment_metadata,
+        })
         .await?;
 
     // If authenticated via OIDC, store safe claims in separate table
@@ -284,13 +312,6 @@ pub async fn list_reports(
     let reports: Vec<ReportSummary> = reports
         .into_iter()
         .map(|r| {
-            let github_metadata = GitHubMetadata::from_json(r.github_metadata.as_ref());
-            let github_metadata = if github_metadata.is_empty() {
-                None
-            } else {
-                Some(github_metadata)
-            };
-
             // Extract short ID (first 13 chars of UUID - timestamp portion)
             let short_id = r.id.to_string()[..13].to_string();
 
@@ -302,6 +323,15 @@ pub async fn list_reports(
 
             let oidc_claims = oidc_claims_map.get(&r.id).cloned();
 
+            let environment_metadata = crate::models::report::ReportEnvironmentMetadata::from_json(
+                r.environment_metadata.as_ref(),
+            );
+            let environment_metadata = if environment_metadata.is_empty() {
+                None
+            } else {
+                Some(environment_metadata)
+            };
+
             ReportSummary {
                 id: r.id,
                 short_id,
@@ -310,8 +340,13 @@ pub async fn list_reports(
                 expected_jobs: r.expected_jobs,
                 jobs_complete: *jobs_complete_map.get(&r.id).unwrap_or(&0),
                 test_stats,
-                github_metadata,
+                repository: r.repository,
+                branch: r.branch,
+                commit: r.commit,
+                run_id: r.run_id,
+                pr_number: r.pr_number,
                 oidc_claims,
+                environment_metadata,
                 created_at: r.created_at,
             }
         })
@@ -385,9 +420,8 @@ pub async fn get_report_suites(
         .into_iter()
         .enumerate()
         .map(|(i, j)| {
-            let github_metadata = JobGitHubMetadata::from_json(j.github_metadata.as_ref());
-            let display_name = github_metadata
-                .job_name
+            let display_name = j
+                .github_job_name
                 .clone()
                 .unwrap_or_else(|| format!("Job {}", i + 1));
 
@@ -492,16 +526,10 @@ pub async fn get_report(pool: web::Data<DbPool>, path: web::Path<Uuid>) -> AppRe
         .into_iter()
         .enumerate()
         .map(|(i, j)| {
-            let github_metadata = JobGitHubMetadata::from_json(j.github_metadata.as_ref());
-            let display_name = github_metadata
-                .job_name
+            let display_name = j
+                .github_job_name
                 .clone()
                 .unwrap_or_else(|| format!("Job {}", i + 1));
-            let github_metadata = if github_metadata.is_empty() {
-                None
-            } else {
-                Some(github_metadata)
-            };
 
             // Get the actual HTML filename from uploaded files
             let html_url = j.html_path.and_then(|p| {
@@ -513,7 +541,8 @@ pub async fn get_report(pool: web::Data<DbPool>, path: web::Path<Uuid>) -> AppRe
             JobSummary {
                 id: j.id,
                 short_id: j.id.to_string()[..13].to_string(),
-                github_metadata,
+                github_job_id: j.github_job_id,
+                github_job_name: j.github_job_name,
                 display_name,
                 status: JobStatus::parse(&j.status).unwrap_or(JobStatus::Pending),
                 html_url,
@@ -521,25 +550,32 @@ pub async fn get_report(pool: web::Data<DbPool>, path: web::Path<Uuid>) -> AppRe
         })
         .collect();
 
-    // Parse GitHub metadata from JSONB
-    let github_metadata = GitHubMetadata::from_json(report.github_metadata.as_ref());
-    let github_metadata = if github_metadata.is_empty() {
-        None
-    } else {
-        Some(github_metadata)
-    };
-
     // Fetch OIDC claims for this report (if uploaded via OIDC)
     let oidc_claims =
         crate::db::report_oidc_claims::find_by_report_id(pool.connection(), report_id).await?;
+
+    // Parse environment metadata
+    let environment_metadata = crate::models::report::ReportEnvironmentMetadata::from_json(
+        report.environment_metadata.as_ref(),
+    );
+    let environment_metadata = if environment_metadata.is_empty() {
+        None
+    } else {
+        Some(environment_metadata)
+    };
 
     let response = ReportDetailResponse {
         id: report.id,
         framework: Framework::parse(&report.framework).unwrap_or(Framework::Playwright),
         status: ReportStatus::parse(&report.status).unwrap_or(ReportStatus::Initializing),
         expected_jobs: report.expected_jobs,
-        github_metadata,
+        repository: report.repository,
+        branch: report.branch,
+        commit: report.commit,
+        run_id: report.run_id,
+        pr_number: report.pr_number,
         oidc_claims,
+        environment_metadata,
         created_at: report.created_at,
         updated_at: report.updated_at,
         jobs: job_summaries,
@@ -854,6 +890,245 @@ fn extract_word_containing_match(text: &str, match_start: usize, match_len: usiz
     chars[word_start..word_end].iter().collect()
 }
 
+/// Get reports grouped by repository for the landing page.
+#[utoipa::path(
+    get,
+    path = "/reports/grouped",
+    tag = "Reports",
+    responses(
+        (status = 200, description = "Reports grouped by repository", body = crate::models::report::GroupedReportsResponse),
+    )
+)]
+pub async fn grouped_reports(pool: web::Data<DbPool>) -> AppResult<HttpResponse> {
+    use crate::models::report::{
+        Framework as Fw, GroupedReportsResponse, MAX_RUNS_PER_REPO, ReportStatus as Rs,
+        RepositoryGroup, RunEntry,
+    };
+    use std::collections::HashMap;
+
+    let reports = pool.list_all_reports_for_grouping().await?;
+
+    // Group by repository name (portion after '/')
+    let mut groups_map: HashMap<String, Vec<RunEntry>> = HashMap::new();
+    let mut group_latest: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
+    let mut group_full_repo: HashMap<String, String> = HashMap::new();
+
+    // Batch fetch test stats and OIDC claims for run_number/run_attempt
+    let report_ids: Vec<uuid::Uuid> = reports.iter().map(|r| r.id).collect();
+    let test_stats_map = pool.get_test_stats_by_report_ids(&report_ids).await?;
+    let oidc_claims_list =
+        crate::db::report_oidc_claims::find_by_report_ids(pool.connection(), &report_ids).await?;
+    let oidc_claims_map: std::collections::HashMap<uuid::Uuid, _> =
+        oidc_claims_list.into_iter().collect();
+
+    for r in &reports {
+        let full_repo = &r.repository;
+        let repo_name = full_repo
+            .rsplit('/')
+            .next()
+            .unwrap_or(full_repo)
+            .to_string();
+
+        if repo_name.is_empty() {
+            continue; // skip reports without repository
+        }
+
+        let branch = &r.branch;
+        let commit = &r.commit;
+        let short_sha = if commit.len() >= 7 {
+            commit[..7].to_string()
+        } else {
+            commit.clone()
+        };
+
+        let framework = Fw::parse(&r.framework).unwrap_or(Fw::Playwright);
+        let url_path = format!(
+            "/reports/{}/{}/{}/{}",
+            repo_name, branch, short_sha, framework
+        );
+
+        let test_stats = test_stats_map
+            .get(&r.id)
+            .cloned()
+            .and_then(|s| if s.total > 0 { Some(s) } else { None });
+
+        // Get run_number and run_attempt from OIDC claims (if available)
+        let oidc = oidc_claims_map.get(&r.id);
+        let run_number = oidc.and_then(|c| c.run_number.clone());
+        let run_attempt = oidc.and_then(|c| c.run_attempt.clone());
+
+        let entry = RunEntry {
+            report_id: r.id,
+            framework,
+            status: Rs::parse(&r.status).unwrap_or(Rs::Initializing),
+            branch: branch.clone(),
+            commit: commit.clone(),
+            short_sha,
+            run_number,
+            run_attempt,
+            test_stats,
+            created_at: r.created_at,
+            url_path,
+        };
+
+        let runs = groups_map.entry(repo_name.clone()).or_default();
+        if runs.len() < MAX_RUNS_PER_REPO {
+            runs.push(entry);
+        }
+
+        group_latest
+            .entry(repo_name.clone())
+            .and_modify(|latest| {
+                if r.created_at > *latest {
+                    *latest = r.created_at;
+                }
+            })
+            .or_insert(r.created_at);
+
+        group_full_repo
+            .entry(repo_name)
+            .or_insert(full_repo.clone());
+    }
+
+    // Build sorted groups
+    let mut groups: Vec<RepositoryGroup> = groups_map
+        .into_iter()
+        .map(|(repo_name, runs)| {
+            let latest = group_latest.get(&repo_name).copied().unwrap_or_default();
+            let full_repo = group_full_repo.get(&repo_name).cloned().unwrap_or_default();
+            RepositoryGroup {
+                repository: full_repo,
+                repository_name: repo_name,
+                latest_run_at: latest,
+                runs,
+            }
+        })
+        .collect();
+
+    groups.sort_by(|a, b| b.latest_run_at.cmp(&a.latest_run_at));
+
+    Ok(HttpResponse::Ok().json(GroupedReportsResponse { groups }))
+}
+
+/// Query parameters for the consolidated results endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub struct ConsolidatedQuery {
+    pub repository: String,
+    pub branch: String,
+    pub commit: String,
+    pub framework: String,
+    pub run_attempt: Option<i32>,
+}
+
+/// Get consolidated test results for a specific repo + branch + commit + tool.
+pub async fn consolidated_results(
+    pool: web::Data<DbPool>,
+    query: web::Query<ConsolidatedQuery>,
+) -> AppResult<HttpResponse> {
+    use crate::models::report::ConsolidatedFilters;
+    use crate::services::consolidation::{TestCaseInput, consolidate};
+
+    let q = query.into_inner();
+
+    // Validate commit length
+    if q.commit.len() < 7 {
+        return Err(AppError::InvalidInput(
+            "commit must be at least 7 characters".to_string(),
+        ));
+    }
+
+    // Check for commit ambiguity
+    let distinct_count = pool.count_distinct_commits(&q.commit).await?;
+    if distinct_count > 1 {
+        return Err(AppError::InvalidInput(format!(
+            "Ambiguous commit prefix '{}' matches {} distinct commits. Use the full 40-character SHA.",
+            q.commit, distinct_count
+        )));
+    }
+
+    // Build repository suffix filter (match name portion after '/')
+    let repo_filter = format!("%/{}", q.repository);
+
+    // Get matching reports
+    let list_query = crate::models::ListReportsQuery {
+        framework: crate::models::Framework::parse(&q.framework),
+        status: None,
+        repository: Some(repo_filter),
+        branch: Some(q.branch.clone()),
+        commit: Some(q.commit.clone()),
+        limit: 100,
+        offset: 0,
+    };
+    let (reports, _) = pool.list_reports(&list_query).await?;
+
+    if reports.is_empty() {
+        return Err(AppError::NotFound(
+            "No reports match the filter".to_string(),
+        ));
+    }
+
+    // Fetch OIDC claims for run_attempt info
+    let report_ids: Vec<uuid::Uuid> = reports.iter().map(|r| r.id).collect();
+    let oidc_claims_list =
+        crate::db::report_oidc_claims::find_by_report_ids(pool.connection(), &report_ids).await?;
+    let oidc_claims_map: std::collections::HashMap<uuid::Uuid, _> =
+        oidc_claims_list.into_iter().collect();
+
+    // Get test cases from all matching reports
+    let mut inputs: Vec<TestCaseInput> = Vec::new();
+
+    for report in &reports {
+        let commit_sha = report.commit.clone();
+        let report_run_attempt: i32 = oidc_claims_map
+            .get(&report.id)
+            .and_then(|c| c.run_attempt.as_deref())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+
+        // If run_attempt filter is set, skip reports that don't match
+        if let Some(pinned) = q.run_attempt
+            && report_run_attempt != pinned
+        {
+            continue;
+        }
+
+        // Get jobs for this report
+        let jobs = pool.get_jobs_by_report_id(report.id).await?;
+        for job in &jobs {
+            // Get test cases for this job's suites
+            let suites = pool.get_test_suites_by_report_id(report.id).await?;
+            for suite in &suites {
+                if suite.test_job_id != job.id {
+                    continue;
+                }
+                let cases = pool.get_test_cases_by_suite_id(suite.id).await?;
+                for tc in cases {
+                    inputs.push(TestCaseInput {
+                        report_id: report.id,
+                        full_title: tc.full_title,
+                        status: tc.status,
+                        duration_ms: tc.duration_ms,
+                        error_message: tc.error_message,
+                        commit_sha: commit_sha.clone(),
+                        run_attempt: report_run_attempt,
+                        created_at: tc.created_at,
+                    });
+                }
+            }
+        }
+    }
+
+    let filters = ConsolidatedFilters {
+        repository: q.repository,
+        target_name: q.branch,
+        commit_sha: q.commit,
+        tool_name: q.framework,
+    };
+
+    let result = consolidate(inputs, filters);
+    Ok(HttpResponse::Ok().json(result))
+}
+
 /// Configure report routes.
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -861,6 +1136,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             .route(web::get().to(list_reports))
             .route(web::post().to(register_report)),
     )
+    .service(web::resource("/reports/grouped").route(web::get().to(grouped_reports)))
+    .service(web::resource("/reports/consolidated").route(web::get().to(consolidated_results)))
     .service(web::resource("/reports/{report_id}").route(web::get().to(get_report)))
     .service(web::resource("/reports/{report_id}/suites").route(web::get().to(get_report_suites)))
     .service(

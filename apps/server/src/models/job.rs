@@ -6,37 +6,6 @@ use serde_json::Value as JsonValue;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// GitHub metadata for jobs (stored as JSONB).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
-pub struct JobGitHubMetadata {
-    /// GitHub Actions job ID (for idempotency).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub job_id: Option<String>,
-    /// Human-readable job name for UI display.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub job_name: Option<String>,
-}
-
-impl JobGitHubMetadata {
-    pub fn is_empty(&self) -> bool {
-        self.job_id.is_none() && self.job_name.is_none()
-    }
-
-    pub fn to_json(&self) -> Option<JsonValue> {
-        if self.is_empty() {
-            None
-        } else {
-            serde_json::to_value(self).ok()
-        }
-    }
-
-    pub fn from_json(value: Option<&JsonValue>) -> Self {
-        value
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default()
-    }
-}
-
 /// Environment metadata for jobs (stored as JSONB).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct EnvironmentMetadata {
@@ -162,9 +131,12 @@ pub struct RejectedFile {
 /// Request to initialize a new job (without files).
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct InitJobRequest {
-    /// GitHub metadata (job_id, job_name).
+    /// GitHub Actions job ID (for idempotency).
     #[serde(default)]
-    pub github_metadata: Option<JobGitHubMetadata>,
+    pub github_job_id: Option<String>,
+    /// Human-readable job name for UI display.
+    #[serde(default)]
+    pub github_job_name: Option<String>,
     /// Environment metadata.
     #[serde(default)]
     pub environment: Option<EnvironmentMetadata>,
@@ -287,9 +259,12 @@ pub struct JobSummary {
     pub id: Uuid,
     /// Short ID for display (timestamp portion of UUIDv7).
     pub short_id: String,
-    /// GitHub metadata (job_id, job_name).
+    /// GitHub Actions job ID.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_metadata: Option<JobGitHubMetadata>,
+    pub github_job_id: Option<String>,
+    /// GitHub Actions job name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_job_name: Option<String>,
     /// UI display name (github_job_name or "Job N").
     pub display_name: String,
     /// Job status.
@@ -306,9 +281,12 @@ pub struct JobDetailResponse {
     pub id: Uuid,
     /// Report UUID.
     pub report_id: Uuid,
-    /// GitHub metadata (job_id, job_name).
+    /// GitHub Actions job ID.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_metadata: Option<JobGitHubMetadata>,
+    pub github_job_id: Option<String>,
+    /// GitHub Actions job name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_job_name: Option<String>,
     /// Job status.
     pub status: JobStatus,
     /// URL to view HTML report.

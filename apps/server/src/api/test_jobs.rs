@@ -15,9 +15,9 @@ use crate::models::{
     AcceptedHtmlFile, AcceptedJsonFile, AcceptedScreenshot, EnvironmentMetadata,
     HtmlUploadProgress, HtmlUploadResponse, InitHtmlRequest, InitHtmlResponse, InitJobRequest,
     InitJobResponse, InitJsonRequest, InitJsonResponse, InitScreenshotsRequest,
-    InitScreenshotsResponse, JobDetailResponse, JobGitHubMetadata, JobListResponse, JobStatus,
-    JsonUploadProgress, JsonUploadResponse, QueryJobsParams, RejectedFile, ReportStatus,
-    ScreenshotUploadResponse, WsEvent, WsEventMessage,
+    InitScreenshotsResponse, JobDetailResponse, JobListResponse, JobStatus, JsonUploadProgress,
+    JsonUploadResponse, QueryJobsParams, RejectedFile, ReportStatus, ScreenshotUploadResponse,
+    WsEvent, WsEventMessage,
 };
 use crate::services::extraction;
 use crate::services::{EventBroadcaster, Storage};
@@ -182,8 +182,7 @@ pub async fn init_job(
         .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
 
     // Check for existing job with same github_job_id (idempotency)
-    let github_job_id = req.github_metadata.as_ref().and_then(|m| m.job_id.as_ref());
-    if let Some(github_job_id) = github_job_id
+    if let Some(ref github_job_id) = req.github_job_id
         && let Some(existing_job) = pool.find_job_by_github_id(report_id, github_job_id).await?
     {
         info!(
@@ -203,15 +202,13 @@ pub async fn init_job(
     let job_id = Uuid::now_v7();
 
     // Insert job with Pending status
-    let github_job_name = req
-        .github_metadata
-        .as_ref()
-        .and_then(|m| m.job_name.clone());
+    let github_job_name = req.github_job_name.clone();
     let _job = pool
         .insert_job(
             job_id,
             report_id,
-            req.github_metadata.clone(),
+            req.github_job_id.clone(),
+            req.github_job_name.clone(),
             req.environment.clone(),
             JobStatus::Pending,
         )
@@ -443,20 +440,14 @@ pub async fn query_jobs(
     let jobs_response: Vec<JobDetailResponse> = jobs
         .into_iter()
         .map(|j| {
-            let github_metadata = JobGitHubMetadata::from_json(j.github_metadata.as_ref());
-            let github_metadata = if github_metadata.is_empty() {
-                None
-            } else {
-                Some(github_metadata)
-            };
-
             let env = EnvironmentMetadata::from_json(j.environment.as_ref());
             let env = if env.is_empty() { None } else { Some(env) };
 
             JobDetailResponse {
                 id: j.id,
                 report_id: j.test_report_id,
-                github_metadata,
+                github_job_id: j.github_job_id,
+                github_job_name: j.github_job_name,
                 status: JobStatus::parse(&j.status).unwrap_or(JobStatus::Pending),
                 html_url: j.html_path.map(|p| format!("/files/{}/index.html", p)),
                 environment: env,
@@ -509,20 +500,14 @@ pub async fn get_job(
         )));
     }
 
-    let github_metadata = JobGitHubMetadata::from_json(job.github_metadata.as_ref());
-    let github_metadata = if github_metadata.is_empty() {
-        None
-    } else {
-        Some(github_metadata)
-    };
-
     let env = EnvironmentMetadata::from_json(job.environment.as_ref());
     let env = if env.is_empty() { None } else { Some(env) };
 
     let response = JobDetailResponse {
         id: job.id,
         report_id: job.test_report_id,
-        github_metadata,
+        github_job_id: job.github_job_id,
+        github_job_name: job.github_job_name,
         status: JobStatus::parse(&job.status).unwrap_or(JobStatus::Pending),
         html_url: job.html_path.map(|p| format!("/files/{}/index.html", p)),
         environment: env,

@@ -2,6 +2,7 @@
 
 pub mod api_key;
 pub mod auth_admin;
+pub mod consolidation;
 pub mod event_broadcaster;
 pub mod extraction;
 pub mod github_oauth;

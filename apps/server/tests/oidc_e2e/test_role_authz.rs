@@ -15,7 +15,7 @@ async fn test_no_matching_policy_rejected() {
     let claims =
         TestOidcClaims::default_for(&mock.issuer_url).with_repository("unknown-org/unknown-repo");
     let token = mock.issue_token(&claims, &key);
-    let (status, _) = upload_report_with_token(&app, &token, None).await;
+    let (status, _) = upload_report_with_token(&app, &token, "unknown-org/unknown-repo").await;
 
     // Should fail — no policy matches
     assert!(
@@ -45,7 +45,8 @@ async fn test_viewer_role_read_only() {
     assert_eq!(list_status, 200, "Viewer should be able to list reports");
 
     // Write should be denied (viewer can't upload)
-    let (upload_status, _) = upload_report_with_token(&app, &token, None).await;
+    let (upload_status, _) =
+        upload_report_with_token(&app, &token, &format!("{org}/some-repo")).await;
     assert!(
         upload_status == 401 || upload_status == 403,
         "Viewer should not be able to upload: got {}",
@@ -76,7 +77,8 @@ async fn test_contributor_role_full_access() {
     );
 
     // Upload should succeed
-    let (upload_status, body) = upload_report_with_token(&app, &token, None).await;
+    let (upload_status, body) =
+        upload_report_with_token(&app, &token, &format!("{org}/test-repo")).await;
     assert_eq!(
         upload_status, 201,
         "Contributor should be able to upload: {:?}",

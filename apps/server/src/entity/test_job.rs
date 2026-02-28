@@ -17,8 +17,8 @@ pub struct Model {
     /// JSON upload status: NULL, started, completed, failed, timedout
     pub json_upload_status: Option<String>,
     pub html_path: Option<String>,
-    #[sea_orm(column_type = "JsonBinary", nullable)]
-    pub github_metadata: Option<JsonValue>,
+    pub github_job_id: Option<String>,
+    pub github_job_name: Option<String>,
     #[sea_orm(column_type = "JsonBinary", nullable)]
     pub environment: Option<JsonValue>,
     pub error_message: Option<String>,

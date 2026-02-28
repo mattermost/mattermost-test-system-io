@@ -34,10 +34,11 @@ impl MigrationTrait for Migration {
                     -- S3 path prefix for HTML report files
                     html_path VARCHAR(500),
 
-                    -- Metadata as JSONB (flexible schema)
-                    -- github_metadata: {job_id, job_name}
-                    -- environment: {os, browser, device, tags}
-                    github_metadata JSONB,
+                    -- GitHub job metadata (typed columns)
+                    github_job_id VARCHAR(100),
+                    github_job_name VARCHAR(255),
+
+                    -- Environment metadata as JSONB
                     environment JSONB,
 
                     -- Extracted stats from JSON files
@@ -65,9 +66,9 @@ impl MigrationTrait for Migration {
                     WHERE deleted_at IS NULL;
 
                 -- Unique index for GitHub job idempotency (active jobs only)
-                -- Prevents duplicate uploads for the same github job_id within a report
-                CREATE UNIQUE INDEX idx_test_jobs_github_job ON test_jobs(test_report_id, (github_metadata->>'job_id'))
-                    WHERE github_metadata->>'job_id' IS NOT NULL AND deleted_at IS NULL;
+                -- Prevents duplicate uploads for the same github_job_id within a report
+                CREATE UNIQUE INDEX idx_test_jobs_github_job ON test_jobs(test_report_id, github_job_id)
+                    WHERE github_job_id IS NOT NULL AND deleted_at IS NULL;
 
                 -- Trigger to update updated_at
                 CREATE TRIGGER update_test_jobs_updated_at

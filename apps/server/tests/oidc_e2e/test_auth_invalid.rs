@@ -18,7 +18,7 @@ async fn test_expired_token_rejected() {
         .with_repository(&format!("{org}/test-repo"))
         .expired();
     let token = mock.issue_token(&claims, &key);
-    let (status, _) = upload_report_with_token(&app, &token, None).await;
+    let (status, _) = upload_report_with_token(&app, &token, &format!("{org}/test-repo")).await;
 
     assert_eq!(status, 401, "Expired token should be rejected");
 }
@@ -38,7 +38,7 @@ async fn test_bad_signature_rejected() {
     let claims =
         TestOidcClaims::default_for(&mock.issuer_url).with_repository(&format!("{org}/test-repo"));
     let token = mock.issue_token(&claims, &unknown_key);
-    let (status, _) = upload_report_with_token(&app, &token, None).await;
+    let (status, _) = upload_report_with_token(&app, &token, &format!("{org}/test-repo")).await;
 
     assert_eq!(
         status, 401,
@@ -90,7 +90,7 @@ async fn test_audience_mismatch_rejected() {
         .with_repository(&format!("{org}/test-repo"))
         .with_audience("wrong-audience");
     let token = mock.issue_token(&claims, &key);
-    let (status, _) = upload_report_with_token(&app, &token, None).await;
+    let (status, _) = upload_report_with_token(&app, &token, &format!("{org}/test-repo")).await;
 
     assert_eq!(status, 401, "Token with wrong audience should be rejected");
 }
@@ -111,7 +111,7 @@ async fn test_issuer_mismatch_rejected() {
         .with_repository(&format!("{org}/test-repo"))
         .with_issuer("https://evil-issuer.example.com");
     let token = mock.issue_token(&claims, &key);
-    let (status, _) = upload_report_with_token(&app, &token, None).await;
+    let (status, _) = upload_report_with_token(&app, &token, &format!("{org}/test-repo")).await;
 
     assert_eq!(status, 401, "Token with wrong issuer should be rejected");
 }

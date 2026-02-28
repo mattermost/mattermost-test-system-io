@@ -144,11 +144,8 @@ where
 }
 
 /// Upload a report using an OIDC Bearer token.
-pub async fn upload_report_with_token<S>(
-    app: &S,
-    token: &str,
-    github_metadata: Option<Value>,
-) -> (u16, Value)
+/// Uses the org from the OIDC claims repo pattern as the repository.
+pub async fn upload_report_with_token<S>(app: &S, token: &str, repo: &str) -> (u16, Value)
 where
     S: actix_web::dev::Service<
             actix_http::Request,
@@ -156,13 +153,13 @@ where
             Error = actix_web::Error,
         >,
 {
-    let mut body = serde_json::json!({
+    let body = serde_json::json!({
         "expected_jobs": 1,
         "framework": "playwright",
+        "repository": repo,
+        "branch": "main",
+        "commit": format!("{}abcdef1234567890", Uuid::new_v4().to_string().split('-').next().unwrap()),
     });
-    if let Some(meta) = github_metadata {
-        body["github_metadata"] = meta;
-    }
 
     let req = test::TestRequest::post()
         .uri("/api/v1/reports")

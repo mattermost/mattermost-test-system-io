@@ -94,7 +94,7 @@ export const ReportCard = memo(function ReportCard({
 
         {/* Column 2: Repo + PR */}
         <div className="flex-1 min-w-0 text-center">
-          {report.github_metadata && <GitMetadataMobile metadata={report.github_metadata} />}
+          {report.repository && <GitMetadataMobile report={report} />}
         </div>
 
         {/* Column 3: Results + Pass Rate + Arrow */}
@@ -196,10 +196,7 @@ export const ReportCard = memo(function ReportCard({
           </div>
 
           {/* Git context */}
-          {report.github_metadata &&
-            (report.github_metadata.repository || report.github_metadata.pr_number) && (
-              <GitMetadataDesktop metadata={report.github_metadata} />
-            )}
+          {(report.repository || report.pr_number) && <GitMetadataDesktop report={report} />}
         </div>
 
         {/* Right section */}

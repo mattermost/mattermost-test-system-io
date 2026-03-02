@@ -2,14 +2,13 @@
 
 pub mod api_keys;
 pub mod github_oidc_policies;
-pub mod html_files;
 pub mod json_files;
+pub mod oidc_claims;
 pub mod refresh_tokens;
-pub mod report_oidc_claims;
+pub mod report_groups;
+pub mod reports;
+pub mod results;
 pub mod screenshots;
-pub mod test_jobs;
-pub mod test_reports;
-pub mod test_results;
 pub mod users;
 
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};

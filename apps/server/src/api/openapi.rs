@@ -10,7 +10,7 @@ use crate::{api, error, models, services};
     info(
         title = "Mattermost Test System IO",
         version = "0.2.0",
-        description = "API server for uploading and viewing test reports (Playwright, Cypress, Detox) with job-based artifact upload"
+        description = "API server for uploading and viewing test reports (Playwright, Cypress, Detox)"
     ),
     servers(
         (url = "/", description = "Local server")
@@ -21,27 +21,13 @@ use crate::{api, error, models, services};
         api::health::ready,
         api::health::info,
         // Report endpoints
-        api::test_reports::register_report,
-        api::test_reports::list_reports,
-        api::test_reports::get_report,
-        // Job endpoints
-        api::test_jobs::init_job,
-        api::test_jobs::init_html,
-        api::test_jobs::upload_html,
-        api::test_jobs::get_html_progress,
-        api::test_jobs::init_screenshots,
-        api::test_jobs::upload_screenshots,
-        api::test_jobs::init_json,
-        api::test_jobs::upload_json,
-        api::test_jobs::get_json_progress,
-        api::test_jobs::query_jobs,
-        api::test_jobs::get_job,
-        // Test results endpoints
-        api::test_results::query_test_suites,
-        api::test_results::query_test_cases,
-        api::test_results::get_job_test_suites,
-        api::test_results::get_job_test_cases,
-        api::test_results::get_suite_test_cases,
+        api::reports::get_report,
+        api::reports::begin,
+        api::reports::complete,
+        // Report upload endpoints
+        api::register::register_report,
+        api::register::upload_screenshots,
+        api::register::upload_json,
         // Auth endpoints
         services::auth_admin::create_api_key,
         services::auth_admin::list_api_keys,
@@ -60,41 +46,24 @@ use crate::{api, error, models, services};
             // Reports
             models::Framework,
             models::ReportStatus,
-            models::RegisterReportRequest,
-            models::RegisterReportResponse,
             models::ReportSummary,
-            models::ReportListResponse,
             models::ReportDetailResponse,
-            models::ListReportsQuery,
-            // Jobs
-            models::JobStatus,
+            // Uploads
             models::UploadStatus,
             models::EnvironmentMetadata,
-            models::InitJobRequest,
-            models::InitJobResponse,
-            models::HtmlFileToUpload,
-            models::InitHtmlRequest,
-            models::InitHtmlResponse,
-            models::AcceptedHtmlFile,
-            models::HtmlUploadResponse,
-            models::HtmlUploadProgress,
+            models::RegisterReportRequest,
+            models::RegisterReportResponse,
             models::RejectedFile,
-            models::JobStatusResponse,
-            models::JobSummary,
-            models::JobDetailResponse,
-            models::JobListResponse,
-            models::QueryJobsParams,
+            models::UploadSummary,
             models::ScreenshotToUpload,
-            models::InitScreenshotsRequest,
-            models::InitScreenshotsResponse,
             models::AcceptedScreenshot,
             models::ScreenshotUploadResponse,
             models::JsonFileToUpload,
-            models::InitJsonRequest,
-            models::InitJsonResponse,
             models::AcceptedJsonFile,
             models::JsonUploadResponse,
-            models::JsonUploadProgress,
+            models::ReportGroupingRequest,
+            models::BeginResponse,
+            models::CompleteResponse,
             // Auth
             models::ApiKeyRole,
             models::ApiKeyCreateResponse,
@@ -103,18 +72,11 @@ use crate::{api, error, models, services};
             services::auth_admin::ListApiKeysResponse,
             services::auth_admin::RevokeApiKeyResponse,
             services::auth_admin::RestoreApiKeyResponse,
-            // Test Results
-            api::test_results::TestSuiteResponse,
-            api::test_results::TestCaseResponse,
-            api::test_results::TestSuitesListResponse,
-            api::test_results::TestCasesListResponse,
         )
     ),
     tags(
         (name = "Health", description = "Health check endpoints"),
-        (name = "Reports", description = "Report registration and management"),
-        (name = "Jobs", description = "Job initialization and uploads"),
-        (name = "Test Results", description = "Query test suites and test cases"),
+        (name = "Reports", description = "Report management and uploads"),
         (name = "Auth", description = "API key management")
     ),
     modifiers(&SecurityAddon, &VersionFromCargo)

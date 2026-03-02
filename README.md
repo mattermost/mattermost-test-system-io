@@ -37,8 +37,7 @@ Base path: `/api/v1` | Auth: `X-API-Key` header
 | `POST /reports` | Create report |
 | `GET /reports/{id}` | Report details |
 | `GET /reports/{id}/suites` | Test suites |
-| `POST /reports/{id}/jobs/init` | Initialize job |
-| `GET /jobs` | Query jobs |
+| `POST /reports/register` | Register report |
 | `GET /ws` | WebSocket for real-time updates |
 
 ## Environments

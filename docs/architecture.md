@@ -193,7 +193,7 @@ Files are stored in S3 with the following key structure:
 | `{report_id}/mochawesome.html` | Cypress HTML report |
 | `{report_id}/all.json` | Cypress test results |
 | `{report_id}/screenshots/` | Cypress screenshots |
-| `{report_id}/{job}/` | Detox job folders |
+| `{report_id}/{report}/` | Detox report folders |
 
 ### Storage Behavior
 
@@ -398,7 +398,7 @@ The database uses SeaORM migrations. Schema is organized into the following tabl
 
 | Table | Purpose |
 |-------|---------|
-| `detox_jobs` | Detox job metadata with stats |
+| `detox_jobs` | Detox report metadata with stats |
 | `detox_screenshots` | Screenshot references for Detox tests |
 
 ### System Tables

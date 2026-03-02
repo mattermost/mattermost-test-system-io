@@ -238,8 +238,6 @@ async fn main() -> std::io::Result<()> {
                 web::scope("/api/v1")
                     .configure(api::configure_health_routes)
                     .configure(api::configure_report_routes)
-                    .configure(api::configure_job_routes)
-                    .configure(api::configure_test_results_routes)
                     .configure(api::configure_websocket_routes)
                     .configure(services::configure_auth_routes)
                     .configure(services::configure_oauth_routes)

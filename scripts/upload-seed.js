@@ -1,21 +1,43 @@
 #!/usr/bin/env node
 /**
- * Upload seed data to the report server using the new job-based API.
+ * Upload seed data to the report server using the stateless API.
+ *
+ * NEW API flow (per report):
+ *   beginReport() -> for each shard: registerReport() -> uploadJson() -> completeReport()
+ *
+ * Authentication: Uses mock OIDC (Bearer tokens) by default. Each shard gets its
+ * own signed JWT with a unique `check_run_id` claim, replicating how GitHub
+ * Actions OIDC works in production.
+ *
+ * Prerequisites:
+ *   The API server must be started with OIDC enabled and pointing at the mock
+ *   JWKS server this script starts on port 9090:
+ *
+ *     TSIO_GITHUB_OIDC_ENABLED=true \
+ *     TSIO_GITHUB_OIDC_ISSUER=http://localhost:9090 \
+ *     make dev
  *
  * Usage:
- *   node scripts/upload-seed.js                     # Upload all default seed directories
- *   node scripts/upload-seed.js seed/pw-report-smoke  # Upload specific report directory
+ *   node scripts/upload-seed.js                          # Upload all seed dirs (branch=main)
+ *   node scripts/upload-seed.js --branch main            # Upload all seed dirs for branch "main"
+ *   node scripts/upload-seed.js --branch release-9.11    # Upload all seed dirs for release branch
+ *   node scripts/upload-seed.js --branch pr-1234         # Upload all seed dirs for a pull request
+ *   node scripts/upload-seed.js --branch master           # Upload all seed dirs for "master"
+ *   node scripts/upload-seed.js --incomplete              # Skip last shard + don't complete (in_progress)
+ *   node scripts/upload-seed.js --commit <sha>            # Rerun on an existing commit (new run ID)
+ *   node scripts/upload-seed.js --image <docker-image>   # Set server image in environment metadata
+ *   node scripts/upload-seed.js --name playwright-enterprise  # Use custom report name (default: framework)
+ *   node scripts/upload-seed.js seed/cypress-ci cypress   # Upload specific seed dir + framework
+ *
+ * Each invocation generates a unique commit SHA and run ID so the script can
+ * be run multiple times to populate different reports.
  *
  * Environment variables:
- *   API_BASE - Base URL (default: http://localhost:8080/api/v1)
- *   TSIO_API_KEY - API key for authentication
- *   TSIO_ADMIN_KEY - Admin key fallback (default: dev-admin-key-do-not-use-in-production)
- *   BATCH_SIZE - Number of files per upload batch (default: 50)
- *
- * Framework-specific folder structures:
- *   Cypress:    job/html/, job/screenshots/, job/json/ (folder with JSON files)
- *   Playwright: job/html/, job/screenshots/, job/json/results.json (single file)
- *   Detox:      job/html/, job/screenshots/, job/json/android-data.json (single file)
+ *   API_BASE       - Base URL (default: http://localhost:8080/api/v1)
+ *   TSIO_API_KEY   - API key for authentication (falls back to admin key)
+ *   TSIO_ADMIN_KEY - Admin key for OIDC policy setup (default: dev-admin-key-do-not-use-in-production)
+ *   BATCH_SIZE     - Number of files per upload batch (default: 50)
+ *   MOCK_OIDC_PORT - Port for mock JWKS server (default: 9090)
  */
 
 const fs = require("fs");
@@ -30,116 +52,291 @@ const API_KEY = process.env.TSIO_API_KEY;
 const ADMIN_KEY =
   process.env.TSIO_ADMIN_KEY || "dev-admin-key-do-not-use-in-production";
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "50", 10);
+const MOCK_OIDC_PORT = parseInt(process.env.MOCK_OIDC_PORT || "9090", 10);
 
-// Sample data for random generation
-const OWNERS = [
-  "acme-corp",
-  "test-org",
-  "my-company",
-  "dev-team",
-  "qa-automation",
-];
-const REPOS = {
-  playwright: "repo-web",
-  cypress: "repo-web",
-  detox: "repo-mobile",
+/**
+ * Parse --branch argument from CLI args.
+ * Accepted formats: main, master, release-*, pr-<number>
+ * Returns OIDC-compatible claim values.
+ *
+ * For branches: ref=refs/heads/<branch>, head_ref/base_ref unset
+ * For PRs:      ref=refs/pull/<n>/merge, head_ref=<generated>, base_ref=main
+ */
+function parseBranchArg(args) {
+  let branch = "main"; // default
+  const branchIdx = args.indexOf("--branch");
+  if (branchIdx !== -1 && branchIdx + 1 < args.length) {
+    branch = args[branchIdx + 1];
+  }
+
+  const prMatch = branch.match(/^pr-(\d+)$/);
+  if (prMatch) {
+    return {
+      branch,
+      ref: `refs/pull/${prMatch[1]}/merge`,
+      head_ref: `refs/heads/pr-${prMatch[1]}-branch`,
+      base_ref: "refs/heads/main",
+      ref_type: "branch",
+      event_name: "pull_request",
+      pr_number: prMatch[1],
+    };
+  }
+
+  return {
+    branch,
+    ref: `refs/heads/${branch}`,
+    head_ref: null,
+    base_ref: null,
+    ref_type: "branch",
+    event_name: "push",
+    pr_number: null,
+  };
+}
+
+/**
+ * Generate a random 40-char hex commit SHA.
+ */
+function generateCommitSha() {
+  return crypto.randomBytes(20).toString("hex");
+}
+
+/**
+ * Generate a numeric run ID (mimics GitHub Actions run_id).
+ * Produces a 14-digit number starting with "2423" that increments on each call,
+ * based on epoch time so successive script invocations yield ascending IDs.
+ */
+let _runIdCounter = 0;
+function generateRunId() {
+  const epochMs = Date.now() + _runIdCounter++;
+  // "2423" prefix + last 10 digits of epoch ms = 14-digit realistic run ID
+  return `2423${epochMs.toString().slice(-10)}`;
+}
+
+/**
+ * Parse --commit argument from CLI args.
+ * If provided, reuses the given SHA; otherwise generates a random one.
+ */
+function parseCommitArg(args) {
+  const idx = args.indexOf("--commit");
+  if (idx !== -1 && idx + 1 < args.length) {
+    return args[idx + 1];
+  }
+  return null;
+}
+
+/**
+ * Parse --image argument from CLI args.
+ * If provided, sets the server image in environment metadata.
+ */
+function parseImageArg(args) {
+  const idx = args.indexOf("--image");
+  if (idx !== -1 && idx + 1 < args.length) {
+    return args[idx + 1];
+  }
+  return null;
+}
+
+/**
+ * Parse --name argument from CLI args.
+ * If provided, uses the given name for report grouping.
+ * Defaults to framework value when not provided.
+ */
+function parseNameArg(args) {
+  const idx = args.indexOf("--name");
+  if (idx !== -1 && idx + 1 < args.length) {
+    return args[idx + 1];
+  }
+  return null;
+}
+
+// Dynamic seed context (unique per invocation)
+const SEED_BRANCH_INFO = parseBranchArg(process.argv.slice(2));
+const SEED_IMAGE = parseImageArg(process.argv.slice(2));
+const SEED_NAME = parseNameArg(process.argv.slice(2));
+const SEED_CONTEXT = {
+  repository: "mattermost/mattermost",
+  commit: parseCommitArg(process.argv.slice(2)) || generateCommitSha(),
+  gh_run_id: generateRunId(),
 };
-const BRANCHES = [
-  "main",
-  "develop",
-  "feature/auth",
-  "feature/dashboard",
-  "fix/login-bug",
-  "release/v2.0",
-  "hotfix/security",
-];
-const AUTHORS = [
-  "john-doe",
-  "jane-smith",
-  "bob-wilson",
-  "alice-johnson",
-  "dev-bot",
+
+// Default seed configurations matching actual seed/ directory structure.
+// The name is a constant user-defined identifier for the test configuration
+// (tool + scope + edition). It does not change per branch or PR.
+const seedConfigs = [
+  { dir: "seed/cypress-ci", framework: "cypress", name: "cypress-full-enterprise" },
+  { dir: "seed/playwright-ci", framework: "playwright", name: "playwright-full-enterprise" },
 ];
 
-// Files/directories to exclude from HTML uploads
+// Files/directories to exclude from uploads
 const EXCLUDE_PATTERNS = [".DS_Store"];
 const VIDEO_EXTENSIONS = [".mp4", ".webm", ".avi", ".mov", ".mkv"];
 
 // Allowed image extensions for screenshot uploads
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 
-// Framework-specific JSON file/folder patterns
-// Cypress: json/ folder with JSON files (mochawesome format)
-// Playwright: json/results.json file
-// Detox: json/android-data.json or json/ios-data.json file
-const JSON_PATTERNS = {
-  playwright: { type: "folder", patterns: ["json"] },
-  cypress: { type: "folder", patterns: ["json"] },
-  detox: { type: "folder", patterns: ["json"] },
-};
-
-// Framework-specific HTML entry file patterns
-const HTML_ENTRY_PATTERNS = {
-  playwright: ["index.html"],
-  cypress: ["index.html", "mochawesome.html"],
-  detox: ["android-report.html", "ios-report.html", "index.html"],
-};
+// ── Mock OIDC Provider ───────────────────────────────────────────────────────
 
 /**
- * Generate random hex string.
+ * Minimal JWT signer using Node.js built-in crypto (no external dependencies).
  */
-function generateHex(length) {
-  return crypto
-    .randomBytes(Math.ceil(length / 2))
-    .toString("hex")
-    .slice(0, length);
+function base64url(input) {
+  const buf = typeof input === "string" ? Buffer.from(input) : input;
+  return buf.toString("base64url");
+}
+
+function signJwt(payload, privateKey, kid) {
+  const header = { alg: "RS256", typ: "JWT", kid };
+  const headerB64 = base64url(JSON.stringify(header));
+  const payloadB64 = base64url(JSON.stringify(payload));
+  const signingInput = `${headerB64}.${payloadB64}`;
+  const signature = crypto.sign("sha256", Buffer.from(signingInput), privateKey);
+  return `${signingInput}.${base64url(signature)}`;
 }
 
 /**
- * Pick random element from array.
+ * Mock OIDC provider that starts a local JWKS server and issues signed JWTs.
+ *
+ * Mirrors the Rust MockOidcProvider in apps/server/tests/oidc_e2e/mock_oidc_provider.rs
+ * but implemented with Node.js built-in crypto for the seed script.
  */
-function randomChoice(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-/**
- * Generate random integer in range [min, max].
- */
-function randomInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-/**
- * Generate random GitHub context.
- */
-function generateGitHubContext(framework) {
-  const owner = randomChoice(OWNERS);
-  const repo = REPOS[framework] || "repo-web";
-  const branch = randomChoice(BRANCHES);
-
-  const context = {
-    repo: `${owner}/${repo}`,
-    branch,
-    commit: generateHex(40),
-    run_id: Date.now(),
-    run_attempt: randomInt(1, 3),
-  };
-
-  // Add PR info for non-main branches
-  if (
-    branch !== "main" &&
-    branch !== "develop" &&
-    !branch.startsWith("release/")
-  ) {
-    context.pr_number = randomInt(100, 9999);
-    context.pr_author = randomChoice(AUTHORS);
+class MockOidcProvider {
+  constructor() {
+    this.kid = "seed-key-1";
+    this.port = MOCK_OIDC_PORT;
+    this.issuer = `http://localhost:${this.port}`;
+    this.server = null;
+    this.publicKey = null;
+    this.privateKey = null;
   }
 
-  return context;
+  /**
+   * Load or generate RSA key pair and start the JWKS HTTP server.
+   * Keys are persisted to .oidc-keys.json so the server's JWKS cache
+   * stays valid across multiple seed script invocations.
+   */
+  async start() {
+    const keysPath = path.join(__dirname, ".oidc-keys.json");
+    let publicKey, privateKey;
+
+    if (fs.existsSync(keysPath)) {
+      const saved = JSON.parse(fs.readFileSync(keysPath, "utf-8"));
+      publicKey = crypto.createPublicKey({ key: saved.public, format: "pem" });
+      privateKey = crypto.createPrivateKey({ key: saved.private, format: "pem" });
+      console.log("  Loaded existing OIDC keys from .oidc-keys.json");
+    } else {
+      const pair = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+      publicKey = pair.publicKey;
+      privateKey = pair.privateKey;
+      fs.writeFileSync(keysPath, JSON.stringify({
+        public: publicKey.export({ type: "spki", format: "pem" }),
+        private: privateKey.export({ type: "pkcs8", format: "pem" }),
+      }));
+      console.log("  Generated new OIDC keys → .oidc-keys.json");
+    }
+
+    this.publicKey = publicKey;
+    this.privateKey = privateKey;
+
+    // Export public key as JWK for the JWKS endpoint
+    const jwk = publicKey.export({ format: "jwk" });
+
+    const jwksResponse = JSON.stringify({
+      keys: [
+        {
+          kty: jwk.kty,
+          n: jwk.n,
+          e: jwk.e,
+          kid: this.kid,
+          alg: "RS256",
+          use: "sig",
+        },
+      ],
+    });
+
+    // Start HTTP server serving /.well-known/jwks
+    this.server = http.createServer((req, res) => {
+      if (req.url === "/.well-known/jwks") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(jwksResponse);
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+
+    await new Promise((resolve, reject) => {
+      this.server.on("error", reject);
+      this.server.listen(this.port, () => {
+        console.log(`  Mock OIDC JWKS server listening on ${this.issuer}/.well-known/jwks`);
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Issue a signed JWT with the given per-shard claims.
+   *
+   * @param {object} overrides - Claim overrides (e.g., check_run_id)
+   * @returns {string} Signed JWT string
+   */
+  issueToken(overrides = {}) {
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      // GitHub OIDC identity claims
+      sub: `repo:${SEED_CONTEXT.repository}:ref:${SEED_BRANCH_INFO.ref}`,
+      repository: SEED_CONTEXT.repository,
+      repository_owner: "mattermost",
+      actor: "seed-script",
+
+      // Git ref claims
+      sha: SEED_CONTEXT.commit,
+      ref: SEED_BRANCH_INFO.ref,
+      ref_type: SEED_BRANCH_INFO.ref_type,
+      // head_ref/base_ref are set for pull_request events
+      ...(SEED_BRANCH_INFO.head_ref ? { head_ref: SEED_BRANCH_INFO.head_ref } : {}),
+      ...(SEED_BRANCH_INFO.base_ref ? { base_ref: SEED_BRANCH_INFO.base_ref } : {}),
+
+      // Workflow / run claims
+      workflow: "E2E Tests",
+      event_name: SEED_BRANCH_INFO.event_name,
+      run_id: SEED_CONTEXT.gh_run_id,
+      run_number: "1",
+      run_attempt: "1",
+
+      // Environment / runner claims
+      runner_environment: "github-hosted",
+
+      // Per-job override (check_run_id should be unique per job)
+      ...overrides,
+
+      // Standard JWT fields (always last so they cannot be overridden)
+      iss: this.issuer,
+      iat: now,
+      exp: now + 600, // 10 minutes
+      nbf: now,
+    };
+
+    return signJwt(payload, this.privateKey, this.kid);
+  }
+
+  /**
+   * Stop the JWKS server.
+   */
+  async stop() {
+    if (this.server) {
+      await new Promise((resolve) => {
+        this.server.close(resolve);
+      });
+      this.server = null;
+      console.log("  Mock OIDC JWKS server stopped.");
+    }
+  }
 }
 
+// ── Utility helpers ──────────────────────────────────────────────────────────
+
 /**
- * Check if file should be excluded from HTML upload.
+ * Check if file should be excluded from upload.
  */
 function shouldExclude(filepath) {
   for (const pattern of EXCLUDE_PATTERNS) {
@@ -216,30 +413,9 @@ function getAllFiles(dirPath, baseDir = dirPath) {
 }
 
 /**
- * Find JSON files for a framework in a job directory.
- * Returns array of file info objects.
+ * Recursively find all JSON files in a directory.
  */
-function findJsonFiles(jobDir, framework) {
-  const config = JSON_PATTERNS[framework] || JSON_PATTERNS.playwright;
-  const files = [];
-
-  // All frameworks now use folder pattern with json/ directory
-  for (const pattern of config.patterns) {
-    const folderPath = path.join(jobDir, pattern);
-    if (fs.existsSync(folderPath) && fs.statSync(folderPath).isDirectory()) {
-      // Recursively get all JSON files from the json/ folder
-      const jsonFiles = getAllJsonFilesRecursive(folderPath, folderPath);
-      files.push(...jsonFiles);
-    }
-  }
-
-  return files;
-}
-
-/**
- * Recursively get all JSON files in a directory.
- */
-function getAllJsonFilesRecursive(dirPath, baseDir) {
+function findJsonFiles(dirPath, baseDir = dirPath) {
   const files = [];
 
   if (!fs.existsSync(dirPath)) {
@@ -250,7 +426,7 @@ function getAllJsonFilesRecursive(dirPath, baseDir) {
   for (const entry of entries) {
     const fullPath = path.join(dirPath, entry.name);
     if (entry.isDirectory()) {
-      files.push(...getAllJsonFilesRecursive(fullPath, baseDir));
+      files.push(...findJsonFiles(fullPath, baseDir));
     } else if (entry.isFile() && entry.name.endsWith(".json")) {
       const relativePath = path.relative(baseDir, fullPath);
       const stats = fs.statSync(fullPath);
@@ -278,100 +454,18 @@ function isImageFile(filepath) {
  * Get all screenshot image files from a screenshots directory.
  */
 function getScreenshotFiles(screenshotsDir) {
-  const files = [];
-
-  if (!fs.existsSync(screenshotsDir)) {
-    return files;
-  }
-
-  const entries = fs.readdirSync(screenshotsDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(screenshotsDir, entry.name);
-    if (entry.isDirectory()) {
-      // Recursively get files from subdirectories (test-name folders)
-      const subFiles = getAllFilesRecursive(fullPath, screenshotsDir);
-      for (const file of subFiles) {
-        if (isImageFile(file.relativePath) && !shouldExclude(file.relativePath)) {
-          files.push(file);
-        }
-      }
-    } else if (entry.isFile() && isImageFile(entry.name) && !shouldExclude(entry.name)) {
-      // Handle root-level screenshots
-      const stats = fs.statSync(fullPath);
-      files.push({
-        fullPath,
-        relativePath: entry.name,
-        size: stats.size,
-        contentType: getMimeType(entry.name),
-      });
-    }
-  }
-
-  return files;
+  const allFiles = getAllFiles(screenshotsDir);
+  return allFiles.filter(
+    (f) => isImageFile(f.relativePath) && !shouldExclude(f.relativePath),
+  );
 }
 
-/**
- * Recursively get all files in a directory with relative paths.
- */
-function getAllFilesRecursive(dirPath, baseDir) {
-  const files = [];
-
-  if (!fs.existsSync(dirPath)) {
-    return files;
-  }
-
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dirPath, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...getAllFilesRecursive(fullPath, baseDir));
-    } else if (entry.isFile()) {
-      const relativePath = path.relative(baseDir, fullPath);
-      const stats = fs.statSync(fullPath);
-      files.push({
-        fullPath,
-        relativePath,
-        size: stats.size,
-        contentType: getMimeType(entry.name),
-      });
-    }
-  }
-
-  return files;
-}
+// ── HTTP helpers ─────────────────────────────────────────────────────────────
 
 /**
- * Get job directories within a report directory.
+ * Build admin auth headers (used only for OIDC policy setup).
  */
-function getJobDirectories(reportDir) {
-  const entries = fs.readdirSync(reportDir, { withFileTypes: true });
-  const jobDirs = [];
-
-  for (const entry of entries) {
-    if (entry.isDirectory() && !entry.name.startsWith(".")) {
-      const jobPath = path.join(reportDir, entry.name);
-      const htmlDir = path.join(jobPath, "html");
-      const screenshotsDir = path.join(jobPath, "screenshots");
-
-      // Check if this is a valid job directory (has html subdirectory)
-      if (fs.existsSync(htmlDir)) {
-        jobDirs.push({
-          name: entry.name,
-          path: jobPath,
-          htmlDir,
-          screenshotsDir: fs.existsSync(screenshotsDir) ? screenshotsDir : null,
-        });
-      }
-    }
-  }
-
-  return jobDirs;
-}
-
-/**
- * Build auth headers based on available keys.
- */
-function getAuthHeaders() {
+function getAdminAuthHeaders() {
   const headers = {};
   if (API_KEY) {
     headers["X-API-Key"] = API_KEY;
@@ -379,6 +473,13 @@ function getAuthHeaders() {
     headers["X-Admin-Key"] = ADMIN_KEY;
   }
   return headers;
+}
+
+/**
+ * Build Bearer auth headers for a specific OIDC token.
+ */
+function getBearerAuthHeaders(token) {
+  return { Authorization: `Bearer ${token}` };
 }
 
 /**
@@ -427,8 +528,12 @@ function makeRequest(url, options, body) {
 
 /**
  * Upload files via multipart/form-data.
+ *
+ * @param {string} url - Upload endpoint URL
+ * @param {Array} files - Files to upload
+ * @param {object} authHeaders - Auth headers (Bearer token or admin key)
  */
-function uploadFilesMultipart(url, files, baseDir) {
+function uploadFilesMultipart(url, files, authHeaders) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const client = parsedUrl.protocol === "https:" ? https : http;
@@ -453,7 +558,7 @@ function uploadFilesMultipart(url, files, baseDir) {
     const body = Buffer.concat(parts);
 
     const headers = {
-      ...getAuthHeaders(),
+      ...authHeaders,
       "Content-Type": `multipart/form-data; boundary=${boundary}`,
       "Content-Length": body.length,
     };
@@ -492,26 +597,120 @@ function uploadFilesMultipart(url, files, baseDir) {
   });
 }
 
+// ── OIDC policy setup ────────────────────────────────────────────────────────
+
 /**
- * Step 1: Register a new report.
+ * Create an OIDC policy allowing the seed repository via admin key.
+ * This is a one-time setup step; if the policy already exists the server
+ * will accept a duplicate (idempotent by pattern).
  */
-async function registerReport(framework, expectedJobs, githubContext) {
-  const url = `${API_BASE}/reports`;
+async function createOidcPolicy() {
+  const url = `${API_BASE}/auth/oidc-policies`;
   const body = JSON.stringify({
-    framework,
-    expected_jobs: expectedJobs,
-    github_metadata: githubContext,
+    repository_pattern: "mattermost/*",
+    role: "contributor",
+    description: "Seed script: allow all mattermost repos via OIDC",
   });
 
   const headers = {
-    ...getAuthHeaders(),
+    ...getAdminAuthHeaders(),
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(body),
   };
 
   const response = await makeRequest(url, { method: "POST", headers }, body);
 
-  if (response.statusCode !== 201) {
+  if (response.statusCode === 201 || response.statusCode === 200) {
+    const result = JSON.parse(response.body);
+    console.log(`  OIDC policy created: ${result.id} (pattern: mattermost/*)`);
+    return result;
+  }
+
+  // Policy may already exist — log but don't fail
+  console.log(
+    `  OIDC policy setup returned ${response.statusCode}: ${response.body}`,
+  );
+  return null;
+}
+
+// ── API calls (stateless flow with per-shard Bearer tokens) ────────────────────
+
+/**
+ * POST /api/v1/reports/begin
+ * Begins a report session for the given repository/commit/run/framework.
+ */
+async function beginReport(context, authHeaders) {
+  const url = `${API_BASE}/reports/begin`;
+  const payload = {
+    repository: context.repository,
+    commit: context.commit,
+    gh_run_id: context.gh_run_id,
+    framework: context.framework,
+    name: context.name,
+  };
+  if (context.gh_pr_number !== undefined) {
+    payload.gh_pr_number = context.gh_pr_number;
+  }
+  const body = JSON.stringify(payload);
+
+  const headers = {
+    ...authHeaders,
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  };
+
+  const response = await makeRequest(url, { method: "POST", headers }, body);
+
+  if (response.statusCode !== 200 && response.statusCode !== 201) {
+    throw new Error(
+      `Failed to begin report (${response.statusCode}): ${response.body}`,
+    );
+  }
+
+  return JSON.parse(response.body);
+}
+
+/**
+ * POST /api/v1/reports/register
+ * Registers an upload within a report, declaring the JSON files it will upload.
+ */
+async function registerReport(context, ghJobId, ghJobName, jsonFiles, screenshotFiles, authHeaders, environmentMetadata) {
+  const url = `${API_BASE}/reports/register`;
+  const payload = {
+    repository: context.repository,
+    commit: context.commit,
+    gh_run_id: context.gh_run_id,
+    framework: context.framework,
+    name: context.name,
+    branch: context.branch,
+    gh_job_id: ghJobId,
+    gh_job_name: ghJobName,
+    json_files: jsonFiles.map((f) => ({
+      path: f.relativePath,
+      size: f.size,
+    })),
+    screenshots: screenshotFiles.map((f) => ({
+      path: f.relativePath,
+      size: f.size,
+    })),
+  };
+  if (environmentMetadata) {
+    payload.environment_metadata = environmentMetadata;
+  }
+  if (context.gh_pr_number !== undefined) {
+    payload.gh_pr_number = context.gh_pr_number;
+  }
+  const body = JSON.stringify(payload);
+
+  const headers = {
+    ...authHeaders,
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  };
+
+  const response = await makeRequest(url, { method: "POST", headers }, body);
+
+  if (response.statusCode !== 200 && response.statusCode !== 201) {
     throw new Error(
       `Failed to register report (${response.statusCode}): ${response.body}`,
     );
@@ -521,201 +720,12 @@ async function registerReport(framework, expectedJobs, githubContext) {
 }
 
 /**
- * Step 2: Initialize a job.
+ * Upload JSON files to POST /reports/upload/{reportId}/{uploadId}/json
  */
-async function initJob(reportId, jobName) {
-  const url = `${API_BASE}/reports/${reportId}/jobs/init`;
-  const body = JSON.stringify({
-    github_metadata: {
-      job_name: jobName,
-    },
-  });
-
-  const headers = {
-    ...getAuthHeaders(),
-    "Content-Type": "application/json",
-    "Content-Length": Buffer.byteLength(body),
-  };
-
-  const response = await makeRequest(url, { method: "POST", headers }, body);
-
-  if (response.statusCode !== 200) {
-    throw new Error(
-      `Failed to init job (${response.statusCode}): ${response.body}`,
-    );
-  }
-
-  return JSON.parse(response.body);
-}
-
-/**
- * Step 3a: Initialize HTML files (request-then-transfer pattern).
- */
-async function initHtml(reportId, jobId, files) {
-  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/html/init`;
-  const body = JSON.stringify({
-    files: files.map((f) => ({
-      path: f.relativePath,
-      size: f.size,
-      content_type: f.contentType,
-    })),
-  });
-
-  const headers = {
-    ...getAuthHeaders(),
-    "Content-Type": "application/json",
-    "Content-Length": Buffer.byteLength(body),
-  };
-
-  const response = await makeRequest(url, { method: "POST", headers }, body);
-
-  if (response.statusCode !== 200) {
-    throw new Error(
-      `Failed to init HTML (${response.statusCode}): ${response.body}`,
-    );
-  }
-
-  return JSON.parse(response.body);
-}
-
-/**
- * Step 3b: Upload HTML files in batches.
- */
-async function uploadHtmlFiles(reportId, jobId, files, htmlDir) {
-  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/html`;
+async function uploadJsonFiles(reportId, uploadId, files, authHeaders) {
+  const url = `${API_BASE}/reports/upload/${reportId}/${uploadId}/json`;
   let totalUploaded = 0;
 
-  // Upload in batches
-  for (let i = 0; i < files.length; i += BATCH_SIZE) {
-    const batch = files.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    const totalBatches = Math.ceil(files.length / BATCH_SIZE);
-
-    console.log(
-      `    Batch ${batchNum}/${totalBatches}: uploading ${batch.length} files...`,
-    );
-
-    const response = await uploadFilesMultipart(url, batch, htmlDir);
-
-    if (response.statusCode !== 200) {
-      throw new Error(
-        `Failed to upload HTML files (${response.statusCode}): ${response.body}`,
-      );
-    }
-
-    const result = JSON.parse(response.body);
-    totalUploaded += result.files_uploaded;
-    console.log(
-      `    Progress: ${result.total_uploaded}/${result.total_expected} files`,
-    );
-  }
-
-  return totalUploaded;
-}
-
-/**
- * Step 4a: Initialize screenshots (request-then-transfer pattern).
- */
-async function initScreenshots(reportId, jobId, files) {
-  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/screenshots/init`;
-  const body = JSON.stringify({
-    files: files.map((f) => ({
-      path: f.relativePath,
-      size: f.size,
-      content_type: f.contentType,
-    })),
-  });
-
-  const headers = {
-    ...getAuthHeaders(),
-    "Content-Type": "application/json",
-    "Content-Length": Buffer.byteLength(body),
-  };
-
-  const response = await makeRequest(url, { method: "POST", headers }, body);
-
-  if (response.statusCode !== 200) {
-    throw new Error(
-      `Failed to init screenshots (${response.statusCode}): ${response.body}`,
-    );
-  }
-
-  return JSON.parse(response.body);
-}
-
-/**
- * Step 4b: Upload screenshot files.
- */
-async function uploadScreenshots(reportId, jobId, files) {
-  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/screenshots`;
-  let totalUploaded = 0;
-
-  // Upload in batches
-  for (let i = 0; i < files.length; i += BATCH_SIZE) {
-    const batch = files.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    const totalBatches = Math.ceil(files.length / BATCH_SIZE);
-
-    console.log(
-      `    Batch ${batchNum}/${totalBatches}: uploading ${batch.length} screenshots...`,
-    );
-
-    const response = await uploadFilesMultipart(url, batch, null);
-
-    if (response.statusCode !== 200) {
-      throw new Error(
-        `Failed to upload screenshots (${response.statusCode}): ${response.body}`,
-      );
-    }
-
-    const result = JSON.parse(response.body);
-    totalUploaded += result.files_uploaded;
-    console.log(
-      `    Progress: ${result.total_uploaded}/${result.total_expected} screenshots`,
-    );
-  }
-
-  return totalUploaded;
-}
-
-/**
- * Step 5a: Initialize JSON files (request-then-transfer pattern).
- */
-async function initJson(reportId, jobId, files) {
-  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/json/init`;
-  const body = JSON.stringify({
-    files: files.map((f) => ({
-      path: f.relativePath,
-      size: f.size,
-      content_type: f.contentType,
-    })),
-  });
-
-  const headers = {
-    ...getAuthHeaders(),
-    "Content-Type": "application/json",
-    "Content-Length": Buffer.byteLength(body),
-  };
-
-  const response = await makeRequest(url, { method: "POST", headers }, body);
-
-  if (response.statusCode !== 200) {
-    throw new Error(
-      `Failed to init JSON (${response.statusCode}): ${response.body}`,
-    );
-  }
-
-  return JSON.parse(response.body);
-}
-
-/**
- * Step 5b: Upload JSON files.
- */
-async function uploadJson(reportId, jobId, files) {
-  const url = `${API_BASE}/reports/${reportId}/jobs/${jobId}/json`;
-  let totalUploaded = 0;
-
-  // Upload in batches
   for (let i = 0; i < files.length; i += BATCH_SIZE) {
     const batch = files.slice(i, i + BATCH_SIZE);
     const batchNum = Math.floor(i / BATCH_SIZE) + 1;
@@ -723,11 +733,11 @@ async function uploadJson(reportId, jobId, files) {
 
     if (totalBatches > 1) {
       console.log(
-        `    Batch ${batchNum}/${totalBatches}: uploading ${batch.length} JSON files...`,
+        `      Batch ${batchNum}/${totalBatches}: uploading ${batch.length} JSON files...`,
       );
     }
 
-    const response = await uploadFilesMultipart(url, batch, null);
+    const response = await uploadFilesMultipart(url, batch, authHeaders);
 
     if (response.statusCode !== 200) {
       throw new Error(
@@ -736,201 +746,417 @@ async function uploadJson(reportId, jobId, files) {
     }
 
     const result = JSON.parse(response.body);
-    totalUploaded += result.files_uploaded;
-
-    if (result.extraction_triggered) {
-      console.log(`    Extraction triggered`);
-    }
+    totalUploaded += result.files_uploaded || batch.length;
   }
 
   return totalUploaded;
 }
 
 /**
- * Upload a single report directory (containing multiple job subdirectories).
+ * Upload screenshot files to POST /reports/upload/{reportId}/{uploadId}/screenshots
  */
-async function uploadReport(reportDir, framework = "playwright") {
-  if (!fs.existsSync(reportDir) || !fs.statSync(reportDir).isDirectory()) {
-    console.log(`Warning: Directory not found: ${reportDir} (skipping)`);
-    return false;
-  }
+async function uploadScreenshots(reportId, uploadId, files, authHeaders) {
+  const url = `${API_BASE}/reports/upload/${reportId}/${uploadId}/screenshots`;
+  let totalUploaded = 0;
 
-  const reportName = path.basename(reportDir);
+  for (let i = 0; i < files.length; i += BATCH_SIZE) {
+    const batch = files.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(files.length / BATCH_SIZE);
 
-  console.log("");
-  console.log("=".repeat(60));
-  console.log(`Report: ${reportName} (${framework})`);
-  console.log("=".repeat(60));
-
-  // Get job directories
-  const jobDirs = getJobDirectories(reportDir);
-  if (jobDirs.length === 0) {
-    console.log("  No job directories found (skipping)");
-    return false;
-  }
-
-  console.log(`  Found ${jobDirs.length} job(s)`);
-
-  // Generate GitHub context
-  const githubContext = generateGitHubContext(framework);
-  console.log(`  Repository: ${githubContext.repo}`);
-  console.log(`  Branch: ${githubContext.branch}`);
-
-  try {
-    // Step 1: Register report
-    console.log("\n[1/5] Registering report...");
-    const reportResponse = await registerReport(
-      framework,
-      jobDirs.length,
-      githubContext,
-    );
-    const reportId = reportResponse.report_id;
-    console.log(`  Report ID: ${reportId}`);
-    console.log(`  Status: ${reportResponse.status}`);
-
-    // Process each job
-    for (let i = 0; i < jobDirs.length; i++) {
-      const job = jobDirs[i];
-      console.log(`\n--- Job ${i + 1}/${jobDirs.length}: ${job.name} ---`);
-
-      // Step 2: Initialize job
-      console.log("[2/5] Initializing job...");
-      const initResponse = await initJob(reportId, job.name);
-      const jobId = initResponse.job_id;
-      console.log(`  Job ID: ${jobId}`);
-
-      // Step 3: Upload HTML files (optional)
-      const htmlFiles = getAllFiles(job.htmlDir);
-      if (htmlFiles.length > 0) {
-        console.log(`[3/5] Uploading ${htmlFiles.length} HTML files...`);
-
-        // Step 3a: Initialize HTML
-        console.log("  Initializing HTML files...");
-        const initHtmlResponse = await initHtml(reportId, jobId, htmlFiles);
-        console.log(`  Accepted: ${initHtmlResponse.accepted_files.length} files`);
-        if (initHtmlResponse.rejected_files && initHtmlResponse.rejected_files.length > 0) {
-          console.log(`  Rejected: ${initHtmlResponse.rejected_files.length} files`);
-          for (const rejected of initHtmlResponse.rejected_files.slice(0, 3)) {
-            console.log(`    - ${rejected.path}: ${rejected.reason}`);
-          }
-        }
-
-        // Step 3b: Upload HTML files
-        const uploadedHtml = await uploadHtmlFiles(reportId, jobId, htmlFiles, job.htmlDir);
-        console.log(`  Uploaded ${uploadedHtml} HTML files`);
-      } else {
-        console.log("[3/5] No HTML files found (skipping)");
-      }
-
-      // Step 4: Upload screenshots (optional)
-      if (job.screenshotsDir) {
-        const screenshotFiles = getScreenshotFiles(job.screenshotsDir);
-        if (screenshotFiles.length > 0) {
-          console.log(`[4/5] Uploading ${screenshotFiles.length} screenshots...`);
-
-          // Step 4a: Initialize screenshots
-          console.log("  Initializing screenshots...");
-          const initSsResponse = await initScreenshots(reportId, jobId, screenshotFiles);
-          console.log(`  Accepted: ${initSsResponse.accepted_files.length} screenshots`);
-          if (initSsResponse.rejected_files && initSsResponse.rejected_files.length > 0) {
-            console.log(`  Rejected: ${initSsResponse.rejected_files.length} screenshots`);
-            for (const rejected of initSsResponse.rejected_files.slice(0, 3)) {
-              console.log(`    - ${rejected.path}: ${rejected.reason}`);
-            }
-          }
-
-          // Step 4b: Upload screenshot files
-          const uploadedSs = await uploadScreenshots(reportId, jobId, screenshotFiles);
-          console.log(`  Uploaded ${uploadedSs} screenshots`);
-        } else {
-          console.log("[4/5] No screenshots found (skipping)");
-        }
-      } else {
-        console.log("[4/5] No screenshots directory (skipping)");
-      }
-
-      // Step 5: Upload JSON files (required)
-      const jsonFiles = findJsonFiles(job.path, framework);
-      if (jsonFiles.length > 0) {
-        console.log(`[5/5] Uploading ${jsonFiles.length} JSON file(s)...`);
-
-        // Step 5a: Initialize JSON
-        console.log("  Initializing JSON files...");
-        const initJsonResponse = await initJson(reportId, jobId, jsonFiles);
-        console.log(`  Accepted: ${initJsonResponse.accepted_files.length} files`);
-        if (initJsonResponse.rejected_files && initJsonResponse.rejected_files.length > 0) {
-          console.log(`  Rejected: ${initJsonResponse.rejected_files.length} files`);
-          for (const rejected of initJsonResponse.rejected_files.slice(0, 3)) {
-            console.log(`    - ${rejected.path}: ${rejected.reason}`);
-          }
-        }
-
-        // Step 5b: Upload JSON files
-        const uploadedJson = await uploadJson(reportId, jobId, jsonFiles);
-        console.log(`  Uploaded ${uploadedJson} JSON file(s)`);
-      } else {
-        console.log("[5/5] WARNING: No JSON files found!");
-        console.log("  JSON files are required for test data extraction.");
-        console.log(`  Expected: json/ folder with .json files`);
-      }
+    if (totalBatches > 1) {
+      console.log(
+        `      Batch ${batchNum}/${totalBatches}: uploading ${batch.length} screenshots...`,
+      );
     }
 
-    console.log(`\nReport ${reportId} uploaded successfully!`);
-    return true;
-  } catch (error) {
-    console.log(`\nError: ${error.message}`);
-    return false;
+    const response = await uploadFilesMultipart(url, batch, authHeaders);
+
+    if (response.statusCode !== 200) {
+      throw new Error(
+        `Failed to upload screenshots (${response.statusCode}): ${response.body}`,
+      );
+    }
+
+    const result = JSON.parse(response.body);
+    totalUploaded += result.files_uploaded || batch.length;
   }
+
+  return totalUploaded;
 }
 
 /**
- * Main function.
+ * POST /api/v1/reports/complete
+ * Marks a report as complete after all reports have been uploaded.
  */
-async function main() {
-  const args = process.argv.slice(2);
-  const scriptDir = __dirname;
-  const projectRoot = path.dirname(scriptDir);
+async function completeReport(context, authHeaders) {
+  const url = `${API_BASE}/reports/complete`;
+  const payload = {
+    repository: context.repository,
+    commit: context.commit,
+    gh_run_id: context.gh_run_id,
+    framework: context.framework,
+    name: context.name,
+  };
+  if (context.gh_pr_number !== undefined) {
+    payload.gh_pr_number = context.gh_pr_number;
+  }
+  const body = JSON.stringify(payload);
 
-  console.log(`API Base: ${API_BASE}`);
-  console.log(`Auth: ${API_KEY ? "API Key" : "Admin Key"}`);
-  console.log(`Batch Size: ${BATCH_SIZE}`);
+  const headers = {
+    ...authHeaders,
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  };
 
-  if (args.length > 0) {
-    // Upload specified directories
-    for (const dirPath of args) {
-      const fullPath = path.isAbsolute(dirPath)
-        ? dirPath
-        : path.join(projectRoot, dirPath);
+  const response = await makeRequest(url, { method: "POST", headers }, body);
 
-      // Try to detect framework from directory name
-      let framework = "playwright";
-      const dirName = path.basename(fullPath).toLowerCase();
-      if (dirName.includes("cy") || dirName.includes("cypress")) {
-        framework = "cypress";
-      } else if (dirName.includes("detox")) {
-        framework = "detox";
-      }
+  if (response.statusCode !== 200 && response.statusCode !== 201) {
+    throw new Error(
+      `Failed to complete report (${response.statusCode}): ${response.body}`,
+    );
+  }
 
-      await uploadReport(fullPath, framework);
+  return JSON.parse(response.body);
+}
+
+// ── Shard discovery ──────────────────────────────────────────────────────────
+
+/**
+ * Detect shard directories within a seed directory.
+ *
+ * Cypress:     cypress-full--results-*
+ * Playwright:  playwright-full--results-* and playwright-full--retest-*
+ */
+function getShardDirectories(seedDir, framework) {
+  if (!fs.existsSync(seedDir) || !fs.statSync(seedDir).isDirectory()) {
+    return [];
+  }
+
+  const entries = fs.readdirSync(seedDir, { withFileTypes: true });
+  const shards = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) {
+      continue;
     }
-  } else {
-    // Default: upload all seed directories
-    console.log("\nUploading all seed data...\n");
 
-    const seedConfigs = [
-      { dir: "seed/playwright-report", framework: "playwright" },
-      { dir: "seed/cypress-report", framework: "cypress" },
-      { dir: "seed/cypress-report-with-empty", framework: "cypress" },
-      { dir: "seed/detox-android-report", framework: "detox" },
-    ];
+    let matches = false;
+    if (framework === "cypress") {
+      matches = entry.name.match(/^cypress-full--results-\d+$/) !== null;
+    } else if (framework === "playwright") {
+      matches =
+        entry.name.match(/^playwright-full--results-\d+$/) !== null ||
+        entry.name.match(/^playwright-full--retest-/) !== null;
+    }
 
-    for (const { dir, framework } of seedConfigs) {
-      await uploadReport(path.join(projectRoot, dir), framework);
+    if (matches) {
+      shards.push({
+        name: entry.name,
+        path: path.join(seedDir, entry.name),
+      });
     }
   }
 
+  // Sort for consistent ordering
+  shards.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return shards;
+}
+
+/**
+ * Find JSON files for a shard based on framework.
+ *
+ * Cypress:     results/mochawesome-report/json/ (recursive .json files)
+ * Playwright:  results/reporter/ (contains results.json)
+ */
+function findShardJsonFiles(shardDir, framework) {
+  if (framework === "cypress") {
+    const jsonDir = path.join(
+      shardDir,
+      "results",
+      "mochawesome-report",
+      "json",
+    );
+    return findJsonFiles(jsonDir, jsonDir);
+  } else if (framework === "playwright") {
+    const reporterDir = path.join(shardDir, "results", "reporter");
+    return findJsonFiles(reporterDir, reporterDir);
+  }
+
+  return [];
+}
+
+// ── Main upload logic ────────────────────────────────────────────────────────
+
+/**
+ * Upload a single seed directory (e.g. seed/cypress-ci) using the new flow:
+ *   beginReport -> for each shard: issue token -> registerReport -> uploadJson -> completeReport
+ *
+ * @param {string} seedDir - Path to the seed directory
+ * @param {string} framework - Framework name (cypress, playwright)
+ * @param {string} name - User-defined report name (e.g., "playwright-full-cloud-master")
+ * @param {MockOidcProvider} oidcProvider - Mock OIDC provider for issuing per-shard tokens
+ * @param {object} [options] - Upload options
+ * @param {boolean} [options.incomplete] - Skip last shard and don't complete report (leaves in_progress)
+ */
+async function uploadSeedDir(seedDir, framework, name, oidcProvider, options = {}) {
+  if (!fs.existsSync(seedDir) || !fs.statSync(seedDir).isDirectory()) {
+    console.log(`  Warning: Directory not found: ${seedDir} (skipping)`);
+    return { reports: 0, files: 0, errors: 0 };
+  }
+
+  const shards = getShardDirectories(seedDir, framework);
+  if (shards.length === 0) {
+    console.log(`  No shard directories found in ${seedDir} (skipping)`);
+    return { reports: 0, files: 0, errors: 0 };
+  }
+
+  const context = {
+    repository: SEED_CONTEXT.repository,
+    commit: SEED_CONTEXT.commit,
+    gh_run_id: SEED_CONTEXT.gh_run_id,
+    framework: framework,
+    name: name,
+    branch: SEED_BRANCH_INFO.branch,
+    gh_pr_number: SEED_BRANCH_INFO.pr_number ? parseInt(SEED_BRANCH_INFO.pr_number, 10) : undefined,
+  };
+
+  let totalReports = 0;
+  let totalFiles = 0;
+  let errors = 0;
+
+  console.log("");
+  console.log("=".repeat(60));
+  console.log(
+    `${framework.charAt(0).toUpperCase() + framework.slice(1)} (${shards.length} shards, run_id=${SEED_CONTEXT.gh_run_id})`,
+  );
+  console.log("=".repeat(60));
+  console.log(`  Repository: ${context.repository}`);
+  console.log(`  Branch:     ${SEED_BRANCH_INFO.branch} (${SEED_BRANCH_INFO.ref})`);
+  console.log(`  Commit:     ${context.commit.slice(0, 12)}...`);
+
+  // Step 1: Begin report (use a token for the first shard as the "begin" caller)
+  console.log("\n  [begin] Starting report...");
+  const beginToken = oidcProvider.issueToken({
+    check_run_id: `seed-${framework}-begin`,
+  });
+  const beginAuth = getBearerAuthHeaders(beginToken);
+  try {
+    const beginResponse = await beginReport(context, beginAuth);
+    const reportId = beginResponse.report_id;
+    console.log(`  Report ID: ${reportId}`);
+  } catch (error) {
+    console.log(
+      `  Warning: beginReport failed (${error.message}) - may already exist, continuing...`,
+    );
+  }
+
+  // Step 2: Process each shard with its own unique OIDC token
+  const shardsToUpload = options.incomplete ? shards.length - 1 : shards.length;
+  if (options.incomplete) {
+    console.log(`  [incomplete] Skipping last shard (${shards[shards.length - 1].name}) and not completing report`);
+  }
+  for (let i = 0; i < shardsToUpload; i++) {
+    const shard = shards[i];
+    // Generate a numeric job ID (mimics GitHub Actions job_id)
+    const ghJobId = `${Date.now()}${Math.floor(Math.random() * 10000).toString().padStart(4, "0")}`;
+    const ghJobName = shard.name;
+
+    // Issue a unique OIDC token for this shard
+    const shardToken = oidcProvider.issueToken({
+      check_run_id: ghJobId,
+    });
+    const shardAuth = getBearerAuthHeaders(shardToken);
+
+    // Find JSON files for this shard
+    const jsonFiles = findShardJsonFiles(shard.path, framework);
+    if (jsonFiles.length === 0) {
+      console.log(`  ${shard.name}: no JSON files, skipping`);
+      continue;
+    }
+
+    // Find screenshot files for this shard (before registration so they can be declared)
+    const ssDir = findScreenshotsDir(shard.path);
+    const ssFiles = ssDir ? getScreenshotFiles(ssDir) : [];
+
+    try {
+      // Register report (declares JSON files and screenshots)
+      // Pass environment metadata on the first upload (sets report-level metadata)
+      const envMeta = (i === 0 && SEED_IMAGE) ? { server: { image: SEED_IMAGE } } : undefined;
+      const registerResponse = await registerReport(context, ghJobId, ghJobName, jsonFiles, ssFiles, shardAuth, envMeta);
+      const reportId = registerResponse.report_id;
+      const uploadId = registerResponse.upload_id;
+      const reportsInGroup = registerResponse.reports_in_group;
+      const rejectedCount = (registerResponse.rejected_json_files?.length || 0)
+        + (registerResponse.rejected_screenshots?.length || 0);
+
+      // Upload JSON files
+      const uploaded = await uploadJsonFiles(reportId, uploadId, jsonFiles, shardAuth);
+
+      // Upload screenshots if present
+      let ssUploaded = 0;
+      if (ssFiles.length > 0) {
+        ssUploaded = await uploadScreenshots(reportId, uploadId, ssFiles, shardAuth);
+      }
+
+      totalReports++;
+      totalFiles += uploaded + ssUploaded;
+
+      let statusMsg = `${uploaded}/${jsonFiles.length} JSON`;
+      if (ssUploaded > 0) statusMsg += `, ${ssUploaded} screenshots`;
+      if (rejectedCount > 0) statusMsg += ` (${rejectedCount} rejected)`;
+
+      console.log(`  ${shard.name}: ${statusMsg} [token: ${ghJobId}]`);
+    } catch (error) {
+      console.log(`  ${shard.name}: ERROR - ${error.message}`);
+      errors++;
+    }
+  }
+
+  // Step 3: Complete report (skip if --incomplete)
+  if (options.incomplete) {
+    console.log("\n  [incomplete] Report left in_progress (not completing)");
+  } else {
+    console.log("\n  [complete] Finalizing report...");
+    const completeToken = oidcProvider.issueToken({
+      check_run_id: `seed-${framework}-complete`,
+    });
+    const completeAuth = getBearerAuthHeaders(completeToken);
+    try {
+      const completeResponse = await completeReport(context, completeAuth);
+      const reportsCount = completeResponse.reports_count || "?";
+      console.log(`  Complete: ${reportsCount} reports`);
+    } catch (error) {
+      console.log(`  Warning: completeReport failed (${error.message})`);
+    }
+  }
+
+  return { reports: totalReports, files: totalFiles, errors };
+}
+
+/**
+ * Find the screenshots directory for a shard (if it exists).
+ * Checks multiple locations:
+ *   - results/screenshots/ (Cypress)
+ *   - results/output/ (Playwright test artifacts with screenshots)
+ */
+function findScreenshotsDir(shardDir) {
+  // Cypress: results/screenshots/
+  const cypressDir = path.join(shardDir, "results", "screenshots");
+  if (fs.existsSync(cypressDir) && fs.statSync(cypressDir).isDirectory()) {
+    return cypressDir;
+  }
+  // Playwright: results/output/ (contains per-test folders with screenshots)
+  const playwrightDir = path.join(shardDir, "results", "output");
+  if (fs.existsSync(playwrightDir) && fs.statSync(playwrightDir).isDirectory()) {
+    return playwrightDir;
+  }
+  return null;
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+
+async function main() {
+  const rawArgs = process.argv.slice(2);
+  const scriptDir = __dirname;
+  const projectRoot = path.dirname(scriptDir);
+
+  // Strip named flags from positional args
+  const args = [];
+  let incomplete = false;
+  for (let i = 0; i < rawArgs.length; i++) {
+    if (rawArgs[i] === "--branch" || rawArgs[i] === "--commit" || rawArgs[i] === "--image" || rawArgs[i] === "--name") {
+      i++; // skip the value too
+    } else if (rawArgs[i] === "--incomplete") {
+      incomplete = true;
+    } else {
+      args.push(rawArgs[i]);
+    }
+  }
+
+  console.log(`API Base: ${API_BASE}`);
+  console.log(`Auth: OIDC Bearer tokens (mock provider on port ${MOCK_OIDC_PORT})`);
+  console.log(`Branch: ${SEED_BRANCH_INFO.branch} (ref: ${SEED_BRANCH_INFO.ref})`);
+  console.log(`Commit: ${SEED_CONTEXT.commit}`);
+  console.log(`Run ID: ${SEED_CONTEXT.gh_run_id}`);
+  console.log(`Batch Size: ${BATCH_SIZE}`);
+  if (SEED_NAME) console.log(`Name: ${SEED_NAME}`);
+  if (SEED_IMAGE) console.log(`Image: ${SEED_IMAGE}`);
+  if (incomplete) console.log(`Mode: INCOMPLETE (will skip last shard and not complete)`);
+
+  // Step 1: Start mock OIDC provider
+  console.log("\n[setup] Starting mock OIDC provider...");
+  const oidcProvider = new MockOidcProvider();
+  await oidcProvider.start();
+
+  // Step 2: Create OIDC policy via admin key (one-time setup)
+  console.log("[setup] Creating OIDC policy...");
+  await createOidcPolicy();
+
+  let totalReports = 0;
+  let totalFiles = 0;
+  let totalErrors = 0;
+
+  try {
+    if (args.length >= 1) {
+      // Upload specified directory: node scripts/upload-seed.js <dir> [framework]
+      const dirPath = path.isAbsolute(args[0])
+        ? args[0]
+        : path.join(projectRoot, args[0]);
+
+      // Detect framework from arg or directory name
+      let framework = args[1] || "playwright";
+      if (!args[1]) {
+        const dirName = path.basename(dirPath).toLowerCase();
+        if (dirName.includes("cypress")) {
+          framework = "cypress";
+        } else if (dirName.includes("playwright")) {
+          framework = "playwright";
+        }
+      }
+
+      // --name is required when uploading a specific directory
+      const name = SEED_NAME;
+      if (!name) {
+        console.error("Error: --name is required (e.g., --name playwright-full-cloud-master)");
+        process.exit(1);
+      }
+
+      const result = await uploadSeedDir(dirPath, framework, name, oidcProvider, { incomplete });
+      totalReports += result.reports;
+      totalFiles += result.files;
+      totalErrors += result.errors;
+    } else {
+      // Default: upload all seed directories
+      console.log("\nUploading all seed data...");
+
+      for (const { dir, framework, name } of seedConfigs) {
+        const fullPath = path.join(projectRoot, dir);
+        const seedName = SEED_NAME || name;
+        const result = await uploadSeedDir(fullPath, framework, seedName, oidcProvider, { incomplete });
+        totalReports += result.reports;
+        totalFiles += result.files;
+        totalErrors += result.errors;
+      }
+    }
+  } finally {
+    // Step 3: Shut down mock JWKS server
+    console.log("\n[teardown] Stopping mock OIDC provider...");
+    await oidcProvider.stop();
+  }
+
   console.log("\n" + "=".repeat(60));
-  console.log("Done!");
+  console.log("Seed Summary");
+  console.log("=".repeat(60));
+  console.log(`  Reports uploaded: ${totalReports}`);
+  console.log(`  Files uploaded: ${totalFiles}`);
+  if (totalErrors > 0) {
+    console.log(`  Errors: ${totalErrors}`);
+    process.exit(1);
+  } else {
+    console.log(`  No errors`);
+  }
+  console.log("");
 }
 
 main().catch((error) => {

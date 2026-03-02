@@ -1,12 +1,29 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useParams } from 'react-router-dom';
 import { HomePage } from '@/pages/home_page';
 import { FilteredReportPage } from '@/pages/filtered_report_page';
-import { JobReportPage } from '@/pages/job_report_page';
+import { FilteredReportsPage } from '@/pages/filtered_reports_page';
+import { CommitReportsPage } from '@/pages/commit_reports_page';
+import { ReportDetailPage } from '@/pages/report_detail_page';
 import { ThemeProvider } from '@/contexts/theme_context';
 import { ThemeToggle } from '@/components/theme_toggle';
 import { ConnectionStatus } from '@/components/connection_status';
 import { LoginButton } from '@/components/login_button';
 import { Footer } from '@/components/footer';
+
+const SHA_RE = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * For /reports/:param — resolves ambiguous single-segment paths.
+ * SHA-like strings (7-40 hex) → CommitReportsPage
+ * Everything else → FilteredReportsPage (repo name filter)
+ */
+function RepoOrShaResolver() {
+  const { param } = useParams<{ param: string }>();
+  if (param && SHA_RE.test(param)) {
+    return <CommitReportsPage />;
+  }
+  return <FilteredReportsPage />;
+}
 
 export function App() {
   return (
@@ -33,11 +50,17 @@ export function App() {
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/reports" element={<HomePage />} />
-              <Route
-                path="/reports/:repo/:target_name/:commit_sha/:tool_name"
-                element={<FilteredReportPage />}
-              />
-              <Route path="/reports/:id" element={<JobReportPage />} />
+              {/* Explicit prefixed routes */}
+              <Route path="/reports/r/:id" element={<ReportDetailPage />} />
+              <Route path="/reports/g/:id" element={<ReportDetailPage />} />
+              <Route path="/reports/c/:sha" element={<CommitReportsPage />} />
+              {/* Consolidated report view */}
+              <Route path="/reports/:repo/:branch/:commit/:name" element={<FilteredReportPage />} />
+              {/* Filtered views by repo/branch/commit */}
+              <Route path="/reports/:repo/:branch/:commit" element={<FilteredReportsPage />} />
+              <Route path="/reports/:repo/:branch" element={<FilteredReportsPage />} />
+              {/* Single segment: SHA → commit lookup, otherwise → repo filter */}
+              <Route path="/reports/:param" element={<RepoOrShaResolver />} />
             </Routes>
           </main>
           <Footer />

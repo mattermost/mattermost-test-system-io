@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  ChevronLeft,
   ChevronRight,
   ChevronDown,
   CheckCircle2,
@@ -15,7 +16,13 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import type { TestSuite, ReportStats, TestSpec, TestSpecListResponse, JobInfo } from '@/types';
+import type {
+  TestSuite,
+  ReportStats,
+  TestSpec,
+  TestSpecListResponse,
+  ReportEntryInfo,
+} from '@/types';
 import { ScreenshotGallery } from '@/components/ui/screenshot-gallery';
 import { useSearchTestCases, useClientConfig, type SearchSuiteResult } from '@/services/api';
 import {
@@ -31,24 +38,26 @@ import {
 
 const API_BASE = '/api/v1';
 const SEARCH_DEBOUNCE_MS = 500; // 500ms debounce for both client and API search
+const PAGE_SIZE = 100;
 
 interface TestSuitesViewProps {
   reportId: string;
   suites: TestSuite[];
   stats?: ReportStats;
   title?: string;
-  jobs?: JobInfo[];
+  reports?: ReportEntryInfo[];
 }
 
-export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSuitesViewProps) {
+export function TestSuitesView({ reportId, suites, stats, title, reports }: TestSuitesViewProps) {
   const [expandedSuiteIds, setExpandedSuiteIds] = useState<Set<number>>(new Set());
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [selectedJobs, setSelectedJobs] = useState<Set<string>>(new Set()); // empty = all jobs
-  const [jobDropdownOpen, setJobDropdownOpen] = useState(false);
+  const [selectedReports, setSelectedReports] = useState<Set<string>>(new Set()); // empty = all reports
+  const [reportDropdownOpen, setReportDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [effectiveSearch, setEffectiveSearch] = useState(''); // Search ready for rendering
-  const jobDropdownRef = useRef<HTMLDivElement>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const reportDropdownRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Get client config for search_min_length
@@ -102,19 +111,24 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
     searchData?.results &&
     searchData.results.length > 0;
 
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, selectedReports, effectiveSearch]);
+
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (jobDropdownRef.current && !jobDropdownRef.current.contains(event.target as Node)) {
-        setJobDropdownOpen(false);
+      if (reportDropdownRef.current && !reportDropdownRef.current.contains(event.target as Node)) {
+        setReportDropdownOpen(false);
       }
     };
 
-    if (jobDropdownOpen) {
+    if (reportDropdownOpen) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
-  }, [jobDropdownOpen]);
+  }, [reportDropdownOpen]);
 
   const handleSuiteClick = useCallback((suiteId: number) => {
     setExpandedSuiteIds((prev) => {
@@ -132,15 +146,17 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
   // Uses effectiveSearch which only updates when API is ready (single render)
   const normalizedSearch = useMemo(() => effectiveSearch.toLowerCase(), [effectiveSearch]);
 
-  // Filter and sort suites by start_time (actual test execution time)
-  // Two-tier search:
-  // 1. Client-side: Always filter by suite title/file_path (immediate)
-  // 2. API-side: When query >= minSearchLength, also include suites with matching test cases
-  const filteredSuites = useMemo(() => {
-    return suites
+  // Step 1: Base filter (empty suites, report filter, search) + sort + deduplicate
+  // Dedup happens BEFORE status filter so the latest result wins (e.g., a retest pass
+  // replaces an earlier failure, and the failed entry won't appear in "failed" filter).
+  const deduplicatedSuites = useMemo(() => {
+    const sorted = suites
       .filter((suite) => {
-        // Job filter
-        if (selectedJobs.size > 0 && suite.job_id && !selectedJobs.has(suite.job_id)) {
+        // Skip empty suites (no specs extracted)
+        if (suite.specs_count === 0) return false;
+
+        // Report filter
+        if (selectedReports.size > 0 && suite.report_id && !selectedReports.has(suite.report_id)) {
           return false;
         }
 
@@ -161,20 +177,7 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
           }
         }
 
-        // Status filter
-        if (statusFilter === 'all') return true;
-        switch (statusFilter) {
-          case 'passed':
-            return suite.passed_count > 0;
-          case 'failed':
-            return suite.failed_count > 0;
-          case 'flaky':
-            return (suite.flaky_count ?? 0) > 0;
-          case 'skipped':
-            return (suite.skipped_count ?? 0) > 0;
-          default:
-            return true;
-        }
+        return true;
       })
       .sort((a, b) => {
         // Sort by start_time (actual test execution time), fallback to created_at
@@ -185,39 +188,81 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
         }
         return 0;
       });
+
+    // Deduplicate by file_path: keep the latest entry (last created wins)
+    if (reports && reports.length > 1) {
+      const seen = new Map<string, number>();
+      // Walk in reverse so later entries (latest) overwrite earlier ones
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        const fp = sorted[i]!.file_path;
+        if (fp && !seen.has(fp)) {
+          seen.set(fp, i);
+        }
+      }
+      return sorted.filter((suite, i) => {
+        if (!suite.file_path) return true;
+        return seen.get(suite.file_path) === i;
+      });
+    }
+
+    return sorted;
   }, [
     suites,
-    selectedJobs,
+    selectedReports,
     normalizedSearch,
-    statusFilter,
     hasApiSearchResults,
     searchResultsBySuite,
+    reports,
   ]);
 
-  // Toggle job selection
-  const toggleJob = (jobId: string) => {
-    setSelectedJobs((prev) => {
+  // Step 2: Apply status filter on deduplicated suites
+  const filteredSuites = useMemo(() => {
+    if (statusFilter === 'all') return deduplicatedSuites;
+    return deduplicatedSuites.filter((suite) => {
+      switch (statusFilter) {
+        case 'passed':
+          return suite.passed_count > 0;
+        case 'failed':
+          return suite.failed_count > 0;
+        case 'flaky':
+          return (suite.flaky_count ?? 0) > 0;
+        case 'skipped':
+          return (suite.skipped_count ?? 0) > 0;
+        default:
+          return true;
+      }
+    });
+  }, [deduplicatedSuites, statusFilter]);
+
+  // Step 3: Paginate filtered suites
+  const totalPages = Math.ceil(filteredSuites.length / PAGE_SIZE);
+  const paginatedSuites = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return filteredSuites.slice(start, start + PAGE_SIZE);
+  }, [filteredSuites, currentPage]);
+
+  // Toggle report selection
+  const toggleReport = (reportId: string) => {
+    setSelectedReports((prev) => {
       const next = new Set(prev);
-      if (next.has(jobId)) {
-        next.delete(jobId);
+      if (next.has(reportId)) {
+        next.delete(reportId);
       } else {
-        next.add(jobId);
+        next.add(reportId);
       }
       return next;
     });
   };
 
-  // Select all jobs (clear selection = show all)
-  const selectAllJobs = () => {
-    setSelectedJobs(new Set());
-    setJobDropdownOpen(false);
+  // Select all reports (clear selection = show all)
+  const selectAllReports = () => {
+    setSelectedReports(new Set());
+    setReportDropdownOpen(false);
   };
 
-  // Calculate totals from suites (use filtered suites for accurate counts)
+  // Calculate totals from deduplicated suites (latest results only)
   const { totals, totalTests } = useMemo(() => {
-    const suitesForTotals =
-      selectedJobs.size > 0 ? suites.filter((s) => s.job_id && selectedJobs.has(s.job_id)) : suites;
-    const calculated = suitesForTotals.reduce(
+    const calculated = deduplicatedSuites.reduce(
       (acc, suite) => ({
         passed: acc.passed + (suite.passed_count ?? 0),
         failed: acc.failed + (suite.failed_count ?? 0),
@@ -230,7 +275,41 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
       totals: calculated,
       totalTests: calculated.passed + calculated.failed + calculated.flaky + calculated.skipped,
     };
-  }, [suites, selectedJobs]);
+  }, [deduplicatedSuites]);
+
+  // Build map: file_path -> list of report badge info (ordered by created_at) for all reports that tested this file
+  type ReportBadge = {
+    report_number: number;
+    report_name: string;
+    passed: boolean;
+    created_at: string;
+  };
+  const filePathReportsMap = useMemo(() => {
+    if (!reports || reports.length <= 1) return new Map<string, ReportBadge[]>();
+    const map = new Map<string, ReportBadge[]>();
+    for (const suite of suites) {
+      if (!suite.file_path || suite.specs_count === 0) continue;
+      const entry: ReportBadge = {
+        report_number: suite.report_number ?? 0,
+        report_name: suite.report_name || '',
+        passed: suite.failed_count === 0,
+        created_at: suite.created_at || '',
+      };
+      const existing = map.get(suite.file_path);
+      if (existing) {
+        if (!existing.some((e) => e.report_number === entry.report_number)) {
+          existing.push(entry);
+        }
+      } else {
+        map.set(suite.file_path, [entry]);
+      }
+    }
+    // Sort each entry by created_at (chronological order)
+    for (const entries of map.values()) {
+      entries.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+    }
+    return map;
+  }, [suites, reports]);
 
   return (
     <div className="space-y-3">
@@ -326,7 +405,7 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
           {/* Section 1: Title (fixed width) */}
           <h3 className="w-40 flex-shrink-0 text-sm font-medium text-gray-900 dark:text-white">
             Test Suites ({filteredSuites.length}
-            {statusFilter !== 'all' || normalizedSearch ? ` of ${suites.length}` : ''})
+            {statusFilter !== 'all' || normalizedSearch ? ` of ${deduplicatedSuites.length}` : ''})
           </h3>
 
           {/* Section 2: Search input (fixed width, centered) */}
@@ -363,7 +442,7 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
           {/* Spacer */}
           <div className="flex-1" />
 
-          {/* Section 3: Filters (status + job dropdown) */}
+          {/* Section 3: Filters (status + report dropdown) */}
           <div className="flex flex-shrink-0 items-center gap-2">
             {/* Status filter buttons */}
             <div className="flex items-center gap-1">
@@ -442,61 +521,61 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
               )}
             </div>
 
-            {/* Job filter dropdown - only show when multiple jobs */}
-            {jobs && jobs.length > 1 && (
-              <div ref={jobDropdownRef} className="relative">
+            {/* Report filter dropdown - only show when multiple reports */}
+            {reports && reports.length > 1 && (
+              <div ref={reportDropdownRef} className="relative">
                 <button
                   type="button"
-                  onClick={() => setJobDropdownOpen(!jobDropdownOpen)}
+                  onClick={() => setReportDropdownOpen(!reportDropdownOpen)}
                   className={`cursor-pointer inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition-colors w-28 justify-center ${
-                    selectedJobs.size > 0
+                    selectedReports.size > 0
                       ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400'
                       : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600'
                   }`}
                 >
                   <Filter className="h-3 w-3" />
-                  {selectedJobs.size > 0
-                    ? `${selectedJobs.size} job${selectedJobs.size > 1 ? 's' : ''}`
-                    : 'All Jobs'}
+                  {selectedReports.size > 0
+                    ? `${selectedReports.size} report${selectedReports.size > 1 ? 's' : ''}`
+                    : 'All Reports'}
                   <ChevronDown
-                    className={`h-3 w-3 transition-transform ${jobDropdownOpen ? 'rotate-180' : ''}`}
+                    className={`h-3 w-3 transition-transform ${reportDropdownOpen ? 'rotate-180' : ''}`}
                   />
                 </button>
 
-                {jobDropdownOpen && (
+                {reportDropdownOpen && (
                   <div className="absolute right-0 z-10 mt-1 w-80 max-w-[90vw] rounded-md border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
                     <div className="p-2 max-h-64 overflow-y-auto">
                       <button
                         type="button"
-                        onClick={selectAllJobs}
+                        onClick={selectAllReports}
                         className={`w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
-                          selectedJobs.size === 0
+                          selectedReports.size === 0
                             ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
                             : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700'
                         }`}
                       >
-                        All Jobs
+                        All Reports
                       </button>
                       <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-                      {[...jobs]
-                        .sort((a, b) => a.job_number - b.job_number)
-                        .map((job) => (
+                      {[...reports]
+                        .sort((a, b) => a.report_number - b.report_number)
+                        .map((entry) => (
                           <button
-                            key={job.job_id}
+                            key={entry.report_id}
                             type="button"
-                            onClick={() => toggleJob(job.job_id)}
+                            onClick={() => toggleReport(entry.report_id)}
                             className={`w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
-                              selectedJobs.has(job.job_id)
+                              selectedReports.has(entry.report_id)
                                 ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
                                 : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700'
                             }`}
                           >
                             <span className="flex items-center gap-2 min-w-0">
                               <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-gray-200 px-1 text-[10px] font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-300">
-                                {job.job_number}
+                                {entry.report_number}
                               </span>
-                              <span className="truncate" title={job.job_name}>
-                                {job.job_name}
+                              <span className="truncate" title={entry.report_name}>
+                                {entry.report_name}
                               </span>
                             </span>
                           </button>
@@ -509,6 +588,37 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
           </div>
         </div>
 
+        {/* Pagination controls (top) */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between border-b border-gray-200 pb-4 mb-4 dark:border-gray-700">
+            <div className="text-sm text-gray-500 dark:text-gray-400">
+              Showing {(currentPage - 1) * PAGE_SIZE + 1} to{' '}
+              {Math.min(currentPage * PAGE_SIZE, filteredSuites.length)} of {filteredSuites.length}{' '}
+              suites
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setCurrentPage(currentPage - 1)}
+                disabled={currentPage === 1}
+                className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(currentPage + 1)}
+                disabled={currentPage >= totalPages}
+                className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+              >
+                Next
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {filteredSuites.length === 0 ? (
           <p className="text-sm text-gray-500 dark:text-gray-400">
             {statusFilter === 'all'
@@ -517,7 +627,7 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
           </p>
         ) : (
           <div className="divide-y divide-gray-100 dark:divide-gray-700">
-            {filteredSuites.map((suite, index) => {
+            {paginatedSuites.map((suite, index) => {
               // Check if suite itself matched by title/file_path (vs matched by API test cases)
               const suiteMatchedByPath = normalizedSearch
                 ? suite.title?.toLowerCase().includes(normalizedSearch) ||
@@ -531,13 +641,45 @@ export function TestSuitesView({ reportId, suites, stats, title, jobs }: TestSui
                   isExpanded={expandedSuiteIds.has(suite.id)}
                   onToggle={() => handleSuiteClick(suite.id)}
                   statusFilter={statusFilter}
-                  rowNumber={index + 1}
-                  hasMultipleJobs={!!jobs && jobs.length > 1}
+                  rowNumber={(currentPage - 1) * PAGE_SIZE + index + 1}
+                  hasMultipleReports={!!reports && reports.length > 1}
                   searchQuery={normalizedSearch}
                   suiteMatchedByPath={suiteMatchedByPath}
+                  allReportsForFile={filePathReportsMap.get(suite.file_path) || []}
                 />
               );
             })}
+          </div>
+        )}
+
+        {/* Pagination controls */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between border-t border-gray-200 pt-4 mt-4 dark:border-gray-700">
+            <div className="text-sm text-gray-500 dark:text-gray-400">
+              Showing {(currentPage - 1) * PAGE_SIZE + 1} to{' '}
+              {Math.min(currentPage * PAGE_SIZE, filteredSuites.length)} of {filteredSuites.length}{' '}
+              suites
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setCurrentPage(currentPage - 1)}
+                disabled={currentPage === 1}
+                className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(currentPage + 1)}
+                disabled={currentPage >= totalPages}
+                className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+              >
+                Next
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         )}
 
@@ -590,10 +732,17 @@ interface SuiteRowProps {
   onToggle: () => void;
   statusFilter: StatusFilter;
   rowNumber: number;
-  hasMultipleJobs: boolean;
+  hasMultipleReports: boolean;
   searchQuery: string;
   /** True if suite matched by its own title/file_path, false if matched only by API test cases */
   suiteMatchedByPath: boolean;
+  /** All reports that tested this same file_path (for multi-report badge display) */
+  allReportsForFile: {
+    report_number: number;
+    report_name: string;
+    passed: boolean;
+    created_at: string;
+  }[];
 }
 
 const LOADING_DELAY_MS = 1000;
@@ -605,9 +754,10 @@ const SuiteRow = memo(function SuiteRow({
   onToggle,
   statusFilter,
   rowNumber,
-  hasMultipleJobs,
+  hasMultipleReports,
   searchQuery,
   suiteMatchedByPath,
+  allReportsForFile,
 }: SuiteRowProps) {
   // Memoize status calculations
   const { hasFlaky, hasFailed, hasSkipped, StatusIcon, statusIconColor } = useMemo(() => {
@@ -753,12 +903,27 @@ const SuiteRow = memo(function SuiteRow({
                     <span className="text-red-500 italic">Missing file path</span>
                   )}
                 </span>
-                {suite.job_number !== undefined && hasMultipleJobs && (
-                  <span
-                    className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded bg-gray-200 text-[10px] font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-300 flex-shrink-0"
-                    title={suite.job_name || `Job ${suite.job_number}`}
-                  >
-                    {suite.job_number}
+                {hasMultipleReports && allReportsForFile.length > 0 && (
+                  <span className="ml-1 inline-flex items-center gap-0.5 flex-shrink-0">
+                    {allReportsForFile.map((j) => {
+                      const isCurrent = j.report_number === suite.report_number;
+                      const colorClass = j.passed
+                        ? isCurrent
+                          ? 'bg-green-200 text-green-700 dark:bg-green-800 dark:text-green-200'
+                          : 'bg-green-100 text-green-400 dark:bg-green-900/40 dark:text-green-500'
+                        : isCurrent
+                          ? 'bg-red-200 text-red-700 dark:bg-red-800 dark:text-red-200'
+                          : 'bg-red-100 text-red-400 dark:bg-red-900/40 dark:text-red-500';
+                      return (
+                        <span
+                          key={j.report_number}
+                          className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${colorClass}`}
+                          title={j.report_name || `Report ${j.report_number}`}
+                        >
+                          {j.report_number}
+                        </span>
+                      );
+                    })}
                   </span>
                 )}
               </p>

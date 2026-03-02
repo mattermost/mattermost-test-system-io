@@ -1,6 +1,6 @@
 //! Database queries for screenshots with upload tracking.
 //!
-//! Follows the same request-then-transfer pattern as job_files.
+//! Follows the same request-then-transfer pattern as report files.
 
 use chrono::Utc;
 use sea_orm::{
@@ -44,7 +44,7 @@ impl DbPool {
     /// Insert multiple screenshots in a batch (pending status).
     pub async fn insert_screenshots(
         &self,
-        job_id: Uuid,
+        report_id: Uuid,
         screenshots: Vec<ScreenshotEntry>,
     ) -> AppResult<Vec<screenshot::Model>> {
         let now = Utc::now();
@@ -55,8 +55,8 @@ impl DbPool {
             let id = Uuid::now_v7();
             let model = ActiveModel {
                 id: Set(id),
-                test_job_id: Set(job_id),
-                test_case_id: Set(None), // linked after extraction
+                upload_id: Set(report_id),
+                case_id: Set(None), // linked after extraction
                 filename: Set(screenshot.filename),
                 s3_key: Set(screenshot.s3_key),
                 size_bytes: Set(screenshot.size_bytes),
@@ -81,13 +81,13 @@ impl DbPool {
         Ok(inserted)
     }
 
-    /// Get all screenshots for a job.
-    pub async fn get_screenshots_by_job_id(
+    /// Get all screenshots for a report.
+    pub async fn get_screenshots_by_report_id(
         &self,
-        job_id: Uuid,
+        report_id: Uuid,
     ) -> AppResult<Vec<screenshot::Model>> {
         let result = Screenshot::find()
-            .filter(screenshot::Column::TestJobId.eq(job_id))
+            .filter(screenshot::Column::UploadId.eq(report_id))
             .order_by_asc(screenshot::Column::TestName)
             .order_by_asc(screenshot::Column::Sequence)
             .all(self.connection())
@@ -97,10 +97,13 @@ impl DbPool {
         Ok(result)
     }
 
-    /// Get pending screenshots for a job.
-    pub async fn get_pending_screenshots(&self, job_id: Uuid) -> AppResult<Vec<screenshot::Model>> {
+    /// Get pending screenshots for a report.
+    pub async fn get_pending_screenshots(
+        &self,
+        report_id: Uuid,
+    ) -> AppResult<Vec<screenshot::Model>> {
         let result = Screenshot::find()
-            .filter(screenshot::Column::TestJobId.eq(job_id))
+            .filter(screenshot::Column::UploadId.eq(report_id))
             .filter(screenshot::Column::Status.eq(ScreenshotStatus::Pending.as_str()))
             .all(self.connection())
             .await
@@ -112,7 +115,7 @@ impl DbPool {
     /// Mark screenshots as uploaded.
     pub async fn mark_screenshots_uploaded(
         &self,
-        job_id: Uuid,
+        report_id: Uuid,
         filenames: &[String],
     ) -> AppResult<u64> {
         let now = Utc::now();
@@ -126,7 +129,7 @@ impl DbPool {
                 screenshot::Column::UploadedAt,
                 sea_orm::sea_query::Expr::value(now),
             )
-            .filter(screenshot::Column::TestJobId.eq(job_id))
+            .filter(screenshot::Column::UploadId.eq(report_id))
             .filter(screenshot::Column::Filename.is_in(filenames))
             .exec(self.connection())
             .await
@@ -137,10 +140,10 @@ impl DbPool {
         Ok(result.rows_affected)
     }
 
-    /// Count pending screenshots for a job.
-    pub async fn count_pending_screenshots(&self, job_id: Uuid) -> AppResult<u64> {
+    /// Count pending screenshots for a report.
+    pub async fn count_pending_screenshots(&self, report_id: Uuid) -> AppResult<u64> {
         let count = Screenshot::find()
-            .filter(screenshot::Column::TestJobId.eq(job_id))
+            .filter(screenshot::Column::UploadId.eq(report_id))
             .filter(screenshot::Column::Status.eq(ScreenshotStatus::Pending.as_str()))
             .count(self.connection())
             .await
@@ -151,10 +154,10 @@ impl DbPool {
         Ok(count)
     }
 
-    /// Count total screenshots for a job.
-    pub async fn count_screenshots(&self, job_id: Uuid) -> AppResult<u64> {
+    /// Count total screenshots for a report.
+    pub async fn count_screenshots(&self, report_id: Uuid) -> AppResult<u64> {
         let count = Screenshot::find()
-            .filter(screenshot::Column::TestJobId.eq(job_id))
+            .filter(screenshot::Column::UploadId.eq(report_id))
             .count(self.connection())
             .await
             .map_err(|e| AppError::Database(format!("Failed to count screenshots: {}", e)))?;
@@ -162,29 +165,29 @@ impl DbPool {
         Ok(count)
     }
 
-    /// Get screenshot upload progress for a job.
-    pub async fn get_screenshot_upload_progress(&self, job_id: Uuid) -> AppResult<(u64, u64)> {
-        let total = self.count_screenshots(job_id).await?;
-        let pending = self.count_pending_screenshots(job_id).await?;
+    /// Get screenshot upload progress for a report.
+    pub async fn get_screenshot_upload_progress(&self, report_id: Uuid) -> AppResult<(u64, u64)> {
+        let total = self.count_screenshots(report_id).await?;
+        let pending = self.count_pending_screenshots(report_id).await?;
         let uploaded = total - pending;
 
         Ok((uploaded, total))
     }
 
-    /// Check if all screenshots have been uploaded for a job.
-    pub async fn all_screenshots_uploaded(&self, job_id: Uuid) -> AppResult<bool> {
-        let pending = self.count_pending_screenshots(job_id).await?;
+    /// Check if all screenshots have been uploaded for a report.
+    pub async fn all_screenshots_uploaded(&self, report_id: Uuid) -> AppResult<bool> {
+        let pending = self.count_pending_screenshots(report_id).await?;
         Ok(pending == 0)
     }
 
-    /// Get a specific screenshot by job_id and filename.
+    /// Get a specific screenshot by report_id and filename.
     pub async fn get_screenshot(
         &self,
-        job_id: Uuid,
+        report_id: Uuid,
         filename: &str,
     ) -> AppResult<Option<screenshot::Model>> {
         let result = Screenshot::find()
-            .filter(screenshot::Column::TestJobId.eq(job_id))
+            .filter(screenshot::Column::UploadId.eq(report_id))
             .filter(screenshot::Column::Filename.eq(filename))
             .one(self.connection())
             .await
@@ -204,7 +207,7 @@ impl DbPool {
         for (screenshot_id, test_case_id) in mappings {
             let result = Screenshot::update_many()
                 .col_expr(
-                    screenshot::Column::TestCaseId,
+                    screenshot::Column::CaseId,
                     sea_orm::sea_query::Expr::value(*test_case_id),
                 )
                 .filter(screenshot::Column::Id.eq(*screenshot_id))

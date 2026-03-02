@@ -4,18 +4,36 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// GitHub Actions OIDC JWT claims — safe subset only.
+/// GitHub Actions OIDC JWT claims — all ~29 fields.
 ///
-/// Contains only the 14 claims we persist plus fields required for
-/// authentication/authorization.
-/// Excluded claims (jti, iss, aud, exp, iat, nbf, repository_visibility,
-/// repository_id, repository_owner_id, actor_id, runner_environment,
-/// job_workflow_ref, workflow_ref, workflow_sha) are silently ignored
-/// during deserialization and never stored.
+/// Includes every claim GitHub Actions places in the OIDC token so we can
+/// persist the full set in `oidc_claims` for audit and correlation.
 ///
 /// See: <https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect>
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct GitHubOidcClaims {
+    // --- Standard JWT fields ---
+    /// JWT token ID.
+    #[serde(default)]
+    pub jti: Option<String>,
+    /// Issuer.
+    #[serde(default)]
+    pub iss: Option<String>,
+    /// Audience.
+    #[serde(default)]
+    pub aud: Option<String>,
+    /// Expiration (unix timestamp).
+    #[serde(default)]
+    pub exp: Option<i64>,
+    /// Issued-at (unix timestamp).
+    #[serde(default)]
+    pub iat: Option<i64>,
+    /// Not-before (unix timestamp).
+    #[serde(default)]
+    pub nbf: Option<i64>,
+
+    // --- GitHub identity claims ---
     /// Subject (e.g., "repo:org/repo:ref:refs/heads/main").
     pub sub: String,
     /// Repository (e.g., "octo-org/octo-repo").
@@ -24,7 +42,21 @@ pub struct GitHubOidcClaims {
     pub repository_owner: String,
     /// Actor (GitHub username who triggered the workflow).
     pub actor: String,
-    /// Git ref (e.g., "refs/heads/main") — kept as-is, not stripped.
+    /// Repository numeric ID.
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    /// Repository owner numeric ID.
+    #[serde(default)]
+    pub repository_owner_id: Option<String>,
+    /// Repository visibility ("public", "private", "internal").
+    #[serde(default)]
+    pub repository_visibility: Option<String>,
+    /// Actor numeric ID.
+    #[serde(default)]
+    pub actor_id: Option<String>,
+
+    // --- Git ref claims ---
+    /// Git ref (e.g., "refs/heads/main") -- kept as-is, not stripped.
     #[serde(rename = "ref", default)]
     pub git_ref: Option<String>,
     /// Ref type ("branch" or "tag").
@@ -33,6 +65,14 @@ pub struct GitHubOidcClaims {
     /// Commit SHA.
     #[serde(default)]
     pub sha: Option<String>,
+    /// Head ref (source branch for PRs, empty otherwise).
+    #[serde(default)]
+    pub head_ref: Option<String>,
+    /// Base ref (target branch for PRs, empty otherwise).
+    #[serde(default)]
+    pub base_ref: Option<String>,
+
+    // --- Workflow / run claims ---
     /// Workflow name.
     #[serde(default)]
     pub workflow: Option<String>,
@@ -48,20 +88,37 @@ pub struct GitHubOidcClaims {
     /// Run attempt number.
     #[serde(default)]
     pub run_attempt: Option<String>,
-    /// Head ref (source branch for PRs, empty otherwise).
+
+    // --- Environment / runner claims ---
+    /// Runner environment (e.g., "github-hosted").
     #[serde(default)]
-    pub head_ref: Option<String>,
-    /// Base ref (target branch for PRs, empty otherwise).
+    pub runner_environment: Option<String>,
+    /// Deployment environment name (if the job references an environment).
     #[serde(default)]
-    pub base_ref: Option<String>,
+    pub environment: Option<String>,
+
+    // --- Check / workflow ref claims ---
+    /// Check run ID.
+    #[serde(default)]
+    pub check_run_id: Option<String>,
+    /// Job workflow ref (reusable workflow ref).
+    #[serde(default)]
+    pub job_workflow_ref: Option<String>,
+    /// Job workflow SHA.
+    #[serde(default)]
+    pub job_workflow_sha: Option<String>,
+    /// Workflow ref.
+    #[serde(default)]
+    pub workflow_ref: Option<String>,
+    /// Workflow SHA.
+    #[serde(default)]
+    pub workflow_sha: Option<String>,
 }
 
 impl GitHubOidcClaims {
-    /// Extract only the 13 safe, non-sensitive claims for persistence.
-    ///
-    /// Excluded: jti, sub, iss, aud, exp, iat, nbf, repository_visibility,
-    /// environment, runner_environment, repository_id, repository_owner_id,
-    /// actor_id, workflow_ref, workflow_sha, job_workflow_ref, job_workflow_sha.
+    /// Convert all claims to the safe persistence struct that maps 1:1 to
+    /// the `oidc_claims` table columns.
+    #[allow(dead_code)]
     pub fn to_safe_claims(
         &self,
         resolved_role: &str,
@@ -69,20 +126,44 @@ impl GitHubOidcClaims {
         http_method: &str,
     ) -> SafeOidcClaims {
         SafeOidcClaims {
+            // Standard JWT
+            jti: self.jti.clone(),
+            iss: self.iss.clone(),
+            aud: self.aud.clone(),
+            exp: self.exp,
+            iat: self.iat,
+            nbf: self.nbf,
+            // Identity
             sub: Some(self.sub.clone()),
             repository: Some(self.repository.clone()),
             repository_owner: Some(self.repository_owner.clone()),
             actor: Some(self.actor.clone()),
-            sha: self.sha.clone(),
+            repository_id: self.repository_id.clone(),
+            repository_owner_id: self.repository_owner_id.clone(),
+            repository_visibility: self.repository_visibility.clone(),
+            actor_id: self.actor_id.clone(),
+            // Git ref
             git_ref: self.git_ref.clone(),
             ref_type: self.ref_type.clone(),
+            sha: self.sha.clone(),
+            head_ref: self.head_ref.clone(),
+            base_ref: self.base_ref.clone(),
+            // Workflow / run
             workflow: self.workflow.clone(),
             event_name: self.event_name.clone(),
             run_id: self.run_id.clone(),
             run_number: self.run_number.clone(),
             run_attempt: self.run_attempt.clone(),
-            head_ref: self.head_ref.clone(),
-            base_ref: self.base_ref.clone(),
+            // Environment / runner
+            runner_environment: self.runner_environment.clone(),
+            environment: self.environment.clone(),
+            // Check / workflow ref
+            check_run_id: self.check_run_id.clone(),
+            job_workflow_ref: self.job_workflow_ref.clone(),
+            job_workflow_sha: self.job_workflow_sha.clone(),
+            workflow_ref: self.workflow_ref.clone(),
+            workflow_sha: self.workflow_sha.clone(),
+            // Audit
             resolved_role: resolved_role.to_string(),
             api_path: api_path.to_string(),
             http_method: http_method.to_string(),
@@ -164,23 +245,51 @@ pub struct OidcPolicyListResponse {
     pub policies: Vec<OidcPolicyResponse>,
 }
 
-/// Safe subset of OIDC claims for persistence (13 claims + 3 audit fields).
+/// All OIDC claims for persistence in `oidc_claims` table.
+///
+/// Maps 1:1 to the `oidc_claims` table columns: all ~29 token claims
+/// plus 3 audit fields (resolved_role, api_path, http_method).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SafeOidcClaims {
+    // Standard JWT fields
+    pub jti: Option<String>,
+    pub iss: Option<String>,
+    pub aud: Option<String>,
+    pub exp: Option<i64>,
+    pub iat: Option<i64>,
+    pub nbf: Option<i64>,
+    // Identity
     pub sub: Option<String>,
     pub repository: Option<String>,
     pub repository_owner: Option<String>,
     pub actor: Option<String>,
-    pub sha: Option<String>,
+    pub repository_id: Option<String>,
+    pub repository_owner_id: Option<String>,
+    pub repository_visibility: Option<String>,
+    pub actor_id: Option<String>,
+    // Git ref
     pub git_ref: Option<String>,
     pub ref_type: Option<String>,
+    pub sha: Option<String>,
+    pub head_ref: Option<String>,
+    pub base_ref: Option<String>,
+    // Workflow / run
     pub workflow: Option<String>,
     pub event_name: Option<String>,
     pub run_id: Option<String>,
     pub run_number: Option<String>,
     pub run_attempt: Option<String>,
-    pub head_ref: Option<String>,
-    pub base_ref: Option<String>,
+    // Environment / runner
+    pub runner_environment: Option<String>,
+    pub environment: Option<String>,
+    // Check / workflow ref
+    pub check_run_id: Option<String>,
+    pub job_workflow_ref: Option<String>,
+    pub job_workflow_sha: Option<String>,
+    pub workflow_ref: Option<String>,
+    pub workflow_sha: Option<String>,
+    // Audit fields (NOT optional)
     pub resolved_role: String,
     pub api_path: String,
     pub http_method: String,

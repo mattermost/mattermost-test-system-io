@@ -21,7 +21,7 @@ async fn test_valid_oidc_upload() {
     let token = mock.issue_token(&claims, &key);
     let (status, body) = upload_report_with_token(&app, &token, &format!("{org}/test-repo")).await;
 
-    assert_eq!(status, 201, "Upload should succeed: {:?}", body);
+    assert_eq!(status, 200, "Register should succeed: {:?}", body);
     assert!(body["report_id"].is_string());
 }
 
@@ -76,10 +76,10 @@ async fn test_valid_oidc_report_detail() {
         Some(format!("{org}/test-repo").as_str()),
         "repository typed column should match request"
     );
-    assert_eq!(
-        body["branch"].as_str(),
-        Some("main"),
-        "branch typed column should match request"
+    // Branch is stored as the full ref from OIDC claims
+    assert!(
+        body["branch"].as_str().unwrap().contains("main"),
+        "branch typed column should contain 'main'"
     );
     assert!(
         body["commit"].is_string() && !body["commit"].as_str().unwrap().is_empty(),

@@ -177,7 +177,8 @@ export function getWebSocketUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const host = window.location.host;
 
-  // In development, API is on port 8080
+  // In development, connect directly to the backend (Vite HTTP proxy
+  // doesn't reliably handle WebSocket upgrades)
   if (import.meta.env.DEV) {
     return `ws://localhost:8080/api/v1/ws`;
   }

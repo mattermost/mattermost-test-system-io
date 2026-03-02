@@ -91,18 +91,37 @@ async fn jwks_endpoint(state: web::Data<Arc<Mutex<MockOidcState>>>) -> HttpRespo
 }
 
 /// GitHub OIDC claims for signing test tokens.
+///
+/// Covers all ~29 GitHub Actions OIDC claims plus standard JWT fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestOidcClaims {
+    // --- Identity claims ---
     pub sub: String,
     pub repository: String,
     pub repository_owner: String,
     pub actor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_owner_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_visibility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<String>,
+
+    // --- Git ref claims ---
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha: Option<String>,
     #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
     pub git_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ref_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
+
+    // --- Workflow / run claims ---
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,39 +132,78 @@ pub struct TestOidcClaims {
     pub run_number: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_attempt: Option<String>,
+
+    // --- Environment / runner claims ---
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub head_ref: Option<String>,
+    pub runner_environment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_ref: Option<String>,
+    pub environment: Option<String>,
+
+    // --- Check / workflow ref claims ---
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_workflow_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_workflow_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_sha: Option<String>,
+
+    // --- JWT standard fields ---
     pub iss: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aud: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jti: Option<String>,
     pub exp: i64,
     pub iat: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nbf: Option<i64>,
 }
 
 impl TestOidcClaims {
     pub fn default_for(issuer: &str) -> Self {
         let now = Utc::now();
         Self {
+            // Identity
             sub: "repo:test-org/test-repo:ref:refs/heads/main".to_string(),
             repository: "test-org/test-repo".to_string(),
             repository_owner: "test-org".to_string(),
             actor: "test-user".to_string(),
+            repository_id: None,
+            repository_owner_id: None,
+            repository_visibility: None,
+            actor_id: None,
+            // Git ref
             sha: Some("abc123def456".to_string()),
             git_ref: Some("refs/heads/main".to_string()),
             ref_type: Some("branch".to_string()),
+            head_ref: None,
+            base_ref: None,
+            // Workflow / run
             workflow: Some("CI Tests".to_string()),
             event_name: Some("push".to_string()),
             run_id: Some("12345".to_string()),
             run_number: Some("42".to_string()),
             run_attempt: Some("1".to_string()),
-            head_ref: None,
-            base_ref: None,
+            // Environment / runner
+            runner_environment: Some("github-hosted".to_string()),
+            environment: None,
+            // Check / workflow ref
+            check_run_id: Some("mock-check-run-1".to_string()),
+            job_workflow_ref: None,
+            job_workflow_sha: None,
+            workflow_ref: None,
+            workflow_sha: None,
+            // JWT standard
             iss: issuer.to_string(),
             aud: None,
+            jti: None,
             exp: (now + Duration::minutes(10)).timestamp(),
             iat: now.timestamp(),
+            nbf: None,
         }
     }
 
@@ -172,6 +230,16 @@ impl TestOidcClaims {
         if let Some(pos) = repo.find('/') {
             self.repository_owner = repo[..pos].to_string();
         }
+        self
+    }
+
+    pub fn with_check_run_id(mut self, id: &str) -> Self {
+        self.check_run_id = Some(id.to_string());
+        self
+    }
+
+    pub fn with_event_name(mut self, name: &str) -> Self {
+        self.event_name = Some(name.to_string());
         self
     }
 }

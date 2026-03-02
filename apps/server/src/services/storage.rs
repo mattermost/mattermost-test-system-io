@@ -184,29 +184,16 @@ impl Storage {
         Ok((data, content_type))
     }
 
-    /// Build an S3 key prefix for a job's files.
+    /// Build an S3 key prefix for a report's files.
     ///
     /// # Arguments
-    /// * `report_id` - The report UUID
-    /// * `job_id` - The job UUID
+    /// * `report_group_id` - The report group UUID
+    /// * `report_id` - The individual report UUID
     ///
     /// # Returns
-    /// S3 key prefix in format: reports/{report_id}/jobs/{job_id}
-    pub fn job_key_prefix(report_id: &str, job_id: &str) -> String {
-        format!("reports/{}/jobs/{}", report_id, job_id)
-    }
-
-    /// Build an S3 key for a job file.
-    ///
-    /// # Arguments
-    /// * `report_id` - The report UUID
-    /// * `job_id` - The job UUID
-    /// * `filename` - The filename within the job
-    ///
-    /// # Returns
-    /// S3 key in format: reports/{report_id}/jobs/{job_id}/{filename}
-    pub fn job_key(report_id: &str, job_id: &str, filename: &str) -> String {
-        format!("reports/{}/jobs/{}/{}", report_id, job_id, filename)
+    /// S3 key prefix in format: reports/{report_group_id}/entries/{report_id}
+    pub fn report_key_prefix(report_group_id: &str, report_id: &str) -> String {
+        format!("reports/{}/entries/{}", report_group_id, report_id)
     }
 }
 
@@ -215,15 +202,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_job_key_prefix() {
-        let prefix = Storage::job_key_prefix("report-123", "job-456");
-        assert_eq!(prefix, "reports/report-123/jobs/job-456");
-    }
-
-    #[test]
-    fn test_job_key() {
-        let key = Storage::job_key("report-123", "job-456", "index.html");
-        assert_eq!(key, "reports/report-123/jobs/job-456/index.html");
+    fn test_report_key_prefix() {
+        let prefix = Storage::report_key_prefix("group-123", "report-456");
+        assert_eq!(prefix, "reports/group-123/entries/report-456");
     }
 
     #[test]

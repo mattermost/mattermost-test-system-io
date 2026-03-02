@@ -13,7 +13,8 @@
         outdated outdated-server outdated-web update update-server update-web \
         check-target-size clean-debug-if-large clean-release-if-large \
         kill-ports kill-server-port kill-web-port kill-port \
-        audit audit-server
+        audit audit-server \
+        seed
 
 # Default target
 .DEFAULT_GOAL := help
@@ -376,11 +377,12 @@ update-web-latest: ## Update npm dependencies to latest (may break semver)
 # Database
 # ============================================================================
 
-db-reset: ## Reset database (removes PostgreSQL Docker volumes)
-	@echo "$(YELLOW)Resetting database...$(RESET)"
-	@echo "$(YELLOW)Stopping services and removing database volumes...$(RESET)"
+db-reset: ## Reset database and storage (removes bind-mount data directories)
+	@echo "$(YELLOW)Resetting database and storage...$(RESET)"
+	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml stop
 	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down -v
-	@echo "$(GREEN)Database volumes removed. Run 'make docker-up' to recreate.$(RESET)"
+	rm -rf $(ROOT_DIR)/docker/data/postgres $(ROOT_DIR)/docker/data/minio
+	@echo "$(GREEN)Data directories removed. Run 'make docker-up' to recreate.$(RESET)"
 
 # ============================================================================
 # Documentation
@@ -396,7 +398,7 @@ docs-server: ## Generate Rust documentation
 # CI/Quality Checks
 # ============================================================================
 
-ci: fmt-check lint test build ## Run all CI checks (format, lint, test, build)
+ci: fmt-check lint typecheck test build ## Run all CI checks (format, lint, typecheck, test, build)
 	@echo "$(GREEN)All CI checks passed!$(RESET)"
 
 pre-commit: fmt lint check typecheck audit ## Run pre-commit checks (includes security audit)
@@ -437,10 +439,12 @@ docker-up: ## Start dev services (PostgreSQL + MinIO + Adminer)
 
 docker-down: ## Stop dev services
 	@echo "$(CYAN)Stopping docker-compose services...$(RESET)"
+	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml stop
 	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down
 
 docker-down-volumes: ## Stop dev services and remove volumes
 	@echo "$(YELLOW)Stopping services and removing volumes...$(RESET)"
+	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml stop
 	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down -v
 
 docker-logs: ## Show dev services logs
@@ -471,6 +475,10 @@ setup-env: ## Create .env files from examples
 	else \
 		echo "$(YELLOW)apps/web/.env already exists, skipping$(RESET)"; \
 	fi
+
+seed: ## Seed local dev server with test data (usage: make seed [BRANCH=main|master|release-9.11|pr-1234])
+	@echo "$(CYAN)Seeding local dev server...$(RESET)"
+	@node scripts/upload-seed.js $(if $(BRANCH),--branch $(BRANCH))
 
 info: ## Show project information
 	@echo ""

@@ -30,6 +30,7 @@ pub struct TestCaseInput {
 pub fn consolidate(
     inputs: Vec<TestCaseInput>,
     filters: ConsolidatedFilters,
+    duration_ms: Option<i64>,
 ) -> ConsolidatedResultsResponse {
     if inputs.is_empty() {
         return ConsolidatedResultsResponse {
@@ -44,6 +45,7 @@ pub fn consolidate(
             latest_commit_sha: String::new(),
             latest_run_attempt: 0,
             available_run_attempts: vec![],
+            duration_ms: None,
             specs: vec![],
         };
     }
@@ -167,6 +169,7 @@ pub fn consolidate(
         latest_commit_sha: latest_commit,
         latest_run_attempt: latest_attempt,
         available_run_attempts: available_attempts,
+        duration_ms,
         specs,
     }
 }
@@ -214,7 +217,7 @@ mod tests {
             make_input("spec_a", "failed", "commit_old", 1, 60),
             make_input("spec_a", "passed", "commit_new", 1, 10),
         ];
-        let result = consolidate(inputs, default_filters());
+        let result = consolidate(inputs, default_filters(), None);
         assert_eq!(result.specs[0].status, "passed");
         assert_eq!(result.overall_status, "passed");
     }
@@ -225,7 +228,7 @@ mod tests {
             make_input("spec_a", "failed", "commit_a", 1, 20),
             make_input("spec_a", "passed", "commit_a", 2, 10),
         ];
-        let result = consolidate(inputs, default_filters());
+        let result = consolidate(inputs, default_filters(), None);
         assert_eq!(result.specs[0].status, "passed");
     }
 
@@ -236,7 +239,7 @@ mod tests {
             // spec_a not re-run on commit_b
             make_input("spec_b", "passed", "commit_b", 1, 10),
         ];
-        let result = consolidate(inputs, default_filters());
+        let result = consolidate(inputs, default_filters(), None);
         assert_eq!(result.total_specs, 2);
         assert_eq!(result.overall_status, "passed");
 
@@ -254,7 +257,7 @@ mod tests {
             make_input("spec_a", "passed", "sha", 1, 10),
             make_input("spec_b", "failed", "sha", 1, 10),
         ];
-        let result = consolidate(inputs, default_filters());
+        let result = consolidate(inputs, default_filters(), None);
         assert_eq!(result.overall_status, "failed");
         assert_eq!(result.failed, 1);
     }
@@ -265,7 +268,7 @@ mod tests {
             make_input("spec_a", "passed", "sha", 1, 10),
             make_input("spec_b", "flaky", "sha", 1, 10),
         ];
-        let result = consolidate(inputs, default_filters());
+        let result = consolidate(inputs, default_filters(), None);
         assert_eq!(result.overall_status, "flaky");
     }
 
@@ -275,7 +278,7 @@ mod tests {
             make_input("spec_a", "passed", "old_sha", 1, 60),
             make_input("spec_b", "passed", "new_sha", 1, 10),
         ];
-        let result = consolidate(inputs, default_filters());
+        let result = consolidate(inputs, default_filters(), None);
 
         let spec_a = result
             .specs
@@ -294,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_empty_input() {
-        let result = consolidate(vec![], default_filters());
+        let result = consolidate(vec![], default_filters(), None);
         assert_eq!(result.total_specs, 0);
         assert_eq!(result.overall_status, "passed");
     }

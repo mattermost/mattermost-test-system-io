@@ -13,11 +13,11 @@ pub enum WsEvent {
     ReportCreated(ReportCreatedPayload),
     /// A report was updated (status change, stats update).
     ReportUpdated(ReportUpdatedPayload),
-    /// A new job was created/uploaded.
-    JobCreated(JobCreatedPayload),
-    /// A job was updated (status change).
-    JobUpdated(JobUpdatedPayload),
-    /// Test suites are now available for a job.
+    /// A new individual report was registered.
+    ReportRegistered(ReportRegisteredPayload),
+    /// An individual report was updated (status change).
+    ReportEntryUpdated(ReportEntryUpdatedPayload),
+    /// Test suites are now available for a report.
     SuitesAvailable(SuitesAvailablePayload),
 }
 
@@ -26,7 +26,6 @@ pub enum WsEvent {
 pub struct ReportCreatedPayload {
     pub report_id: Uuid,
     pub framework: String,
-    pub expected_jobs: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
     #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
@@ -36,9 +35,9 @@ pub struct ReportCreatedPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
+    pub gh_run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pr_number: Option<i32>,
+    pub gh_pr_number: Option<i32>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -48,34 +47,32 @@ pub struct ReportUpdatedPayload {
     pub report_id: Uuid,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub completed_jobs: Option<i32>,
+    pub completed_reports: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_stats: Option<TestStatsPayload>,
     pub updated_at: DateTime<Utc>,
 }
 
-/// Payload for job_created event.
+/// Payload for report_registered event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JobCreatedPayload {
+pub struct ReportRegisteredPayload {
+    pub report_group_id: Uuid,
     pub report_id: Uuid,
-    pub job_id: Uuid,
     pub display_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_job_id: Option<String>,
+    pub gh_job_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub github_job_name: Option<String>,
+    pub gh_job_name: Option<String>,
     pub status: String,
     pub created_at: DateTime<Utc>,
 }
 
-/// Payload for job_updated event.
+/// Payload for report_entry_updated event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JobUpdatedPayload {
+pub struct ReportEntryUpdatedPayload {
+    pub report_group_id: Uuid,
     pub report_id: Uuid,
-    pub job_id: Uuid,
     pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub html_url: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -83,7 +80,6 @@ pub struct JobUpdatedPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuitesAvailablePayload {
     pub report_id: Uuid,
-    pub job_id: Uuid,
     pub suite_count: i32,
 }
 
@@ -118,17 +114,17 @@ impl WsEventMessage {
 
 impl WsEvent {
     /// Create a simple report_created event with minimal fields.
+    #[allow(dead_code)]
     pub fn report_created(report_id: Uuid) -> Self {
         WsEvent::ReportCreated(ReportCreatedPayload {
             report_id,
             framework: "playwright".to_string(),
-            expected_jobs: 1,
             repository: None,
             git_ref: None,
             sha: None,
             actor: None,
-            run_id: None,
-            pr_number: None,
+            gh_run_id: None,
+            gh_pr_number: None,
             created_at: Utc::now(),
         })
     }
@@ -138,32 +134,31 @@ impl WsEvent {
         WsEvent::ReportUpdated(ReportUpdatedPayload {
             report_id,
             status: "updated".to_string(),
-            completed_jobs: None,
+            completed_reports: None,
             test_stats: None,
             updated_at: Utc::now(),
         })
     }
 
-    /// Create a job_created event.
-    pub fn job_created(report_id: Uuid, job_id: Uuid) -> Self {
-        WsEvent::JobCreated(JobCreatedPayload {
+    /// Create a report_registered event.
+    pub fn report_registered(report_group_id: Uuid, report_id: Uuid) -> Self {
+        WsEvent::ReportRegistered(ReportRegisteredPayload {
+            report_group_id,
             report_id,
-            job_id,
-            display_name: format!("Job {}", &job_id.to_string()[..8]),
-            github_job_id: None,
-            github_job_name: None,
+            display_name: format!("Report {}", &report_id.to_string()[..8]),
+            gh_job_id: None,
+            gh_job_name: None,
             status: "pending".to_string(),
             created_at: Utc::now(),
         })
     }
 
-    /// Create a job_updated event with status.
-    pub fn job_updated(report_id: Uuid, job_id: Uuid, status: String) -> Self {
-        WsEvent::JobUpdated(JobUpdatedPayload {
+    /// Create a report_entry_updated event with status.
+    pub fn report_entry_updated(report_group_id: Uuid, report_id: Uuid, status: String) -> Self {
+        WsEvent::ReportEntryUpdated(ReportEntryUpdatedPayload {
+            report_group_id,
             report_id,
-            job_id,
             status,
-            html_url: None,
             updated_at: Utc::now(),
         })
     }
@@ -172,7 +167,6 @@ impl WsEvent {
     pub fn suites_available(report_id: Uuid, suite_count: i32) -> Self {
         WsEvent::SuitesAvailable(SuitesAvailablePayload {
             report_id,
-            job_id: Uuid::nil(),
             suite_count,
         })
     }

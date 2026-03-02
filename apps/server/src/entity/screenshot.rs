@@ -9,8 +9,8 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
-    pub test_job_id: Uuid,
-    pub test_case_id: Option<Uuid>, // linked after extraction
+    pub upload_id: Uuid,
+    pub case_id: Option<Uuid>, // linked after extraction
 
     // File info
     pub filename: String,
@@ -33,30 +33,30 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
-        belongs_to = "super::test_job::Entity",
-        from = "Column::TestJobId",
-        to = "super::test_job::Column::Id",
+        belongs_to = "super::report::Entity",
+        from = "Column::UploadId",
+        to = "super::report::Column::Id",
         on_delete = "Cascade"
     )]
-    Job,
+    Report,
     #[sea_orm(
-        belongs_to = "super::test_case::Entity",
-        from = "Column::TestCaseId",
-        to = "super::test_case::Column::Id",
+        belongs_to = "super::case::Entity",
+        from = "Column::CaseId",
+        to = "super::case::Column::Id",
         on_delete = "SetNull"
     )]
-    TestCase,
+    Case,
 }
 
-impl Related<super::test_job::Entity> for Entity {
+impl Related<super::report::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::Job.def()
+        Relation::Report.def()
     }
 }
 
-impl Related<super::test_case::Entity> for Entity {
+impl Related<super::case::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::TestCase.def()
+        Relation::Case.def()
     }
 }
 

@@ -80,8 +80,8 @@ async fn test_contributor_role_full_access() {
     let (upload_status, body) =
         upload_report_with_token(&app, &token, &format!("{org}/test-repo")).await;
     assert_eq!(
-        upload_status, 201,
-        "Contributor should be able to upload: {:?}",
+        upload_status, 200,
+        "Contributor should be able to register reports: {:?}",
         body
     );
 }

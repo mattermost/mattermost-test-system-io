@@ -8,13 +8,13 @@ use uuid::Uuid;
 
 use crate::auth::ApiKeyAuth;
 use crate::db::DbPool;
+use crate::db::report_groups::InsertReportGroupParams;
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    Framework, JobStatus, JobSummary, ListReportsQuery, RegisterReportRequest,
-    RegisterReportResponse, ReportDetailResponse, ReportListResponse, ReportStatus, ReportSummary,
-    WsEvent, WsEventMessage,
+    BeginResponse, CompleteResponse, Framework, ListReportsQuery, ReportDetailResponse,
+    ReportGroupingRequest, ReportListResponse, ReportStatus, ReportSummary, UploadStatus,
+    UploadSummary,
 };
-use crate::services::EventBroadcaster;
 
 /// Response for test suite (simplified for report-level aggregation).
 #[derive(Debug, Serialize, ToSchema)]
@@ -22,11 +22,11 @@ pub struct TestSuiteResponse {
     pub id: Uuid,
     /// Short ID for display (timestamp portion of UUIDv7).
     pub short_id: String,
-    pub job_id: Uuid,
-    /// Job display name (github_job_name or "Job N").
-    pub job_name: Option<String>,
-    /// Job number for display (parsed from suffix or sequential).
-    pub job_number: i32,
+    pub report_id: Uuid,
+    /// Report display name (gh_job_name or "Report N").
+    pub report_name: Option<String>,
+    /// Report number for display (parsed from suffix or sequential).
+    pub report_number: i32,
     pub title: String,
     pub file_path: Option<String>,
     pub specs_count: i32,
@@ -42,21 +42,21 @@ pub struct TestSuiteResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Job info for filtering.
+/// Report entry info for filtering.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct JobInfo {
-    pub job_id: Uuid,
-    pub job_name: String,
-    pub job_number: i32,
+pub struct ReportEntryInfo {
+    pub report_id: Uuid,
+    pub report_name: String,
+    pub report_number: i32,
 }
 
 /// Response for report suites endpoint.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ReportSuitesResponse {
     pub suites: Vec<TestSuiteResponse>,
-    /// List of jobs for filtering (only included when multiple jobs exist).
+    /// List of report entries for filtering (only included when multiple reports exist).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub jobs: Option<Vec<JobInfo>>,
+    pub reports: Option<Vec<ReportEntryInfo>>,
 }
 
 /// Response for a single test result (one execution/retry).
@@ -132,7 +132,7 @@ pub struct SearchSuiteResult {
     pub suite_id: Uuid,
     pub suite_title: String,
     pub suite_file_path: Option<String>,
-    pub job_id: Uuid,
+    pub report_id: Uuid,
     /// Test cases in this suite that match the search query.
     pub matches: Vec<SearchMatchedTestCase>,
 }
@@ -148,134 +148,6 @@ pub struct SearchResponse {
     pub total_matches: usize,
     /// Results grouped by suite.
     pub results: Vec<SearchSuiteResult>,
-}
-
-/// Register a new test report.
-///
-/// Creates a report with expected job count and typed metadata columns.
-#[utoipa::path(
-    post,
-    path = "/reports",
-    tag = "Reports",
-    request_body = RegisterReportRequest,
-    responses(
-        (status = 201, description = "Report registered successfully", body = RegisterReportResponse),
-        (status = 400, description = "Invalid request", body = crate::error::ErrorResponse),
-        (status = 401, description = "Unauthorized", body = crate::error::ErrorResponse),
-    ),
-    security(
-        ("api_key" = [])
-    )
-)]
-pub async fn register_report(
-    auth: ApiKeyAuth,
-    pool: web::Data<DbPool>,
-    broadcaster: web::Data<EventBroadcaster>,
-    body: web::Json<RegisterReportRequest>,
-) -> AppResult<HttpResponse> {
-    // Viewers cannot upload reports
-    if auth.caller.role == crate::models::ApiKeyRole::Viewer {
-        return Err(AppError::Unauthorized(
-            "Viewer role cannot upload reports. Contributor or admin role required.".to_string(),
-        ));
-    }
-
-    let req = body.into_inner();
-
-    // Validate required fields
-    if req.expected_jobs < 1 || req.expected_jobs > 100 {
-        return Err(AppError::InvalidInput(
-            "expected_jobs must be between 1 and 100".to_string(),
-        ));
-    }
-    if req.repository.trim().is_empty() {
-        return Err(AppError::InvalidInput("repository is required".to_string()));
-    }
-    if req.branch.trim().is_empty() {
-        return Err(AppError::InvalidInput("branch is required".to_string()));
-    }
-    if req.commit.trim().is_empty() {
-        return Err(AppError::InvalidInput("commit is required".to_string()));
-    }
-
-    // Validate pr_number for PR events (from OIDC claims)
-    let oidc = &auth.caller.oidc_claims;
-    if oidc.as_ref().and_then(|c| c.event_name.as_deref()) == Some("pull_request")
-        && req.pr_number.is_none()
-    {
-        return Err(AppError::InvalidInput(
-            "pr_number is required for pull_request events".to_string(),
-        ));
-    }
-
-    let run_id = req.run_id.as_deref().unwrap_or("");
-
-    // Generate report ID (UUIDv7 for time-ordered sorting)
-    let report_id = Uuid::now_v7();
-
-    // Insert report with typed columns
-    let report = pool
-        .insert_report(crate::db::test_reports::InsertReportParams {
-            id: report_id,
-            expected_jobs: req.expected_jobs,
-            framework: req.framework,
-            repository: &req.repository,
-            branch: &req.branch,
-            commit: &req.commit,
-            run_id,
-            pr_number: req.pr_number,
-            environment_metadata: req.environment_metadata,
-        })
-        .await?;
-
-    // If authenticated via OIDC, store safe claims in separate table
-    if let Some(ref claims) = auth.caller.oidc_claims {
-        let safe = claims.to_safe_claims(auth.caller.role.as_str(), "/api/v1/reports", "POST");
-        let claim_model = crate::entity::report_oidc_claim::ActiveModel {
-            id: sea_orm::Set(Uuid::now_v7()),
-            report_id: sea_orm::Set(report_id),
-            sub: sea_orm::Set(safe.sub),
-            repository: sea_orm::Set(safe.repository),
-            repository_owner: sea_orm::Set(safe.repository_owner),
-            actor: sea_orm::Set(safe.actor),
-            sha: sea_orm::Set(safe.sha),
-            git_ref: sea_orm::Set(safe.git_ref),
-            ref_type: sea_orm::Set(safe.ref_type),
-            workflow: sea_orm::Set(safe.workflow),
-            event_name: sea_orm::Set(safe.event_name),
-            run_id: sea_orm::Set(safe.run_id),
-            run_number: sea_orm::Set(safe.run_number),
-            run_attempt: sea_orm::Set(safe.run_attempt),
-            head_ref: sea_orm::Set(safe.head_ref),
-            base_ref: sea_orm::Set(safe.base_ref),
-            resolved_role: sea_orm::Set(safe.resolved_role),
-            api_path: sea_orm::Set(safe.api_path),
-            http_method: sea_orm::Set(safe.http_method),
-            created_at: sea_orm::Set(chrono::Utc::now()),
-        };
-        crate::db::report_oidc_claims::insert(pool.connection(), claim_model).await?;
-    }
-
-    info!(
-        "Report registered: id={}, framework={}, expected_jobs={}",
-        report_id,
-        req.framework.as_str(),
-        req.expected_jobs
-    );
-
-    // Broadcast report_created event
-    let event = WsEventMessage::new(WsEvent::report_created(report_id));
-    broadcaster.send(event);
-
-    let response = RegisterReportResponse {
-        report_id: report.id,
-        status: ReportStatus::parse(&report.status).unwrap_or(ReportStatus::Initializing),
-        expected_jobs: report.expected_jobs,
-        framework: Framework::parse(&report.framework).unwrap_or(Framework::Playwright),
-        created_at: report.created_at,
-    };
-
-    Ok(HttpResponse::Created().json(response))
 }
 
 /// List reports with pagination and filtering.
@@ -298,16 +170,12 @@ pub async fn list_reports(
     query: web::Query<ListReportsQuery>,
 ) -> AppResult<HttpResponse> {
     let query = query.into_inner();
-    let (reports, total) = pool.list_reports(&query).await?;
+    let (reports, total) = pool.list_report_groups(&query).await?;
 
-    // Batch fetch completed job counts, test stats, and OIDC claims for all reports
+    // Batch fetch completed report counts and test stats for all report groups
     let report_ids: Vec<uuid::Uuid> = reports.iter().map(|r| r.id).collect();
-    let jobs_complete_map = pool.count_completed_jobs_batch(&report_ids).await?;
+    let reports_complete_map = pool.count_completed_reports_batch(&report_ids).await?;
     let test_stats_map = pool.get_test_stats_by_report_ids(&report_ids).await?;
-    let oidc_claims_list =
-        crate::db::report_oidc_claims::find_by_report_ids(pool.connection(), &report_ids).await?;
-    let oidc_claims_map: std::collections::HashMap<uuid::Uuid, _> =
-        oidc_claims_list.into_iter().collect();
 
     let reports: Vec<ReportSummary> = reports
         .into_iter()
@@ -320,8 +188,6 @@ pub async fn list_reports(
                 .get(&r.id)
                 .cloned()
                 .and_then(|stats| if stats.total > 0 { Some(stats) } else { None });
-
-            let oidc_claims = oidc_claims_map.get(&r.id).cloned();
 
             let environment_metadata = crate::models::report::ReportEnvironmentMetadata::from_json(
                 r.environment_metadata.as_ref(),
@@ -336,16 +202,16 @@ pub async fn list_reports(
                 id: r.id,
                 short_id,
                 framework: Framework::parse(&r.framework).unwrap_or(Framework::Playwright),
-                status: ReportStatus::parse(&r.status).unwrap_or(ReportStatus::Initializing),
-                expected_jobs: r.expected_jobs,
-                jobs_complete: *jobs_complete_map.get(&r.id).unwrap_or(&0),
+                name: r.name,
+                status: ReportStatus::parse(&r.status).unwrap_or(ReportStatus::InProgress),
+                reports_complete: *reports_complete_map.get(&r.id).unwrap_or(&0),
                 test_stats,
                 repository: r.repository,
                 branch: r.branch,
                 commit: r.commit,
-                run_id: r.run_id,
-                pr_number: r.pr_number,
-                oidc_claims,
+                gh_run_id: r.gh_run_id,
+                gh_run_attempt: r.gh_run_attempt,
+                gh_pr_number: r.gh_pr_number,
                 environment_metadata,
                 created_at: r.created_at,
             }
@@ -381,16 +247,16 @@ pub async fn get_report_suites(
 ) -> AppResult<HttpResponse> {
     let report_id = path.into_inner();
 
-    // Verify report exists
+    // Verify report group exists
     let _report = pool
-        .get_report_by_id(report_id)
+        .get_report_group_by_id(report_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
 
-    // Get all jobs for this report and parse job numbers
-    let jobs = pool.get_jobs_by_report_id(report_id).await?;
+    // Get all reports for this report group and parse report numbers
+    let entries = pool.get_reports_by_group_id(report_id).await?;
 
-    // Helper to parse suffix number from job name (e.g., "ubuntu-chrome-5" -> Some(5))
+    // Helper to parse suffix number from report name (e.g., "ubuntu-chrome-5" -> Some(5))
     fn parse_suffix_number(name: &str) -> Option<i32> {
         // Try to find a trailing number after a separator (-, _, or space)
         let trimmed = name.trim();
@@ -415,38 +281,38 @@ pub async fn get_report_suites(
         None
     }
 
-    // Build job info with parsed or sequential numbers
-    let job_infos: Vec<(Uuid, String, i32)> = jobs
+    // Build report entry info with parsed or sequential numbers
+    let entry_infos: Vec<(Uuid, String, i32)> = entries
         .into_iter()
         .enumerate()
-        .map(|(i, j)| {
-            let display_name = j
-                .github_job_name
+        .map(|(i, r)| {
+            let display_name = r
+                .gh_job_name
                 .clone()
-                .unwrap_or_else(|| format!("Job {}", i + 1));
+                .unwrap_or_else(|| format!("Report {}", i + 1));
 
             // Try to parse suffix number, otherwise use sequential (1-based)
-            let job_number = parse_suffix_number(&display_name).unwrap_or((i + 1) as i32);
+            let report_number = parse_suffix_number(&display_name).unwrap_or((i + 1) as i32);
 
-            (j.id, display_name, job_number)
+            (r.id, display_name, report_number)
         })
         .collect();
 
-    // Build lookup map: job_id -> (name, number)
-    let job_map: std::collections::HashMap<Uuid, (String, i32)> = job_infos
+    // Build lookup map: report_id -> (name, number)
+    let entry_map: std::collections::HashMap<Uuid, (String, i32)> = entry_infos
         .iter()
         .map(|(id, name, num)| (*id, (name.clone(), *num)))
         .collect();
 
-    // Build jobs list for filtering (only if multiple jobs)
-    let jobs_for_response = if job_infos.len() > 1 {
+    // Build reports list for filtering (only if multiple reports)
+    let reports_for_response = if entry_infos.len() > 1 {
         Some(
-            job_infos
+            entry_infos
                 .iter()
-                .map(|(id, name, num)| JobInfo {
-                    job_id: *id,
-                    job_name: name.clone(),
-                    job_number: *num,
+                .map(|(id, name, num)| ReportEntryInfo {
+                    report_id: *id,
+                    report_name: name.clone(),
+                    report_number: *num,
                 })
                 .collect(),
         )
@@ -454,23 +320,23 @@ pub async fn get_report_suites(
         None
     };
 
-    // Get all test suites for this report (through jobs)
+    // Get all test suites for this report (through individual reports)
     let suites = pool.get_test_suites_by_report_id(report_id).await?;
 
     let suite_responses: Vec<TestSuiteResponse> = suites
         .into_iter()
         .map(|s| {
-            let (job_name, job_number) = job_map
-                .get(&s.test_job_id)
+            let (report_name, report_number) = entry_map
+                .get(&s.upload_id)
                 .map(|(n, num)| (Some(n.clone()), *num))
                 .unwrap_or((None, 1));
 
             TestSuiteResponse {
                 id: s.id,
                 short_id: s.id.to_string()[..13].to_string(),
-                job_name,
-                job_number,
-                job_id: s.test_job_id,
+                report_name,
+                report_number,
+                report_id: s.upload_id,
                 title: s.title,
                 file_path: s.file_path,
                 specs_count: s.total_count,
@@ -488,13 +354,13 @@ pub async fn get_report_suites(
 
     let response = ReportSuitesResponse {
         suites: suite_responses,
-        jobs: jobs_for_response,
+        reports: reports_for_response,
     };
 
     Ok(HttpResponse::Ok().json(response))
 }
 
-/// Get report details with jobs.
+/// Get report group details.
 #[utoipa::path(
     get,
     path = "/reports/{report_id}",
@@ -503,56 +369,50 @@ pub async fn get_report_suites(
         ("report_id" = Uuid, Path, description = "Report UUID")
     ),
     responses(
-        (status = 200, description = "Report details with jobs", body = ReportDetailResponse),
+        (status = 200, description = "Report details with reports", body = ReportDetailResponse),
         (status = 404, description = "Report not found", body = crate::error::ErrorResponse),
     )
 )]
 pub async fn get_report(pool: web::Data<DbPool>, path: web::Path<Uuid>) -> AppResult<HttpResponse> {
-    let report_id = path.into_inner();
+    let id = path.into_inner();
 
-    let report = pool
-        .get_report_by_id(report_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
+    // Try as report group first, then fall back to individual report
+    let (report, report_id) = if let Some(rg) = pool.get_report_group_by_id(id).await? {
+        (rg, id)
+    } else if let Some(individual) = pool.get_report_by_id(id).await? {
+        // Individual report ID — look up its parent group
+        let group_id = individual.report_group_id;
+        let rg = pool
+            .get_report_group_by_id(group_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Report group {} not found", group_id)))?;
+        (rg, group_id)
+    } else {
+        return Err(AppError::NotFound(format!("Report {}", id)));
+    };
 
-    // Get jobs for this report
-    let jobs = pool.get_jobs_by_report_id(report_id).await?;
+    // Get individual reports for this report group
+    let report_entries = pool.get_reports_by_group_id(report_id).await?;
 
-    // Get root HTML filenames for all jobs
-    let job_ids: Vec<_> = jobs.iter().map(|j| j.id).collect();
-    let html_filenames = pool.get_root_html_filenames_for_jobs(&job_ids).await?;
-
-    let job_summaries: Vec<JobSummary> = jobs
+    let report_summaries: Vec<UploadSummary> = report_entries
         .into_iter()
         .enumerate()
-        .map(|(i, j)| {
-            let display_name = j
-                .github_job_name
+        .map(|(i, r)| {
+            let display_name = r
+                .gh_job_name
                 .clone()
-                .unwrap_or_else(|| format!("Job {}", i + 1));
+                .unwrap_or_else(|| format!("Report {}", i + 1));
 
-            // Get the actual HTML filename from uploaded files
-            let html_url = j.html_path.and_then(|p| {
-                html_filenames
-                    .get(&j.id)
-                    .map(|filename| format!("/files/{}/{}", p, filename))
-            });
-
-            JobSummary {
-                id: j.id,
-                short_id: j.id.to_string()[..13].to_string(),
-                github_job_id: j.github_job_id,
-                github_job_name: j.github_job_name,
+            UploadSummary {
+                id: r.id,
+                short_id: r.id.to_string()[..13].to_string(),
+                gh_job_id: r.gh_job_id,
+                gh_job_name: r.gh_job_name,
                 display_name,
-                status: JobStatus::parse(&j.status).unwrap_or(JobStatus::Pending),
-                html_url,
+                status: UploadStatus::parse(&r.status).unwrap_or(UploadStatus::Pending),
             }
         })
         .collect();
-
-    // Fetch OIDC claims for this report (if uploaded via OIDC)
-    let oidc_claims =
-        crate::db::report_oidc_claims::find_by_report_id(pool.connection(), report_id).await?;
 
     // Parse environment metadata
     let environment_metadata = crate::models::report::ReportEnvironmentMetadata::from_json(
@@ -567,18 +427,18 @@ pub async fn get_report(pool: web::Data<DbPool>, path: web::Path<Uuid>) -> AppRe
     let response = ReportDetailResponse {
         id: report.id,
         framework: Framework::parse(&report.framework).unwrap_or(Framework::Playwright),
-        status: ReportStatus::parse(&report.status).unwrap_or(ReportStatus::Initializing),
-        expected_jobs: report.expected_jobs,
+        name: report.name,
+        status: ReportStatus::parse(&report.status).unwrap_or(ReportStatus::InProgress),
         repository: report.repository,
         branch: report.branch,
         commit: report.commit,
-        run_id: report.run_id,
-        pr_number: report.pr_number,
-        oidc_claims,
+        gh_run_id: report.gh_run_id,
+        gh_run_attempt: report.gh_run_attempt,
+        gh_pr_number: report.gh_pr_number,
         environment_metadata,
         created_at: report.created_at,
         updated_at: report.updated_at,
-        jobs: job_summaries,
+        reports: report_summaries,
     };
 
     Ok(HttpResponse::Ok().json(response))
@@ -614,13 +474,13 @@ pub async fn get_suite_specs(
         suite_id,
     } = path.into_inner();
 
-    // Verify report exists
+    // Verify report group exists
     let _report = pool
-        .get_report_by_id(report_id)
+        .get_report_group_by_id(report_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
 
-    // Get the suite to get the job_id
+    // Get the suite to get the report_id
     let suite = pool
         .get_test_suite_by_id(suite_id)
         .await?
@@ -629,8 +489,8 @@ pub async fn get_suite_specs(
     // Get test cases for this suite
     let test_cases = pool.get_test_cases_by_suite_id(suite_id).await?;
 
-    // Get screenshots for this job
-    let screenshots = pool.get_screenshots_by_job_id(suite.test_job_id).await?;
+    // Get screenshots for this report
+    let screenshots = pool.get_screenshots_by_report_id(suite.upload_id).await?;
 
     // Group test cases by full_title to combine retries into specs
     use std::collections::HashMap;
@@ -682,7 +542,7 @@ pub async fn get_suite_specs(
                 .iter()
                 .filter(|s| {
                     // Primary: match by test_case_id (linked during extraction)
-                    if let Some(tc_id) = s.test_case_id
+                    if let Some(tc_id) = s.case_id
                         && case_ids.contains(&tc_id)
                     {
                         return true;
@@ -782,9 +642,9 @@ pub async fn search_test_cases(
         }));
     }
 
-    // Verify report exists
+    // Verify report group exists
     let _report = pool
-        .get_report_by_id(report_id)
+        .get_report_group_by_id(report_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Report {}", report_id)))?;
 
@@ -820,7 +680,7 @@ pub async fn search_test_cases(
                 suite_id: suite.id,
                 suite_title: suite.title.clone(),
                 suite_file_path: suite.file_path.clone(),
-                job_id: tc.test_job_id,
+                report_id: tc.upload_id,
                 matches: vec![],
             })
             .matches
@@ -890,6 +750,17 @@ fn extract_word_containing_match(text: &str, match_start: usize, match_len: usiz
     chars[word_start..word_end].iter().collect()
 }
 
+/// Extract PR number from branch names like "pr-1234-branch" or "pr-1234-something".
+/// Returns the number portion if matched.
+fn regex_extract_pr_number(branch: &str) -> Option<&str> {
+    let rest = branch.strip_prefix("pr-")?;
+    let num_end = rest.find(|c: char| !c.is_ascii_digit())?;
+    if num_end == 0 {
+        return None;
+    }
+    Some(&rest[..num_end])
+}
+
 /// Get reports grouped by repository for the landing page.
 #[utoipa::path(
     get,
@@ -906,20 +777,16 @@ pub async fn grouped_reports(pool: web::Data<DbPool>) -> AppResult<HttpResponse>
     };
     use std::collections::HashMap;
 
-    let reports = pool.list_all_reports_for_grouping().await?;
+    let reports = pool.list_all_report_groups_for_grouping().await?;
 
     // Group by repository name (portion after '/')
     let mut groups_map: HashMap<String, Vec<RunEntry>> = HashMap::new();
     let mut group_latest: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
     let mut group_full_repo: HashMap<String, String> = HashMap::new();
 
-    // Batch fetch test stats and OIDC claims for run_number/run_attempt
+    // Batch fetch test stats
     let report_ids: Vec<uuid::Uuid> = reports.iter().map(|r| r.id).collect();
     let test_stats_map = pool.get_test_stats_by_report_ids(&report_ids).await?;
-    let oidc_claims_list =
-        crate::db::report_oidc_claims::find_by_report_ids(pool.connection(), &report_ids).await?;
-    let oidc_claims_map: std::collections::HashMap<uuid::Uuid, _> =
-        oidc_claims_list.into_iter().collect();
 
     for r in &reports {
         let full_repo = &r.repository;
@@ -934,6 +801,25 @@ pub async fn grouped_reports(pool: web::Data<DbPool>) -> AppResult<HttpResponse>
         }
 
         let branch = &r.branch;
+        // Build a URL-friendly branch segment:
+        // - "refs/heads/main" -> "main"
+        // - "refs/heads/pr-1234-branch" -> "pr-1234" (extract PR number)
+        // - "refs/pull/1234/merge" -> "pr-1234"
+        // - "refs/tags/v1.0" -> "v1.0"
+        let stripped = branch
+            .strip_prefix("refs/heads/")
+            .or_else(|| branch.strip_prefix("refs/tags/"))
+            .unwrap_or(branch);
+        let short_branch = if let Some(rest) = branch.strip_prefix("refs/pull/") {
+            // refs/pull/1234/merge -> pr-1234
+            let pr_num = rest.split('/').next().unwrap_or(rest);
+            format!("pr-{}", pr_num)
+        } else if let Some(caps) = regex_extract_pr_number(stripped) {
+            // pr-1234-branch, pr-1234-something -> pr-1234
+            format!("pr-{}", caps)
+        } else {
+            stripped.to_string()
+        };
         let commit = &r.commit;
         let short_sha = if commit.len() >= 7 {
             commit[..7].to_string()
@@ -944,7 +830,7 @@ pub async fn grouped_reports(pool: web::Data<DbPool>) -> AppResult<HttpResponse>
         let framework = Fw::parse(&r.framework).unwrap_or(Fw::Playwright);
         let url_path = format!(
             "/reports/{}/{}/{}/{}",
-            repo_name, branch, short_sha, framework
+            repo_name, short_branch, short_sha, r.name
         );
 
         let test_stats = test_stats_map
@@ -952,20 +838,23 @@ pub async fn grouped_reports(pool: web::Data<DbPool>) -> AppResult<HttpResponse>
             .cloned()
             .and_then(|s| if s.total > 0 { Some(s) } else { None });
 
-        // Get run_number and run_attempt from OIDC claims (if available)
-        let oidc = oidc_claims_map.get(&r.id);
-        let run_number = oidc.and_then(|c| c.run_number.clone());
-        let run_attempt = oidc.and_then(|c| c.run_attempt.clone());
-
         let entry = RunEntry {
             report_id: r.id,
             framework,
-            status: Rs::parse(&r.status).unwrap_or(Rs::Initializing),
-            branch: branch.clone(),
+            name: r.name.clone(),
+            status: Rs::parse(&r.status).unwrap_or(Rs::InProgress),
+            branch: short_branch.clone(),
             commit: commit.clone(),
             short_sha,
-            run_number,
-            run_attempt,
+            run_number: None,
+            run_attempt: None,
+            gh_run_attempt: r.gh_run_attempt.clone(),
+            gh_run_id: if r.gh_run_id.is_empty() {
+                None
+            } else {
+                Some(r.gh_run_id.clone())
+            },
+            gh_pr_number: r.gh_pr_number,
             test_stats,
             created_at: r.created_at,
             url_path,
@@ -1016,8 +905,11 @@ pub struct ConsolidatedQuery {
     pub repository: String,
     pub branch: String,
     pub commit: String,
-    pub framework: String,
+    pub name: String,
     pub run_attempt: Option<i32>,
+    /// Optional: pin to a specific report group by its UUID.
+    /// When provided, only that report group is used instead of the latest one.
+    pub gid: Option<Uuid>,
 }
 
 /// Get consolidated test results for a specific repo + branch + commit + tool.
@@ -1027,6 +919,7 @@ pub async fn consolidated_results(
 ) -> AppResult<HttpResponse> {
     use crate::models::report::ConsolidatedFilters;
     use crate::services::consolidation::{TestCaseInput, consolidate};
+    use std::collections::HashMap;
 
     let q = query.into_inner();
 
@@ -1049,17 +942,35 @@ pub async fn consolidated_results(
     // Build repository suffix filter (match name portion after '/')
     let repo_filter = format!("%/{}", q.repository);
 
+    // Expand short branch names to full refs (DB stores refs/heads/... or refs/tags/...)
+    // For PR branches like "pr-1234", match any ref containing the PR number
+    // (e.g., refs/heads/pr-1234-branch, refs/pull/1234/merge)
+    let branch_filter = if q.branch.starts_with("refs/") {
+        q.branch.clone()
+    } else if let Some(pr_num) = q.branch.strip_prefix("pr-") {
+        if pr_num.chars().all(|c| c.is_ascii_digit()) {
+            // Use LIKE to match refs/heads/pr-N% or refs/pull/N/%
+            format!("refs/%{}%", pr_num)
+        } else {
+            format!("refs/heads/{}", q.branch)
+        }
+    } else {
+        format!("refs/heads/{}", q.branch)
+    };
+
     // Get matching reports
     let list_query = crate::models::ListReportsQuery {
-        framework: crate::models::Framework::parse(&q.framework),
+        framework: None,
+        name: Some(q.name.clone()),
         status: None,
         repository: Some(repo_filter),
-        branch: Some(q.branch.clone()),
+        branch: Some(branch_filter),
         commit: Some(q.commit.clone()),
+        gh_run_attempt: None,
         limit: 100,
         offset: 0,
     };
-    let (reports, _) = pool.list_reports(&list_query).await?;
+    let (reports, _) = pool.list_report_groups(&list_query).await?;
 
     if reports.is_empty() {
         return Err(AppError::NotFound(
@@ -1067,38 +978,72 @@ pub async fn consolidated_results(
         ));
     }
 
-    // Fetch OIDC claims for run_attempt info
-    let report_ids: Vec<uuid::Uuid> = reports.iter().map(|r| r.id).collect();
-    let oidc_claims_list =
-        crate::db::report_oidc_claims::find_by_report_ids(pool.connection(), &report_ids).await?;
-    let oidc_claims_map: std::collections::HashMap<uuid::Uuid, _> =
-        oidc_claims_list.into_iter().collect();
+    // Select which report group(s) to use:
+    // - If gid is provided, use only that specific report group
+    // - Otherwise, keep only the latest report group per name
+    let reports = if let Some(pinned_gid) = q.gid {
+        reports
+            .into_iter()
+            .filter(|r| r.id == pinned_gid)
+            .collect::<Vec<_>>()
+    } else {
+        let mut latest_by_name: HashMap<String, usize> = HashMap::new();
+        for (i, r) in reports.iter().enumerate() {
+            let run_attempt: i32 = r.gh_run_attempt.parse().unwrap_or(1);
+            if let Some(pinned) = q.run_attempt
+                && run_attempt != pinned
+            {
+                continue;
+            }
+            match latest_by_name.get(&r.name) {
+                Some(&idx) if reports[idx].created_at >= r.created_at => {}
+                _ => {
+                    latest_by_name.insert(r.name.clone(), i);
+                }
+            }
+        }
+        let mut kept: Vec<_> = latest_by_name
+            .into_values()
+            .map(|i| reports[i].clone())
+            .collect();
+        kept.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        kept
+    };
 
-    // Get test cases from all matching reports
+    if reports.is_empty() {
+        return Err(AppError::NotFound(
+            "No reports match the filter".to_string(),
+        ));
+    }
+
+    // Build test case inputs from the selected report groups
     let mut inputs: Vec<TestCaseInput> = Vec::new();
+    let mut earliest_start: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut latest_end: Option<chrono::DateTime<chrono::Utc>> = None;
 
     for report in &reports {
         let commit_sha = report.commit.clone();
-        let report_run_attempt: i32 = oidc_claims_map
-            .get(&report.id)
-            .and_then(|c| c.run_attempt.as_deref())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
+        let report_run_attempt: i32 = report.gh_run_attempt.parse().unwrap_or(1);
 
-        // If run_attempt filter is set, skip reports that don't match
-        if let Some(pinned) = q.run_attempt
-            && report_run_attempt != pinned
-        {
-            continue;
-        }
+        let entries = pool.get_reports_by_group_id(report.id).await?;
+        for entry in &entries {
+            // Track wall-clock span from report start_time and duration_ms
+            if let Some(start) = entry.start_time {
+                earliest_start = Some(
+                    earliest_start
+                        .map_or(start, |prev: chrono::DateTime<chrono::Utc>| prev.min(start)),
+                );
+                if let Some(dur) = entry.duration_ms {
+                    let end = start + chrono::Duration::milliseconds(dur);
+                    latest_end = Some(
+                        latest_end.map_or(end, |prev: chrono::DateTime<chrono::Utc>| prev.max(end)),
+                    );
+                }
+            }
 
-        // Get jobs for this report
-        let jobs = pool.get_jobs_by_report_id(report.id).await?;
-        for job in &jobs {
-            // Get test cases for this job's suites
             let suites = pool.get_test_suites_by_report_id(report.id).await?;
             for suite in &suites {
-                if suite.test_job_id != job.id {
+                if suite.upload_id != entry.id {
                     continue;
                 }
                 let cases = pool.get_test_cases_by_suite_id(suite.id).await?;
@@ -1118,31 +1063,358 @@ pub async fn consolidated_results(
         }
     }
 
+    // Wall-clock duration: earliest report start to latest report end
+    let duration_ms = match (earliest_start, latest_end) {
+        (Some(start), Some(end)) => {
+            let ms = (end - start).num_milliseconds();
+            if ms > 0 { Some(ms) } else { None }
+        }
+        _ => None,
+    };
+
     let filters = ConsolidatedFilters {
         repository: q.repository,
         target_name: q.branch,
         commit_sha: q.commit,
-        tool_name: q.framework,
+        tool_name: q.name,
     };
 
-    let result = consolidate(inputs, filters);
+    let result = consolidate(inputs, filters, duration_ms);
     Ok(HttpResponse::Ok().json(result))
+}
+
+// ── Begin / Complete handlers ─────────────────────────────────────────────────
+
+/// Signal the start of a test run.
+///
+/// Creates a report with `in_progress` status if none exists for the grouping key.
+/// If a report already exists, returns it without modification (idempotent).
+#[utoipa::path(
+    post,
+    path = "/reports/begin",
+    tag = "Reports",
+    request_body = ReportGroupingRequest,
+    responses(
+        (status = 200, description = "Report begun", body = BeginResponse),
+        (status = 400, description = "Invalid request", body = crate::error::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::error::ErrorResponse),
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
+pub async fn begin(
+    auth: ApiKeyAuth,
+    pool: web::Data<DbPool>,
+    body: web::Json<ReportGroupingRequest>,
+) -> AppResult<HttpResponse> {
+    let req = body.into_inner();
+
+    // ── Validate required fields ─────────────────────────────────────────
+    if req.repository.trim().is_empty() || !req.repository.contains('/') {
+        return Err(AppError::InvalidInput(
+            "repository is required in org/repo format".to_string(),
+        ));
+    }
+    if req.commit.len() < 7
+        || req.commit.len() > 40
+        || !req.commit.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err(AppError::InvalidInput(
+            "commit must be a 7-40 character hex SHA".to_string(),
+        ));
+    }
+    if req.name.trim().is_empty()
+        || !req
+            .name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(AppError::InvalidInput(
+            "name is required and must contain only alphanumeric characters, hyphens, and underscores".to_string(),
+        ));
+    }
+    if req.gh_run_id.is_empty() || !req.gh_run_id.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AppError::InvalidInput(
+            "gh_run_id is required and must be numeric".to_string(),
+        ));
+    }
+
+    let gh_run_id = &req.gh_run_id;
+
+    // ── Derive gh_run_attempt from OIDC claims (or default "1") ──────────
+    let gh_run_attempt = auth
+        .caller
+        .oidc_claims
+        .as_ref()
+        .and_then(|c| c.run_attempt.clone())
+        .unwrap_or_else(|| "1".to_string());
+
+    if !gh_run_attempt.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AppError::InvalidInput(
+            "run_attempt must be numeric".to_string(),
+        ));
+    }
+
+    // Derive branch from OIDC claims if available
+    let branch = auth
+        .caller
+        .oidc_claims
+        .as_ref()
+        .and_then(|c| c.head_ref.clone().or_else(|| c.git_ref.clone()))
+        .unwrap_or_default();
+
+    // ── Validate gh_pr_number for pull_request events ────────────────────
+    let is_pr_event = auth
+        .caller
+        .oidc_claims
+        .as_ref()
+        .and_then(|c| c.event_name.as_deref())
+        .map(|e| e == "pull_request")
+        .unwrap_or(false);
+
+    if is_pr_event && req.gh_pr_number.is_none() {
+        return Err(AppError::InvalidInput(
+            "gh_pr_number is required for pull_request events".to_string(),
+        ));
+    }
+
+    // ── Upsert or find report ────────────────────────────────────────────
+    let report_id = Uuid::now_v7();
+    let (report, is_new) = pool
+        .upsert_or_find_report_group(InsertReportGroupParams {
+            id: report_id,
+            framework: req.framework,
+            name: &req.name,
+            repository: &req.repository,
+            branch: &branch,
+            commit: &req.commit,
+            gh_run_id,
+            gh_run_attempt: &gh_run_attempt,
+            gh_pr_number: req.gh_pr_number,
+            environment_metadata: None,
+        })
+        .await?;
+
+    info!(
+        "Report begin: report_id={}, created={}, repository={}, name={}",
+        report.id, is_new, req.repository, req.name
+    );
+
+    Ok(HttpResponse::Ok().json(BeginResponse {
+        report_id: report.id,
+        status: ReportStatus::parse(&report.status).unwrap_or(ReportStatus::InProgress),
+        created: is_new,
+    }))
+}
+
+/// Signal the end of a test run.
+///
+/// Transitions the report to `completed` status. Returns the number of reports
+/// in the report. If no report matches the grouping key, returns 404.
+/// Calling twice is safe (idempotent).
+#[utoipa::path(
+    post,
+    path = "/reports/complete",
+    tag = "Reports",
+    request_body = ReportGroupingRequest,
+    responses(
+        (status = 200, description = "Report completed", body = CompleteResponse),
+        (status = 400, description = "Invalid request", body = crate::error::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::error::ErrorResponse),
+        (status = 404, description = "No matching report", body = crate::error::ErrorResponse),
+    ),
+    security(
+        ("api_key" = [])
+    )
+)]
+pub async fn complete(
+    auth: ApiKeyAuth,
+    pool: web::Data<DbPool>,
+    body: web::Json<ReportGroupingRequest>,
+) -> AppResult<HttpResponse> {
+    let req = body.into_inner();
+
+    // ── Validate required fields ─────────────────────────────────────────
+    if req.repository.trim().is_empty() || !req.repository.contains('/') {
+        return Err(AppError::InvalidInput(
+            "repository is required in org/repo format".to_string(),
+        ));
+    }
+    if req.commit.len() < 7
+        || req.commit.len() > 40
+        || !req.commit.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err(AppError::InvalidInput(
+            "commit must be a 7-40 character hex SHA".to_string(),
+        ));
+    }
+    if req.name.trim().is_empty()
+        || !req
+            .name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(AppError::InvalidInput(
+            "name is required and must contain only alphanumeric characters, hyphens, and underscores".to_string(),
+        ));
+    }
+    if req.gh_run_id.is_empty() || !req.gh_run_id.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AppError::InvalidInput(
+            "gh_run_id is required and must be numeric".to_string(),
+        ));
+    }
+
+    let gh_run_id = &req.gh_run_id;
+
+    // ── Derive gh_run_attempt from OIDC claims (or default "1") ──────────
+    let gh_run_attempt = auth
+        .caller
+        .oidc_claims
+        .as_ref()
+        .and_then(|c| c.run_attempt.clone())
+        .unwrap_or_else(|| "1".to_string());
+
+    if !gh_run_attempt.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AppError::InvalidInput(
+            "run_attempt must be numeric".to_string(),
+        ));
+    }
+
+    // ── Find report by grouping key ──────────────────────────────────────
+    let report = pool
+        .find_report_group_by_grouping_key(
+            &req.repository,
+            &req.commit,
+            gh_run_id,
+            &req.name,
+            &gh_run_attempt,
+        )
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "No report found for repository={}, commit={}, gh_run_id={}, name={}, gh_run_attempt={}",
+                req.repository, req.commit, gh_run_id, req.name, gh_run_attempt
+            ))
+        })?;
+
+    // ── Transition to completed ──────────────────────────────────────────
+    let updated = pool
+        .update_report_group_status(report.id, ReportStatus::Completed)
+        .await?;
+
+    // ── Count reports ────────────────────────────────────────────────────
+    let reports_count = pool.count_reports_in_group(report.id).await?;
+
+    info!(
+        "Report complete: report_id={}, reports_count={}, repository={}, name={}",
+        report.id, reports_count, req.repository, req.name
+    );
+
+    Ok(HttpResponse::Ok().json(CompleteResponse {
+        report_id: updated.id,
+        status: ReportStatus::parse(&updated.status).unwrap_or(ReportStatus::Completed),
+        reports_count,
+    }))
+}
+
+/// List individual reports (not grouped).
+pub async fn list_individual_reports(
+    pool: web::Data<DbPool>,
+    query: web::Query<crate::models::ListReportsQuery>,
+) -> AppResult<HttpResponse> {
+    use crate::models::report::{IndividualReportListResponse, IndividualReportSummary};
+
+    let q = query.into_inner();
+    let limit = q.limit.clamp(1, 100) as u64;
+    let offset = q.offset.max(0) as u64;
+
+    let (reports, total) = pool.list_individual_reports(limit, offset).await?;
+
+    // Batch fetch test stats for individual reports
+    let report_ids: Vec<uuid::Uuid> = reports.iter().map(|r| r.id).collect();
+    let test_stats_map = pool
+        .get_test_stats_by_individual_report_ids(&report_ids)
+        .await?;
+
+    // Batch fetch parent report groups for git metadata
+    let group_ids: Vec<uuid::Uuid> = reports.iter().map(|r| r.report_group_id).collect();
+    let mut group_map: std::collections::HashMap<uuid::Uuid, crate::entity::report_group::Model> =
+        std::collections::HashMap::new();
+    for gid in &group_ids {
+        if !group_map.contains_key(gid)
+            && let Some(g) = pool.get_report_group_by_id(*gid).await?
+        {
+            group_map.insert(*gid, g);
+        }
+    }
+
+    let summaries: Vec<IndividualReportSummary> = reports
+        .into_iter()
+        .map(|r| {
+            let test_stats = test_stats_map
+                .get(&r.id)
+                .cloned()
+                .and_then(|s| if s.total > 0 { Some(s) } else { None });
+
+            let group = group_map.get(&r.report_group_id);
+
+            IndividualReportSummary {
+                id: r.id,
+                short_id: r.id.to_string()[..13].to_string(),
+                report_group_id: r.report_group_id,
+                name: r.name,
+                status: r.status,
+                gh_job_id: r.gh_job_id,
+                gh_job_name: r.gh_job_name,
+                repository: group.map(|g| g.repository.clone()),
+                branch: group.map(|g| g.branch.clone()),
+                commit: group.map(|g| g.commit.clone()),
+                test_stats,
+                duration_ms: r.duration_ms,
+                created_at: r.created_at,
+            }
+        })
+        .collect();
+
+    Ok(HttpResponse::Ok().json(IndividualReportListResponse {
+        reports: summaries,
+        total: total as i64,
+        limit: q.limit,
+        offset: q.offset,
+    }))
 }
 
 /// Configure report routes.
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::resource("/reports")
-            .route(web::get().to(list_reports))
-            .route(web::post().to(register_report)),
-    )
-    .service(web::resource("/reports/grouped").route(web::get().to(grouped_reports)))
-    .service(web::resource("/reports/consolidated").route(web::get().to(consolidated_results)))
-    .service(web::resource("/reports/{report_id}").route(web::get().to(get_report)))
-    .service(web::resource("/reports/{report_id}/suites").route(web::get().to(get_report_suites)))
-    .service(
-        web::resource("/reports/{report_id}/suites/{suite_id}/specs")
-            .route(web::get().to(get_suite_specs)),
-    )
-    .service(web::resource("/reports/{report_id}/search").route(web::get().to(search_test_cases)));
+    cfg.service(web::resource("/reports").route(web::get().to(list_reports)))
+        .service(web::resource("/reports/individual").route(web::get().to(list_individual_reports)))
+        .service(web::resource("/reports/begin").route(web::post().to(begin)))
+        .service(
+            web::resource("/reports/register")
+                .route(web::post().to(super::register::register_report)),
+        )
+        .service(web::resource("/reports/complete").route(web::post().to(complete)))
+        .service(web::resource("/reports/grouped").route(web::get().to(grouped_reports)))
+        .service(web::resource("/reports/consolidated").route(web::get().to(consolidated_results)))
+        .service(web::resource("/reports/{report_id}").route(web::get().to(get_report)))
+        .service(
+            web::resource("/reports/{report_id}/suites").route(web::get().to(get_report_suites)),
+        )
+        .service(
+            web::resource("/reports/{report_id}/suites/{suite_id}/specs")
+                .route(web::get().to(get_suite_specs)),
+        )
+        .service(
+            web::resource("/reports/{report_id}/search").route(web::get().to(search_test_cases)),
+        )
+        // Upload routes
+        .service(
+            web::resource("/reports/upload/{report_group_id}/{report_id}/json")
+                .route(web::post().to(super::register::upload_json)),
+        )
+        .service(
+            web::resource("/reports/upload/{report_group_id}/{report_id}/screenshots")
+                .route(web::post().to(super::register::upload_screenshots)),
+        );
 }

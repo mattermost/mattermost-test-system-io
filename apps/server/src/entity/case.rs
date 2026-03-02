@@ -1,15 +1,15 @@
-//! TestCase entity for SeaORM.
+//! Case entity for SeaORM.
 
 use sea_orm::entity::prelude::*;
 use serde_json::Value as JsonValue;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-#[sea_orm(table_name = "test_cases")]
+#[sea_orm(table_name = "cases")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
-    pub test_suite_id: Uuid,
-    pub test_job_id: Uuid,
+    pub suite_id: Uuid,
+    pub upload_id: Uuid,
     pub title: String,
     pub full_title: String,
     pub status: String,
@@ -27,30 +27,30 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
-        belongs_to = "super::test_suite::Entity",
-        from = "Column::TestSuiteId",
-        to = "super::test_suite::Column::Id",
+        belongs_to = "super::suite::Entity",
+        from = "Column::SuiteId",
+        to = "super::suite::Column::Id",
         on_delete = "Cascade"
     )]
-    TestSuite,
+    Suite,
     #[sea_orm(
-        belongs_to = "super::test_job::Entity",
-        from = "Column::TestJobId",
-        to = "super::test_job::Column::Id",
+        belongs_to = "super::report::Entity",
+        from = "Column::UploadId",
+        to = "super::report::Column::Id",
         on_delete = "Cascade"
     )]
-    Job,
+    Report,
 }
 
-impl Related<super::test_suite::Entity> for Entity {
+impl Related<super::suite::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::TestSuite.def()
+        Relation::Suite.def()
     }
 }
 
-impl Related<super::test_job::Entity> for Entity {
+impl Related<super::report::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::Job.def()
+        Relation::Report.def()
     }
 }
 

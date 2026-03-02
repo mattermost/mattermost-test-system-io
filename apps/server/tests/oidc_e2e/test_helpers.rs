@@ -76,7 +76,7 @@ pub fn unique_org(prefix: &str) -> String {
     )
 }
 
-/// Create a test TSIO app.
+/// Create a test TSIO app (includes report and OIDC policy routes).
 pub async fn create_test_app(
     pool: &DbPool,
     mock_issuer_url: &str,
@@ -106,7 +106,7 @@ pub async fn create_test_app(
             .app_data(web::Data::new(config))
             .service(
                 web::scope("/api/v1")
-                    .configure(mattermost_tsio_lib::api::test_reports::configure_routes)
+                    .configure(mattermost_tsio_lib::api::reports::configure_routes)
                     .configure(mattermost_tsio_lib::services::oidc_policy::configure_routes),
             ),
     )
@@ -143,7 +143,7 @@ where
     body
 }
 
-/// Upload a report using an OIDC Bearer token.
+/// Register a report using an OIDC Bearer token.
 /// Uses the org from the OIDC claims repo pattern as the repository.
 pub async fn upload_report_with_token<S>(app: &S, token: &str, repo: &str) -> (u16, Value)
 where
@@ -153,23 +153,30 @@ where
             Error = actix_web::Error,
         >,
 {
+    let job_id_num =
+        u32::from_str_radix(Uuid::new_v4().to_string().split('-').next().unwrap(), 16).unwrap();
+    let run_id_num =
+        u32::from_str_radix(Uuid::new_v4().to_string().split('-').next().unwrap(), 16).unwrap();
     let body = serde_json::json!({
-        "expected_jobs": 1,
         "framework": "playwright",
+        "name": "playwright",
         "repository": repo,
-        "branch": "main",
         "commit": format!("{}abcdef1234567890", Uuid::new_v4().to_string().split('-').next().unwrap()),
+        "gh_run_id": format!("{}", run_id_num),
+        "gh_job_id": format!("{}", job_id_num),
+        "gh_job_name": format!("test-report-{}", job_id_num),
     });
 
     let req = test::TestRequest::post()
-        .uri("/api/v1/reports")
+        .uri("/api/v1/reports/register")
         .insert_header(("Authorization", format!("Bearer {}", token)))
         .set_json(body)
         .to_request();
 
     let resp = test::call_service(app, req).await;
     let status = resp.status().as_u16();
-    let body: Value = test::read_body_json(resp).await;
+    let bytes = test::read_body(resp).await;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, body)
 }
 
@@ -189,7 +196,8 @@ where
 
     let resp = test::call_service(app, req).await;
     let status = resp.status().as_u16();
-    let body: Value = test::read_body_json(resp).await;
+    let bytes = test::read_body(resp).await;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, body)
 }
 
@@ -209,7 +217,8 @@ where
 
     let resp = test::call_service(app, req).await;
     let status = resp.status().as_u16();
-    let body: Value = test::read_body_json(resp).await;
+    let bytes = test::read_body(resp).await;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, body)
 }
 
@@ -229,4 +238,138 @@ where
 
     let resp = test::call_service(app, req).await;
     resp.status().as_u16()
+}
+
+/// Send POST /api/v1/reports/register with OIDC Bearer token.
+pub async fn register_report_with_token<S>(app: &S, token: &str, body: Value) -> (u16, Value)
+where
+    S: actix_web::dev::Service<
+            actix_http::Request,
+            Response = ServiceResponse,
+            Error = actix_web::Error,
+        >,
+{
+    let req = test::TestRequest::post()
+        .uri("/api/v1/reports/register")
+        .insert_header(("Authorization", format!("Bearer {}", token)))
+        .set_json(body)
+        .to_request();
+
+    let resp = test::call_service(app, req).await;
+    let status = resp.status().as_u16();
+    let bytes = test::read_body(resp).await;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
+/// Send POST /api/v1/reports/register with admin key.
+pub async fn register_report_with_api_key<S>(app: &S, body: Value) -> (u16, Value)
+where
+    S: actix_web::dev::Service<
+            actix_http::Request,
+            Response = ServiceResponse,
+            Error = actix_web::Error,
+        >,
+{
+    let req = test::TestRequest::post()
+        .uri("/api/v1/reports/register")
+        .insert_header(("X-Admin-Key", TEST_ADMIN_KEY))
+        .set_json(body)
+        .to_request();
+
+    let resp = test::call_service(app, req).await;
+    let status = resp.status().as_u16();
+    let bytes = test::read_body(resp).await;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
+/// Send POST /api/v1/reports/begin with admin key.
+pub async fn begin_report<S>(app: &S, body: Value) -> (u16, Value)
+where
+    S: actix_web::dev::Service<
+            actix_http::Request,
+            Response = ServiceResponse,
+            Error = actix_web::Error,
+        >,
+{
+    let req = test::TestRequest::post()
+        .uri("/api/v1/reports/begin")
+        .insert_header(("X-Admin-Key", TEST_ADMIN_KEY))
+        .set_json(body)
+        .to_request();
+
+    let resp = test::call_service(app, req).await;
+    let status = resp.status().as_u16();
+    let bytes = test::read_body(resp).await;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
+/// Send POST /api/v1/reports/begin with OIDC Bearer token.
+#[allow(dead_code)]
+pub async fn begin_report_with_token<S>(app: &S, token: &str, body: Value) -> (u16, Value)
+where
+    S: actix_web::dev::Service<
+            actix_http::Request,
+            Response = ServiceResponse,
+            Error = actix_web::Error,
+        >,
+{
+    let req = test::TestRequest::post()
+        .uri("/api/v1/reports/begin")
+        .insert_header(("Authorization", format!("Bearer {}", token)))
+        .set_json(body)
+        .to_request();
+
+    let resp = test::call_service(app, req).await;
+    let status = resp.status().as_u16();
+    let bytes = test::read_body(resp).await;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
+/// Send POST /api/v1/reports/complete with admin key.
+pub async fn complete_report<S>(app: &S, body: Value) -> (u16, Value)
+where
+    S: actix_web::dev::Service<
+            actix_http::Request,
+            Response = ServiceResponse,
+            Error = actix_web::Error,
+        >,
+{
+    let req = test::TestRequest::post()
+        .uri("/api/v1/reports/complete")
+        .insert_header(("X-Admin-Key", TEST_ADMIN_KEY))
+        .set_json(body)
+        .to_request();
+
+    let resp = test::call_service(app, req).await;
+    let status = resp.status().as_u16();
+    let bytes = test::read_body(resp).await;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
+/// Send POST /api/v1/reports/complete with OIDC Bearer token.
+#[allow(dead_code)]
+pub async fn complete_report_with_token<S>(app: &S, token: &str, body: Value) -> (u16, Value)
+where
+    S: actix_web::dev::Service<
+            actix_http::Request,
+            Response = ServiceResponse,
+            Error = actix_web::Error,
+        >,
+{
+    let req = test::TestRequest::post()
+        .uri("/api/v1/reports/complete")
+        .insert_header(("Authorization", format!("Bearer {}", token)))
+        .set_json(body)
+        .to_request();
+
+    let resp = test::call_service(app, req).await;
+    let status = resp.status().as_u16();
+    let bytes = test::read_body(resp).await;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
 }

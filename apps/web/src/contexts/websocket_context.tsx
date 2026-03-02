@@ -53,25 +53,34 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 
       switch (event.type) {
         case 'report_created':
-          // Invalidate the reports list
+          // Invalidate report lists (flat + grouped landing page)
           queryClient.invalidateQueries({ queryKey: ['reports'] });
+          queryClient.invalidateQueries({ queryKey: ['reports-grouped'] });
           break;
 
         case 'report_updated':
-          // Invalidate both list and specific report
+          // Invalidate lists, grouped view, consolidated view, and specific report
           queryClient.invalidateQueries({ queryKey: ['reports'] });
+          queryClient.invalidateQueries({ queryKey: ['reports-grouped'] });
+          queryClient.invalidateQueries({ queryKey: ['reports-consolidated'] });
           queryClient.invalidateQueries({
-            queryKey: ['report-with-jobs', event.payload.report_id],
+            queryKey: ['report-detail', event.payload.report_id],
           });
           break;
 
-        case 'job_created':
-        case 'job_updated':
-          // Invalidate the specific report and reports list (for job count)
+        case 'report_registered':
+        case 'report_entry_updated':
+          // Invalidate the specific report group, reports lists, and consolidated view
           queryClient.invalidateQueries({
-            queryKey: ['report-with-jobs', event.payload.report_id],
+            queryKey: [
+              'report-detail',
+              (event.payload as { report_group_id?: string }).report_group_id ??
+                event.payload.report_id,
+            ],
           });
           queryClient.invalidateQueries({ queryKey: ['reports'] });
+          queryClient.invalidateQueries({ queryKey: ['reports-grouped'] });
+          queryClient.invalidateQueries({ queryKey: ['reports-consolidated'] });
           break;
 
         case 'suites_available':

@@ -6,8 +6,8 @@
 export type WsEventType =
   | 'report_created'
   | 'report_updated'
-  | 'job_created'
-  | 'job_updated'
+  | 'report_registered'
+  | 'report_entry_updated'
   | 'suites_available';
 
 // Test statistics included in report_updated events
@@ -23,7 +23,7 @@ export interface TestStatsPayload {
 export interface ReportCreatedPayload {
   report_id: string;
   framework: string;
-  expected_jobs: number;
+
   repository?: string;
   ref?: string;
   sha?: string;
@@ -37,35 +37,33 @@ export interface ReportCreatedPayload {
 export interface ReportUpdatedPayload {
   report_id: string;
   status: string;
-  completed_jobs?: number;
+  completed_reports?: number;
   test_stats?: TestStatsPayload;
   updated_at: string;
 }
 
-// Payload for job_created event
-export interface JobCreatedPayload {
+// Payload for report_registered event
+export interface ReportRegisteredPayload {
+  report_group_id: string;
   report_id: string;
-  job_id: string;
   display_name: string;
-  github_job_id?: string;
-  github_job_name?: string;
+  gh_job_id?: string;
+  gh_job_name?: string;
   status: string;
   created_at: string;
 }
 
-// Payload for job_updated event
-export interface JobUpdatedPayload {
+// Payload for report_entry_updated event
+export interface ReportEntryUpdatedPayload {
+  report_group_id: string;
   report_id: string;
-  job_id: string;
   status: string;
-  html_url?: string;
   updated_at: string;
 }
 
 // Payload for suites_available event
 export interface SuitesAvailablePayload {
   report_id: string;
-  job_id: string;
   suite_count: number;
 }
 
@@ -73,8 +71,8 @@ export interface SuitesAvailablePayload {
 export type WsEventPayload =
   | ReportCreatedPayload
   | ReportUpdatedPayload
-  | JobCreatedPayload
-  | JobUpdatedPayload
+  | ReportRegisteredPayload
+  | ReportEntryUpdatedPayload
   | SuitesAvailablePayload;
 
 // Individual event types
@@ -90,15 +88,15 @@ export interface ReportUpdatedEvent {
   timestamp: string;
 }
 
-export interface JobCreatedEvent {
-  type: 'job_created';
-  payload: JobCreatedPayload;
+export interface ReportRegisteredEvent {
+  type: 'report_registered';
+  payload: ReportRegisteredPayload;
   timestamp: string;
 }
 
-export interface JobUpdatedEvent {
-  type: 'job_updated';
-  payload: JobUpdatedPayload;
+export interface ReportEntryUpdatedEvent {
+  type: 'report_entry_updated';
+  payload: ReportEntryUpdatedPayload;
   timestamp: string;
 }
 
@@ -112,6 +110,6 @@ export interface SuitesAvailableEvent {
 export type WsEventMessage =
   | ReportCreatedEvent
   | ReportUpdatedEvent
-  | JobCreatedEvent
-  | JobUpdatedEvent
+  | ReportRegisteredEvent
+  | ReportEntryUpdatedEvent
   | SuitesAvailableEvent;

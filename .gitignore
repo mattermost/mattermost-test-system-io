@@ -27,6 +27,7 @@ apps/web/coverage/
 *.p12
 credentials.json
 service-account*.json
+.oidc-keys.json
 
 # CDK
 cdk.out/

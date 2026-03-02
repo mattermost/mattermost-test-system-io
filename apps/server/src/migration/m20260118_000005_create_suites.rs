@@ -1,4 +1,4 @@
-//! Migration: Create test_suites table.
+//! Migration: Create suites table.
 //!
 //! Stores normalized test suite data extracted from framework JSON.
 
@@ -14,9 +14,9 @@ impl MigrationTrait for Migration {
             .get_connection()
             .execute_unprepared(
                 r#"
-                CREATE TABLE test_suites (
+                CREATE TABLE suites (
                     id UUID PRIMARY KEY, -- UUIDv7 for time-ordered sorting
-                    test_job_id UUID NOT NULL REFERENCES test_jobs(id) ON DELETE CASCADE,
+                    upload_id UUID NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
 
                     -- Suite identification
                     title VARCHAR(500) NOT NULL,           -- Suite name/description
@@ -38,25 +38,25 @@ impl MigrationTrait for Migration {
                     deleted_at TIMESTAMPTZ
                 );
 
-                -- Index for job lookup (active only)
-                CREATE INDEX idx_test_suites_test_job_id ON test_suites(test_job_id)
+                -- Index for upload lookup (active only)
+                CREATE INDEX idx_suites_upload_id ON suites(upload_id)
                     WHERE deleted_at IS NULL;
 
                 -- Index for ordering by start time (actual test execution)
-                CREATE INDEX idx_test_suites_start_time ON test_suites(start_time ASC NULLS LAST)
+                CREATE INDEX idx_suites_start_time ON suites(start_time ASC NULLS LAST)
                     WHERE deleted_at IS NULL;
 
                 -- Index for ordering by creation (fallback)
-                CREATE INDEX idx_test_suites_created_at ON test_suites(created_at DESC)
+                CREATE INDEX idx_suites_created_at ON suites(created_at DESC)
                     WHERE deleted_at IS NULL;
 
                 -- Index for soft-delete queries
-                CREATE INDEX idx_test_suites_deleted_at ON test_suites(deleted_at)
+                CREATE INDEX idx_suites_deleted_at ON suites(deleted_at)
                     WHERE deleted_at IS NULL;
 
                 -- Trigger to update updated_at
-                CREATE TRIGGER update_test_suites_updated_at
-                    BEFORE UPDATE ON test_suites
+                CREATE TRIGGER update_suites_updated_at
+                    BEFORE UPDATE ON suites
                     FOR EACH ROW
                     EXECUTE FUNCTION update_updated_at_column();
                 "#,
@@ -71,8 +71,8 @@ impl MigrationTrait for Migration {
             .get_connection()
             .execute_unprepared(
                 r#"
-                DROP TRIGGER IF EXISTS update_test_suites_updated_at ON test_suites;
-                DROP TABLE IF EXISTS test_suites CASCADE;
+                DROP TRIGGER IF EXISTS update_suites_updated_at ON suites;
+                DROP TABLE IF EXISTS suites CASCADE;
                 "#,
             )
             .await?;

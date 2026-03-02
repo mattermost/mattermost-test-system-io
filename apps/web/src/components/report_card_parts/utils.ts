@@ -41,7 +41,8 @@ export function calculatePassRate(stats: {
   const failed = stats.failed;
   const total = passed + failed;
   if (total === 0) return null;
-  return Math.round((passed * 100) / total);
+  const rate = (passed * 100) / total;
+  return rate === 100 ? 100 : Math.floor(rate * 10) / 10;
 }
 
 export function getPassRateColorClass(passRate: number | null): string {

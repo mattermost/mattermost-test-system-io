@@ -17,7 +17,7 @@ impl MigrationTrait for Migration {
                 r#"
                 CREATE TABLE json_files (
                     id UUID PRIMARY KEY, -- UUIDv7 for time-ordered sorting
-                    test_job_id UUID NOT NULL REFERENCES test_jobs(id) ON DELETE CASCADE,
+                    upload_id UUID NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
 
                     -- File info
                     filename VARCHAR(500) NOT NULL,        -- relative path (e.g., "results.json")
@@ -39,16 +39,16 @@ impl MigrationTrait for Migration {
                     deleted_at TIMESTAMPTZ
                 );
 
-                -- Unique constraint: one file per job+filename (active only)
-                CREATE UNIQUE INDEX idx_json_files_test_job_filename ON json_files(test_job_id, filename)
+                -- Unique constraint: one file per upload+filename (active only)
+                CREATE UNIQUE INDEX idx_json_files_upload_filename ON json_files(upload_id, filename)
                     WHERE deleted_at IS NULL;
 
-                -- Index for job lookup (active only)
-                CREATE INDEX idx_json_files_test_job_id ON json_files(test_job_id)
+                -- Index for upload lookup (active only)
+                CREATE INDEX idx_json_files_upload_id ON json_files(upload_id)
                     WHERE deleted_at IS NULL;
 
                 -- Index for pending files (for upload progress)
-                CREATE INDEX idx_json_files_status ON json_files(test_job_id, status)
+                CREATE INDEX idx_json_files_status ON json_files(upload_id, status)
                     WHERE deleted_at IS NULL;
 
                 -- Index for soft-delete queries

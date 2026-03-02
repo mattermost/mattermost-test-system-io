@@ -1,24 +1,22 @@
-//! Job entity for SeaORM.
+//! Report entity for SeaORM (individual uploaded report, formerly "upload").
 
 use sea_orm::entity::prelude::*;
 use serde_json::Value as JsonValue;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-#[sea_orm(table_name = "test_jobs")]
+#[sea_orm(table_name = "reports")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
-    pub test_report_id: Uuid,
+    pub report_group_id: Uuid,
+    pub name: String,
     pub status: String,
-    /// HTML upload status: NULL, started, completed, failed, timedout
-    pub html_upload_status: Option<String>,
     /// Screenshots upload status: NULL, started, completed, failed, timedout
     pub screenshots_upload_status: Option<String>,
     /// JSON upload status: NULL, started, completed, failed, timedout
     pub json_upload_status: Option<String>,
-    pub html_path: Option<String>,
-    pub github_job_id: Option<String>,
-    pub github_job_name: Option<String>,
+    pub gh_job_id: Option<String>,
+    pub gh_job_name: Option<String>,
     #[sea_orm(column_type = "JsonBinary", nullable)]
     pub environment: Option<JsonValue>,
     pub error_message: Option<String>,
@@ -34,31 +32,23 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
-        belongs_to = "super::test_report::Entity",
-        from = "Column::TestReportId",
-        to = "super::test_report::Column::Id",
+        belongs_to = "super::report_group::Entity",
+        from = "Column::ReportGroupId",
+        to = "super::report_group::Column::Id",
         on_delete = "Cascade"
     )]
-    Report,
-    #[sea_orm(has_many = "super::html_file::Entity")]
-    HtmlFiles,
+    ReportGroup,
     #[sea_orm(has_many = "super::screenshot::Entity")]
     Screenshots,
     #[sea_orm(has_many = "super::json_file::Entity")]
     JsonFiles,
-    #[sea_orm(has_many = "super::test_suite::Entity")]
-    TestSuites,
+    #[sea_orm(has_many = "super::suite::Entity")]
+    Suites,
 }
 
-impl Related<super::test_report::Entity> for Entity {
+impl Related<super::report_group::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::Report.def()
-    }
-}
-
-impl Related<super::html_file::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::HtmlFiles.def()
+        Relation::ReportGroup.def()
     }
 }
 
@@ -74,9 +64,9 @@ impl Related<super::json_file::Entity> for Entity {
     }
 }
 
-impl Related<super::test_suite::Entity> for Entity {
+impl Related<super::suite::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::TestSuites.def()
+        Relation::Suites.def()
     }
 }
 

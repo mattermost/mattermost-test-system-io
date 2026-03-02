@@ -25,6 +25,7 @@ impl ReportEnvironmentMetadata {
         self.tool.is_none() && self.server.is_none()
     }
 
+    #[allow(dead_code)]
     pub fn to_json(&self) -> Option<JsonValue> {
         if self.is_empty() {
             None
@@ -41,34 +42,27 @@ impl ReportEnvironmentMetadata {
 }
 
 /// Report status enum.
+///
+/// Only two states: a report is either still receiving data or fully done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportStatus {
-    Initializing,
-    Uploading,
-    Processing,
-    Complete,
-    Failed,
+    InProgress,
+    Completed,
 }
 
 impl ReportStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Initializing => "initializing",
-            Self::Uploading => "uploading",
-            Self::Processing => "processing",
-            Self::Complete => "complete",
-            Self::Failed => "failed",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "initializing" => Some(Self::Initializing),
-            "uploading" => Some(Self::Uploading),
-            "processing" => Some(Self::Processing),
-            "complete" => Some(Self::Complete),
-            "failed" => Some(Self::Failed),
+            "in_progress" => Some(Self::InProgress),
+            "completed" => Some(Self::Completed),
             _ => None,
         }
     }
@@ -114,45 +108,6 @@ impl std::fmt::Display for Framework {
     }
 }
 
-/// Request to register a new report.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
-pub struct RegisterReportRequest {
-    /// Number of parallel jobs expected (1-100).
-    pub expected_jobs: i32,
-    /// Test framework.
-    pub framework: Framework,
-    /// Repository (e.g., "org/repo"). Required.
-    pub repository: String,
-    /// Branch or tag name (e.g., "main", "release-1.0"). Required.
-    pub branch: String,
-    /// Commit hash (e.g., "776e302abc..."). Required.
-    pub commit: String,
-    /// GitHub Actions run ID. Optional (empty string if not provided).
-    #[serde(default)]
-    pub run_id: Option<String>,
-    /// PR number. Required when event is pull_request.
-    #[serde(default)]
-    pub pr_number: Option<i32>,
-    /// Environment metadata — tool and server info (stored as JSONB).
-    #[serde(default)]
-    pub environment_metadata: Option<ReportEnvironmentMetadata>,
-}
-
-/// Response after registering a report.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct RegisterReportResponse {
-    /// Report UUID.
-    pub report_id: Uuid,
-    /// Report status.
-    pub status: ReportStatus,
-    /// Expected number of jobs.
-    pub expected_jobs: i32,
-    /// Test framework.
-    pub framework: Framework,
-    /// Creation timestamp.
-    pub created_at: DateTime<Utc>,
-}
-
 /// Test statistics for a report.
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 pub struct TestStats {
@@ -185,11 +140,11 @@ pub struct ReportSummary {
     pub status: ReportStatus,
     /// Test framework.
     pub framework: Framework,
-    /// Expected number of jobs.
-    pub expected_jobs: i32,
-    /// Number of completed jobs.
-    pub jobs_complete: i32,
-    /// Test statistics aggregated from all jobs.
+    /// User-defined report name for grouping (e.g., "playwright-full-enterprise-master").
+    pub name: String,
+    /// Number of completed reports.
+    pub reports_complete: i32,
+    /// Test statistics aggregated from all reports.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_stats: Option<TestStats>,
     /// Repository (e.g., "org/repo").
@@ -199,13 +154,12 @@ pub struct ReportSummary {
     /// Commit SHA.
     pub commit: String,
     /// GitHub Actions run ID.
-    pub run_id: String,
+    pub gh_run_id: String,
+    /// GitHub Actions run attempt.
+    pub gh_run_attempt: String,
     /// PR number.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pr_number: Option<i32>,
-    /// OIDC claims (token-derived, stored separately).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oidc_claims: Option<super::report_oidc_claim::ReportOidcClaimsResponse>,
+    pub gh_pr_number: Option<i32>,
     /// Environment metadata (tool + server info).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment_metadata: Option<ReportEnvironmentMetadata>,
@@ -213,7 +167,7 @@ pub struct ReportSummary {
     pub created_at: DateTime<Utc>,
 }
 
-/// Report detail response including jobs.
+/// Report group detail response including reports.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ReportDetailResponse {
     /// Report UUID.
@@ -222,8 +176,8 @@ pub struct ReportDetailResponse {
     pub status: ReportStatus,
     /// Test framework.
     pub framework: Framework,
-    /// Expected number of jobs.
-    pub expected_jobs: i32,
+    /// User-defined report name.
+    pub name: String,
     /// Repository (e.g., "org/repo").
     pub repository: String,
     /// Branch name (stored as-is, e.g., "main").
@@ -231,13 +185,12 @@ pub struct ReportDetailResponse {
     /// Commit SHA.
     pub commit: String,
     /// GitHub Actions run ID.
-    pub run_id: String,
+    pub gh_run_id: String,
+    /// GitHub Actions run attempt.
+    pub gh_run_attempt: String,
     /// PR number.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pr_number: Option<i32>,
-    /// OIDC claims (token-derived, stored separately).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oidc_claims: Option<super::report_oidc_claim::ReportOidcClaimsResponse>,
+    pub gh_pr_number: Option<i32>,
     /// Environment metadata (tool + server info).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment_metadata: Option<ReportEnvironmentMetadata>,
@@ -245,8 +198,8 @@ pub struct ReportDetailResponse {
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
     pub updated_at: DateTime<Utc>,
-    /// Jobs in this report (ordered by creation time).
-    pub jobs: Vec<super::job::JobSummary>,
+    /// Individual reports in this report group (ordered by creation time).
+    pub reports: Vec<UploadSummary>,
 }
 
 /// Report list response with pagination.
@@ -262,12 +215,62 @@ pub struct ReportListResponse {
     pub offset: i32,
 }
 
+/// Individual report summary (single upload, not grouped).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct IndividualReportSummary {
+    /// Report UUID.
+    pub id: Uuid,
+    /// Short ID for display.
+    pub short_id: String,
+    /// Report group UUID.
+    pub report_group_id: Uuid,
+    /// User-defined report name.
+    pub name: String,
+    /// Processing status.
+    pub status: String,
+    /// GitHub Actions job ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gh_job_id: Option<String>,
+    /// GitHub Actions job name / display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gh_job_name: Option<String>,
+    /// Repository (from parent report group).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    /// Branch (from parent report group).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Commit SHA (from parent report group).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Test statistics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_stats: Option<TestStats>,
+    /// Duration in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Response for individual reports list.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct IndividualReportListResponse {
+    pub reports: Vec<IndividualReportSummary>,
+    pub total: i64,
+    pub limit: i32,
+    pub offset: i32,
+}
+
 /// Query parameters for listing reports.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ListReportsQuery {
     /// Filter by framework.
     #[serde(default)]
     pub framework: Option<Framework>,
+    /// Filter by report name.
+    #[serde(default)]
+    pub name: Option<String>,
     /// Filter by status.
     #[serde(default)]
     pub status: Option<ReportStatus>,
@@ -280,6 +283,9 @@ pub struct ListReportsQuery {
     /// Filter by commit SHA (prefix-matched, min 7 chars).
     #[serde(default)]
     pub commit: Option<String>,
+    /// Filter by GitHub run attempt.
+    #[serde(default)]
+    pub gh_run_attempt: Option<String>,
     /// Maximum results to return.
     #[serde(default = "default_limit")]
     pub limit: i32,
@@ -302,6 +308,7 @@ pub const MAX_RUNS_PER_REPO: usize = 10;
 pub struct RunEntry {
     pub report_id: Uuid,
     pub framework: Framework,
+    pub name: String,
     pub status: ReportStatus,
     pub branch: String,
     pub commit: String,
@@ -310,6 +317,11 @@ pub struct RunEntry {
     pub run_number: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_attempt: Option<String>,
+    pub gh_run_attempt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gh_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gh_pr_number: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_stats: Option<TestStats>,
     pub created_at: DateTime<Utc>,
@@ -370,6 +382,48 @@ pub struct ConsolidatedSpec {
     pub history: Vec<SpecHistoryEntry>,
 }
 
+// --- Begin / Complete Endpoints ---
+
+/// Request body for `POST /reports/begin` and `POST /reports/complete`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ReportGroupingRequest {
+    /// Repository (e.g., "org/repo"). Required.
+    pub repository: String,
+    /// Commit SHA. Required.
+    pub commit: String,
+    /// GitHub Actions run ID. Required.
+    pub gh_run_id: String,
+    /// Test framework. Required.
+    pub framework: Framework,
+    /// User-defined report name for grouping (e.g., "playwright-full-enterprise"). Required.
+    pub name: String,
+    /// PR number (required for pull_request events).
+    #[serde(default)]
+    pub gh_pr_number: Option<i32>,
+}
+
+/// Response from `POST /reports/begin`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BeginResponse {
+    /// Report UUID.
+    pub report_id: Uuid,
+    /// Current report status (always `in_progress` after begin).
+    pub status: ReportStatus,
+    /// `true` if this call created the report; `false` if it already existed.
+    pub created: bool,
+}
+
+/// Response from `POST /reports/complete`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CompleteResponse {
+    /// Report UUID.
+    pub report_id: Uuid,
+    /// Current report status (always `completed` after complete).
+    pub status: ReportStatus,
+    /// Number of individual reports in this group.
+    pub reports_count: i64,
+}
+
 /// Response for the consolidated results endpoint.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ConsolidatedResultsResponse {
@@ -384,5 +438,253 @@ pub struct ConsolidatedResultsResponse {
     pub latest_commit_sha: String,
     pub latest_run_attempt: i32,
     pub available_run_attempts: Vec<i32>,
+    /// Wall-clock duration in milliseconds (earliest start to latest end across all reports).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
     pub specs: Vec<ConsolidatedSpec>,
+}
+
+// ============================================================================
+// Report Registration and Upload Types
+// ============================================================================
+
+/// Environment metadata for individual reports (stored as JSONB).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct EnvironmentMetadata {
+    /// Operating system (e.g., linux, macos, windows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    /// Browser name (e.g., chrome, firefox, safari).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser: Option<String>,
+    /// Device name for mobile testing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// Custom tags for categorization.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl EnvironmentMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.os.is_none() && self.browser.is_none() && self.device.is_none() && self.tags.is_empty()
+    }
+
+    pub fn to_json(&self) -> Option<JsonValue> {
+        if self.is_empty() {
+            None
+        } else {
+            serde_json::to_value(self).ok()
+        }
+    }
+}
+
+/// Report processing status enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadStatus {
+    /// Report initialized, waiting for uploads and/or JSON data.
+    Pending,
+    /// Test data extraction in progress.
+    Processing,
+    /// Extraction complete.
+    Complete,
+    /// Report failed.
+    Failed,
+}
+
+impl UploadStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Processing => "processing",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(Self::Pending),
+            "processing" => Some(Self::Processing),
+            "complete" => Some(Self::Complete),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for UploadStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// File that was rejected during validation.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RejectedFile {
+    /// File path.
+    pub path: String,
+    /// Rejection reason.
+    pub reason: String,
+}
+
+/// Upload summary for report detail responses.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct UploadSummary {
+    /// Upload UUID.
+    pub id: Uuid,
+    /// Short ID for display (timestamp portion of UUIDv7).
+    pub short_id: String,
+    /// GitHub Actions job ID (for idempotency).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gh_job_id: Option<String>,
+    /// GitHub Actions job name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gh_job_name: Option<String>,
+    /// UI display name (gh_job_name or "Report N").
+    pub display_name: String,
+    /// Upload processing status.
+    pub status: UploadStatus,
+}
+
+/// Screenshot file to upload (in register request).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ScreenshotToUpload {
+    /// Relative file path (e.g., "test-name/screenshot1.png").
+    pub path: String,
+    /// Expected file size in bytes.
+    #[serde(default)]
+    pub size: Option<i64>,
+    /// MIME content type (optional, will be inferred from extension).
+    #[serde(default)]
+    pub content_type: Option<String>,
+}
+
+/// Screenshot that was accepted for upload.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AcceptedScreenshot {
+    /// Relative file path.
+    pub path: String,
+    /// S3 object key.
+    pub s3_key: String,
+    /// Test name extracted from path.
+    pub test_name: String,
+}
+
+/// Response after uploading screenshots.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ScreenshotUploadResponse {
+    /// Report UUID.
+    pub report_id: Uuid,
+    /// Number of screenshots uploaded in this request.
+    pub files_uploaded: u64,
+    /// Total screenshots uploaded so far.
+    pub total_uploaded: u64,
+    /// Total screenshots expected for this report.
+    pub total_expected: u64,
+    /// True if all screenshots have been uploaded.
+    pub all_uploaded: bool,
+}
+
+/// JSON file to upload (in register request).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct JsonFileToUpload {
+    /// Relative file path (e.g., "results.json", "test-output/report.json").
+    pub path: String,
+    /// Expected file size in bytes.
+    #[serde(default)]
+    pub size: Option<i64>,
+    /// MIME content type (optional, defaults to application/json).
+    #[serde(default)]
+    pub content_type: Option<String>,
+}
+
+/// JSON file that was accepted for upload.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AcceptedJsonFile {
+    /// Relative file path.
+    pub path: String,
+    /// S3 object key.
+    pub s3_key: String,
+}
+
+/// Response after uploading JSON files.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct JsonUploadResponse {
+    /// Report UUID.
+    pub report_id: Uuid,
+    /// Number of JSON files uploaded in this request.
+    pub files_uploaded: u64,
+    /// Total JSON files uploaded so far.
+    pub total_uploaded: u64,
+    /// Total JSON files expected for this report.
+    pub total_expected: u64,
+    /// True if all JSON files have been uploaded.
+    pub all_uploaded: bool,
+    /// True if extraction has been triggered (all JSON files uploaded).
+    pub extraction_triggered: bool,
+}
+
+/// Request body for report registration.
+///
+/// Auto-creates a report group (by grouping key) and a report in a single call.
+/// Optionally declares files for upload.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct RegisterReportRequest {
+    /// Repository (e.g., "org/repo"). Required.
+    pub repository: String,
+    /// Commit SHA. Required.
+    pub commit: String,
+    /// GitHub Actions run ID. Required.
+    pub gh_run_id: String,
+    /// Test framework. Required.
+    pub framework: Framework,
+    /// User-defined report name for grouping (e.g., "playwright-full-enterprise"). Required.
+    pub name: String,
+    /// GitHub Actions job ID (for idempotency). Required.
+    pub gh_job_id: String,
+    /// Human-readable name for UI display. Required.
+    pub gh_job_name: String,
+    /// Branch name (optional — derived from OIDC claims for PR events).
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// PR number (required for pull_request events).
+    #[serde(default)]
+    pub gh_pr_number: Option<i32>,
+    /// Report-level environment metadata (tool + server info).
+    #[serde(default)]
+    pub environment_metadata: Option<ReportEnvironmentMetadata>,
+    /// Report-level environment metadata (os, browser, device, tags).
+    #[serde(default)]
+    pub environment: Option<EnvironmentMetadata>,
+    /// JSON files to upload.
+    #[serde(default)]
+    pub json_files: Option<Vec<JsonFileToUpload>>,
+    /// Screenshot files to upload.
+    #[serde(default)]
+    pub screenshots: Option<Vec<ScreenshotToUpload>>,
+}
+
+/// Response from report registration.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RegisterReportResponse {
+    /// Report UUID.
+    pub report_id: Uuid,
+    /// Upload ID (opaque, used for upload endpoints).
+    pub upload_id: Uuid,
+    /// True if returning an existing report (idempotent replay).
+    pub is_existing: bool,
+    /// Current report status.
+    pub report_status: ReportStatus,
+    /// Number of reports in this group (including the one just created).
+    pub reports_in_group: i64,
+    /// JSON files accepted for upload.
+    pub accepted_json_files: Vec<AcceptedJsonFile>,
+    /// JSON files that were rejected.
+    pub rejected_json_files: Vec<RejectedFile>,
+    /// Screenshots accepted for upload.
+    pub accepted_screenshots: Vec<AcceptedScreenshot>,
+    /// Screenshots that were rejected.
+    pub rejected_screenshots: Vec<RejectedFile>,
 }

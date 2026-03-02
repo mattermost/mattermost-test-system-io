@@ -18,7 +18,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, info, warn};
 
 use crate::auth::ApiKeyAuth;
-use crate::config::{ADMIN_KEY_HEADER, API_KEY_HEADER};
+use crate::config::{ADMIN_KEY_HEADER, API_KEY_HEADER, Config};
 use crate::db::DbPool;
 use crate::error::ErrorResponse;
 use crate::services::EventBroadcaster;
@@ -38,30 +38,49 @@ pub async fn websocket_handler(
     stream: web::Payload,
     broadcaster: web::Data<EventBroadcaster>,
     pool: web::Data<DbPool>,
+    config: web::Data<Config>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    // Authenticate before upgrading. We build and drive the ApiKeyAuth future
-    // manually so we can return a structured 401 without upgrading the socket.
-    use actix_web::dev::Payload;
-    let auth_result = {
-        let mut payload = Payload::None;
-        let fut = <ApiKeyAuth as actix_web::FromRequest>::from_request(&req, &mut payload);
-        fut.await
+    // In development, allow unauthenticated WebSocket connections because
+    // browser WebSocket API cannot send custom headers and OAuth may not
+    // be configured. The WebSocket is read-only (broadcast events only).
+    let is_dev = config.is_development();
+
+    let caller_id = if is_dev {
+        // Try auth but don't require it
+        use actix_web::dev::Payload;
+        let auth_result = {
+            let mut payload = Payload::None;
+            let fut = <ApiKeyAuth as actix_web::FromRequest>::from_request(&req, &mut payload);
+            fut.await
+        };
+        match auth_result {
+            Ok(auth) => auth.caller.key_id,
+            Err(_) => "anonymous-dev".to_string(),
+        }
+    } else {
+        // Production: require authentication
+        use actix_web::dev::Payload;
+        let auth_result = {
+            let mut payload = Payload::None;
+            let fut = <ApiKeyAuth as actix_web::FromRequest>::from_request(&req, &mut payload);
+            fut.await
+        };
+
+        if let Err(auth_err) = auth_result {
+            warn!(
+                client = %req.connection_info().realip_remote_addr().unwrap_or("unknown"),
+                header_key = %req.headers().get(API_KEY_HEADER).is_some(),
+                header_admin = %req.headers().get(ADMIN_KEY_HEADER).is_some(),
+                "WebSocket authentication failed"
+            );
+            return Ok(actix_web::HttpResponse::Unauthorized().json(ErrorResponse {
+                error: "UNAUTHORIZED".to_string(),
+                message: auth_err.to_string(),
+            }));
+        }
+
+        auth_result.unwrap().caller.key_id
     };
-
-    if let Err(auth_err) = auth_result {
-        warn!(
-            client = %req.connection_info().realip_remote_addr().unwrap_or("unknown"),
-            header_key = %req.headers().get(API_KEY_HEADER).is_some(),
-            header_admin = %req.headers().get(ADMIN_KEY_HEADER).is_some(),
-            "WebSocket authentication failed"
-        );
-        return Ok(actix_web::HttpResponse::Unauthorized().json(ErrorResponse {
-            error: "UNAUTHORIZED".to_string(),
-            message: auth_err.to_string(),
-        }));
-    }
-
-    let auth = auth_result.unwrap();
 
     // Get client info for logging
     let client_addr = req
@@ -74,8 +93,7 @@ pub async fn websocket_handler(
 
     info!(
         client = %client_addr,
-        key_id = %auth.caller.key_id,
-        role = %auth.caller.role,
+        key_id = %caller_id,
         "WebSocket connection established"
     );
 

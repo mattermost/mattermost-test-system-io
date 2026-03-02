@@ -5,7 +5,7 @@ import type {
   ReportListResponse,
   RawReportListResponse,
   TestSuiteListResponse,
-  ReportWithJobs,
+  ReportDetail,
   GroupedReportsResponse,
   ConsolidatedResultsResponse,
 } from '@/types';
@@ -79,29 +79,76 @@ export function useConsolidatedResults(
   repo: string,
   branch: string,
   commit: string,
-  framework: string,
+  name: string,
   runAttempt?: number,
+  gid?: string,
 ) {
   return useQuery({
-    queryKey: ['reports-consolidated', repo, branch, commit, framework, runAttempt],
+    queryKey: ['reports-consolidated', repo, branch, commit, name, runAttempt, gid],
     queryFn: async () => {
       const params = new URLSearchParams({
         repository: repo,
         branch,
         commit,
-        framework,
+        name,
       });
       if (runAttempt !== undefined) {
         params.set('run_attempt', String(runAttempt));
       }
+      if (gid) {
+        params.set('gid', gid);
+      }
       const response = await fetch(`${API_URL}/reports/consolidated?${params}`);
       return handleResponse<ConsolidatedResultsResponse>(response);
     },
-    enabled: !!repo && !!branch && !!commit && !!framework,
+    enabled: !!repo && !!branch && !!commit && !!name,
   });
 }
 
-// Reports list API
+// Individual reports list API
+export interface IndividualReportSummary {
+  id: string;
+  short_id: string;
+  report_group_id: string;
+  name: string;
+  status: string;
+  gh_job_id?: string;
+  gh_job_name?: string;
+  repository?: string;
+  branch?: string;
+  commit?: string;
+  test_stats?: {
+    total: number;
+    passed: number;
+    failed: number;
+    skipped: number;
+    flaky: number;
+    duration_ms?: number;
+    wall_clock_ms?: number;
+  };
+  duration_ms?: number;
+  created_at: string;
+}
+
+export interface IndividualReportListResponse {
+  reports: IndividualReportSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export function useIndividualReports(page = 1, limit = 100) {
+  return useQuery({
+    queryKey: ['reports-individual', page, limit],
+    queryFn: async () => {
+      const offset = (page - 1) * limit;
+      const response = await fetch(`${API_URL}/reports/individual?limit=${limit}&offset=${offset}`);
+      return handleResponse<IndividualReportListResponse>(response);
+    },
+  });
+}
+
+// Reports list API (report groups)
 export function useReports(page = 1, limit = 100) {
   return useQuery({
     queryKey: ['reports', page, limit],
@@ -127,27 +174,29 @@ export function useReports(page = 1, limit = 100) {
   });
 }
 
+export async function fetchReportSuites(id: string): Promise<TestSuiteListResponse> {
+  const response = await fetch(`${API_URL}/reports/${id}/suites`);
+  return handleResponse<TestSuiteListResponse>(response);
+}
+
 export function useReportSuites(id: string) {
   return useQuery({
     queryKey: ['report', id, 'suites'],
-    queryFn: async () => {
-      const response = await fetch(`${API_URL}/reports/${id}/suites`);
-      return handleResponse<TestSuiteListResponse>(response);
-    },
+    queryFn: () => fetchReportSuites(id),
     enabled: !!id,
   });
 }
 
-// Report with jobs API
-async function fetchReportWithJobs(id: string): Promise<ReportWithJobs> {
+// Report detail API
+export async function fetchReportDetail(id: string): Promise<ReportDetail> {
   const response = await fetch(`${API_URL}/reports/${id}`);
-  return handleResponse<ReportWithJobs>(response);
+  return handleResponse<ReportDetail>(response);
 }
 
-export function useReportWithJobs(id: string) {
+export function useReportDetail(id: string) {
   return useQuery({
-    queryKey: ['report-with-jobs', id],
-    queryFn: () => fetchReportWithJobs(id),
+    queryKey: ['report-detail', id],
+    queryFn: () => fetchReportDetail(id),
     enabled: !!id,
   });
 }
@@ -165,7 +214,7 @@ export interface SearchSuiteResult {
   suite_id: string;
   suite_title: string;
   suite_file_path: string | null;
-  job_id: string;
+  report_id: string;
   matches: SearchMatchedTestCase[];
 }
 

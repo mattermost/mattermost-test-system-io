@@ -76,21 +76,20 @@ export interface ReportEnvironmentMetadata {
   server?: Record<string, unknown>;
 }
 
-// New job-based report summary (current API)
+// Report summary (current API)
 export interface ReportSummary {
   id: string;
   short_id: string;
+  name: string;
   status: ReportStatus;
   framework: Framework;
-  expected_jobs: number;
-  jobs_complete: number;
   test_stats?: TestStats;
   repository: string;
   branch: string;
   commit: string;
-  run_id: string;
-  pr_number?: number;
-  oidc_claims?: ReportOidcClaims;
+  gh_run_id: string;
+  gh_pr_number?: number;
+  gh_run_attempt: string;
   environment_metadata?: ReportEnvironmentMetadata;
   created_at: string;
 }
@@ -120,9 +119,9 @@ export interface TestSuite {
   id: number;
   title: string;
   file_path: string;
-  job_id?: string;
-  job_name?: string;
-  job_number?: number;
+  report_id?: string;
+  report_name?: string;
+  report_number?: number;
   specs_count: number;
   passed_count: number;
   failed_count: number;
@@ -134,15 +133,15 @@ export interface TestSuite {
   created_at?: string;
 }
 
-export interface JobInfo {
-  job_id: string;
-  job_name: string;
-  job_number: number;
+export interface ReportEntryInfo {
+  report_id: string;
+  report_name: string;
+  report_number: number;
 }
 
 export interface TestSuiteListResponse {
   suites: TestSuite[];
-  jobs?: JobInfo[];
+  reports?: ReportEntryInfo[];
 }
 
 export interface TestAttachment {
@@ -187,46 +186,45 @@ export interface TestSpecListResponse {
   specs: TestSpec[];
 }
 
-// Job-based report types (Phase 6)
-export type JobStatus = 'html_uploaded' | 'json_uploaded' | 'processing' | 'complete' | 'failed';
-export type ReportStatus = 'initializing' | 'uploading' | 'processing' | 'complete' | 'failed';
+// Report types
+export type ProcessingStatus = 'pending' | 'processing' | 'complete' | 'failed';
+export type ReportStatus = 'in_progress' | 'completed';
 export type Framework = 'playwright' | 'cypress' | 'detox';
 
-export interface JobEnvironment {
+export interface ReportEnvironment {
   os?: string;
   browser?: string;
   device?: string;
   tags?: string[];
 }
 
-export interface JobSummary {
+export interface ReportEntry {
   id: string;
   short_id: string;
-  github_job_id?: string;
-  github_job_name?: string;
+  gh_job_id?: string;
+  gh_job_name?: string;
   display_name: string;
-  status: JobStatus;
-  html_url?: string;
-  environment?: JobEnvironment;
+  status: ProcessingStatus;
+  environment?: ReportEnvironment;
   created_at?: string;
   updated_at?: string;
 }
 
-export interface ReportWithJobs {
+export interface ReportDetail {
   id: string;
+  name: string;
   framework: Framework;
   status: ReportStatus;
-  expected_jobs: number;
   repository: string;
   branch: string;
   commit: string;
-  run_id: string;
-  pr_number?: number;
-  oidc_claims?: ReportOidcClaims;
+  gh_run_id: string;
+  gh_pr_number?: number;
+  gh_run_attempt: string;
   environment_metadata?: ReportEnvironmentMetadata;
   created_at: string;
   updated_at: string;
-  jobs: JobSummary[];
+  reports: ReportEntry[];
   error_message?: string;
 }
 
@@ -235,12 +233,15 @@ export interface ReportWithJobs {
 export interface RunEntry {
   report_id: string;
   framework: Framework;
+  name: string;
   status: ReportStatus;
   branch: string;
   commit: string;
   short_sha: string;
   run_number?: string;
-  run_attempt?: string;
+  gh_run_attempt: string;
+  gh_run_id?: string;
+  gh_pr_number?: number;
   test_stats?: TestStats;
   created_at: string;
   url_path: string;
@@ -298,5 +299,6 @@ export interface ConsolidatedResultsResponse {
   latest_commit_sha: string;
   latest_run_attempt: number;
   available_run_attempts: number[];
+  duration_ms?: number;
   specs: ConsolidatedSpec[];
 }

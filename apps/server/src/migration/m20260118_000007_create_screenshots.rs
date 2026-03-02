@@ -16,8 +16,8 @@ impl MigrationTrait for Migration {
                 r#"
                 CREATE TABLE screenshots (
                     id UUID PRIMARY KEY, -- UUIDv7 for time-ordered sorting
-                    test_job_id UUID NOT NULL REFERENCES test_jobs(id) ON DELETE CASCADE,
-                    test_case_id UUID REFERENCES test_cases(id) ON DELETE SET NULL, -- linked after extraction
+                    upload_id UUID NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+                    case_id UUID REFERENCES cases(id) ON DELETE SET NULL, -- linked after extraction
 
                     -- File info
                     filename VARCHAR(500) NOT NULL,           -- relative path from screenshots root
@@ -39,29 +39,29 @@ impl MigrationTrait for Migration {
                     deleted_at TIMESTAMPTZ
                 );
 
-                -- Unique constraint: one file per job+filename (active only)
-                CREATE UNIQUE INDEX idx_screenshots_test_job_filename ON screenshots(test_job_id, filename)
+                -- Unique constraint: one file per upload+filename (active only)
+                CREATE UNIQUE INDEX idx_screenshots_upload_filename ON screenshots(upload_id, filename)
                     WHERE deleted_at IS NULL;
 
-                -- Index for job lookup (active only)
-                CREATE INDEX idx_screenshots_test_job_id ON screenshots(test_job_id)
+                -- Index for upload lookup (active only)
+                CREATE INDEX idx_screenshots_upload_id ON screenshots(upload_id)
                     WHERE deleted_at IS NULL;
 
                 -- Index for pending files (for upload progress)
-                CREATE INDEX idx_screenshots_status ON screenshots(test_job_id, status)
+                CREATE INDEX idx_screenshots_status ON screenshots(upload_id, status)
                     WHERE deleted_at IS NULL;
 
-                -- Index for test name lookup within a job
-                CREATE INDEX idx_screenshots_test_name ON screenshots(test_job_id, test_name)
+                -- Index for test name lookup within an upload
+                CREATE INDEX idx_screenshots_test_name ON screenshots(upload_id, test_name)
                     WHERE deleted_at IS NULL;
 
-                -- Index for test_case_id lookup
-                CREATE INDEX idx_screenshots_test_case_id ON screenshots(test_case_id)
-                    WHERE deleted_at IS NULL AND test_case_id IS NOT NULL;
+                -- Index for case_id lookup
+                CREATE INDEX idx_screenshots_case_id ON screenshots(case_id)
+                    WHERE deleted_at IS NULL AND case_id IS NOT NULL;
 
-                -- Index for unmapped screenshots (test_case_id IS NULL)
-                CREATE INDEX idx_screenshots_unmapped ON screenshots(test_job_id)
-                    WHERE deleted_at IS NULL AND test_case_id IS NULL;
+                -- Index for unmapped screenshots (case_id IS NULL)
+                CREATE INDEX idx_screenshots_unmapped ON screenshots(upload_id)
+                    WHERE deleted_at IS NULL AND case_id IS NULL;
 
                 -- Index for soft-delete queries
                 CREATE INDEX idx_screenshots_deleted_at ON screenshots(deleted_at)

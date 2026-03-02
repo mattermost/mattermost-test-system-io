@@ -10,7 +10,7 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
-    pub test_job_id: Uuid,
+    pub upload_id: Uuid,
     pub filename: String,
     pub s3_key: String,
     pub size_bytes: i64,
@@ -29,17 +29,17 @@ pub struct Model {
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
-        belongs_to = "super::test_job::Entity",
-        from = "Column::TestJobId",
-        to = "super::test_job::Column::Id",
+        belongs_to = "super::report::Entity",
+        from = "Column::UploadId",
+        to = "super::report::Column::Id",
         on_delete = "Cascade"
     )]
-    Job,
+    Report,
 }
 
-impl Related<super::test_job::Entity> for Entity {
+impl Related<super::report::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::Job.def()
+        Relation::Report.def()
     }
 }
 

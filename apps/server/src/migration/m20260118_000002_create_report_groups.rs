@@ -1,6 +1,6 @@
-//! Migration: Create reports table and shared trigger function.
+//! Migration: Create report_groups table and shared trigger function.
 //!
-//! Reports represent a test run with one or more jobs.
+//! Report groups represent a test run with one or more reports (individual uploads).
 //! Also creates the shared updated_at trigger function.
 
 use sea_orm_migration::prelude::*;
@@ -24,25 +24,23 @@ impl MigrationTrait for Migration {
                 END;
                 $$ LANGUAGE plpgsql;
 
-                -- Test reports table
-                CREATE TABLE test_reports (
+                -- Report groups table
+                CREATE TABLE report_groups (
                     id UUID PRIMARY KEY,
-                    expected_jobs INTEGER NOT NULL
-                        CHECK (expected_jobs >= 1 AND expected_jobs <= 100),
                     framework VARCHAR(20) NOT NULL
                         CHECK (framework IN ('playwright', 'cypress', 'detox')),
-                    status VARCHAR(20) NOT NULL DEFAULT 'initializing'
-                        CHECK (status IN ('initializing', 'uploading', 'processing', 'complete', 'failed')),
+                    name TEXT NOT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT 'in_progress'
+                        CHECK (status IN ('in_progress', 'completed')),
 
-                    -- Typed metadata columns (previously stored in github_metadata JSONB)
                     repository VARCHAR(255) NOT NULL,
                     branch VARCHAR(255) NOT NULL,
                     commit VARCHAR(255) NOT NULL,
-                    run_id VARCHAR(100) NOT NULL DEFAULT '',
-                    pr_number INTEGER,
+                    gh_run_id VARCHAR(100) NOT NULL DEFAULT '',
+                    gh_run_attempt VARCHAR(50) NOT NULL DEFAULT '1',
+                    gh_pr_number INTEGER,
 
                     -- Environment metadata as JSONB (tool + server info)
-                    -- {tool: {name, version, browser, ...}, server: {version, type, edition, ...}}
                     environment_metadata JSONB,
 
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -51,36 +49,41 @@ impl MigrationTrait for Migration {
                 );
 
                 -- Index for listing reports by status (active only)
-                CREATE INDEX idx_test_reports_status ON test_reports(status)
+                CREATE INDEX idx_report_groups_status ON report_groups(status)
                     WHERE deleted_at IS NULL;
 
                 -- Index for filtering by framework (active only)
-                CREATE INDEX idx_test_reports_framework ON test_reports(framework)
+                CREATE INDEX idx_report_groups_framework ON report_groups(framework)
                     WHERE deleted_at IS NULL;
 
                 -- Index for soft-delete queries
-                CREATE INDEX idx_test_reports_deleted_at ON test_reports(deleted_at)
+                CREATE INDEX idx_report_groups_deleted_at ON report_groups(deleted_at)
                     WHERE deleted_at IS NULL;
 
                 -- Index for listing by creation date (active only)
-                CREATE INDEX idx_test_reports_created_at ON test_reports(created_at DESC)
+                CREATE INDEX idx_report_groups_created_at ON report_groups(created_at DESC)
                     WHERE deleted_at IS NULL;
 
                 -- Index for repository queries (active only)
-                CREATE INDEX idx_test_reports_repository ON test_reports(repository)
+                CREATE INDEX idx_report_groups_repository ON report_groups(repository)
                     WHERE deleted_at IS NULL;
 
-                -- Index for commit prefix searches (active only)
-                CREATE INDEX idx_test_reports_commit ON test_reports(commit)
+                -- Index for commit lookups (active only)
+                CREATE INDEX idx_report_groups_commit ON report_groups(commit)
                     WHERE deleted_at IS NULL;
 
-                -- Index for run_id lookups
-                CREATE INDEX idx_test_reports_run_id ON test_reports(run_id)
+                -- Index for gh_run_id lookups (active only)
+                CREATE INDEX idx_report_groups_gh_run_id ON report_groups(gh_run_id)
+                    WHERE deleted_at IS NULL;
+
+                -- Unique partial index for grouping key (prevents duplicate reports)
+                CREATE UNIQUE INDEX idx_report_groups_grouping_key
+                    ON report_groups(repository, commit, gh_run_id, name, gh_run_attempt)
                     WHERE deleted_at IS NULL;
 
                 -- Trigger to update updated_at
-                CREATE TRIGGER update_test_reports_updated_at
-                    BEFORE UPDATE ON test_reports
+                CREATE TRIGGER update_report_groups_updated_at
+                    BEFORE UPDATE ON report_groups
                     FOR EACH ROW
                     EXECUTE FUNCTION update_updated_at_column();
                 "#,
@@ -95,8 +98,8 @@ impl MigrationTrait for Migration {
             .get_connection()
             .execute_unprepared(
                 r#"
-                DROP TRIGGER IF EXISTS update_test_reports_updated_at ON test_reports;
-                DROP TABLE IF EXISTS test_reports CASCADE;
+                DROP TRIGGER IF EXISTS update_report_groups_updated_at ON report_groups;
+                DROP TABLE IF EXISTS report_groups CASCADE;
                 DROP FUNCTION IF EXISTS update_updated_at_column();
                 "#,
             )

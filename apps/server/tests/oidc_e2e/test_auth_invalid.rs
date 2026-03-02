@@ -77,7 +77,7 @@ async fn test_audience_mismatch_rejected() {
             .app_data(actix_web::web::Data::new(config))
             .service(
                 actix_web::web::scope("/api/v1")
-                    .configure(mattermost_tsio_lib::api::test_reports::configure_routes)
+                    .configure(mattermost_tsio_lib::api::reports::configure_routes)
                     .configure(mattermost_tsio_lib::services::oidc_policy::configure_routes),
             ),
     )

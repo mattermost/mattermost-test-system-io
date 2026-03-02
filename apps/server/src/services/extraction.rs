@@ -10,8 +10,8 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::db::DbPool;
-use crate::db::test_results::{NewTestCase, NewTestSuite};
-use crate::models::{JobStatus, WsEvent, WsEventMessage};
+use crate::db::results::{NewTestCase, NewTestSuite};
+use crate::models::{UploadStatus, WsEvent, WsEventMessage};
 use crate::services::{EventBroadcaster, Storage};
 
 // ============================================================================
@@ -248,79 +248,82 @@ struct ExtractedTestSuite {
 // Main Extraction Function
 // ============================================================================
 
-/// Extract data from a job's JSON files and update the database.
+/// Extract data from a report's JSON files and update the database.
 ///
 /// This function is called asynchronously after JSON files are uploaded.
 /// It fetches the files from S3, parses them, and stores the results.
-pub async fn extract_job(
+pub async fn extract_report(
     pool: &DbPool,
     storage: &Storage,
     broadcaster: &EventBroadcaster,
-    job_id: Uuid,
+    report_id: Uuid,
     framework: &str,
 ) {
     info!(
-        "Starting JSON extraction for job_id={}, framework={}",
-        job_id, framework
+        "Starting JSON extraction for report_id={}, framework={}",
+        report_id, framework
     );
 
-    // Get job to verify it exists and get report_id
-    let job = match pool.get_job_by_id(job_id).await {
-        Ok(Some(j)) => j,
+    // Get report to verify it exists and get report_group_id
+    let report = match pool.get_report_by_id(report_id).await {
+        Ok(Some(r)) => r,
         Ok(None) => {
-            error!("Job {} not found during extraction", job_id);
+            error!("Report {} not found during extraction", report_id);
             return;
         }
         Err(e) => {
-            error!("Failed to get job {} during extraction: {}", job_id, e);
+            error!(
+                "Failed to get report {} during extraction: {}",
+                report_id, e
+            );
             return;
         }
     };
 
-    // Get uploaded JSON files for this job
-    let json_files = match pool.get_uploaded_json_files(job_id).await {
+    // Get uploaded JSON files for this report
+    let json_files = match pool.get_uploaded_json_files(report_id).await {
         Ok(files) => files,
         Err(e) => {
-            error!("Failed to get JSON files for job {}: {}", job_id, e);
+            error!("Failed to get JSON files for report {}: {}", report_id, e);
             if let Err(e) = pool
-                .update_job_status(
-                    job_id,
-                    JobStatus::Failed,
+                .update_report_status(
+                    report_id,
+                    UploadStatus::Failed,
                     Some(format!("Failed to get JSON files: {}", e)),
                 )
                 .await
             {
-                error!("Failed to update job status: {}", e);
+                error!("Failed to update report status: {}", e);
             }
             return;
         }
     };
 
     if json_files.is_empty() {
-        error!("Job {} has no uploaded JSON files", job_id);
+        error!("Report {} has no uploaded JSON files", report_id);
         if let Err(e) = pool
-            .update_job_status(
-                job_id,
-                JobStatus::Failed,
+            .update_report_status(
+                report_id,
+                UploadStatus::Failed,
                 Some("No JSON files uploaded".to_string()),
             )
             .await
         {
-            error!("Failed to update job status: {}", e);
+            error!("Failed to update report status: {}", e);
         }
         return;
     }
 
     let mut all_suites: Vec<ExtractedTestSuite> = Vec::new();
-    let mut total_duration_ms: i64 = 0;
-    let earliest_time: Option<DateTime<Utc>> = None;
+    let mut earliest_time: Option<DateTime<Utc>> = None;
+    let mut latest_end_time: Option<DateTime<Utc>> = None;
     let mut global_sequence = 0;
 
     // Fetch uploaded screenshots for validation
-    let uploaded_screenshots = match pool.get_screenshots_by_job_id(job_id).await {
+    let uploaded_screenshots = match pool.get_screenshots_by_report_id(report_id).await {
         Ok(screenshots) => screenshots,
         Err(e) => {
-            warn!("Failed to get screenshots for job {}: {}", job_id, e);
+            warn!("Failed to get screenshots for report {}: {}", report_id, e);
             Vec::new()
         }
     };
@@ -349,6 +352,26 @@ pub async fn extract_job(
             }
         };
 
+        // Parse report-level stats for wall-clock tracking (Cypress/mochawesome format)
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_content)
+            && let Some(stats) = value.get("stats")
+        {
+            if let Some(start_str) = stats.get("start").and_then(|v| v.as_str())
+                && let Ok(dt) = DateTime::parse_from_rfc3339(start_str)
+            {
+                let start = dt.with_timezone(&Utc);
+                earliest_time =
+                    Some(earliest_time.map_or(start, |prev: DateTime<Utc>| prev.min(start)));
+            }
+            if let Some(end_str) = stats.get("end").and_then(|v| v.as_str())
+                && let Ok(dt) = DateTime::parse_from_rfc3339(end_str)
+            {
+                let end = dt.with_timezone(&Utc);
+                latest_end_time =
+                    Some(latest_end_time.map_or(end, |prev: DateTime<Utc>| prev.max(end)));
+            }
+        }
+
         // Parse JSON and extract test data based on framework
         let suites = match framework.to_lowercase().as_str() {
             "cypress" => extract_cypress(&json_content, &screenshot_map, &mut global_sequence),
@@ -373,11 +396,18 @@ pub async fn extract_job(
         };
 
         for suite in suites {
-            total_duration_ms += suite
-                .test_cases
-                .iter()
-                .map(|tc| tc.duration_ms as i64)
-                .sum::<i64>();
+            // Track wall-clock span from test case timestamps
+            for tc in &suite.test_cases {
+                if let Some(tc_start) = tc.start_time {
+                    earliest_time = Some(
+                        earliest_time.map_or(tc_start, |prev: DateTime<Utc>| prev.min(tc_start)),
+                    );
+                    let tc_end = tc_start + chrono::Duration::milliseconds(tc.duration_ms as i64);
+                    latest_end_time = Some(
+                        latest_end_time.map_or(tc_end, |prev: DateTime<Utc>| prev.max(tc_end)),
+                    );
+                }
+            }
             all_suites.push(suite);
         }
 
@@ -387,11 +417,20 @@ pub async fn extract_job(
         }
     }
 
+    // Wall-clock duration: earliest start to latest end across all JSON files
+    let wall_clock_ms = match (earliest_time, latest_end_time) {
+        (Some(start), Some(end)) => {
+            let ms = (end - start).num_milliseconds();
+            if ms > 0 { Some(ms) } else { None }
+        }
+        _ => None,
+    };
+
     info!(
-        "Parsed JSON files for job_id={}: {} suites, {} total duration ms",
-        job_id,
+        "Parsed JSON files for report_id={}: {} suites, wall_clock={}ms",
+        report_id,
         all_suites.len(),
-        total_duration_ms
+        wall_clock_ms.unwrap_or(0)
     );
 
     // Insert test suites and cases into database
@@ -402,7 +441,7 @@ pub async fn extract_job(
         let duration_ms = suite.test_cases.iter().map(|tc| tc.duration_ms).sum();
 
         let new_suite = NewTestSuite {
-            job_id,
+            report_id,
             title: suite.title,
             file_path: suite.file_path,
             total_count: unique_count,
@@ -447,7 +486,7 @@ pub async fn extract_job(
 
                     let new_case = NewTestCase {
                         suite_id,
-                        job_id,
+                        report_id,
                         title: test_case.title,
                         full_title: test_case.full_title,
                         status: test_case.status,
@@ -459,63 +498,72 @@ pub async fn extract_job(
                     };
 
                     if let Err(e) = pool.insert_test_case(new_case).await {
-                        error!("Failed to insert test case for job {}: {}", job_id, e);
+                        error!("Failed to insert test case for report {}: {}", report_id, e);
                     } else {
                         case_count += 1;
                     }
                 }
             }
             Err(e) => {
-                error!("Failed to insert test suite for job {}: {}", job_id, e);
+                error!(
+                    "Failed to insert test suite for report {}: {}",
+                    report_id, e
+                );
             }
         }
     }
 
-    // Update job duration if we have stats
-    if (total_duration_ms > 0 || earliest_time.is_some())
+    // Update report with wall-clock duration and start time
+    if (wall_clock_ms.is_some() || earliest_time.is_some())
         && let Err(e) = pool
-            .update_job_duration(job_id, Some(total_duration_ms), earliest_time)
+            .update_report_duration(report_id, wall_clock_ms, earliest_time)
             .await
     {
-        error!("Failed to update job {} duration: {}", job_id, e);
+        error!("Failed to update report {} duration: {}", report_id, e);
     }
 
     // Link screenshots to test cases
-    if let Err(e) = link_screenshots_to_test_cases(pool, job_id).await {
-        error!("Failed to link screenshots for job {}: {}", job_id, e);
-        // Don't fail the job - screenshots linking is not critical
+    if let Err(e) = link_screenshots_to_test_cases(pool, report_id).await {
+        error!("Failed to link screenshots for report {}: {}", report_id, e);
+        // Don't fail the report - screenshots linking is not critical
     }
 
-    // Update job status to complete
+    // Update report status to complete
     if let Err(e) = pool
-        .update_job_status(job_id, JobStatus::Complete, None)
+        .update_report_status(report_id, UploadStatus::Complete, None)
         .await
     {
-        error!("Failed to update job {} status to complete: {}", job_id, e);
+        error!(
+            "Failed to update report {} status to complete: {}",
+            report_id, e
+        );
         return;
     }
 
-    // Broadcast job_updated event
-    let report_id = job.test_report_id;
-    let event = WsEventMessage::new(WsEvent::job_updated(
+    // Broadcast report_entry_updated event
+    let report_group_id = report.report_group_id;
+    let event = WsEventMessage::new(WsEvent::report_entry_updated(
+        report_group_id,
         report_id,
-        job_id,
         "complete".to_string(),
     ));
     broadcaster.send(event);
 
     // Broadcast suites_available event
-    let suites_event = WsEventMessage::new(WsEvent::suites_available(report_id, suite_count));
+    let suites_event = WsEventMessage::new(WsEvent::suites_available(report_group_id, suite_count));
     broadcaster.send(suites_event);
 
-    // Check if all jobs for the report are complete
-    if let Err(e) = check_report_completion(pool, broadcaster, report_id).await {
-        error!("Failed to check report {} completion: {}", report_id, e);
+    // Check if all reports for the group are complete
+    if let Err(e) = check_report_completion(pool, broadcaster, report_group_id).await {
+        error!(
+            "Failed to check report group {} completion: {}",
+            report_group_id, e
+        );
     }
 
     info!(
-        "Extraction complete for job_id={}: {} suites, {} test cases",
-        job_id, suite_count, case_count
+        "Extraction complete for report_id={}: {} suites, {} test cases",
+        report_id, suite_count, case_count
     );
 }
 
@@ -535,22 +583,19 @@ pub async fn extract_job(
 /// - Handles project suffix in full_title (e.g., "Title [chromium]")
 pub async fn link_screenshots_to_test_cases(
     pool: &DbPool,
-    job_id: Uuid,
+    report_id: Uuid,
 ) -> Result<(), crate::error::AppError> {
-    // Get all screenshots for this job (only unlinked ones need processing)
-    let screenshots = pool.get_screenshots_by_job_id(job_id).await?;
-    let unlinked_screenshots: Vec<_> = screenshots
-        .iter()
-        .filter(|s| s.test_case_id.is_none())
-        .collect();
+    // Get all screenshots for this report (only unlinked ones need processing)
+    let screenshots = pool.get_screenshots_by_report_id(report_id).await?;
+    let unlinked_screenshots: Vec<_> = screenshots.iter().filter(|s| s.case_id.is_none()).collect();
 
     if unlinked_screenshots.is_empty() {
         // All screenshots are already linked or no screenshots exist
         return Ok(());
     }
 
-    // Get all test cases for this job
-    let test_cases = pool.get_test_cases_by_job_id(job_id).await?;
+    // Get all test cases for this report
+    let test_cases = pool.get_test_cases_by_report_id(report_id).await?;
     if test_cases.is_empty() {
         // No test cases yet - screenshots will be linked when JSON is extracted
         return Ok(());
@@ -595,13 +640,13 @@ pub async fn link_screenshots_to_test_cases(
     if linked_count > 0 {
         if unmapped_count > 0 {
             warn!(
-                "Screenshot linking for job_id={}: {} linked, {} still unmapped",
-                job_id, linked_count, unmapped_count
+                "Screenshot linking for report_id={}: {} linked, {} still unmapped",
+                report_id, linked_count, unmapped_count
             );
         } else {
             info!(
-                "Screenshot linking for job_id={}: {} linked",
-                job_id, linked_count
+                "Screenshot linking for report_id={}: {} linked",
+                report_id, linked_count
             );
         }
     }
@@ -1271,48 +1316,34 @@ fn count_statuses(test_cases: &[ExtractedTestCase]) -> (i32, i32, i32, i32, i32)
     (passed, failed, skipped, flaky, unique_count)
 }
 
-/// Check if all jobs for a report are complete and update report status.
+/// Check report progress after a report completes and broadcast updates.
+///
+/// Report completion is signalled externally via `POST /reports/complete`.
+/// This function broadcasts a progress event so the UI stays up-to-date.
 async fn check_report_completion(
     pool: &DbPool,
     broadcaster: &EventBroadcaster,
     report_id: Uuid,
 ) -> Result<(), String> {
-    let report = pool
-        .get_report_by_id(report_id)
+    let _report = pool
+        .get_report_group_by_id(report_id)
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Report {} not found", report_id))?;
+        .ok_or_else(|| format!("Report group {} not found", report_id))?;
 
     let completed = pool
-        .count_completed_jobs(report_id)
+        .count_completed_reports(report_id)
         .await
         .map_err(|e| e.to_string())?;
 
-    let expected = report.expected_jobs as u64;
+    // Broadcast report_updated for progress update
+    let event = WsEventMessage::new(WsEvent::report_updated(report_id));
+    broadcaster.send(event);
 
-    if completed >= expected {
-        pool.update_report_status(report_id, crate::models::ReportStatus::Complete)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        // Broadcast report_updated event for completion
-        let event = WsEventMessage::new(WsEvent::report_updated(report_id));
-        broadcaster.send(event);
-
-        info!(
-            "Report {} marked as complete ({}/{} jobs)",
-            report_id, completed, expected
-        );
-    } else {
-        // Broadcast report_updated for progress update
-        let event = WsEventMessage::new(WsEvent::report_updated(report_id));
-        broadcaster.send(event);
-
-        info!(
-            "Report {} progress: {}/{} jobs complete",
-            report_id, completed, expected
-        );
-    }
+    info!(
+        "Report group {} progress: {} reports complete",
+        report_id, completed
+    );
 
     Ok(())
 }

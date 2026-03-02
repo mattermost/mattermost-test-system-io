@@ -12,5 +12,7 @@ mod test_auth_invalid;
 mod test_auth_valid;
 mod test_claims_storage;
 mod test_key_rotation;
+mod test_lifecycle;
 mod test_policy_validation;
 mod test_role_authz;
+mod test_stateless_upload;

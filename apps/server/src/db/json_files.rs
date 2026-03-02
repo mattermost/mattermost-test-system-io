@@ -41,7 +41,7 @@ impl DbPool {
     /// Insert multiple JSON files in a batch (pending status).
     pub async fn insert_json_files(
         &self,
-        job_id: Uuid,
+        report_id: Uuid,
         files: Vec<JsonFileEntry>,
     ) -> AppResult<Vec<json_file::Model>> {
         let now = Utc::now();
@@ -52,7 +52,7 @@ impl DbPool {
             let id = Uuid::now_v7();
             let model = ActiveModel {
                 id: Set(id),
-                test_job_id: Set(job_id),
+                upload_id: Set(report_id),
                 filename: Set(file.filename),
                 s3_key: Set(file.s3_key),
                 size_bytes: Set(file.size_bytes),
@@ -77,10 +77,13 @@ impl DbPool {
         Ok(inserted)
     }
 
-    /// Get pending JSON files for a job.
-    pub async fn get_pending_json_files(&self, job_id: Uuid) -> AppResult<Vec<json_file::Model>> {
+    /// Get pending JSON files for a report.
+    pub async fn get_pending_json_files(
+        &self,
+        report_id: Uuid,
+    ) -> AppResult<Vec<json_file::Model>> {
         let result = JsonFile::find()
-            .filter(json_file::Column::TestJobId.eq(job_id))
+            .filter(json_file::Column::UploadId.eq(report_id))
             .filter(json_file::Column::Status.eq(JsonFileStatus::Pending.as_str()))
             .filter(json_file::Column::DeletedAt.is_null())
             .all(self.connection())
@@ -90,10 +93,13 @@ impl DbPool {
         Ok(result)
     }
 
-    /// Get uploaded JSON files for a job (ready for extraction).
-    pub async fn get_uploaded_json_files(&self, job_id: Uuid) -> AppResult<Vec<json_file::Model>> {
+    /// Get uploaded JSON files for a report (ready for extraction).
+    pub async fn get_uploaded_json_files(
+        &self,
+        report_id: Uuid,
+    ) -> AppResult<Vec<json_file::Model>> {
         let result = JsonFile::find()
-            .filter(json_file::Column::TestJobId.eq(job_id))
+            .filter(json_file::Column::UploadId.eq(report_id))
             .filter(json_file::Column::Status.eq(JsonFileStatus::Uploaded.as_str()))
             .filter(json_file::Column::DeletedAt.is_null())
             .all(self.connection())
@@ -106,7 +112,7 @@ impl DbPool {
     /// Mark JSON files as uploaded.
     pub async fn mark_json_files_uploaded(
         &self,
-        job_id: Uuid,
+        report_id: Uuid,
         filenames: &[String],
     ) -> AppResult<u64> {
         let now = Utc::now();
@@ -120,7 +126,7 @@ impl DbPool {
                 json_file::Column::UploadedAt,
                 sea_orm::sea_query::Expr::value(now),
             )
-            .filter(json_file::Column::TestJobId.eq(job_id))
+            .filter(json_file::Column::UploadId.eq(report_id))
             .filter(json_file::Column::Filename.is_in(filenames))
             .filter(json_file::Column::DeletedAt.is_null())
             .exec(self.connection())
@@ -152,10 +158,10 @@ impl DbPool {
         Ok(result)
     }
 
-    /// Count pending JSON files for a job.
-    pub async fn count_pending_json_files(&self, job_id: Uuid) -> AppResult<u64> {
+    /// Count pending JSON files for a report.
+    pub async fn count_pending_json_files(&self, report_id: Uuid) -> AppResult<u64> {
         let count = JsonFile::find()
-            .filter(json_file::Column::TestJobId.eq(job_id))
+            .filter(json_file::Column::UploadId.eq(report_id))
             .filter(json_file::Column::Status.eq(JsonFileStatus::Pending.as_str()))
             .filter(json_file::Column::DeletedAt.is_null())
             .count(self.connection())
@@ -167,10 +173,10 @@ impl DbPool {
         Ok(count)
     }
 
-    /// Count total JSON files for a job.
-    pub async fn count_json_files(&self, job_id: Uuid) -> AppResult<u64> {
+    /// Count total JSON files for a report.
+    pub async fn count_json_files(&self, report_id: Uuid) -> AppResult<u64> {
         let count = JsonFile::find()
-            .filter(json_file::Column::TestJobId.eq(job_id))
+            .filter(json_file::Column::UploadId.eq(report_id))
             .filter(json_file::Column::DeletedAt.is_null())
             .count(self.connection())
             .await
@@ -179,33 +185,33 @@ impl DbPool {
         Ok(count)
     }
 
-    /// Get JSON file upload progress for a job.
-    pub async fn get_json_upload_progress(&self, job_id: Uuid) -> AppResult<(u64, u64)> {
-        let total = self.count_json_files(job_id).await?;
-        let pending = self.count_pending_json_files(job_id).await?;
+    /// Get JSON file upload progress for a report.
+    pub async fn get_json_upload_progress(&self, report_id: Uuid) -> AppResult<(u64, u64)> {
+        let total = self.count_json_files(report_id).await?;
+        let pending = self.count_pending_json_files(report_id).await?;
         let uploaded = total - pending;
 
         Ok((uploaded, total))
     }
 
-    /// Check if all JSON files have been uploaded for a job.
-    pub async fn all_json_files_uploaded(&self, job_id: Uuid) -> AppResult<bool> {
-        let total = self.count_json_files(job_id).await?;
+    /// Check if all JSON files have been uploaded for a report.
+    pub async fn all_json_files_uploaded(&self, report_id: Uuid) -> AppResult<bool> {
+        let total = self.count_json_files(report_id).await?;
         if total == 0 {
             return Ok(false); // No files registered yet
         }
-        let pending = self.count_pending_json_files(job_id).await?;
+        let pending = self.count_pending_json_files(report_id).await?;
         Ok(pending == 0)
     }
 
-    /// Get a specific JSON file by job_id and filename.
+    /// Get a specific JSON file by report_id and filename.
     pub async fn get_json_file(
         &self,
-        job_id: Uuid,
+        report_id: Uuid,
         filename: &str,
     ) -> AppResult<Option<json_file::Model>> {
         let result = JsonFile::find()
-            .filter(json_file::Column::TestJobId.eq(job_id))
+            .filter(json_file::Column::UploadId.eq(report_id))
             .filter(json_file::Column::Filename.eq(filename))
             .filter(json_file::Column::DeletedAt.is_null())
             .one(self.connection())

@@ -2,9 +2,8 @@
 
 pub mod api_key;
 pub mod github_oidc;
-pub mod job;
+pub mod oidc_claim;
 pub mod report;
-pub mod report_oidc_claim;
 pub mod user;
 pub mod ws_event;
 
@@ -13,16 +12,13 @@ pub use api_key::{
     ApiKey, ApiKeyCreateResponse, ApiKeyListItem, ApiKeyRole, AuthenticatedCaller,
     CreateApiKeyRequest, OIDC_ADMIN_DENIED_MSG,
 };
-pub use job::{
-    AcceptedHtmlFile, AcceptedJsonFile, AcceptedScreenshot, EnvironmentMetadata, HtmlFileToUpload,
-    HtmlUploadProgress, HtmlUploadResponse, InitHtmlRequest, InitHtmlResponse, InitJobRequest,
-    InitJobResponse, InitJsonRequest, InitJsonResponse, InitScreenshotsRequest,
-    InitScreenshotsResponse, JobDetailResponse, JobListResponse, JobStatus, JobStatusResponse,
-    JobSummary, JsonFileToUpload, JsonUploadProgress, JsonUploadResponse, QueryJobsParams,
-    RejectedFile, ScreenshotToUpload, ScreenshotUploadResponse, UploadStatus,
-};
+#[allow(unused_imports)]
+pub use oidc_claim::OidcClaimsResponse;
 pub use report::{
-    Framework, ListReportsQuery, RegisterReportRequest, RegisterReportResponse,
-    ReportDetailResponse, ReportListResponse, ReportStatus, ReportSummary, TestStats,
+    AcceptedJsonFile, AcceptedScreenshot, BeginResponse, CompleteResponse, EnvironmentMetadata,
+    Framework, JsonFileToUpload, JsonUploadResponse, ListReportsQuery, RegisterReportRequest,
+    RegisterReportResponse, RejectedFile, ReportDetailResponse, ReportGroupingRequest,
+    ReportListResponse, ReportStatus, ReportSummary, ScreenshotToUpload, ScreenshotUploadResponse,
+    TestStats, UploadStatus, UploadSummary,
 };
 pub use ws_event::{WsEvent, WsEventMessage};

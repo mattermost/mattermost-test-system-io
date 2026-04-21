@@ -37,10 +37,12 @@ jobs:
 
       # golangci-lint runs as an action (not `make lint-server`) so the
       # binary is cached between runs and PRs get delta-only annotations.
+      # Keep `version` in sync with `GOLANGCI_LINT_VERSION` in the Makefile so
+      # CI and local `make lint-server` check against the same ruleset.
       - name: golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:
-          version: v2.0.2
+          version: v2.11.4 # keep in sync with Makefile's GOLANGCI_LINT_VERSION
           working-directory: apps/server
 
       - name: Unit tests (race)

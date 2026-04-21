@@ -54,7 +54,10 @@ func Middleware(repo *Repo, rotationGrace time.Duration) func(http.Handler) http
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			// Best-effort usage bump; never block the request on it.
+			// Best-effort usage bump; never block the request on it. The goroutine
+			// deliberately uses a detached background context — binding to
+			// r.Context() would cancel the UPDATE when the handler returns.
+			//nolint:gosec // G118: detached by design (fire-and-forget last-used bump).
 			go func(id uuid.UUID) {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()

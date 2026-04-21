@@ -1,550 +1,305 @@
-# Test System IO - Development Makefile
-# ================================================
-#
-# Usage: make <target>
-#
-# Run `make help` to see all available targets.
+# Test System IO — Development Makefile (Go backend + React web)
+# =================================================================
+# `make help` for a categorized list. Every user-facing target has a `##` comment.
+# Internal helpers (like `ensure-docker`) have none so they don't clutter help.
 
-.PHONY: help install dev dev-server dev-web build build-server build-web \
-        test test-server test-server-oidc test-web lint lint-server lint-web fmt fmt-server fmt-web \
-        clean clean-server clean-web clean-all check typecheck \
-        db-reset run run-server run-web \
-        docker-build docker-build-no-cache docker-up docker-down docker-down-volumes docker-logs \
-        outdated outdated-server outdated-web update update-server update-web \
-        check-target-size clean-debug-if-large clean-release-if-large \
-        kill-ports kill-server-port kill-web-port kill-port \
+.PHONY: help \
+        install install-server install-web tools \
+        dev dev-server dev-web \
+        build build-server build-web \
+        test test-server test-server-e2e test-server-oidc test-web \
+        lint lint-server lint-web \
+        vet vet-server \
+        fmt fmt-server fmt-web \
+        typecheck typecheck-web \
+        ci ensure-docker \
+        db-migrate db-status db-reset seed sqlc \
+        docker-up docker-down docker-logs docker-build \
+        clean clean-server clean-web clean-all \
+        outdated outdated-server outdated-web \
+        update update-server update-web \
         audit audit-server \
-        seed
+        kill-ports kill-server-port kill-web-port kill-port
 
-# Default target
 .DEFAULT_GOAL := help
 
-# Colors for terminal output
-CYAN := \033[36m
-GREEN := \033[32m
+# ----- Colors -----
+CYAN   := \033[36m
+BOLD   := \033[1m
+GREEN  := \033[32m
 YELLOW := \033[33m
-RED := \033[31m
-RESET := \033[0m
+RED    := \033[31m
+RESET  := \033[0m
 
-# Directories
-ROOT_DIR := $(shell pwd)
-SERVER_DIR := $(ROOT_DIR)/apps/server
-WEB_DIR := $(ROOT_DIR)/apps/web
-
-# Size threshold for auto-cleanup (5GB in KB for macOS compatibility)
-SIZE_THRESHOLD_GB := 5
-SIZE_THRESHOLD_KB := $(shell echo $$(($(SIZE_THRESHOLD_GB) * 1024 * 1024)))
-
-# Development ports
+# ----- Paths and ports -----
+ROOT_DIR    := $(shell pwd)
+SERVER_DIR  := $(ROOT_DIR)/apps/server
+WEB_DIR     := $(ROOT_DIR)/apps/web
 SERVER_PORT := 8080
-WEB_PORT := 3000
+WEB_PORT    := 3000
+# macOS default open-file limit (256) breaks testcontainers; bump for test targets.
+ULIMIT_N    := 4096
+
+# ----- Go tooling -----
+GO    ?= go
+GOFMT ?= gofmt
+
+# Tool versions pinned; run via `go run` so no GOBIN setup is required.
+SQLC_VERSION          := v1.30.0
+GOLANGCI_LINT_VERSION := v2.0.2
+GOIMPORTS_PKG         := golang.org/x/tools/cmd/goimports@latest
+GOVULNCHECK_PKG       := golang.org/x/vuln/cmd/govulncheck@latest
+SQLC_CMD              := $(GO) run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+GOLANGCI_LINT_CMD     := $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+GOIMPORTS_CMD         := $(GO) run $(GOIMPORTS_PKG)
+GOVULNCHECK_CMD       := $(GO) run $(GOVULNCHECK_PKG)
+
+# ----- Build identity injected via -ldflags (dev vs staging vs prod conventions) -----
+#   dev      → <base>-<short-sha>.dev[+dirty]   (set here; used by `make dev-server` / `make build-server`)
+#   staging  → <base>-<short-sha>.beta          (set in .github/workflows/deploy_staging.yml)
+#   prod     → <base>                           (set in .github/workflows/deploy_production.yml)
+VERSION_BASE := $(shell tr -d '[:space:]' < $(SERVER_DIR)/VERSION 2>/dev/null || echo 0.0.0)
+SHORT_SHA    := $(shell git -C $(ROOT_DIR) rev-parse --short HEAD 2>/dev/null || echo unknown)
+ifneq ($(shell git -C $(ROOT_DIR) status --porcelain 2>/dev/null),)
+  DIRTY_META := +dirty
+else
+  DIRTY_META :=
+endif
+VERSION      := $(VERSION_BASE)-$(SHORT_SHA).dev$(DIRTY_META)
+COMMIT_SHA   := $(SHORT_SHA)$(if $(DIRTY_META),-dirty,)
+BUILD_TIME   := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS         := -X main.version=$(VERSION) -X main.commitSHA=$(COMMIT_SHA) -X main.buildTime=$(BUILD_TIME)
+RELEASE_LDFLAGS := -s -w $(LDFLAGS)
+
+# ----- Docker -----
+COMPOSE := docker compose -f docker/docker-compose.dev.yml
+# Auto-detect docker socket from the active context — works for Docker Desktop,
+# OrbStack, Colima, etc. E2E tests use this so testcontainers-go finds the
+# same daemon the CLI sees.
+DOCKER_HOST_AUTO := $(shell docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)
+E2E_ENV := DOCKER_HOST='$(DOCKER_HOST_AUTO)' TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE='$(patsubst unix://%,%,$(DOCKER_HOST_AUTO))'
 
 # ============================================================================
-# Help
-# ============================================================================
 
-help: ## Show this help message
+##@ Help
+
+help: ## Show this categorized help
+	@awk 'BEGIN { \
+		FS = ":.*##"; \
+		printf "\n$(BOLD)Test System IO$(RESET) — make targets\n"; \
+	} \
+	/^##@ / { \
+		printf "\n$(BOLD)$(CYAN)%s$(RESET)\n", substr($$0, 5); \
+	} \
+	/^[a-zA-Z0-9][a-zA-Z0-9_-]*:.*##/ { \
+		printf "  $(CYAN)%-22s$(RESET) %s\n", $$1, $$2; \
+	}' $(MAKEFILE_LIST)
 	@echo ""
-	@echo "$(CYAN)Test System IO - Development Commands$(RESET)"
-	@echo "================================================"
-	@echo ""
-	@echo "$(GREEN)Usage:$(RESET) make $(YELLOW)<target>$(RESET)"
-	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-20s$(RESET) %s\n", $$1, $$2}'
-	@echo ""
 
-# ============================================================================
-# Installation
-# ============================================================================
+##@ Installation
 
-install: install-server install-web ## Install all dependencies
+install: install-server install-web ## Install server + web deps
 
-install-server: ## Install Rust dependencies (cargo fetch)
-	@echo "$(CYAN)Installing Rust dependencies...$(RESET)"
-	cd $(SERVER_DIR) && cargo fetch
+install-server: ## Fetch Go module deps
+	@echo "$(CYAN)Fetching Go dependencies...$(RESET)"
+	cd $(SERVER_DIR) && $(GO) mod download
 
-install-web: ## Install Node.js dependencies
+install-web: ## Install npm deps (apps/web)
 	@echo "$(CYAN)Installing Node.js dependencies...$(RESET)"
-	cd $(WEB_DIR) && npm install
+	cd $(WEB_DIR) && npm ci
 
-# ============================================================================
-# Target Size Management
-# ============================================================================
+tools: ## Install pinned Go CLI tools to GOBIN (optional; other targets use `go run`)
+	@echo "$(CYAN)Installing Go developer tools (optional)...$(RESET)"
+	$(GO) install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	$(GO) install $(GOIMPORTS_PKG)
+	@echo "$(GREEN)Installed into $$(go env GOBIN).$(RESET)"
 
-# Check if debug directory exceeds threshold and clean if needed
-clean-debug-if-large:
-	@if [ -d "$(SERVER_DIR)/target/debug" ]; then \
-		SIZE_KB=$$(du -sk $(SERVER_DIR)/target/debug 2>/dev/null | cut -f1); \
-		if [ -n "$$SIZE_KB" ] && [ "$$SIZE_KB" -gt "$(SIZE_THRESHOLD_KB)" ]; then \
-			echo "$(YELLOW)Debug folder is $$(du -sh $(SERVER_DIR)/target/debug | cut -f1) (>$(SIZE_THRESHOLD_GB)GB), cleaning...$(RESET)"; \
-			rm -rf $(SERVER_DIR)/target/debug; \
-			echo "$(GREEN)Debug folder cleaned$(RESET)"; \
-		fi \
-	fi
+##@ Development
 
-# Check if release directory exceeds threshold and clean if needed
-clean-release-if-large:
-	@if [ -d "$(SERVER_DIR)/target/release" ]; then \
-		SIZE_KB=$$(du -sk $(SERVER_DIR)/target/release 2>/dev/null | cut -f1); \
-		if [ -n "$$SIZE_KB" ] && [ "$$SIZE_KB" -gt "$(SIZE_THRESHOLD_KB)" ]; then \
-			echo "$(YELLOW)Release folder is $$(du -sh $(SERVER_DIR)/target/release | cut -f1) (>$(SIZE_THRESHOLD_GB)GB), cleaning...$(RESET)"; \
-			rm -rf $(SERVER_DIR)/target/release; \
-			echo "$(GREEN)Release folder cleaned$(RESET)"; \
-		fi \
-	fi
-
-check-target-size: ## Check and report target directory sizes
-	@echo "$(CYAN)Checking target directory sizes...$(RESET)"
-	@if [ -d "$(SERVER_DIR)/target/debug" ]; then \
-		SIZE=$$(du -sh $(SERVER_DIR)/target/debug | cut -f1); \
-		SIZE_KB=$$(du -sk $(SERVER_DIR)/target/debug | cut -f1); \
-		if [ -n "$$SIZE_KB" ] && [ "$$SIZE_KB" -gt "$(SIZE_THRESHOLD_KB)" ]; then \
-			echo "$(RED)Debug: $$SIZE (exceeds $(SIZE_THRESHOLD_GB)GB threshold)$(RESET)"; \
-		else \
-			echo "$(GREEN)Debug: $$SIZE$(RESET)"; \
-		fi \
-	else \
-		echo "Debug: not present"; \
-	fi
-	@if [ -d "$(SERVER_DIR)/target/release" ]; then \
-		SIZE=$$(du -sh $(SERVER_DIR)/target/release | cut -f1); \
-		SIZE_KB=$$(du -sk $(SERVER_DIR)/target/release | cut -f1); \
-		if [ -n "$$SIZE_KB" ] && [ "$$SIZE_KB" -gt "$(SIZE_THRESHOLD_KB)" ]; then \
-			echo "$(RED)Release: $$SIZE (exceeds $(SIZE_THRESHOLD_GB)GB threshold)$(RESET)"; \
-		else \
-			echo "$(GREEN)Release: $$SIZE$(RESET)"; \
-		fi \
-	else \
-		echo "Release: not present"; \
-	fi
-
-# ============================================================================
-# Development
-# ============================================================================
-
-dev: ## Run both server and web in development mode concurrently
-	@echo "$(CYAN)Starting server and web concurrently...$(RESET)"
+dev: ## Run server + web concurrently with auto-reload
+	@echo "$(CYAN)Starting Go server + Vite web concurrently...$(RESET)"
 	@$(MAKE) dev-server & $(MAKE) dev-web & wait
 
-dev-server: clean-debug-if-large ## Run Rust server in development mode with auto-reload
-	@echo "$(CYAN)Starting Rust server (with cargo-watch if available)...$(RESET)"
-	@if command -v cargo-watch >/dev/null 2>&1; then \
-		cd $(SERVER_DIR) && cargo watch -x 'run --bin mattermost-tsio'; \
-	else \
-		echo "$(YELLOW)cargo-watch not installed. Running without auto-reload.$(RESET)"; \
-		echo "$(YELLOW)Install with: cargo install cargo-watch$(RESET)"; \
-		cd $(SERVER_DIR) && cargo run --bin mattermost-tsio; \
-	fi
+dev-server: ## Run Go server (ldflags inject version/sha/build time)
+	@echo "$(CYAN)Starting Go server on :$(SERVER_PORT) ($(VERSION)@$(COMMIT_SHA))...$(RESET)"
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(GO) run -ldflags '$(LDFLAGS)' ./cmd/tsio
 
 dev-web: ## Run Vite dev server with HMR
-	@echo "$(CYAN)Starting Vite dev server...$(RESET)"
+	@echo "$(CYAN)Starting Vite dev server on :$(WEB_PORT)...$(RESET)"
 	cd $(WEB_DIR) && npm run dev
 
-run: ## Run both server and web concurrently (no auto-reload)
-	@$(MAKE) run-server & $(MAKE) run-web & wait
+##@ Build
 
-run-server: clean-debug-if-large ## Run Rust server (no auto-reload)
-	@echo "$(CYAN)Starting Rust server...$(RESET)"
-	cd $(SERVER_DIR) && cargo run --bin mattermost-tsio
+build: build-server build-web ## Build server binaries + web production bundle
 
-run-web: ## Run Vite preview server (serves built assets)
-	@echo "$(CYAN)Starting Vite preview server...$(RESET)"
-	cd $(WEB_DIR) && npm run preview
+build-server: ## Build tsio + tsioctl binaries (stripped, trimpath)
+	@echo "$(CYAN)Building Go binaries ($(VERSION))...$(RESET)"
+	cd $(SERVER_DIR) && \
+		$(GO) build -trimpath -buildvcs=true -ldflags '$(RELEASE_LDFLAGS)' -o ./bin/tsio   ./cmd/tsio && \
+		$(GO) build -trimpath -buildvcs=true -ldflags '$(RELEASE_LDFLAGS)' -o ./bin/tsioctl ./cmd/tsioctl
 
-# ============================================================================
-# Building
-# ============================================================================
-
-build: build-server build-web ## Build both server and web for production
-
-build-server: clean-release-if-large ## Build Rust server (release mode)
-	@echo "$(CYAN)Building Rust server (release)...$(RESET)"
-	cd $(SERVER_DIR) && cargo build --release
-	@echo "$(GREEN)Server binary: $(SERVER_DIR)/target/release/server$(RESET)"
-
-build-web: ## Build React frontend for production
-	@echo "$(CYAN)Building React frontend...$(RESET)"
+build-web: ## Build web production bundle
+	@echo "$(CYAN)Building web bundle...$(RESET)"
 	cd $(WEB_DIR) && npm run build
-	@echo "$(GREEN)Frontend assets: $(WEB_DIR)/dist/$(RESET)"
 
-build-server-dev: clean-debug-if-large ## Build Rust server (debug mode)
-	@echo "$(CYAN)Building Rust server (debug)...$(RESET)"
-	cd $(SERVER_DIR) && cargo build
+##@ Test
 
-# ============================================================================
-# Testing
-# ============================================================================
+test: test-server test-web ## Run unit tests for server + web
 
-test: test-server test-web ## Run all tests
+test-server: ## Run Go unit tests (race)
+	@echo "$(CYAN)Running Go tests with -race...$(RESET)"
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(GO) test -race -count=1 ./...
 
-test-server: ## Run Rust tests (unit + E2E)
-	@echo "$(CYAN)Running Rust unit tests...$(RESET)"
-	cd $(SERVER_DIR) && RUST_ENV=development cargo test --lib --bins
-	@echo "$(CYAN)Running OIDC E2E tests...$(RESET)"
-	cd $(SERVER_DIR) && ulimit -n 4096 2>/dev/null; RUST_ENV=development cargo test --test oidc_e2e -- --test-threads=1
+test-server-oidc: ensure-docker ## Run OIDC E2E suite (Docker required)
+	@echo "$(CYAN)Running OIDC E2E tests (DOCKER_HOST=$(DOCKER_HOST_AUTO))...$(RESET)"
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(E2E_ENV) $(GO) test -race -tags=e2e -count=1 ./tests/e2e/oidc/...
 
-test-server-oidc: ## Run OIDC E2E tests only (requires running PostgreSQL)
-	@echo "$(CYAN)Running OIDC E2E tests...$(RESET)"
-	cd $(SERVER_DIR) && ulimit -n 4096 2>/dev/null; RUST_ENV=development cargo test --test oidc_e2e -- --test-threads=1
+test-server-e2e: ensure-docker ## Run ALL E2E + contract + perf suites (Docker required)
+	@echo "$(CYAN)Running all -tags=e2e tests (DOCKER_HOST=$(DOCKER_HOST_AUTO))...$(RESET)"
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(E2E_ENV) $(GO) test -race -tags=e2e -count=1 ./tests/...
 
-test-web: ## Run frontend tests with Vitest
-	@echo "$(CYAN)Running frontend tests...$(RESET)"
+test-web: ## Run web tests (vitest)
 	cd $(WEB_DIR) && npm run test
 
-test-web-watch: ## Run frontend tests in watch mode
-	@echo "$(CYAN)Running frontend tests (watch mode)...$(RESET)"
-	cd $(WEB_DIR) && npm run test:watch
-
-test-web-coverage: ## Run frontend tests with coverage report
-	@echo "$(CYAN)Running frontend tests with coverage...$(RESET)"
-	cd $(WEB_DIR) && npm run test:coverage
-
-# ============================================================================
-# Linting & Formatting
-# ============================================================================
+##@ Lint, Vet, Format
 
 lint: lint-server lint-web ## Run all linters
 
-lint-server: ## Run Clippy (Rust linter)
-	@echo "$(CYAN)Running Clippy...$(RESET)"
-	cd $(SERVER_DIR) && cargo clippy -- -D warnings
+lint-server: ## golangci-lint on the Go module
+	@echo "$(CYAN)Linting Go (golangci-lint $(GOLANGCI_LINT_VERSION))...$(RESET)"
+	cd $(SERVER_DIR) && $(GOLANGCI_LINT_CMD) run ./...
 
-lint-web: ## Run oxlint
-	@echo "$(CYAN)Running oxlint...$(RESET)"
+lint-web: ## Lint the web client
 	cd $(WEB_DIR) && npm run lint
 
-fmt: fmt-server fmt-web ## Format all code
+vet: vet-server ## Run `go vet` (fast baseline static analyzers)
 
-fmt-server: ## Format Rust code
-	@echo "$(CYAN)Formatting Rust code...$(RESET)"
-	cd $(SERVER_DIR) && cargo fmt
+vet-server: ## go vet ./... on the Go module
+	@echo "$(CYAN)Running go vet...$(RESET)"
+	cd $(SERVER_DIR) && $(GO) vet ./...
 
-fmt-web: ## Format frontend code with oxfmt
-	@echo "$(CYAN)Formatting frontend code...$(RESET)"
+fmt: fmt-server fmt-web ## Format server (gofmt+goimports) and web (prettier/oxfmt)
+
+fmt-server: ## Format Go code
+	@echo "$(CYAN)Formatting Go code...$(RESET)"
+	cd $(SERVER_DIR) && $(GOFMT) -s -w . && $(GOIMPORTS_CMD) -w .
+
+fmt-web: ## Format web client
 	cd $(WEB_DIR) && npm run format
 
-fmt-check: fmt-check-server fmt-check-web ## Check formatting without changes
+typecheck: typecheck-web ## Type-check (web only; Go type-checks in `vet`/`build`)
 
-fmt-check-server: ## Check Rust formatting
-	@echo "$(CYAN)Checking Rust formatting...$(RESET)"
-	cd $(SERVER_DIR) && cargo fmt --check
-
-fmt-check-web: ## Check frontend formatting (oxfmt)
-	@echo "$(CYAN)Checking frontend formatting...$(RESET)"
-	cd $(WEB_DIR) && npx oxfmt ./src --check
-
-check: check-server typecheck ## Run all checks (compile check + typecheck)
-
-check-server: ## Check Rust compilation without building
-	@echo "$(CYAN)Checking Rust compilation...$(RESET)"
-	cd $(SERVER_DIR) && cargo check
-
-typecheck: ## Run TypeScript type checking
-	@echo "$(CYAN)Running TypeScript type check...$(RESET)"
+typecheck-web: ## Type-check TypeScript (tsc --noEmit)
 	cd $(WEB_DIR) && npm run typecheck
 
-# ============================================================================
-# Cleaning
-# ============================================================================
+##@ CI
 
-clean: clean-server clean-web ## Clean build artifacts (keeps dependencies cached)
+ci: vet lint typecheck test build ## Full CI gate (vet, lint, typecheck, test, build). Excludes e2e (needs Docker).
 
-clean-server: ## Clean Rust build artifacts (keeps dependencies)
-	@echo "$(CYAN)Cleaning Rust build artifacts...$(RESET)"
-	cd $(SERVER_DIR) && cargo clean --release 2>/dev/null || true
-	@# Remove incremental compilation cache (often the biggest bloat)
-	rm -rf $(SERVER_DIR)/target/debug/incremental
-	rm -rf $(SERVER_DIR)/target/release/incremental
-	rm -rf $(SERVER_DIR)/target/debug/deps
-	rm -rf $(SERVER_DIR)/target/debug/build
-	rm -rf $(SERVER_DIR)/target/debug/.fingerprint
-	@echo "$(GREEN)Cleaned Rust incremental build cache$(RESET)"
-
-clean-web: ## Clean frontend build artifacts
-	@echo "$(CYAN)Cleaning frontend build artifacts...$(RESET)"
-	rm -rf $(WEB_DIR)/dist
-	rm -rf $(WEB_DIR)/coverage
-	@echo "$(GREEN)Cleaned frontend build artifacts$(RESET)"
-
-clean-all: clean-server-all clean-web-all ## Deep clean everything (WARNING: removes all caches)
-	@echo "$(GREEN)All build artifacts and caches removed$(RESET)"
-
-clean-server-all: ## Deep clean Rust (removes entire target directory)
-	@echo "$(YELLOW)Deep cleaning Rust target directory...$(RESET)"
-	@echo "$(YELLOW)This will remove all cached dependencies and require full rebuild$(RESET)"
-	rm -rf $(SERVER_DIR)/target
-	@echo "$(GREEN)Removed $(SERVER_DIR)/target$(RESET)"
-
-clean-web-all: ## Deep clean frontend (removes node_modules)
-	@echo "$(YELLOW)Deep cleaning frontend...$(RESET)"
-	rm -rf $(WEB_DIR)/node_modules
-	rm -rf $(WEB_DIR)/dist
-	rm -rf $(WEB_DIR)/coverage
-	@echo "$(GREEN)Removed node_modules and build artifacts$(RESET)"
-
-# ============================================================================
-# Size Analysis & Maintenance
-# ============================================================================
-
-size: size-server size-web ## Show size of build artifacts
-
-size-server: ## Show Rust target directory size
-	@echo "$(CYAN)Rust target directory size:$(RESET)"
-	@if [ -d "$(SERVER_DIR)/target" ]; then \
-		du -sh $(SERVER_DIR)/target; \
+# Internal: precheck that Docker is reachable before any testcontainers target.
+ensure-docker:
+	@if ! docker info >/dev/null 2>&1; then \
 		echo ""; \
-		echo "$(CYAN)Breakdown:$(RESET)"; \
-		du -sh $(SERVER_DIR)/target/*/ 2>/dev/null | sort -hr | head -10; \
-	else \
-		echo "No target directory found"; \
-	fi
-
-size-web: ## Show frontend build/node_modules size
-	@echo "$(CYAN)Frontend directory sizes:$(RESET)"
-	@if [ -d "$(WEB_DIR)/node_modules" ]; then \
-		printf "node_modules: "; du -sh $(WEB_DIR)/node_modules; \
-	fi
-	@if [ -d "$(WEB_DIR)/dist" ]; then \
-		printf "dist: "; du -sh $(WEB_DIR)/dist; \
-	fi
-
-prune: prune-server ## Prune unused dependencies and caches
-
-prune-server: ## Remove unused Rust dependencies from cache
-	@echo "$(CYAN)Pruning unused Rust dependencies...$(RESET)"
-	@if command -v cargo-cache >/dev/null 2>&1; then \
-		cargo cache --autoclean; \
-	else \
-		echo "$(YELLOW)cargo-cache not installed.$(RESET)"; \
-		echo "$(YELLOW)Install with: cargo install cargo-cache$(RESET)"; \
+		echo "$(RED)Docker daemon is not running.$(RESET)"; \
+		echo "$(YELLOW)E2E tests use testcontainers-go to spin up Postgres.$(RESET)"; \
+		echo "$(YELLOW)Start Docker / OrbStack / Colima and retry.$(RESET)"; \
 		echo ""; \
-		echo "Manual cleanup options:"; \
-		echo "  - Remove ~/.cargo/registry/cache (downloaded crates)"; \
-		echo "  - Remove ~/.cargo/registry/src (extracted crate sources)"; \
-	fi
-
-# ============================================================================
-# Dependency Management
-# ============================================================================
-
-outdated: outdated-server outdated-web ## Check for outdated dependencies
-
-outdated-server: ## Check for outdated Rust dependencies
-	@echo "$(CYAN)Checking outdated Rust dependencies...$(RESET)"
-	@if command -v cargo-outdated >/dev/null 2>&1; then \
-		cd $(SERVER_DIR) && cargo outdated; \
-	else \
-		echo "$(YELLOW)cargo-outdated not installed.$(RESET)"; \
-		echo "$(YELLOW)Install with: cargo install cargo-outdated$(RESET)"; \
-		echo ""; \
-		echo "Alternative: Run 'cargo update --dry-run' to see available updates"; \
-		cd $(SERVER_DIR) && cargo update --dry-run 2>&1 | grep -E "Updating|Adding" || echo "All dependencies up to date"; \
-	fi
-
-outdated-web: ## Check for outdated npm dependencies
-	@echo "$(CYAN)Checking outdated npm dependencies...$(RESET)"
-	cd $(WEB_DIR) && npm outdated || true
-
-update: update-server update-web ## Update all dependencies
-
-update-server: ## Update Rust dependencies (respects version constraints)
-	@echo "$(CYAN)Updating Rust dependencies...$(RESET)"
-	cd $(SERVER_DIR) && cargo update
-	@echo "$(GREEN)Cargo.lock updated$(RESET)"
-
-update-web: ## Update npm dependencies (respects version constraints)
-	@echo "$(CYAN)Updating npm dependencies...$(RESET)"
-	cd $(WEB_DIR) && npm update
-	@echo "$(GREEN)package-lock.json updated$(RESET)"
-
-update-server-latest: ## Update Rust dependencies to latest (may break semver)
-	@echo "$(YELLOW)Updating Rust dependencies to latest versions...$(RESET)"
-	@echo "$(YELLOW)WARNING: This may update to incompatible versions$(RESET)"
-	@if command -v cargo-upgrade >/dev/null 2>&1; then \
-		cd $(SERVER_DIR) && cargo upgrade; \
-	else \
-		echo "$(RED)cargo-edit not installed.$(RESET)"; \
-		echo "$(YELLOW)Install with: cargo install cargo-edit$(RESET)"; \
-	fi
-
-update-web-latest: ## Update npm dependencies to latest (may break semver)
-	@echo "$(YELLOW)Updating npm dependencies to latest versions...$(RESET)"
-	@echo "$(YELLOW)WARNING: This may update to incompatible versions$(RESET)"
-	cd $(WEB_DIR) && npx npm-check-updates -u && npm install
-
-# ============================================================================
-# Database
-# ============================================================================
-
-db-reset: ## Reset database and storage (removes bind-mount data directories)
-	@echo "$(YELLOW)Resetting database and storage...$(RESET)"
-	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml stop
-	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down -v
-	rm -rf $(ROOT_DIR)/docker/data/postgres $(ROOT_DIR)/docker/data/minio
-	@echo "$(GREEN)Data directories removed. Run 'make docker-up' to recreate.$(RESET)"
-
-# ============================================================================
-# Documentation
-# ============================================================================
-
-docs: docs-server ## Generate documentation
-
-docs-server: ## Generate Rust documentation
-	@echo "$(CYAN)Generating Rust documentation...$(RESET)"
-	cd $(SERVER_DIR) && cargo doc --no-deps --open
-
-# ============================================================================
-# CI/Quality Checks
-# ============================================================================
-
-ci: fmt-check lint typecheck test build ## Run all CI checks (format, lint, typecheck, test, build)
-	@echo "$(GREEN)All CI checks passed!$(RESET)"
-
-pre-commit: fmt lint check typecheck audit ## Run pre-commit checks (includes security audit)
-	@echo "$(GREEN)Pre-commit checks passed!$(RESET)"
-
-audit: audit-server ## Run security audits
-
-# RUSTSEC-2023-0071: `rsa` pulled in transitively via sqlx-mysql ← sea-orm
-audit-server: ## Run cargo audit to check for known vulnerabilities
-	@echo "$(CYAN)Running cargo security audit...$(RESET)"
-	@if command -v cargo-audit >/dev/null 2>&1; then \
-		cd $(SERVER_DIR) && cargo audit --ignore RUSTSEC-2023-0071; \
-	else \
-		echo "$(YELLOW)cargo-audit not installed. Install with: cargo install cargo-audit$(RESET)"; \
-		echo "$(YELLOW)Skipping security audit.$(RESET)"; \
-	fi
-
-# ============================================================================
-# Docker
-# ============================================================================
-
-docker-build: ## Build Docker image
-	@echo "$(CYAN)Building Docker image...$(RESET)"
-	docker build -t mattermost-test-system-io:latest .
-
-docker-build-no-cache: ## Build Docker image without cache
-	@echo "$(CYAN)Building Docker image (no cache)...$(RESET)"
-	docker build --no-cache -t mattermost-test-system-io:latest .
-
-docker-up: ## Start dev services (PostgreSQL + MinIO + Adminer)
-	@echo "$(CYAN)Starting docker (PostgreSQL + MinIO + Adminer)...$(RESET)"
-	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml up -d
-	@echo ""
-	@echo "$(GREEN)Development infrastructure started!$(RESET)"
-	@echo "  PostgreSQL: localhost:6432"
-	@echo "  MinIO:      localhost:9100 (UI: http://localhost:9101)"
-	@echo "  Adminer:    http://localhost:8081"
-
-docker-down: ## Stop dev services
-	@echo "$(CYAN)Stopping docker-compose services...$(RESET)"
-	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml stop
-	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down
-
-docker-down-volumes: ## Stop dev services and remove volumes
-	@echo "$(YELLOW)Stopping services and removing volumes...$(RESET)"
-	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml stop
-	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml down -v
-
-docker-logs: ## Show dev services logs
-	docker compose -f $(ROOT_DIR)/docker/docker-compose.dev.yml logs -f
-
-# ============================================================================
-# Utilities
-# ============================================================================
-
-setup: install setup-env ## Initial project setup
-	@echo "$(GREEN)Project setup complete!$(RESET)"
-	@echo ""
-	@echo "Next steps:"
-	@echo "  1. Run 'make docker-up' to start PostgreSQL and MinIO"
-	@echo "  2. Run 'make dev-server' in one terminal"
-	@echo "  3. Run 'make dev-web' in another terminal"
-
-setup-env: ## Create .env files from examples
-	@if [ ! -f "$(ROOT_DIR)/.env" ]; then \
-		cp $(ROOT_DIR)/.env.example $(ROOT_DIR)/.env; \
-		echo "$(GREEN)Created .env from .env.example$(RESET)"; \
-	else \
-		echo "$(YELLOW).env already exists, skipping$(RESET)"; \
-	fi
-	@if [ ! -f "$(WEB_DIR)/.env" ]; then \
-		cp $(WEB_DIR)/.env.example $(WEB_DIR)/.env; \
-		echo "$(GREEN)Created apps/web/.env from .env.example$(RESET)"; \
-	else \
-		echo "$(YELLOW)apps/web/.env already exists, skipping$(RESET)"; \
-	fi
-
-seed: ## Seed local dev server with test data (usage: make seed [BRANCH=main|master|release-9.11|pr-1234])
-	@echo "$(CYAN)Seeding local dev server...$(RESET)"
-	@node scripts/upload-seed.js $(if $(BRANCH),--branch $(BRANCH))
-
-info: ## Show project information
-	@echo ""
-	@echo "$(CYAN)Project Information$(RESET)"
-	@echo "==================="
-	@echo ""
-	@echo "$(GREEN)Rust:$(RESET)"
-	@rustc --version 2>/dev/null || echo "  Not installed"
-	@cargo --version 2>/dev/null || echo "  Not installed"
-	@echo ""
-	@echo "$(GREEN)Node.js:$(RESET)"
-	@node --version 2>/dev/null || echo "  Not installed"
-	@npm --version 2>/dev/null | xargs -I {} echo "  npm {}" || echo "  Not installed"
-	@echo ""
-	@echo "$(GREEN)Directories:$(RESET)"
-	@echo "  Server: $(SERVER_DIR)"
-	@echo "  Web: $(WEB_DIR)"
-	@echo ""
-	@if [ -d "$(SERVER_DIR)/target" ]; then \
-		echo "$(GREEN)Rust target size:$(RESET) $$(du -sh $(SERVER_DIR)/target | cut -f1)"; \
-	fi
-	@if [ -d "$(WEB_DIR)/node_modules" ]; then \
-		echo "$(GREEN)node_modules size:$(RESET) $$(du -sh $(WEB_DIR)/node_modules | cut -f1)"; \
-	fi
-
-# ============================================================================
-# Port Management
-# ============================================================================
-
-kill-ports: kill-server-port kill-web-port ## Kill processes on all dev ports (8080, 3000)
-
-kill-server-port: ## Kill process on server port (8080)
-	@echo "$(CYAN)Killing processes on port $(SERVER_PORT)...$(RESET)"
-	@PID=$$(lsof -ti :$(SERVER_PORT) 2>/dev/null); \
-	if [ -n "$$PID" ]; then \
-		echo "$(YELLOW)Found process $$PID on port $(SERVER_PORT)$(RESET)"; \
-		kill -9 $$PID 2>/dev/null && echo "$(GREEN)Killed process $$PID$(RESET)" || echo "$(RED)Failed to kill process$(RESET)"; \
-	else \
-		echo "$(GREEN)No process running on port $(SERVER_PORT)$(RESET)"; \
-	fi
-
-kill-web-port: ## Kill process on web port (3000)
-	@echo "$(CYAN)Killing processes on port $(WEB_PORT)...$(RESET)"
-	@PID=$$(lsof -ti :$(WEB_PORT) 2>/dev/null); \
-	if [ -n "$$PID" ]; then \
-		echo "$(YELLOW)Found process $$PID on port $(WEB_PORT)$(RESET)"; \
-		kill -9 $$PID 2>/dev/null && echo "$(GREEN)Killed process $$PID$(RESET)" || echo "$(RED)Failed to kill process$(RESET)"; \
-	else \
-		echo "$(GREEN)No process running on port $(WEB_PORT)$(RESET)"; \
-	fi
-
-# ============================================================================
-# Utilities
-# ============================================================================
-
-kill-port: ## Kill process on specific port (usage: make kill-port PORT=8080)
-	@if [ -z "$(PORT)" ]; then \
-		echo "$(RED)Error: PORT is required$(RESET)"; \
-		echo "Usage: make kill-port PORT=8080"; \
 		exit 1; \
 	fi
-	@echo "$(CYAN)Killing processes on port $(PORT)...$(RESET)"
-	@PID=$$(lsof -ti :$(PORT) 2>/dev/null); \
-	if [ -n "$$PID" ]; then \
-		echo "$(YELLOW)Found process $$PID on port $(PORT)$(RESET)"; \
-		kill -9 $$PID 2>/dev/null && echo "$(GREEN)Killed process $$PID$(RESET)" || echo "$(RED)Failed to kill process$(RESET)"; \
+
+##@ Database
+
+db-migrate: ## Apply pending migrations forward-only (idempotent)
+	@echo "$(CYAN)Applying migrations...$(RESET)"
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(GO) run ./cmd/tsioctl db migrate
+
+db-status: ## Show current migration version
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(GO) run ./cmd/tsioctl db status
+
+db-reset: ## DESTRUCTIVE: drop schema and re-apply all migrations (dev only)
+	@echo "$(YELLOW)⚠  Resetting database (all data lost)...$(RESET)"
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(GO) run ./cmd/tsioctl db reset
+
+seed: ## Insert dev fixtures (default group + dev API key)
+	@echo "$(CYAN)Seeding dev fixtures...$(RESET)"
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(GO) run ./cmd/tsioctl db seed
+
+sqlc: ## Regenerate sqlc code from migrations/ + internal/db/queries/
+	@echo "$(CYAN)Regenerating sqlc code (sqlc $(SQLC_VERSION))...$(RESET)"
+	cd $(SERVER_DIR) && $(SQLC_CMD) generate
+
+##@ Docker Compose (dev infra) & image build
+
+docker-up: ## Start dev infrastructure (Postgres 18.3 + MinIO + adminer)
+	$(COMPOSE) up -d
+
+docker-down: ## Stop dev infrastructure
+	$(COMPOSE) down
+
+docker-logs: ## Tail logs of dev infrastructure
+	$(COMPOSE) logs -f
+
+docker-build: ## Build the tsio-server container image
+	docker build -t tsio-server:dev -f apps/server/Dockerfile apps/server/
+
+##@ Clean
+
+clean: clean-server clean-web ## Clean build artifacts
+
+clean-server: ## Remove Go build artifacts
+	@echo "$(CYAN)Cleaning Go build artifacts...$(RESET)"
+	rm -rf $(SERVER_DIR)/bin $(SERVER_DIR)/coverage.out
+
+clean-web: ## Remove web build artifacts
+	cd $(WEB_DIR) && rm -rf dist coverage
+
+clean-all: clean ## Clean + purge caches (go mod/test cache, node_modules)
+	cd $(SERVER_DIR) && $(GO) clean -cache -testcache -modcache
+	cd $(WEB_DIR) && rm -rf node_modules
+
+##@ Dependencies
+
+outdated: outdated-server outdated-web ## List outdated deps (server + web)
+
+outdated-server: ## List outdated Go modules
+	cd $(SERVER_DIR) && $(GO) list -u -m all
+
+outdated-web: ## List outdated npm deps
+	cd $(WEB_DIR) && npm outdated || true
+
+update: update-server update-web ## Bump to latest (bump-and-review; run tests after)
+
+update-server: ## Update Go modules to latest (direct + test deps) then tidy
+	@echo "$(CYAN)Updating Go modules to latest...$(RESET)"
+	cd $(SERVER_DIR) && $(GO) get -u -t ./... && $(GO) mod tidy
+	@echo "$(GREEN)Done. Review $(SERVER_DIR)/go.mod and $(SERVER_DIR)/go.sum before committing.$(RESET)"
+
+update-web: ## Update npm packages
+	cd $(WEB_DIR) && npm update
+
+audit: audit-server ## Security audit (server)
+
+audit-server: ## Run govulncheck against the Go module
+	@echo "$(CYAN)Running govulncheck...$(RESET)"
+	cd $(SERVER_DIR) && $(GOVULNCHECK_CMD) ./...
+
+##@ Ports
+
+kill-ports: kill-server-port kill-web-port ## Kill processes on both dev ports
+
+kill-server-port: ## Free :$(SERVER_PORT)
+	@$(MAKE) kill-port PORT=$(SERVER_PORT)
+
+kill-web-port: ## Free :$(WEB_PORT)
+	@$(MAKE) kill-port PORT=$(WEB_PORT)
+
+kill-port: ## Kill process on a specific port (usage: make kill-port PORT=1234)
+	@if [ -z "$(PORT)" ]; then echo "$(RED)PORT is required$(RESET)"; exit 1; fi
+	@pid=$$(lsof -ti tcp:$(PORT) || true); \
+	if [ -n "$$pid" ]; then \
+	  echo "$(YELLOW)Killing process $$pid on port $(PORT)$(RESET)"; \
+	  kill -9 $$pid; \
 	else \
-		echo "$(GREEN)No process running on port $(PORT)$(RESET)"; \
+	  echo "$(GREEN)No process on port $(PORT)$(RESET)"; \
 	fi

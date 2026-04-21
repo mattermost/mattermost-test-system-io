@@ -1,0 +1,154 @@
+// Command tsio is the HTTP server for Test System IO.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
+	authoidc "github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oidc"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/session"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/config"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/db"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/server"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/telemetry"
+)
+
+// Build-time variables, set via -ldflags.
+var (
+	version   = "dev"
+	commitSHA = "unknown"
+	buildTime = "unknown"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	logger := telemetry.NewLogger(cfg.LogFormat, cfg.LogLevel).With(
+		slog.String("service", "tsio"),
+		slog.String("version", version),
+	)
+	slog.SetDefault(logger)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if cfg.DBAutoMigrate {
+		logger.Info("applying embedded migrations")
+		if err := db.Migrate(cfg.DatabaseURL); err != nil {
+			return fmt.Errorf("apply migrations: %w", err)
+		}
+	}
+
+	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	store, err := storage.New(ctx, storage.Config{
+		Endpoint:       cfg.S3Endpoint,
+		Region:         cfg.S3Region,
+		Bucket:         cfg.S3Bucket,
+		AccessKey:      cfg.S3AccessKey,
+		SecretKey:      cfg.S3SecretKey,
+		ForcePathStyle: cfg.S3ForcePathStyle,
+	})
+	if err != nil {
+		return fmt.Errorf("init storage: %w", err)
+	}
+
+	var oidcVerifier *authoidc.Verifier
+	if ov, err := authoidc.New(ctx, cfg.GitHubActionsOIDCIssuer, cfg.GitHubActionsOIDCAudience); err != nil {
+		logger.Warn("oidc verifier unavailable", slog.String("error", err.Error()))
+	} else {
+		oidcVerifier = ov
+	}
+
+	var oauthFlow *oauth.Flow
+	if cfg.GitHubOAuthClientID != "" {
+		oauthFlow = oauth.NewFlow(oauth.Config{
+			ClientID:     cfg.GitHubOAuthClientID,
+			ClientSecret: cfg.GitHubOAuthClientSecret,
+			RedirectURL:  cfg.GitHubOAuthRedirectURL,
+		})
+	}
+
+	hub := events.NewHub()
+	publisher := &events.Publisher{Hub: hub}
+
+	handler := server.Build(server.Deps{
+		Logger:             logger,
+		Pool:               pool,
+		Store:              store,
+		APIKeys:            &apikey.Repo{Pool: pool},
+		Sessions:           &session.Manager{Pool: pool, TTL: cfg.SessionTTL},
+		Refresh:            &session.RefreshManager{Pool: pool, TTL: cfg.RefreshTokenTTL},
+		Policy:             &policy.Engine{Pool: pool},
+		OIDC:               oidcVerifier,
+		OAuth:              oauthFlow,
+		Hub:                hub,
+		Publisher:          publisher,
+		Version:            version,
+		CommitSHA:          commitSHA,
+		BuildTime:          buildTime,
+		AdminKey:           cfg.AdminKey,
+		UploadTimeoutMs:    cfg.UploadTimeoutMs,
+		HTMLViewEnabled:    cfg.HTMLViewEnabled,
+		SearchMinLength:    cfg.SearchMinLength,
+		Environment:        cfg.Environment,
+		RepoURL:            cfg.RepoURL,
+		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		OpenAPISpecPath:    "api/openapi.yaml",
+		PostLoginRedirect:  "/",
+		MaxUploadBytes:     cfg.MaxUploadBytes,
+		MaxArtifactBytes:   cfg.MaxArtifactBytes,
+		PresignTTL:         5 * time.Minute,
+	})
+
+	srv := &http.Server{
+		Addr:              cfg.HTTPListenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       90 * time.Second,
+	}
+
+	go func() {
+		logger.Info("listening",
+			slog.String("addr", cfg.HTTPListenAddr),
+			slog.String("commit", commitSHA),
+			slog.String("build_time", buildTime),
+		)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("http server", slog.String("error", err.Error()))
+			cancel()
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Info("shutting down")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
+	return srv.Shutdown(shutdownCtx)
+}

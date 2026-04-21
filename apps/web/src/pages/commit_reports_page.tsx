@@ -16,6 +16,7 @@ interface AggregatedStats {
   flaky: number;
   total: number;
   duration_ms: number | null;
+  retest_duration_ms: number | null;
   test_status: 'passed' | 'failed' | 'flaky';
   progress_status: 'in_progress' | 'completed' | 'timed_out';
   latest_created_at: string;
@@ -47,6 +48,7 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
     flaky = 0,
     total = 0;
   let maxWallClock: number | null = null;
+  let maxRetestWallClock: number | null = null;
   let hasActiveInProgress = false;
   let hasTimedOut = false;
   const now = Date.now();
@@ -72,6 +74,9 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
       if (stats.wall_clock_ms != null) {
         maxWallClock = Math.max(maxWallClock ?? 0, stats.wall_clock_ms);
       }
+      if (stats.retest_wall_clock_ms != null) {
+        maxRetestWallClock = Math.max(maxRetestWallClock ?? 0, stats.retest_wall_clock_ms);
+      }
     }
   }
 
@@ -95,6 +100,7 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
     flaky,
     total,
     duration_ms: maxWallClock,
+    retest_duration_ms: maxRetestWallClock,
     test_status,
     progress_status,
     latest_created_at: latest || '',
@@ -202,6 +208,7 @@ export function CommitReportsPage() {
             skipped={commitStats.skipped}
             total={commitStats.total}
             durationMs={commitStats.duration_ms}
+            retestDurationMs={commitStats.retest_duration_ms}
             createdAt={commitStats.latest_created_at}
             progressStatus={commitStats.progress_status}
             repository={gitContext?.repository}

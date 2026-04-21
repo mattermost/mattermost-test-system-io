@@ -25,7 +25,10 @@ function filterGroups(
     .map((group) => {
       const filtered_runs = group.runs.filter((entry) => {
         if (branch && short_branch(entry.branch) !== branch) return false;
-        if (commit && !entry.short_sha.startsWith(commit)) return false;
+        // entry.commit is the full 40-char SHA; the URL segment may be any
+        // prefix (7-char short form when linked from a card, 40-char full
+        // when pasted). Case-insensitive startsWith handles both cleanly.
+        if (commit && !entry.commit.toLowerCase().startsWith(commit.toLowerCase())) return false;
         return true;
       });
       return { ...group, runs: filtered_runs };
@@ -42,6 +45,7 @@ interface AggregatedStats {
   flaky: number;
   total: number;
   duration_ms: number | null;
+  retest_duration_ms: number | null;
   test_status: 'passed' | 'failed' | 'flaky';
   progress_status: 'in_progress' | 'completed' | 'timed_out';
   latest_created_at: string;
@@ -73,6 +77,7 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
     flaky = 0,
     total = 0;
   let maxWallClock: number | null = null;
+  let maxRetestWallClock: number | null = null;
   let hasActiveInProgress = false;
   let hasTimedOut = false;
   const now = Date.now();
@@ -98,6 +103,9 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
       if (stats.wall_clock_ms != null) {
         maxWallClock = Math.max(maxWallClock ?? 0, stats.wall_clock_ms);
       }
+      if (stats.retest_wall_clock_ms != null) {
+        maxRetestWallClock = Math.max(maxRetestWallClock ?? 0, stats.retest_wall_clock_ms);
+      }
     }
   }
 
@@ -116,6 +124,7 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
     flaky,
     total,
     duration_ms: maxWallClock,
+    retest_duration_ms: maxRetestWallClock,
     test_status,
     progress_status,
     latest_created_at: latest || '',
@@ -237,6 +246,7 @@ export function FilteredReportsPage() {
             skipped={commitStats.skipped}
             total={commitStats.total}
             durationMs={commitStats.duration_ms}
+            retestDurationMs={commitStats.retest_duration_ms}
             createdAt={commitStats.latest_created_at}
             progressStatus={commitStats.progress_status}
             repository={gitContext?.repository}

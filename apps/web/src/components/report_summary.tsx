@@ -54,11 +54,15 @@ export interface ReportSummaryProps {
   skipped: number;
   total: number;
   durationMs?: number | null;
+  /** Wall-clock span of retest shards alone. Renders after `durationMs` with a `+` separator. */
+  retestDurationMs?: number | null;
 
   // Row 3: metadata
   createdAt?: string;
   framework?: string;
   reportCount?: number;
+  /** Retest shard count. Rendered as `{reportCount}+{retestReportCount}` when > 0. */
+  retestReportCount?: number;
   progressStatus?: ProgressStatus;
 
   // Row 4: git context badges
@@ -150,9 +154,11 @@ export function ReportSummary(props: ReportSummaryProps) {
     skipped,
     total,
     durationMs,
+    retestDurationMs,
     createdAt,
     framework,
     reportCount,
+    retestReportCount,
     progressStatus,
     repository,
     branch,
@@ -254,9 +260,22 @@ export function ReportSummary(props: ReportSummaryProps) {
           <span className="font-medium">{total}</span> total
         </span>
         {durationMs != null && (
-          <span className="inline-flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400">
+          <span
+            className="inline-flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400"
+            title={
+              retestDurationMs != null && retestDurationMs > 0
+                ? 'Parallel shard batch, then separate retest run'
+                : undefined
+            }
+          >
             <Clock className="h-3.5 w-3.5" />
             {formatDuration(durationMs)}
+            {retestDurationMs != null && retestDurationMs > 0 && (
+              <span className="text-gray-400 dark:text-gray-500">
+                {' + '}
+                {formatDuration(retestDurationMs)}
+              </span>
+            )}
           </span>
         )}
       </div>
@@ -277,9 +296,18 @@ export function ReportSummary(props: ReportSummaryProps) {
             </span>
           )}
           {reportCount != null && (
-            <span className="inline-flex items-center gap-1">
+            <span
+              className="inline-flex items-center gap-1"
+              title={
+                retestReportCount && retestReportCount > 0
+                  ? `${reportCount} numbered shard${reportCount === 1 ? '' : 's'}, ${retestReportCount} retest`
+                  : undefined
+              }
+            >
               <CheckCircle className="h-3.5 w-3.5" />
-              {reportCount} {reportCount === 1 ? 'report' : 'reports'}
+              {reportCount}
+              {retestReportCount != null && retestReportCount > 0 && <>+{retestReportCount}</>}{' '}
+              {reportCount + (retestReportCount ?? 0) === 1 ? 'report' : 'reports'}
             </span>
           )}
           {progressStatus && <ProgressBadge status={progressStatus} createdAt={createdAt} />}

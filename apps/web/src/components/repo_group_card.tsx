@@ -134,14 +134,27 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
         )}
       </div>
 
-      {/* Right: wall clock + relative time */}
-      <div className="flex items-center text-xs flex-shrink-0">
-        <span className="inline-flex items-center justify-end gap-1 text-gray-400 dark:text-gray-500 w-20 text-right">
+      {/* Right: wall clock (numbered batch + optional retest) + relative time */}
+      <div className="flex items-center gap-2 text-xs flex-shrink-0">
+        <span
+          className="inline-flex items-center justify-end gap-1 text-gray-400 dark:text-gray-500"
+          title={
+            hasStats && stats.retest_wall_clock_ms
+              ? 'Parallel shard batch, then separate retest run'
+              : undefined
+          }
+        >
           {hasStats && stats.wall_clock_ms != null && stats.wall_clock_ms > 0 && (
             <>
               <Clock className="h-3 w-3" />
               {formatDuration(stats.wall_clock_ms)}
             </>
+          )}
+          {hasStats && stats.retest_wall_clock_ms != null && stats.retest_wall_clock_ms > 0 && (
+            <span className="text-gray-400 dark:text-gray-500">
+              {' + '}
+              {formatDuration(stats.retest_wall_clock_ms)}
+            </span>
           )}
         </span>
         <span className="text-gray-400 dark:text-gray-600 w-16 text-right">

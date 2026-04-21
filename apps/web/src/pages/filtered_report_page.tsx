@@ -22,6 +22,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { ReportSummary } from '@/components/report_summary';
+import { isRetestName } from '@/components/report_card_parts';
 
 const TIMED_OUT_THRESHOLD_MS = 3_600_000; // 1 hour
 
@@ -85,7 +86,23 @@ export function FilteredReportPage() {
   const { data: report } = useReportDetail(latestReportId);
   const { data: suitesData, isLoading: isLoadingSuites } = useReportSuites(latestReportId);
 
-  const totalReports = report?.reports.length ?? 0;
+  // Sum report entries across every contributing group, split by retest vs
+  // numbered shard so the summary can render the "4+1 reports" form.
+  const reportCountSplit = useMemo(() => {
+    let numbered = 0;
+    let retest = 0;
+    for (const q of allReportQueries) {
+      if (!q.data?.reports) continue;
+      for (const e of q.data.reports) {
+        if (isRetestName(e.gh_job_name) || isRetestName(e.display_name)) {
+          retest++;
+        } else {
+          numbered++;
+        }
+      }
+    }
+    return { numbered, retest };
+  }, [allReportQueries]);
 
   // Step 3: Fetch suites for ALL contributing reports (for chip status indicators)
   const allSuitesQueries = useQueries({
@@ -95,6 +112,46 @@ export function FilteredReportPage() {
       enabled: !!id,
     })),
   });
+
+  // Map each per-shard report_id → display_name by flattening every contributing
+  // group's reports[] entries. Used to enrich consolidated spec history with
+  // the shard the attempt came from.
+  const shardNamesByReportId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const q of allReportQueries) {
+      if (!q.data?.reports) continue;
+      for (const entry of q.data.reports) {
+        map.set(entry.id, entry.display_name);
+      }
+    }
+    return map;
+  }, [allReportQueries]);
+
+  // crossShardHistory[full_title] = list of per-shard attempts for that spec,
+  // joined to the shard display_name. TestSuitesView renders a per-spec
+  // "Across shards" section when the list has more than one entry (or any
+  // failed entry for a currently-passing spec).
+  const crossShardHistory = useMemo(() => {
+    const map = new Map<string, import('@/types').CrossShardAttempt[]>();
+    if (!data?.specs) return map;
+    for (const spec of data.specs) {
+      if (!spec.history || spec.history.length === 0) continue;
+      const attempts = spec.history.map((h) => ({
+        report_id: h.report_id,
+        display_name: shardNamesByReportId.get(h.report_id) || '',
+        status: h.status,
+        duration_ms: h.duration_ms,
+        error_message: h.error_message,
+        error_stack: h.error_stack,
+        errors_json: h.errors_json,
+        created_at: h.created_at,
+        run_attempt: h.run_attempt,
+        screenshots: h.screenshots,
+      }));
+      map.set(spec.full_title, attempts);
+    }
+    return map;
+  }, [data?.specs, shardNamesByReportId]);
 
   // Build per-report test result status from suites across ALL contributing reports
   const reportTestStatus = useMemo(() => {
@@ -239,10 +296,12 @@ export function FilteredReportPage() {
               flaky={data.flaky}
               skipped={data.skipped}
               total={data.total_specs}
-              durationMs={data.duration_ms}
+              durationMs={data.wall_clock_ms ?? data.duration_ms}
+              retestDurationMs={data.retest_wall_clock_ms}
               createdAt={report.created_at}
               framework={report.framework}
-              reportCount={totalReports}
+              reportCount={reportCountSplit.numbered}
+              retestReportCount={reportCountSplit.retest}
               progressStatus={
                 report.status === 'in_progress'
                   ? new Date(report.created_at).getTime() < Date.now() - TIMED_OUT_THRESHOLD_MS
@@ -270,6 +329,7 @@ export function FilteredReportPage() {
                 suites={suitesData?.suites || []}
                 title={`${name} — ${branch}/${commit}`}
                 reports={suitesData?.reports}
+                crossShardHistory={crossShardHistory}
               />
             )
           )}

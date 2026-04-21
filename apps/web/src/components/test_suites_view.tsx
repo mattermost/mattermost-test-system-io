@@ -22,6 +22,7 @@ import type {
   TestSpec,
   TestSpecListResponse,
   ReportEntryInfo,
+  CrossShardAttempt,
 } from '@/types';
 import { ScreenshotGallery } from '@/components/ui/screenshot-gallery';
 import { useSearchTestCases, useClientConfig, type SearchSuiteResult } from '@/services/api';
@@ -46,9 +47,22 @@ interface TestSuitesViewProps {
   stats?: ReportStats;
   title?: string;
   reports?: ReportEntryInfo[];
+  /**
+   * Per-spec list of attempts across every shard that ran the same test
+   * title, keyed by `full_title` = `${suite.title} › ${spec.title}`.
+   * Populated from the consolidated view; omitted in single-report contexts.
+   */
+  crossShardHistory?: Map<string, CrossShardAttempt[]>;
 }
 
-export function TestSuitesView({ reportId, suites, stats, title, reports }: TestSuitesViewProps) {
+export function TestSuitesView({
+  reportId,
+  suites,
+  stats,
+  title,
+  reports,
+  crossShardHistory,
+}: TestSuitesViewProps) {
   const [expandedSuiteIds, setExpandedSuiteIds] = useState<Set<number>>(new Set());
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [selectedReports, setSelectedReports] = useState<Set<string>>(new Set()); // empty = all reports
@@ -646,6 +660,7 @@ export function TestSuitesView({ reportId, suites, stats, title, reports }: Test
                   searchQuery={normalizedSearch}
                   suiteMatchedByPath={suiteMatchedByPath}
                   allReportsForFile={filePathReportsMap.get(suite.file_path) || []}
+                  crossShardHistory={crossShardHistory}
                 />
               );
             })}
@@ -743,6 +758,8 @@ interface SuiteRowProps {
     passed: boolean;
     created_at: string;
   }[];
+  /** Per-spec cross-shard attempt history keyed by `${suite.title} › ${spec.title}`. */
+  crossShardHistory?: Map<string, CrossShardAttempt[]>;
 }
 
 const LOADING_DELAY_MS = 1000;
@@ -758,6 +775,7 @@ const SuiteRow = memo(function SuiteRow({
   searchQuery,
   suiteMatchedByPath,
   allReportsForFile,
+  crossShardHistory,
 }: SuiteRowProps) {
   // Memoize status calculations
   const { hasFlaky, hasFailed, hasSkipped, StatusIcon, statusIconColor } = useMemo(() => {
@@ -973,14 +991,18 @@ const SuiteRow = memo(function SuiteRow({
         <div className="mb-3 ml-6 border-l-2 border-gray-200 pl-4 dark:border-gray-600">
           {filteredSpecs.length > 0 ? (
             <div className="space-y-2 py-2">
-              {filteredSpecs.map((spec, specIndex) => (
-                <SpecRow
-                  key={spec.id}
-                  spec={spec}
-                  rowLabel={`${rowNumber}.${specIndex + 1}`}
-                  searchQuery={searchQuery}
-                />
-              ))}
+              {filteredSpecs.map((spec, specIndex) => {
+                const fullTitle = `${suite.title} › ${spec.title}`;
+                return (
+                  <SpecRow
+                    key={spec.id}
+                    spec={spec}
+                    rowLabel={`${rowNumber}.${specIndex + 1}`}
+                    searchQuery={searchQuery}
+                    crossShardAttempts={crossShardHistory?.get(fullTitle)}
+                  />
+                );
+              })}
             </div>
           ) : (
             <p className="py-2 text-sm text-gray-500 dark:text-gray-400">
@@ -997,9 +1019,20 @@ interface SpecRowProps {
   spec: TestSpec;
   rowLabel: string;
   searchQuery: string;
+  /**
+   * Attempts for this spec across every shard that ran it (from the
+   * consolidated view). Populated only on filtered-report pages; single-
+   * report contexts pass undefined.
+   */
+  crossShardAttempts?: CrossShardAttempt[];
 }
 
-const SpecRow = memo(function SpecRow({ spec, rowLabel, searchQuery }: SpecRowProps) {
+const SpecRow = memo(function SpecRow({
+  spec,
+  rowLabel,
+  searchQuery,
+  crossShardAttempts,
+}: SpecRowProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Memoize all derived status values
@@ -1009,13 +1042,62 @@ const SpecRow = memo(function SpecRow({ spec, rowLabel, searchQuery }: SpecRowPr
     statusColor,
     hasMultipleAttempts,
     singleResultHasContent,
+    hasCrossShardDivergence,
+    shardSummaries,
+    failedShardCount,
     isExpandable,
   } = useMemo(() => {
     const latest = spec.results[spec.results.length - 1];
     const skipped = latest?.status === 'skipped';
     const latestPassed = latest?.status === 'passed';
     const hadFailedAttempt = spec.results.some((r) => r.status === 'failed');
-    const flaky = (spec.ok && hadFailedAttempt) || (latestPassed && hadFailedAttempt);
+    const flakyFromRetries = (spec.ok && hadFailedAttempt) || (latestPassed && hadFailedAttempt);
+
+    // Roll each shard's attempts up to one summary entry (final status,
+    // attempt count, earliest timestamp). Native retries within a single
+    // shard become `attempts_count`, not extra rows in the "Across shards"
+    // list.
+    type ShardSummary = {
+      report_id: string;
+      display_name: string;
+      final_status: string;
+      final_duration_ms: number;
+      final_error?: string;
+      attempts_count: number;
+      created_at: string;
+    };
+    const summaries: ShardSummary[] = [];
+    if (crossShardAttempts && crossShardAttempts.length > 0) {
+      const byShard = new Map<string, CrossShardAttempt[]>();
+      for (const a of crossShardAttempts) {
+        const arr = byShard.get(a.report_id) ?? [];
+        arr.push(a);
+        byShard.set(a.report_id, arr);
+      }
+      for (const [reportId, attempts] of byShard) {
+        const sorted = [...attempts].sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+        const last = sorted[sorted.length - 1]!;
+        summaries.push({
+          report_id: reportId,
+          display_name: last.display_name,
+          final_status: last.status,
+          final_duration_ms: last.duration_ms,
+          final_error: last.error_message,
+          attempts_count: sorted.length,
+          created_at: sorted[0]!.created_at,
+        });
+      }
+      summaries.sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+    }
+
+    // Cross-shard divergence: two or more distinct shards with differing
+    // final statuses. In-shard retries don't count — those are native
+    // flakiness, rendered by the `spec.results` path above.
+    const finalStatuses = new Set(summaries.map((s) => s.final_status));
+    const crossShardDivergence = summaries.length > 1 && finalStatuses.size > 1;
+    const failedShards = summaries.filter((s) => s.final_status === 'failed').length;
+
+    const flaky = flakyFromRetries || crossShardDivergence;
 
     let Icon = CheckCircle2;
     let color = 'text-green-500';
@@ -1037,7 +1119,10 @@ const SpecRow = memo(function SpecRow({ spec, rowLabel, searchQuery }: SpecRowPr
       latest &&
       (latest.errors_json || (latest.attachments && latest.attachments.length > 0));
     const hasExpandable =
-      multipleAttempts || singleHasContent || (spec.screenshots && spec.screenshots.length > 0);
+      multipleAttempts ||
+      singleHasContent ||
+      (spec.screenshots && spec.screenshots.length > 0) ||
+      crossShardDivergence;
     const expandable = hasExpandable && (!spec.ok || flaky || skipped);
 
     return {
@@ -1046,9 +1131,12 @@ const SpecRow = memo(function SpecRow({ spec, rowLabel, searchQuery }: SpecRowPr
       statusColor: color,
       hasMultipleAttempts: multipleAttempts,
       singleResultHasContent: singleHasContent,
+      hasCrossShardDivergence: crossShardDivergence,
+      shardSummaries: summaries,
+      failedShardCount: failedShards,
       isExpandable: expandable,
     };
-  }, [spec]);
+  }, [spec, crossShardAttempts]);
 
   const handleToggle = useCallback(() => {
     if (isExpandable) {
@@ -1096,6 +1184,15 @@ const SpecRow = memo(function SpecRow({ spec, rowLabel, searchQuery }: SpecRowPr
           <span className="inline-flex items-center gap-1 text-xs text-orange-600 dark:text-orange-400">
             <RotateCcw className="h-3 w-3" />
             {spec.results.length} attempts
+          </span>
+        )}
+        {hasCrossShardDivergence && (
+          <span
+            className="inline-flex items-center gap-1 text-xs text-yellow-700 dark:text-yellow-400"
+            title="This test produced different final results across shards — expand to see each shard's outcome."
+          >
+            <AlertTriangle className="h-3 w-3" />
+            {failedShardCount} of {shardSummaries.length} shards failed
           </span>
         )}
       </div>
@@ -1158,6 +1255,121 @@ const SpecRow = memo(function SpecRow({ spec, rowLabel, searchQuery }: SpecRowPr
               retry: 0,
               missing: false,
               sequence: idx,
+            }))}
+          />
+        </div>
+      )}
+      {isExpanded && hasCrossShardDivergence && (
+        <div className="ml-16 mt-2 space-y-3 border-l-2 border-yellow-300 pl-3 dark:border-yellow-700">
+          <p className="text-xs font-medium text-yellow-700 dark:text-yellow-400">Across shards</p>
+          {shardSummaries.map((s) => {
+            // Pull this shard's full attempt list back out of crossShardAttempts
+            // so every attempt (failed + passing) renders individually, not
+            // just the rollup. Sort chronologically.
+            const shardAttempts = (crossShardAttempts ?? [])
+              .filter((a) => a.report_id === s.report_id)
+              .slice()
+              .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+            const headerPassed = s.final_status === 'passed' || s.final_status === 'flaky';
+            const headerSkipped = s.final_status === 'skipped';
+            const HeaderIcon = headerSkipped ? MinusCircle : headerPassed ? CheckCircle2 : XCircle;
+            const headerColor = headerSkipped
+              ? 'text-gray-400'
+              : headerPassed
+                ? 'text-green-500'
+                : 'text-red-500';
+            return (
+              <div key={s.report_id} className="space-y-1">
+                <div className="flex items-center gap-2 text-xs">
+                  <HeaderIcon className={`h-3 w-3 flex-shrink-0 ${headerColor}`} />
+                  <span className="font-medium text-gray-700 dark:text-gray-300">
+                    {s.display_name || s.report_id.slice(0, 8)}
+                  </span>
+                  <span className={`text-xs ${headerColor}`}>(final: {s.final_status})</span>
+                  {s.attempts_count > 1 && (
+                    <span className="text-gray-500 dark:text-gray-500">
+                      {s.attempts_count} attempts
+                    </span>
+                  )}
+                </div>
+                {shardAttempts.map((a, idx) => (
+                  <CrossShardAttemptRow key={`${a.report_id}-${idx}`} attempt={a} index={idx} />
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+});
+
+interface CrossShardAttemptRowProps {
+  attempt: CrossShardAttempt;
+  index: number;
+}
+
+/**
+ * One attempt row inside the "Across shards" expansion. The attempt's error
+ * + screenshots are collapsed by default; clicking the row reveals them.
+ * Rows with no error/screenshot content are non-interactive.
+ */
+const CrossShardAttemptRow = memo(function CrossShardAttemptRow({
+  attempt,
+  index,
+}: CrossShardAttemptRowProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const hasErrors = !!attempt.errors_json;
+  const hasScreenshots = !!(attempt.screenshots && attempt.screenshots.length > 0);
+  const hasContent = hasErrors || hasScreenshots;
+
+  const isPassed = attempt.status === 'passed' || attempt.status === 'flaky';
+  const isSkipped = attempt.status === 'skipped';
+  const AttemptIcon = isSkipped ? MinusCircle : isPassed ? CheckCircle2 : XCircle;
+  const color = isSkipped ? 'text-gray-400' : isPassed ? 'text-green-500' : 'text-red-500';
+
+  const toggle = () => hasContent && setIsExpanded((v) => !v);
+  const ExpandIcon = isExpanded ? ChevronDown : ChevronRight;
+
+  return (
+    <div className="ml-5 space-y-1">
+      <div
+        className={`flex items-center gap-2 text-xs ${
+          hasContent
+            ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded -mx-1 px-1'
+            : ''
+        }`}
+        role={hasContent ? 'button' : undefined}
+        tabIndex={hasContent ? 0 : undefined}
+        onClick={hasContent ? toggle : undefined}
+        onKeyDown={hasContent ? (e) => (e.key === 'Enter' || e.key === ' ') && toggle() : undefined}
+      >
+        {hasContent ? (
+          <ExpandIcon className="h-3 w-3 flex-shrink-0 text-gray-400 dark:text-gray-500" />
+        ) : (
+          <span className="w-3 flex-shrink-0" />
+        )}
+        <AttemptIcon className={`h-3 w-3 flex-shrink-0 ${color}`} />
+        <span className="text-gray-600 dark:text-gray-400">Attempt {index + 1}</span>
+        <span className={`text-xs ${color}`}>({attempt.status})</span>
+        {attempt.duration_ms > 0 && (
+          <span className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-500">
+            <Clock className="h-3 w-3" />
+            {formatDuration(attempt.duration_ms)}
+          </span>
+        )}
+      </div>
+      {isExpanded && hasErrors && <InlineErrorDisplay errorsJson={attempt.errors_json!} />}
+      {isExpanded && hasScreenshots && (
+        <div className="ml-5">
+          <ScreenshotGallery
+            screenshots={attempt.screenshots!.map((sh, i) => ({
+              path: sh.file_path,
+              s3_key: sh.file_path,
+              content_type: 'image/png',
+              retry: 0,
+              missing: false,
+              sequence: i,
             }))}
           />
         </div>

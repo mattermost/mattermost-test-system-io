@@ -67,7 +67,10 @@ export interface TestStats {
   skipped: number;
   flaky: number;
   duration_ms?: number;
+  /** Wall-clock span of the numbered (parallel) shard batch. */
   wall_clock_ms?: number;
+  /** Wall-clock span of the retest shards alone. Absent when no retest ran. */
+  retest_wall_clock_ms?: number;
 }
 
 /** Environment metadata — tool and server info for the test run. */
@@ -261,12 +264,18 @@ export interface GroupedReportsResponse {
 // --- Consolidated Results (filtered view) ---
 
 export interface SpecHistoryEntry {
+  /** Per-shard report row; resolvable against ReportDetail.reports[].id. */
+  report_id: string;
   commit_sha: string;
   run_attempt: number;
   status: string;
   duration_ms: number;
   error_message?: string;
+  error_stack?: string;
+  /** Server-built JSON string ready for the inline error renderer. */
+  errors_json?: string;
   created_at: string;
+  screenshots?: ScreenshotInfo[];
 }
 
 export interface ConsolidatedSpec {
@@ -278,6 +287,26 @@ export interface ConsolidatedSpec {
   duration_ms: number;
   error_message?: string;
   history?: SpecHistoryEntry[];
+}
+
+/**
+ * One shard's outcome for a given spec's `full_title`, resolved from
+ * ConsolidatedSpec.history + ReportDetail.reports lookup. Used by
+ * TestSuitesView to render per-spec cross-shard history (e.g. a test that
+ * failed in one shard and passed on retest).
+ */
+export interface CrossShardAttempt {
+  report_id: string;
+  display_name: string;
+  status: string;
+  duration_ms: number;
+  error_message?: string;
+  error_stack?: string;
+  /** Server-built JSON string ready for the inline error renderer. */
+  errors_json?: string;
+  created_at: string;
+  run_attempt: number;
+  screenshots?: ScreenshotInfo[];
 }
 
 export interface ConsolidatedFilters {
@@ -300,5 +329,9 @@ export interface ConsolidatedResultsResponse {
   latest_run_attempt: number;
   available_run_attempts: number[];
   duration_ms?: number;
+  /** MAX numbered-shard wall-clock across contributing groups. */
+  wall_clock_ms?: number;
+  /** MAX retest-shard wall-clock across contributing groups. Absent when no retest ran. */
+  retest_wall_clock_ms?: number;
   specs: ConsolidatedSpec[];
 }

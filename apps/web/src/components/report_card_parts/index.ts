@@ -4,4 +4,5 @@ export {
   formatDuration,
   calculatePassRate,
   getPassRateColorClass,
+  isRetestName,
 } from './utils';

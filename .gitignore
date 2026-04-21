@@ -1,7 +1,9 @@
-# Rust
-target/
-Cargo.lock
-**/*.rs.bk
+# Go
+apps/server/bin/
+apps/server/coverage.out
+apps/server/*.prof
+apps/server/*.test
+apps/server/*.out
 
 # Node.js
 node_modules/

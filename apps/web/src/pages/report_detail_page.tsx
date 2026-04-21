@@ -5,6 +5,7 @@ import { TestSuitesView } from '@/components/test_suites_view';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { Breadcrumb } from '@/components/breadcrumb';
 import { ReportSummary } from '@/components/report_summary';
+import { isRetestName } from '@/components/report_card_parts';
 import { EnvironmentMetadataDisplay } from '@/components/report_card_parts/environment_metadata';
 
 export function ReportDetailPage() {
@@ -19,7 +20,17 @@ export function ReportDetailPage() {
     error: suitesError,
   } = useReportSuites(groupId);
 
-  const totalReports = report?.reports.length ?? 0;
+  // Split report entries by numbered vs retest shard for the summary "4+1"
+  // display. Retest classification mirrors the server's regex on gh_job_name /
+  // display_name.
+  const reportCountSplit = useMemo(() => {
+    const entries = report?.reports ?? [];
+    let retest = 0;
+    for (const e of entries) {
+      if (isRetestName(e.gh_job_name) || isRetestName(e.display_name)) retest++;
+    }
+    return { numbered: entries.length - retest, retest };
+  }, [report?.reports]);
 
   // Detect if URL points to an individual report (not the group)
   const isIndividualReport = report && report.id !== reportId;
@@ -139,7 +150,8 @@ export function ReportDetailPage() {
         durationMs={testStats.durationMs > 0 ? testStats.durationMs : undefined}
         createdAt={individualReport?.created_at || report.created_at}
         framework={report.framework}
-        reportCount={isIndividualReport ? undefined : totalReports}
+        reportCount={isIndividualReport ? undefined : reportCountSplit.numbered}
+        retestReportCount={isIndividualReport ? undefined : reportCountSplit.retest}
         repository={report.repository}
         branch={report.branch}
         commit={report.commit}

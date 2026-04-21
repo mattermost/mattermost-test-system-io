@@ -4,22 +4,24 @@ API server and web dashboard for collecting, storing, and viewing Test Automatio
 
 ## Stack
 
-- **Server**: Rust (Actix-web), PostgreSQL, S3-compatible storage
+- **Server**: Go 1.26 (chi, pgx/v5 + sqlc), PostgreSQL 18.3, S3-compatible storage
 - **Web**: React, Vite, TailwindCSS
 - **Infrastructure**: AWS CDK (ECS Fargate, RDS, S3, ALB)
 
 ## Quick Start
 
 ```bash
-make install       # Install all dependencies
-make docker-up     # Start PostgreSQL + MinIO + Adminer
+make install       # Install all dependencies (Go modules + npm)
+make docker-up     # Start PostgreSQL 18.3 + MinIO + Adminer
+make db-reset      # Apply migrations (fresh schema)
+make seed          # Seed default group + dev API key
 make dev           # Run server (:8080) and web (:3000) concurrently
 ```
 
 ## Project Structure
 
 ```
-apps/server/       # Rust API server
+apps/server/       # Go API server (chi + pgx + sqlc)
 apps/web/          # React frontend
 infra/             # AWS CDK infrastructure
 docker/            # Docker Compose for local dev
@@ -27,18 +29,23 @@ docker/            # Docker Compose for local dev
 
 ## API
 
-Base path: `/api/v1` | Auth: `X-API-Key` header
+Base path: `/api/v1` | Auth: `X-API-Key`, `Authorization: Bearer`, or `tsio_session` cookie
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Health check |
-| `GET /ready` | Readiness check |
+| `GET /health` / `GET /ready` | Probes |
 | `GET /reports` | List reports |
-| `POST /reports` | Create report |
+| `POST /reports` | Upload a Playwright bundle (multipart) |
 | `GET /reports/{id}` | Report details |
 | `GET /reports/{id}/suites` | Test suites |
-| `POST /reports/register` | Register report |
-| `GET /ws` | WebSocket for real-time updates |
+| `GET /reports/{id}/cases` | Test cases (optional `?status=` filter) |
+| `GET /reports/{id}/json` | Raw Playwright JSON (presigned redirect) |
+| `GET /report-groups`, `POST /report-groups` | Report groups |
+| `GET /artifacts/{id}` | Artifact download (presigned redirect) |
+| `GET /events` | WebSocket for live ingest progress |
+| `POST /auth/github/start`, `GET /auth/github/callback` | GitHub OAuth sign-in |
+| `POST /auth/logout` | Clear session |
+| `/swagger-ui/` | Interactive OpenAPI browser |
 
 ## Environments
 
@@ -51,14 +58,20 @@ Base path: `/api/v1` | Auth: `X-API-Key` header
 
 ```bash
 make help              # Show all available targets
-make dev               # Run server + web concurrently (with auto-reload)
-make run               # Run server + web concurrently (no auto-reload)
-make test              # Run all tests
-make lint              # Run all linters
-make fmt               # Format all code
-make build             # Build for production
-make docker-up         # Start dev services
+make dev               # Run server + web concurrently
+make test              # Run all tests (unit + E2E)
+make test-server       # Go unit + integration (race detector)
+make test-server-oidc  # OIDC E2E suite (needs Docker)
+make lint              # Run all linters (golangci-lint + eslint)
+make fmt               # Format all code (gofmt + goimports + prettier)
+make build             # Build server binaries + web bundle
+make ci                # Full CI gate: lint + typecheck + test + build
+make db-reset          # Drop tables and re-apply per-table schema
+make seed              # Seed dev fixtures
+make sqlc              # Regenerate sqlc code
+make docker-up         # Start dev services (Postgres + MinIO)
 make docker-down       # Stop dev services
+make tools             # Install developer CLI tools (sqlc, goimports)
 ```
 
 ## Deployment

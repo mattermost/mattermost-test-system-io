@@ -66,7 +66,7 @@ jobs:
       - name: Read VERSION and compute beta tag
         id: meta
         run: |
-          VERSION=$(grep '^version' apps/server/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          VERSION=$(tr -d '[:space:]' < apps/server/VERSION)
           SHORT_SHA="${GITHUB_SHA::7}"
           BETA_TAG="${VERSION}-${SHORT_SHA}.beta"
           BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")

@@ -38,6 +38,8 @@
  *   TSIO_ADMIN_KEY - Admin key for OIDC policy setup (default: dev-admin-key-do-not-use-in-production)
  *   BATCH_SIZE     - Number of files per upload batch (default: 50)
  *   MOCK_OIDC_PORT - Port for mock JWKS server (default: 9090)
+ *   MOCK_OIDC_AUDIENCE - aud claim minted into tokens (default: tsio). Must
+ *                        match the server's TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE.
  */
 
 const fs = require("fs");
@@ -53,6 +55,7 @@ const ADMIN_KEY =
   process.env.TSIO_ADMIN_KEY || "dev-admin-key-do-not-use-in-production";
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "50", 10);
 const MOCK_OIDC_PORT = parseInt(process.env.MOCK_OIDC_PORT || "9090", 10);
+const MOCK_OIDC_AUDIENCE = process.env.MOCK_OIDC_AUDIENCE || "tsio";
 
 /**
  * Parse --branch argument from CLI args.
@@ -311,6 +314,7 @@ class MockOidcProvider {
 
       // Standard JWT fields (always last so they cannot be overridden)
       iss: this.issuer,
+      aud: MOCK_OIDC_AUDIENCE,
       iat: now,
       exp: now + 600, // 10 minutes
       nbf: now,

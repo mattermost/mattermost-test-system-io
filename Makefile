@@ -5,15 +5,15 @@
 
 .PHONY: help \
         install install-server install-web tools \
-        dev dev-server dev-web \
+        dev dev-server dev-web dev-web-watch \
         build build-server build-web \
-        test test-server test-server-e2e test-server-oidc test-web \
+        test test-server test-server-e2e test-web \
         lint lint-server lint-web \
         vet vet-server \
-        fmt fmt-server fmt-web \
+        fmt fmt-server fmt-check-server fmt-web fmt-check-web \
         typecheck typecheck-web \
         ci ensure-docker \
-        db-migrate db-status db-reset seed sqlc \
+        db-migrate db-status db-reset seed \
         docker-up docker-down docker-logs docker-build \
         clean clean-server clean-web clean-all \
         outdated outdated-server outdated-web \
@@ -45,11 +45,9 @@ GO    ?= go
 GOFMT ?= gofmt
 
 # Tool versions pinned; run via `go run` so no GOBIN setup is required.
-SQLC_VERSION          := v1.30.0
 GOLANGCI_LINT_VERSION := v2.0.2
 GOIMPORTS_PKG         := golang.org/x/tools/cmd/goimports@latest
 GOVULNCHECK_PKG       := golang.org/x/vuln/cmd/govulncheck@latest
-SQLC_CMD              := $(GO) run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 GOLANGCI_LINT_CMD     := $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 GOIMPORTS_CMD         := $(GO) run $(GOIMPORTS_PKG)
 GOVULNCHECK_CMD       := $(GO) run $(GOVULNCHECK_PKG)
@@ -110,7 +108,6 @@ install-web: ## Install npm deps (apps/web)
 
 tools: ## Install pinned Go CLI tools to GOBIN (optional; other targets use `go run`)
 	@echo "$(CYAN)Installing Go developer tools (optional)...$(RESET)"
-	$(GO) install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	$(GO) install $(GOIMPORTS_PKG)
 	@echo "$(GREEN)Installed into $$(go env GOBIN).$(RESET)"
@@ -128,6 +125,9 @@ dev-server: ## Run Go server (ldflags inject version/sha/build time)
 dev-web: ## Run Vite dev server with HMR
 	@echo "$(CYAN)Starting Vite dev server on :$(WEB_PORT)...$(RESET)"
 	cd $(WEB_DIR) && npm run dev
+
+dev-web-watch: ## Run Vite in watch-build mode; refreshes the embedded bundle on every save (use when iterating on the web with :8080)
+	cd $(WEB_DIR) && npm run build -- --watch
 
 ##@ Build
 
@@ -151,11 +151,7 @@ test-server: ## Run Go unit tests (race)
 	@echo "$(CYAN)Running Go tests with -race...$(RESET)"
 	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(GO) test -race -count=1 ./...
 
-test-server-oidc: ensure-docker ## Run OIDC E2E suite (Docker required)
-	@echo "$(CYAN)Running OIDC E2E tests (DOCKER_HOST=$(DOCKER_HOST_AUTO))...$(RESET)"
-	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(E2E_ENV) $(GO) test -race -tags=e2e -count=1 ./tests/e2e/oidc/...
-
-test-server-e2e: ensure-docker ## Run ALL E2E + contract + perf suites (Docker required)
+test-server-e2e: ensure-docker ## Run every -tags=e2e package (admin_cli, oidc, contract); Docker required
 	@echo "$(CYAN)Running all -tags=e2e tests (DOCKER_HOST=$(DOCKER_HOST_AUTO))...$(RESET)"
 	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(E2E_ENV) $(GO) test -race -tags=e2e -count=1 ./tests/...
 
@@ -181,12 +177,23 @@ vet-server: ## go vet ./... on the Go module
 
 fmt: fmt-server fmt-web ## Format server (gofmt+goimports) and web (prettier/oxfmt)
 
-fmt-server: ## Format Go code
+fmt-server: ## Format Go code (writes)
 	@echo "$(CYAN)Formatting Go code...$(RESET)"
 	cd $(SERVER_DIR) && $(GOFMT) -s -w . && $(GOIMPORTS_CMD) -w .
 
-fmt-web: ## Format web client
+fmt-check-server: ## Verify Go is gofmt-clean (CI-friendly; exit 1 on drift)
+	@cd $(SERVER_DIR) && out=$$($(GOFMT) -s -l .); \
+	if [ -n "$$out" ]; then \
+		echo "$(RED)gofmt -s finds formatting issues:$(RESET)"; \
+		echo "$$out"; \
+		exit 1; \
+	fi
+
+fmt-web: ## Format web client (writes)
 	cd $(WEB_DIR) && npm run format
+
+fmt-check-web: ## Verify web client is oxfmt-clean
+	cd $(WEB_DIR) && npm run format:check
 
 typecheck: typecheck-web ## Type-check (web only; Go type-checks in `vet`/`build`)
 
@@ -225,10 +232,6 @@ seed: ## Insert dev fixtures (default group + dev API key)
 	@echo "$(CYAN)Seeding dev fixtures...$(RESET)"
 	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(GO) run ./cmd/tsioctl db seed
 
-sqlc: ## Regenerate sqlc code from migrations/ + internal/db/queries/
-	@echo "$(CYAN)Regenerating sqlc code (sqlc $(SQLC_VERSION))...$(RESET)"
-	cd $(SERVER_DIR) && $(SQLC_CMD) generate
-
 ##@ Docker Compose (dev infra) & image build
 
 docker-up: ## Start dev infrastructure (Postgres 18.3 + MinIO + adminer)
@@ -241,7 +244,7 @@ docker-logs: ## Tail logs of dev infrastructure
 	$(COMPOSE) logs -f
 
 docker-build: ## Build the tsio-server container image
-	docker build -t tsio-server:dev -f apps/server/Dockerfile apps/server/
+	docker build -t tsio-server:dev -f apps/server/Dockerfile .
 
 ##@ Clean
 

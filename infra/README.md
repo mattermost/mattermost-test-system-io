@@ -272,7 +272,7 @@ npx cdk diff          # Preview changes from CDK upgrade
 
 - **Read-only root filesystem** on all app containers (`readonlyRootFilesystem: true`)
 - **ECS Exec disabled** (`enableExecuteCommand: false`) — no shell access to running containers
-- **Non-root user** in Dockerfile (`appuser`)
+- **Non-root user** in `apps/server/Dockerfile` (`nonroot:nonroot` via distroless)
 - **Deployment circuit breaker** with auto-rollback on health check failure
 
 ### CDK-Specific

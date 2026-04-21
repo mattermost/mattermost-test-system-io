@@ -198,9 +198,7 @@ function signJwt(payload, privateKey, kid) {
 
 /**
  * Mock OIDC provider that starts a local JWKS server and issues signed JWTs.
- *
- * Mirrors the Rust MockOidcProvider in apps/server/tests/oidc_e2e/mock_oidc_provider.rs
- * but implemented with Node.js built-in crypto for the seed script.
+ * Implemented with Node.js built-in crypto to keep the seed script dependency-free.
  */
 class MockOidcProvider {
   constructor() {

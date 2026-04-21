@@ -9,14 +9,14 @@ updates:
       - "dependencies"
       - "github-actions"
 
-  - package-ecosystem: "cargo"
+  - package-ecosystem: "gomod"
     directory: "/apps/server"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
-      - "rust"
+      - "go"
 
   - package-ecosystem: "npm"
     directory: "/apps/web"
@@ -26,3 +26,22 @@ updates:
     labels:
       - "dependencies"
       - "javascript"
+
+  - package-ecosystem: "npm"
+    directory: "/infra"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "infra"
+
+  - package-ecosystem: "docker"
+    directory: "/apps/server"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "docker"

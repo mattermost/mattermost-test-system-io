@@ -48,7 +48,7 @@ After a PR is merged to `main` and CI passes on the merge commit.
 
 ```
 1. check-concurrent    → Rejects if another staging deploy is running
-2. build-and-tag       → Reads version from Cargo.toml
+2. build-and-tag       → Reads version from apps/server/VERSION
                         → Computes beta tag: {version}-{short_sha}.beta
                         → Builds Docker image and pushes to Docker Hub
                         → Creates GitHub prerelease with the beta tag
@@ -70,7 +70,7 @@ After a PR is merged to `main` and CI passes on the merge commit.
 Example: 0.1.0-abcdefg.beta
 ```
 
-- Version is read from `apps/server/Cargo.toml`
+- Version is read from `apps/server/VERSION`
 - Short SHA is the first 7 characters of the commit hash
 - No `v` prefix
 
@@ -188,7 +188,7 @@ Wait for the active deployment to finish, then retry.
    ```bash
    aws logs tail /ecs/mattermost-test-system-io-shared --follow
    ```
-3. Verify environment variables (TSIO_DB_HOST, TSIO_DB_PASSWORD, TSIO_S3_BUCKET)
+3. Verify environment variables (`TSIO_DATABASE_URL`, `TSIO_S3_BUCKET`, `TSIO_S3_ACCESS_KEY`, `TSIO_S3_SECRET_KEY`, `TSIO_SESSION_SECRET`)
 4. ECS circuit breaker will auto-rollback if the task can't start
 
 ### Beta tag not found during production promotion
@@ -293,7 +293,7 @@ Trigger the staging deploy workflow. The `Configure AWS credentials via OIDC` st
 
 - **Branch protection** on `main`: required PR reviews, required status checks, no force push
 - **Actions permissions**: allow only verified creators + explicitly allowlisted actions
-- **CODEOWNERS**: maintainer review required for `.github/workflows/`, `infra/`, `Dockerfile`
+- **CODEOWNERS**: maintainer review required for `.github/workflows/`, `infra/`, `apps/server/Dockerfile`
 
 ## Security
 

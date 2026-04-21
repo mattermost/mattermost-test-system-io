@@ -26,7 +26,8 @@ export default defineConfig({
     port: 3000,
   },
   build: {
-    outDir: 'dist',
+    outDir: '../server/internal/webui/dist',
+    emptyOutDir: true,
     sourcemap: true,
   },
   test: {

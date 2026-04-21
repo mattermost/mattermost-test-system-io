@@ -11,12 +11,10 @@
 package contract
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -137,56 +135,16 @@ func TestListReportsContract_empty(t *testing.T) {
 	}
 	validateResponse(t, doc, opts, http.MethodGet, "/api/v1/reports", status, hdr, body)
 
-	// Sanity: the items array is present and empty.
+	// Sanity: the reports array is present and empty (no shards under the
+	// seeded group yet). Field name intentionally asserted — the web pages
+	// depend on it.
 	var parsed struct {
-		Items []any `json:"items"`
+		Reports []any `json:"reports"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if parsed.Items == nil {
-		t.Error("items should be non-nil array")
+	if parsed.Reports == nil {
+		t.Error("reports should be non-nil array")
 	}
-}
-
-func TestListReportGroupsContract(t *testing.T) {
-	env := testenv.Start(t)
-	env.DefaultReportGroup(t)
-	apiKey := env.IssueAPIKey(t, "ci")
-	doc, opts := loadSpec(t)
-
-	status, hdr, body := mustRecordedResponse(t, env,
-		http.MethodGet, "/api/v1/report-groups",
-		map[string]string{"X-API-Key": apiKey},
-	)
-	if status != 200 {
-		t.Fatalf("status = %d, body = %s", status, body)
-	}
-	validateResponse(t, doc, opts, http.MethodGet, "/api/v1/report-groups", status, hdr, body)
-}
-
-func TestCreateReportGroupContract(t *testing.T) {
-	env := testenv.Start(t)
-	apiKey := env.IssueAPIKey(t, "ci")
-	doc, opts := loadSpec(t)
-
-	body := []byte(`{"slug":"contract-test","display_name":"Contract Test"}`)
-	req, _ := http.NewRequest(http.MethodPost, env.ServerURL+"/api/v1/report-groups", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", apiKey)
-
-	client := httptest.NewRequest(http.MethodPost, "/x", nil).Body // unused: just to avoid unused-import
-	_ = client
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("do: %v", err)
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 201 {
-		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
-	}
-	validateResponse(t, doc, opts, http.MethodPost, "/api/v1/report-groups",
-		resp.StatusCode, resp.Header, respBody)
 }

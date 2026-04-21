@@ -10,27 +10,28 @@ make ci     # Run checks, lint, test, build
 
 ## Structure
 ```
-apps/server/   # Go API (chi, pgx/v5, sqlc, PostgreSQL 18.3)
+apps/server/   # Go API (chi, pgx/v5, PostgreSQL 18.3)
 apps/web/      # React (Vite, TailwindCSS, lucide-react)
 ```
 
-## API (`/api/v1`, auth: `X-API-Key` header, `Authorization: Bearer`, or `tsio_session` cookie)
-- `GET /health` / `GET /ready` — probes
-- `GET /reports` — list reports
-- `POST /reports` — upload (multipart, optional `X-Report-Idempotency-Key`)
-- `GET /reports/{id}` — report details
-- `GET /reports/{id}/suites` — test suites
-- `GET /reports/{id}/cases` — test cases
-- `GET /reports/{id}/json` — raw Playwright JSON (302 → presigned S3)
-- `GET /report-groups`, `POST /report-groups`
-- `GET /artifacts/{id}` — 302 → presigned S3
-- `GET /events` — WebSocket for live ingest progress
-- `POST /auth/github/start`, `GET /auth/github/callback`, `POST /auth/logout`
+## API
+Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or the `tsio_session` cookie. Base path for the API is `/api/v1`; `/health`, `/ready`, `/files/*`, and `/swagger-ui/*` are top-level.
+- `GET /health` / `GET /ready` — probes (top-level, not under `/api/v1`)
+- `GET /api/v1/reports` — list reports (public)
+- `GET /api/v1/reports/{id}` — report details (public)
+- `GET /api/v1/reports/{id}/suites` — test suites (public)
+- `GET /api/v1/reports/{id}/cases` — test cases (public)
+- `GET /api/v1/reports/{id}/json` — raw Playwright JSON, 302 → presigned S3 (public)
+- Stateless upload (auth): `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots` → `complete`
+- `GET /api/v1/artifacts/{id}` — 302 → presigned S3 (auth required)
+- `GET /api/v1/ws` — WebSocket for live ingest progress (anonymous)
+- `POST /api/v1/auth/github/start`, `GET /api/v1/auth/github/callback`, `POST /api/v1/auth/logout`
 - `/swagger-ui/` — hand-authored OpenAPI 3.1 spec browser
+- Legacy `POST /api/v1/reports` bundle upload now returns 410 Gone.
 
 ## Style
 - Go: `gofmt -s`, `goimports`, `golangci-lint` (zero warnings)
-- TypeScript: `eslint` + `prettier`
+- TypeScript: `oxlint` + `oxfmt`
 - Files: `snake_case.tsx`, `lowercase_with_underscores.go`
 - Icons: lucide-react
 - UI: shadcn/ui patterns
@@ -41,7 +42,7 @@ apps/web/      # React (Vite, TailwindCSS, lucide-react)
 ```bash
 make test              # All tests (unit + E2E)
 make test-server       # Go unit + integration (race)
-make test-server-oidc  # OIDC E2E (testcontainers-go; needs Docker)
+make test-server-e2e   # Every -tags=e2e suite (testcontainers-go; needs Docker)
 make test-web          # Frontend tests
 ```
 
@@ -56,11 +57,11 @@ echo 'ulimit -n 4096' >> ~/.zshrc   # make permanent
 ```
 
 ## Schema changes (pre-v1.0)
-`apps/server/migrations/NNN_<table>.sql` is the schema source of truth.
+`apps/server/migrations/NNN_<table>.sql` is the schema source of truth
+(embedded into the Go binary via `apps/server/migrations/embed.go`).
 Edit the `.sql` file in place, then:
 ```bash
-make db-reset    # drops + reapplies the whole schema
-make sqlc        # regenerates typed Go accessors
+make db-reset    # drops + reapplies the whole schema locally
 make test-server
 ```
 

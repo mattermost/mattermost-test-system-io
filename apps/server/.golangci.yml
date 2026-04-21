@@ -55,11 +55,6 @@ linters:
         text: 'parameter ''t'' seems to be unused'
         linters:
           - revive
-      - path: internal/db/sqlcgen/
-        linters:
-          - revive
-          - staticcheck
-          - gocritic
 
 formatters:
   enable:

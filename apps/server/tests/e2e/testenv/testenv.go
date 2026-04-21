@@ -9,9 +9,14 @@
 package testenv
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -108,6 +113,12 @@ func Start(t *testing.T) *Env {
 		Hub:       hub,
 		Publisher: &events.Publisher{Hub: hub},
 		Version:   "test",
+		// Client-facing /config + /info defaults — match the production env
+		// defaults (see internal/config).
+		UploadTimeoutMs: 3_600_000, // 1h
+		SearchMinLength: 3,
+		Environment:     "test",
+		RepoURL:         "https://github.com/mattermost/mattermost-test-system-io",
 		// OpenAPISpecPath intentionally unset — tests craft synthetic requests,
 		// some of which legitimately don't match the spec (missing auth etc.).
 		MaxUploadBytes:   1 << 24, // 16 MiB
@@ -180,7 +191,83 @@ func (e *Env) DefaultReportGroup(t *testing.T) string {
 	return id
 }
 
+// RegisterResponse captures the outcome of POST /api/v1/reports/register.
+// Exposed so tests can distinguish the "auth accepted + register succeeded"
+// path from policy/validation errors.
+type RegisterResponse struct {
+	ReportID   string
+	StatusCode int
+	Body       []byte
+}
+
+// RegisterStatelessUpload POSTs a minimal valid body to
+// /api/v1/reports/register using the supplied Authorization header value
+// (e.g. "Bearer <jwt>" or "ApiKey <plaintext>"). Use this from tests that
+// previously hit the retired POST /api/v1/reports bundle endpoint to prove
+// the protected path works and to exercise the per-shard `reports` row
+// insert (incl. `uploaded_by_oidc_subject`).
+func (e *Env) RegisterStatelessUpload(t *testing.T, authHeader string, body map[string]any) RegisterResponse {
+	t.Helper()
+
+	// Fill in defaults matching testenv.DefaultReportGroup's composite key so
+	// every test registers under a stable group unless it overrides.
+	defaults := map[string]any{
+		"repository":     "mattermost/test",
+		"commit":         "0000000000000000000000000000000000000000",
+		"gh_run_id":      "e2e-run",
+		"gh_run_attempt": "1",
+		"framework":      "playwright",
+		"name":           "default",
+		"branch":         "main",
+		"gh_job_id":      "job-" + randHex(t, 8),
+		"gh_job_name":    "default",
+		"json_files":     []any{},
+		"screenshots":    []any{},
+	}
+	for k, v := range body {
+		defaults[k] = v
+	}
+	payload, err := json.Marshal(defaults)
+	if err != nil {
+		t.Fatalf("marshal register body: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, e.ServerURL+"/api/v1/reports/register", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("register request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("register do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+
+	out := RegisterResponse{StatusCode: resp.StatusCode, Body: raw}
+	if resp.StatusCode < 300 {
+		var decoded struct {
+			ReportID string `json:"report_id"`
+		}
+		_ = json.Unmarshal(raw, &decoded)
+		out.ReportID = decoded.ReportID
+	}
+	return out
+}
+
 // ---- helpers ----
+
+func randHex(t *testing.T, n int) string {
+	t.Helper()
+	b := make([]byte, n)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	return hex.EncodeToString(b)
+}
 
 func nullIf(s string) any {
 	if s == "" {

@@ -79,15 +79,9 @@ func TestValidAuth(t *testing.T) {
 	})
 
 	tok := env.Mock.IssueToken(t, baseClaims("repo:mattermost/mm-e2e:ref:refs/heads/main"))
-	body, ct := uploadFixture(t)
-	resp := do(t, env, http.MethodPost, "/api/v1/reports", body, func(r *http.Request) {
-		r.Header.Set("Content-Type", ct)
-		r.Header.Set("Authorization", "Bearer "+tok)
-		r.Header.Set("X-Report-Source", "github:"+claimRepo+"@test")
-	})
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 201/200, got %d, body=%s", resp.StatusCode, readAll(resp.Body))
+	out := env.RegisterStatelessUpload(t, "Bearer "+tok, nil)
+	if out.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", out.StatusCode, out.Body)
 	}
 }
 
@@ -132,14 +126,9 @@ func TestClaimStorage(t *testing.T) {
 
 	sub := "repo:mattermost/mm-e2e:ref:refs/heads/main"
 	tok := env.Mock.IssueToken(t, baseClaims(sub))
-	body, ct := uploadFixture(t)
-	resp := do(t, env, http.MethodPost, "/api/v1/reports", body, func(r *http.Request) {
-		r.Header.Set("Content-Type", ct)
-		r.Header.Set("Authorization", "Bearer "+tok)
-		r.Header.Set("X-Report-Source", "github:test")
-	})
-	if resp.StatusCode >= 300 {
-		t.Fatalf("upload rejected: %d %s", resp.StatusCode, readAll(resp.Body))
+	out := env.RegisterStatelessUpload(t, "Bearer "+tok, nil)
+	if out.StatusCode >= 300 {
+		t.Fatalf("upload rejected: %d %s", out.StatusCode, out.Body)
 	}
 
 	var oidcSubject *string
@@ -189,14 +178,9 @@ func TestLifecycle(t *testing.T) {
 	tok := env.Mock.IssueToken(t, baseClaims("repo:mattermost/mm-e2e:ref:refs/heads/main"))
 
 	for i := 0; i < 3; i++ {
-		body, ct := uploadFixture(t)
-		resp := do(t, env, http.MethodPost, "/api/v1/reports", body, func(r *http.Request) {
-			r.Header.Set("Content-Type", ct)
-			r.Header.Set("Authorization", "Bearer "+tok)
-			r.Header.Set("X-Report-Source", "github:test")
-		})
-		if resp.StatusCode >= 300 {
-			t.Fatalf("iteration %d rejected: %d", i, resp.StatusCode)
+		out := env.RegisterStatelessUpload(t, "Bearer "+tok, nil)
+		if out.StatusCode >= 300 {
+			t.Fatalf("iteration %d rejected: %d %s", i, out.StatusCode, out.Body)
 		}
 	}
 }

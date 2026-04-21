@@ -27,6 +27,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/session"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/webui"
 )
 
 // Deps carries the injected dependencies. All pointer-type fields are required
@@ -189,6 +190,17 @@ func Build(d Deps) chi.Router {
 			r.Get("/artifacts/{id}", artifactsH.Get)
 		})
 	})
+
+	// Mount the embedded web UI last so the chi /api/v1 subtree keeps its
+	// normal 404 behavior; only requests that miss every other route fall
+	// through to the SPA handler.
+	if webH, err := webui.Handler(); err != nil {
+		if d.Logger != nil {
+			d.Logger.Warn("embedded web ui disabled", slog.String("error", err.Error()))
+		}
+	} else {
+		r.NotFound(webH.ServeHTTP)
+	}
 
 	return r
 }

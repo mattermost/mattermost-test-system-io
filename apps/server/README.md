@@ -1,8 +1,6 @@
 # Test System IO — Server (Go)
 
-Go 1.26 HTTP API for uploading and viewing Playwright test reports. Replaces
-the previous Rust prototype (see the root `specs/006-rust-to-go/` spec for the
-history of the rewrite).
+HTTP API Server for uploading and viewing test reports.
 
 ## Prerequisites
 
@@ -23,7 +21,7 @@ apps/server/
 │   ├── api/            # chi router, handlers, middleware, error mapper
 │   ├── auth/           # apikey, oauth, oidc, policy, session
 │   ├── config/         # typed config loaded from env
-│   ├── db/             # pgx pool, migration runner, generated sqlc code
+│   ├── db/             # pgx pool, migration runner (migrations embedded via embed.FS)
 │   ├── events/         # WebSocket hub + publisher
 │   ├── ingest/         # multipart → zip extract → consolidate
 │   ├── storage/        # S3/MinIO wrapper
@@ -32,9 +30,9 @@ apps/server/
 ├── migrations/         # per-table SQL files — embedded into the binary via embed.FS
 ├── api/openapi.yaml    # hand-authored API contract
 ├── tests/
-│   ├── e2e/oidc/       # OIDC E2E suite (7 scenarios; scaffolded)
-│   ├── e2e/upload/     # upload-flow E2E (scaffolded)
-│   └── e2e/admin_cli/  # tsioctl lifecycle E2E (scaffolded)
+│   ├── e2e/oidc/       # OIDC E2E suite
+│   ├── e2e/admin_cli/  # tsioctl lifecycle E2E
+│   └── contract/       # OpenAPI contract tests
 └── Dockerfile
 ```
 
@@ -44,7 +42,7 @@ From the repository root:
 
 ```bash
 make install      # go mod download + npm ci
-make tools        # installs sqlc and goimports
+make tools        # installs golangci-lint + goimports to GOBIN (optional; other targets use `go run`)
 cp .env.example .env
 ```
 
@@ -78,30 +76,29 @@ go run ./cmd/tsioctl db seed
 
 ```bash
 make test-server         # unit + integration (race)
-make test-server-oidc    # OIDC E2E (testcontainers-go; needs Docker)
+make test-server-e2e     # every -tags=e2e package (admin_cli, oidc, contract);
+                         # testcontainers-go; needs Docker
 ```
 
 ## Schema changes (pre-v1.0)
 
-The source of truth is `migrations/NNN_<table>.sql`. To change a table:
+The source of truth is `migrations/NNN_<table>.sql`. Migrations are embedded
+into the Go binary via `apps/server/migrations/embed.go`, so the binary ships
+with its own schema. To change a table:
 
 1. Edit the `.sql` file in place (add/remove columns, indexes, constraints).
-2. `make db-reset` — drops and re-applies the whole schema.
-3. `make sqlc` — regenerates `internal/db/sqlcgen/` from the updated schema.
-4. `make test-server`.
+2. `make db-reset` — drops and re-applies the whole schema locally.
+3. `make test-server`.
 
 This "direct-edit" pattern is explicit pre-v1.0 behavior; post-v1.0 will switch
 to append-only additive migrations.
 
 ## Troubleshooting
 
-- **Docker not running** — `make dev` / `make test-server-oidc` fail with
+- **Docker not running** — `make dev` / `make test-server-e2e` fail with
   connection errors. Start Docker Desktop.
 - **`port 5432 in use`** — the dev stack publishes Postgres on `6432` by
   default; check `docker/docker-compose.dev.yml` if your `TSIO_DATABASE_URL`
   expects a different port.
 - **`Too many open files` on macOS** — `ulimit -n 4096`. The Makefile already
   raises the limit automatically for `dev` and `test-*` targets.
-- **`sqlc: parsing error`** — a `.sql` file has invalid syntax, or a query in
-  `internal/db/queries/` references a column that no longer exists. Check the
-  error detail, fix the source file, rerun `make sqlc`.

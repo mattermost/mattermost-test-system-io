@@ -63,7 +63,7 @@ export class ProductionAppStack extends cdk.Stack {
       minimumHealthyPercent: config.production.minimumHealthyPercent,
       maximumPercent: config.production.maximumPercent,
       environmentVariables: {
-        RUST_ENV: "production",
+        TSIO_ENVIRONMENT: "production",
         TSIO_DB_HOST: props.rdsEndpoint.hostname,
         TSIO_DB_PORT: cdk.Token.asString(props.rdsEndpoint.port),
         TSIO_DB_USER: props.rdsDbUsername,

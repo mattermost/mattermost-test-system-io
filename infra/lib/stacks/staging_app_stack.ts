@@ -77,7 +77,7 @@ export class StagingAppStack extends cdk.Stack {
       minimumHealthyPercent: config.staging.minimumHealthyPercent,
       maximumPercent: config.staging.maximumPercent,
       environmentVariables: {
-        RUST_ENV: "production",
+        TSIO_ENVIRONMENT: "staging",
         TSIO_DB_HOST: postgres.dbHost,
         TSIO_DB_PORT: postgres.dbPort,
         TSIO_DB_USER: postgres.dbUser,

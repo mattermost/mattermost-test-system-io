@@ -1,5 +1,5 @@
 // Package testreport defines the domain types (Report, Suite, TestCase,
-// Artifact, ReportJSONFile, ReportGroup) used by handlers and sqlc-generated code.
+// Artifact, ReportJSONFile, ReportGroup) used by handlers.
 package testreport
 
 import (

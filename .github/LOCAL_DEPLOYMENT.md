@@ -13,27 +13,32 @@ Run the production Docker image locally for testing and validation.
 # 1. Start PostgreSQL and MinIO
 docker compose -f docker/docker-compose.dev.yml up -d
 
-# 2. Build the Docker image
+# 2. Build the Docker image (from repo root)
 docker build \
-  --build-arg BUILD_SHA=$(git rev-parse HEAD) \
+  --build-arg COMMIT_SHA=$(git rev-parse HEAD) \
   --build-arg BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
-  -t mattermost-test-system-io:local .
+  -t mattermost-test-system-io:local \
+  -f apps/server/Dockerfile .
 
 # 3. Run the container
 docker run --rm -p 8080:8080 \
-  --network docker_default \
-  -e RUST_ENV=development \
-  -e TSIO_DB_URL=postgres://tsio:tsio@postgres:5432/tsio \
+  --network tsio-dev_default \
+  -e TSIO_ENVIRONMENT=development \
+  -e TSIO_DATABASE_URL=postgres://tsio:tsio@postgres:5432/tsio?sslmode=disable \
   -e TSIO_S3_ENDPOINT=http://minio:9000 \
   -e TSIO_S3_BUCKET=reports \
   -e TSIO_S3_ACCESS_KEY=minioadmin \
   -e TSIO_S3_SECRET_KEY=minioadmin \
   -e TSIO_S3_REGION=us-east-1 \
+  -e TSIO_S3_FORCE_PATH_STYLE=true \
+  -e TSIO_SESSION_SECRET=dev-session-secret-change-me \
+  -e TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=tsio \
   mattermost-test-system-io:local
 
 # 4. Verify
-curl http://localhost:8080/api/v1/health
+curl http://localhost:8080/health
 curl http://localhost:8080/api/v1/info
+open http://localhost:8080/
 ```
 
 ## Step-by-Step
@@ -52,65 +57,70 @@ Wait for healthy status:
 docker compose -f docker/docker-compose.dev.yml ps
 ```
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| PostgreSQL | `localhost:6432` | Database (mapped from 5432) |
-| MinIO | `localhost:9100` (API), `localhost:9101` (Console) | S3-compatible object storage |
-| Adminer | `localhost:8081` | Database admin UI |
+| Service | Host Port | In-network | Purpose |
+|---------|-----------|------------|---------|
+| PostgreSQL | `localhost:6432` | `postgres:5432` | Database |
+| MinIO | `localhost:9100` (API), `localhost:9101` (Console) | `minio:9000` | S3-compatible object storage |
+| Adminer | `localhost:8081` | — | Database admin UI |
 
 ### 2. Build the Docker image
 
+The Dockerfile lives at `apps/server/Dockerfile`, but the build context must be the repo root so the web stage can read `apps/web/`:
+
 ```bash
 docker build \
-  --build-arg BUILD_SHA=$(git rev-parse HEAD) \
+  --build-arg COMMIT_SHA=$(git rev-parse HEAD) \
   --build-arg BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
-  -t mattermost-test-system-io:local .
+  -t mattermost-test-system-io:local \
+  -f apps/server/Dockerfile .
 ```
 
 Build args inject metadata into the image:
 
 | Arg | Value | Shows up in |
 |-----|-------|-------------|
-| `BUILD_SHA` | Full git commit SHA | `/api/v1/info` → `commit_sha` |
+| `COMMIT_SHA` | Full git commit SHA | `/api/v1/info` → `commit_sha` |
 | `BUILD_TIME` | Current UTC timestamp | `/api/v1/info` → `build_time` |
+| `VERSION` | Semantic version (optional) | `/api/v1/info` → `server_version` |
 
-First build takes ~5 minutes (Rust compilation). Subsequent builds use Docker layer caching and are faster.
+A cold build typically takes ~30s for the Node (Vite) stage and <1 minute for the Go stages. Subsequent builds hit Docker layer caching and are faster.
 
 ### 3. Run the container
 
-The container needs to connect to PostgreSQL and MinIO running in Docker. Use `--network docker_default` to join the compose network:
+The container needs to reach PostgreSQL and MinIO running in Docker. Join the compose network (`tsio-dev_default`) so service names resolve:
 
 ```bash
 docker run --rm -p 8080:8080 \
-  --network docker_default \
-  -e RUST_ENV=development \
-  -e TSIO_DB_URL=postgres://tsio:tsio@postgres:5432/tsio \
+  --network tsio-dev_default \
+  -e TSIO_ENVIRONMENT=development \
+  -e TSIO_DATABASE_URL=postgres://tsio:tsio@postgres:5432/tsio?sslmode=disable \
   -e TSIO_S3_ENDPOINT=http://minio:9000 \
   -e TSIO_S3_BUCKET=reports \
   -e TSIO_S3_ACCESS_KEY=minioadmin \
   -e TSIO_S3_SECRET_KEY=minioadmin \
   -e TSIO_S3_REGION=us-east-1 \
+  -e TSIO_S3_FORCE_PATH_STYLE=true \
+  -e TSIO_SESSION_SECRET=dev-session-secret-change-me \
+  -e TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=tsio \
   mattermost-test-system-io:local
 ```
 
-> **Note**: Use `RUST_ENV=development` for local Docker testing. The app validates that production credentials aren't using dev defaults — running with `RUST_ENV=production` and dev credentials (e.g., `minioadmin`) will fail.
-
-> **Note**: Inside the Docker network, services are referenced by their compose service name (`postgres`, `minio`), not `localhost`.
+> **Note**: Inside the Docker network, services are referenced by their compose service name (`postgres:5432`, `minio:9000`), not the host-mapped ports (`6432`, `9100`).
 
 ### 4. Verify
 
 ```bash
-# Health check (always 200)
-curl http://localhost:8080/api/v1/health
+# Liveness (always 200)
+curl http://localhost:8080/health
 
 # Readiness (checks DB connectivity)
-curl http://localhost:8080/api/v1/ready
+curl http://localhost:8080/ready
 
 # Build info
 curl http://localhost:8080/api/v1/info
 
-# Frontend UI
-open http://localhost:8080
+# Embedded React web UI
+open http://localhost:8080/
 ```
 
 Expected `/api/v1/info` response:
@@ -118,7 +128,7 @@ Expected `/api/v1/info` response:
 ```json
 {
   "server_version": "0.1.0",
-  "environment": "production",
+  "environment": "development",
   "repo_url": "https://github.com/mattermost/mattermost-test-system-io",
   "commit_sha": "abc1234...",
   "build_time": "2026-02-22T12:00:00Z"
@@ -130,20 +140,23 @@ Expected `/api/v1/info` response:
 For convenience, create a `.env.docker` file (gitignored):
 
 ```bash
-RUST_ENV=development
-TSIO_DB_URL=postgres://tsio:tsio@postgres:5432/tsio
+TSIO_ENVIRONMENT=development
+TSIO_DATABASE_URL=postgres://tsio:tsio@postgres:5432/tsio?sslmode=disable
 TSIO_S3_ENDPOINT=http://minio:9000
 TSIO_S3_BUCKET=reports
 TSIO_S3_ACCESS_KEY=minioadmin
 TSIO_S3_SECRET_KEY=minioadmin
 TSIO_S3_REGION=us-east-1
+TSIO_S3_FORCE_PATH_STYLE=true
+TSIO_SESSION_SECRET=dev-session-secret-change-me
+TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=tsio
 ```
 
 Then run:
 
 ```bash
 docker run --rm -p 8080:8080 \
-  --network docker_default \
+  --network tsio-dev_default \
   --env-file .env.docker \
   mattermost-test-system-io:local
 ```
@@ -153,7 +166,7 @@ docker run --rm -p 8080:8080 \
 ```bash
 # Start
 docker run -d --name tsio -p 8080:8080 \
-  --network docker_default \
+  --network tsio-dev_default \
   --env-file .env.docker \
   mattermost-test-system-io:local
 
@@ -170,9 +183,10 @@ If you need a completely clean build (e.g., dependency changes):
 
 ```bash
 docker build --no-cache \
-  --build-arg BUILD_SHA=$(git rev-parse HEAD) \
+  --build-arg COMMIT_SHA=$(git rev-parse HEAD) \
   --build-arg BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
-  -t mattermost-test-system-io:local .
+  -t mattermost-test-system-io:local \
+  -f apps/server/Dockerfile .
 ```
 
 ## Cleanup

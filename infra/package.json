@@ -5,8 +5,8 @@
   "scripts": {
     "lint": "oxlint ./lib ./bin ./test",
     "format": "oxfmt ./lib ./bin ./test --write",
+    "format:check": "oxfmt ./lib ./bin ./test --check",
     "typecheck": "tsc --noEmit",
-    "check": "npm run lint && npm run format && npm run typecheck",
     "test": "vitest run",
     "outdated": "npm outdated",
     "cdk:synth": "cdk synth",

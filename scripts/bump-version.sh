@@ -16,19 +16,20 @@ if ! echo "$NEW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
   exit 1
 fi
 
-# Read current version from Cargo.toml (source of truth)
-CURRENT_VERSION=$(grep '^version' "$ROOT_DIR/apps/server/Cargo.toml" | sed 's/.*"\(.*\)"/\1/')
+# Read current version from apps/server/VERSION (source of truth; the CI
+# workflows and Dockerfile ldflags also read this file).
+CURRENT_VERSION=$(tr -d '[:space:]' < "$ROOT_DIR/apps/server/VERSION")
 echo "Bumping version: ${CURRENT_VERSION} -> ${NEW_VERSION}"
 
-# apps/server/Cargo.toml
-sed -i '' "s/^version = \"${CURRENT_VERSION}\"/version = \"${NEW_VERSION}\"/" "$ROOT_DIR/apps/server/Cargo.toml"
-echo "  Updated apps/server/Cargo.toml"
+# apps/server/VERSION
+echo "${NEW_VERSION}" > "$ROOT_DIR/apps/server/VERSION"
+echo "  Updated apps/server/VERSION"
 
 # apps/web/package.json
 sed -i '' "s/\"version\": \"${CURRENT_VERSION}\"/\"version\": \"${NEW_VERSION}\"/" "$ROOT_DIR/apps/web/package.json"
 echo "  Updated apps/web/package.json"
 
-# Regenerate package-lock.json for apps/web
+# Regenerate package-lock.json for apps/web (version bump touches the root).
 echo "  Reinstalling apps/web..."
 rm -rf "$ROOT_DIR/apps/web/node_modules" "$ROOT_DIR/apps/web/package-lock.json"
 (cd "$ROOT_DIR/apps/web" && npm install --silent)

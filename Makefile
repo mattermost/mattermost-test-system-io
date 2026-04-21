@@ -45,7 +45,9 @@ GO    ?= go
 GOFMT ?= gofmt
 
 # Tool versions pinned; run via `go run` so no GOBIN setup is required.
-GOLANGCI_LINT_VERSION := v2.0.2
+# Keep GOLANGCI_LINT_VERSION in sync with .github/workflows/ci.yml's
+# `golangci-lint` step (version input) so CI and local lint against the same ruleset.
+GOLANGCI_LINT_VERSION := v2.11.4
 GOIMPORTS_PKG         := golang.org/x/tools/cmd/goimports@latest
 GOVULNCHECK_PKG       := golang.org/x/vuln/cmd/govulncheck@latest
 GOLANGCI_LINT_CMD     := $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)

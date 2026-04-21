@@ -27,7 +27,7 @@
     "@types/node": "25.3.0",
     "aws-cdk": "2.1107.0",
     "ts-node": "10.9.2",
-    "typescript": "5.9.3",
+    "typescript": "6.0.3",
     "vitest": "4.0.18"
   }
 }

@@ -16,7 +16,7 @@
   "dependencies": {
     "aws-cdk-lib": "2.239.0",
     "constructs": "10.5.1",
-    "dotenv": "17.3.1",
+    "dotenv": "17.4.2",
     "oxfmt": "0.35.0",
     "oxlint": "1.50.0"
   },

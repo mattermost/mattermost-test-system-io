@@ -44,6 +44,18 @@ export class ProductionAppStack extends cdk.Stack {
       enableServiceDiscovery: false,
     });
 
+    // Session signing secret. Auto-generated so neither humans nor CI ever
+    // see the material; ECS mounts it as an env var at container start.
+    const sessionSecret = new secretsmanager.Secret(this, "SessionSecret", {
+      secretName: `${config.projectName}-production-session-secret`,
+      description: "TSIO session signing secret (production)",
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: false,
+        includeSpace: false,
+      },
+    });
+
     const appService = new EcsAppService(this, "AppService", {
       environment: "production",
       projectName: config.projectName,
@@ -68,10 +80,12 @@ export class ProductionAppStack extends cdk.Stack {
         TSIO_DB_PORT: cdk.Token.asString(props.rdsEndpoint.port),
         TSIO_DB_USER: props.rdsDbUsername,
         TSIO_DB_NAME: props.rdsDbName,
+        TSIO_DB_SSLMODE: "require",
         TSIO_S3_BUCKET: props.bucket.bucketName,
       },
       secrets: {
         TSIO_DB_PASSWORD: ecs.Secret.fromSecretsManager(props.rdsSecret, "password"),
+        TSIO_SESSION_SECRET: ecs.Secret.fromSecretsManager(sessionSecret),
       },
       healthCheckGracePeriod: cdk.Duration.seconds(300),
     });

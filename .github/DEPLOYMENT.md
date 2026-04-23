@@ -60,7 +60,7 @@ After a PR is merged to `main` and CI passes on the merge commit.
                         → If no previous release:
                             → Deploys beta directly
                         → Waits for ECS service to stabilize
-                        → Health check: curl $APP_URL/api/v1/ready
+                        → Health check: curl $APP_URL/ready
 ```
 
 ### Version tag format
@@ -105,7 +105,7 @@ After validating the staging deployment (checking the staging URL, running tests
 3. deploy              → Updates ECS service with release version image
                         → Waits for ECS service to stabilize
                         → If health check fails: ECS circuit breaker auto-rolls back
-                        → Health check: curl $APP_URL/api/v1/ready
+                        → Health check: curl $APP_URL/ready
 ```
 
 ### Key: No rebuild
@@ -137,7 +137,7 @@ This guarantees 100% artifact parity between staging and production.
 #    Creates: 0.1.0-abc1234.beta
 
 # 3. Validate staging
-curl https://staging-test-io.test.mattermost.com/api/v1/ready
+curl https://staging-test-io.test.mattermost.com/ready
 # Run integration tests against staging URL...
 
 # 4. Promote to production

@@ -196,4 +196,4 @@ jobs:
 
       - name: Health check
         run: |
-          curl -sf "$APP_URL/api/v1/ready"
+          curl -sf "$APP_URL/ready"

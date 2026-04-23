@@ -3,6 +3,7 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as route53 from "aws-cdk-lib/aws-route53";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 
 import { AppConfig } from "../config";
@@ -58,6 +59,18 @@ export class StagingAppStack extends cdk.Stack {
       autoDeleteObjects: true,
     });
 
+    // Session signing secret. Auto-generated so neither humans nor CI ever
+    // see the material; ECS mounts it as an env var at container start.
+    const sessionSecret = new secretsmanager.Secret(this, "SessionSecret", {
+      secretName: `${config.projectName}-staging-session-secret`,
+      description: "TSIO session signing secret (staging)",
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: false,
+        includeSpace: false,
+      },
+    });
+
     const appService = new EcsAppService(this, "AppService", {
       environment: "staging",
       projectName: config.projectName,
@@ -82,10 +95,14 @@ export class StagingAppStack extends cdk.Stack {
         TSIO_DB_PORT: postgres.dbPort,
         TSIO_DB_USER: postgres.dbUser,
         TSIO_DB_NAME: postgres.dbName,
+        // Staging Postgres is an ephemeral ECS container inside the VPC;
+        // require would fail SSL handshake.
+        TSIO_DB_SSLMODE: "disable",
         TSIO_S3_BUCKET: bucket.bucket.bucketName,
       },
       secrets: {
         TSIO_DB_PASSWORD: ecs.Secret.fromSecretsManager(postgres.dbPasswordSecret),
+        TSIO_SESSION_SECRET: ecs.Secret.fromSecretsManager(sessionSecret),
       },
       healthCheckGracePeriod: cdk.Duration.seconds(300),
       dbReadinessCheck: {

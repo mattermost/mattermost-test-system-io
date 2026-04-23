@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -16,14 +17,29 @@ import (
 type Config struct {
 	HTTPListenAddr string `env:"TSIO_HTTP_LISTEN_ADDR" envDefault:":8080"`
 
-	DatabaseURL   string `env:"TSIO_DATABASE_URL,required"`
+	// Database connection. Supply either TSIO_DATABASE_URL directly, or the
+	// split TSIO_DB_HOST/PORT/USER/PASSWORD/NAME fields — in ECS, the password
+	// is injected from Secrets Manager as a separate env var, so a composed
+	// URL cannot be written by the task definition. Load() assembles the URL
+	// from the split fields when TSIO_DATABASE_URL is unset.
+	DatabaseURL   string `env:"TSIO_DATABASE_URL"`
+	DBHost        string `env:"TSIO_DB_HOST"`
+	DBPort        string `env:"TSIO_DB_PORT" envDefault:"5432"`
+	DBUser        string `env:"TSIO_DB_USER"`
+	DBPassword    string `env:"TSIO_DB_PASSWORD,unset"`
+	DBName        string `env:"TSIO_DB_NAME"`
+	DBSSLMode     string `env:"TSIO_DB_SSLMODE" envDefault:"require"`
 	DBAutoMigrate bool   `env:"TSIO_DB_AUTO_MIGRATE" envDefault:"true"`
 
+	// S3 credentials are optional: when running in ECS/EC2, the AWS SDK picks
+	// up credentials from the task role automatically. Explicit keys are used
+	// for local dev against MinIO or for S3 accounts that don't match the
+	// caller's role.
 	S3Endpoint       string `env:"TSIO_S3_ENDPOINT"`
 	S3Region         string `env:"TSIO_S3_REGION" envDefault:"us-east-1"`
 	S3Bucket         string `env:"TSIO_S3_BUCKET,required"`
-	S3AccessKey      string `env:"TSIO_S3_ACCESS_KEY,required,unset"`
-	S3SecretKey      string `env:"TSIO_S3_SECRET_KEY,required,unset"`
+	S3AccessKey      string `env:"TSIO_S3_ACCESS_KEY,unset"`
+	S3SecretKey      string `env:"TSIO_S3_SECRET_KEY,unset"`
 	S3ForcePathStyle bool   `env:"TSIO_S3_FORCE_PATH_STYLE" envDefault:"false"`
 
 	GitHubOAuthClientID     string `env:"TSIO_GITHUB_OAUTH_CLIENT_ID"`
@@ -73,6 +89,16 @@ func Load() (Config, error) {
 	if err := env.Parse(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse env: %w", err)
 	}
+	if cfg.DatabaseURL == "" {
+		assembled, err := assembleDatabaseURL(cfg)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.DatabaseURL = assembled
+	}
+	// Clear split fields now that DatabaseURL is set; the password in
+	// particular should not linger on the struct after load.
+	cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode = "", "", "", "", "", ""
 	if len(cfg.CORSAllowedOrigins) == 0 {
 		// Dev fallback: Vite dev server at :3000. Production sets
 		// TSIO_CORS_ALLOWED_ORIGINS explicitly.
@@ -82,6 +108,38 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// assembleDatabaseURL builds a postgres:// DSN from the split TSIO_DB_* fields.
+// Returns an error if any required part is missing — callers that supply
+// TSIO_DATABASE_URL directly never reach this path.
+func assembleDatabaseURL(cfg Config) (string, error) {
+	missing := []string{}
+	if cfg.DBHost == "" {
+		missing = append(missing, "TSIO_DB_HOST")
+	}
+	if cfg.DBUser == "" {
+		missing = append(missing, "TSIO_DB_USER")
+	}
+	if cfg.DBPassword == "" {
+		missing = append(missing, "TSIO_DB_PASSWORD")
+	}
+	if cfg.DBName == "" {
+		missing = append(missing, "TSIO_DB_NAME")
+	}
+	if len(missing) > 0 {
+		return "", fmt.Errorf("TSIO_DATABASE_URL is not set and the following split fields are also missing: %v", missing)
+	}
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(cfg.DBUser, cfg.DBPassword),
+		Host:   cfg.DBHost + ":" + cfg.DBPort,
+		Path:   "/" + cfg.DBName,
+	}
+	q := u.Query()
+	q.Set("sslmode", cfg.DBSSLMode)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 // loadDotenv looks for a `.env` file in CWD and then in up to three parent

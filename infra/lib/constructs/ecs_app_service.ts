@@ -129,7 +129,7 @@ export class EcsAppService extends Construct {
       protocol: elbv2.ApplicationProtocol.HTTP,
       targets: [this.service],
       healthCheck: {
-        path: "/api/v1/health",
+        path: "/health",
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
         healthyThresholdCount: 2,

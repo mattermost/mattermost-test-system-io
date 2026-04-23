@@ -53,10 +53,10 @@ func Handler() (http.Handler, error) {
 	}), nil
 }
 
-// serveIndex writes dist/index.html as the SPA fallback response. Missing
-// index.html (which should never happen because the placeholder is
-// committed and real builds write a real one) yields a 500 so the caller
-// sees the misconfiguration instead of a confusing blank body.
+// serveIndex writes dist/index.html as the SPA fallback response.
+// A missing index.html means the web bundle was not built before the server
+// binary was compiled; returning 500 surfaces that misconfiguration
+// instead of a confusing blank body.
 func serveIndex(w http.ResponseWriter, _ *http.Request, sub fs.FS) {
 	f, err := sub.Open("index.html")
 	if err != nil {

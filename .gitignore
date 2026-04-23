@@ -9,7 +9,6 @@ apps/server/*.out
 node_modules/
 apps/web/coverage/
 apps/server/internal/webui/dist/*
-!apps/server/internal/webui/dist/index.html
 !apps/server/internal/webui/dist/.gitkeep
 *.log
 *.tsbuildinfo

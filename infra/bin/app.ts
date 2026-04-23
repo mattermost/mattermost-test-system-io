@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import "source-map-support/register";
 import { config as loadEnv } from "dotenv";
 import * as cdk from "aws-cdk-lib";
 

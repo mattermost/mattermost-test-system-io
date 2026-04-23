@@ -53,6 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_version: ${{ steps.retag.outputs.release_version }}
+      beta_commit_sha: ${{ steps.beta-sha.outputs.commit_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -106,6 +107,16 @@ jobs:
           echo "Release version: ${RELEASE_VERSION}"
           echo "Release tag: ${RELEASE_TAG}"
 
+      - name: Fetch beta commit SHA
+        id: beta-sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BETA_TAG: ${{ inputs.beta_tag }}
+        run: |
+          COMMIT_SHA=$(gh release view "$BETA_TAG" --json targetCommitish --jq '.targetCommitish')
+          echo "commit_sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Beta commit SHA: ${COMMIT_SHA}"
+
       - name: Retag Docker image
         env:
           BETA_TAG: ${{ inputs.beta_tag }}
@@ -119,13 +130,9 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          BETA_TAG: ${{ inputs.beta_tag }}
           RELEASE_VERSION: ${{ steps.retag.outputs.release_version }}
+          COMMIT_SHA: ${{ steps.beta-sha.outputs.commit_sha }}
         run: |
-          # Get commit SHA from the prerelease
-          COMMIT_SHA=$(gh release view "$BETA_TAG" --json targetCommitish --jq '.targetCommitish')
-          echo "Commit SHA: ${COMMIT_SHA}"
-
           RELEASE_TAG="release-${RELEASE_VERSION}"
 
           gh release create "$RELEASE_TAG" \
@@ -193,6 +200,48 @@ jobs:
           aws ecs wait services-stable \
             --cluster "$CLUSTER" \
             --services "$APP_SERVICE"
+
+      # `aws ecs wait services-stable` returns success whether the service
+      # stabilized on the new task definition or on an old one after ECS's
+      # circuit breaker rolled back. Compare ARNs to catch the silent-rollback
+      # case where the workflow would otherwise report success.
+      - name: Verify deployment landed (not rolled back)
+        env:
+          EXPECTED_ARN: ${{ steps.task-def.outputs.new_task_def_arn }}
+        run: |
+          RUNNING_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          if [ "$RUNNING_ARN" != "$EXPECTED_ARN" ]; then
+            echo "::error::ECS rolled back: service is on ${RUNNING_ARN}, expected ${EXPECTED_ARN}. Inspect task logs and service events in the ECS console."
+            exit 1
+          fi
+
+          echo "Service running expected production task definition."
+
+      # Hits /api/v1/info to assert the binary behind the ALB actually matches
+      # the beta we're promoting. Guards against load-balancer/DNS cache
+      # quirks that could otherwise hide a stale server.
+      - name: Verify running binary matches promoted beta
+        env:
+          EXPECTED_SHA: ${{ needs.validate-and-retag.outputs.beta_commit_sha }}
+        run: |
+          RUNNING_SHA=$(curl -sf "$APP_URL/api/v1/info" | jq -r '.commit_sha // empty')
+
+          if [ -z "$RUNNING_SHA" ]; then
+            echo "::error::/api/v1/info returned no commit_sha (got: $(curl -sf "$APP_URL/api/v1/info" || echo "<request failed>"))"
+            exit 1
+          fi
+
+          if [ "$RUNNING_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::Running binary reports commit_sha=${RUNNING_SHA}, expected ${EXPECTED_SHA}."
+            exit 1
+          fi
+
+          echo "Running binary commit_sha matches promoted beta: ${RUNNING_SHA}"
 
       - name: Health check
         run: |

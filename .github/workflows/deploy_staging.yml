@@ -249,6 +249,7 @@ jobs:
             --output text)
 
           echo "::add-mask::${BETA_TASK_DEF_ARN}"
+          echo "beta_task_def_arn=${BETA_TASK_DEF_ARN}" >> "$GITHUB_OUTPUT"
 
           aws ecs update-service \
             --cluster "$CLUSTER" \
@@ -262,6 +263,47 @@ jobs:
           aws ecs wait services-stable \
             --cluster "$CLUSTER" \
             --services "$APP_SERVICE"
+
+      # `aws ecs wait services-stable` returns success whether the service
+      # stabilized on the new task definition or on an old one after ECS's
+      # circuit breaker rolled back. Compare ARNs to catch the silent-rollback
+      # case where the workflow would otherwise report success.
+      - name: Verify beta deployment landed (not rolled back)
+        env:
+          EXPECTED_ARN: ${{ steps.beta-task-def.outputs.beta_task_def_arn }}
+        run: |
+          RUNNING_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          if [ "$RUNNING_ARN" != "$EXPECTED_ARN" ]; then
+            echo "::error::ECS rolled back: service is on ${RUNNING_ARN}, expected ${EXPECTED_ARN}. Inspect task logs and service events; a common cause is a task-definition env-var drift (e.g. missing TSIO_SESSION_SECRET) that a 'cdk deploy StagingAppStack' would fix before the next workflow run."
+            exit 1
+          fi
+
+          echo "Service running expected beta task definition."
+
+      # Hits /api/v1/info to assert the binary the ALB routes to actually
+      # matches the beta we built. Guards against load-balancer/DNS cache
+      # quirks that could otherwise hide a stale server.
+      - name: Verify running binary matches beta commit
+        run: |
+          EXPECTED_SHA="${GITHUB_SHA}"
+          RUNNING_SHA=$(curl -sf "$APP_URL/api/v1/info" | jq -r '.commit_sha // empty')
+
+          if [ -z "$RUNNING_SHA" ]; then
+            echo "::error::/api/v1/info returned no commit_sha (got: $(curl -sf "$APP_URL/api/v1/info" || echo "<request failed>"))"
+            exit 1
+          fi
+
+          if [ "$RUNNING_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::Running binary reports commit_sha=${RUNNING_SHA}, expected ${EXPECTED_SHA}."
+            exit 1
+          fi
+
+          echo "Running binary commit_sha matches beta: ${RUNNING_SHA}"
 
       - name: Health check
         run: |

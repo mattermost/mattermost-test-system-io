@@ -13,7 +13,9 @@ import {
   formatDuration,
   calculatePassRate,
   getPassRateColorClass,
+  resolveDisplayStats,
 } from '@/components/report_card_parts';
+import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
 
 const TIMED_OUT_THRESHOLD_MS = 3_600_000; // 1 hour
 
@@ -29,8 +31,10 @@ function status_icon(entry: RunEntry) {
     return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />;
   }
 
-  // Completed — use test results
-  const stats = entry.test_stats;
+  // Completed — use the same source-of-truth resolver as the row body so
+  // the icon, the count line, and the pass-rate pill always agree on
+  // which side (orchestration vs. uploaded reports) is driving the row.
+  const stats = resolveDisplayStats(entry);
   if (stats && stats.total > 0) {
     if (stats.failed > 0) return <XCircle className="h-4 w-4 text-red-500" />;
     if ((stats.flaky ?? 0) > 0) return <AlertCircle className="h-4 w-4 text-yellow-500" />;
@@ -61,11 +65,20 @@ function format_time(date_string: string): string {
 
 function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string }) {
   const branch = short_branch(entry.branch);
-  const stats = entry.test_stats;
-  const hasStats = stats && stats.total > 0;
+  // Prefer the orchestration counts over the framework's `test_stats`
+  // when both exist, so the row reflects the orchestrator's view of the
+  // run (including in-progress dispatch units before any shard reports
+  // have uploaded). Falls back to `test_stats` only when no orchestration
+  // run is associated with this entry.
+  const stats = resolveDisplayStats(entry);
+  const hasStats = !!stats && stats.total > 0;
   const rate = hasStats ? calculatePassRate(stats) : null;
   const rateColorClass = getPassRateColorClass(rate);
   const hasFailed = hasStats && stats.failed > 0;
+  // Both source branches of `resolveDisplayStats` (test_stats and the
+  // orchestration server-side rollup) are at test-case granularity, so
+  // the unit label is unconditionally "tests".
+  const unit = 'tests';
 
   return (
     <Link
@@ -98,10 +111,10 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
 
       {/* Middle: test summary, pass rate (flex-1 pushes right group to edge) */}
       <div className="flex-1 flex items-center justify-end gap-2 text-xs mx-2">
-        {hasStats && (
+        {hasStats && stats && (
           <span
             className="text-gray-500 dark:text-gray-400"
-            title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total`}
+            title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total ${unit}`}
           >
             <span className="text-green-700 dark:text-green-400">{stats.passed}</span>
             {stats.failed > 0 && (
@@ -124,10 +137,10 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
             )}
           </span>
         )}
-        {hasStats && rate !== null && (
+        {hasStats && stats && rate !== null && (
           <span
             className={`rounded px-1.5 py-0.5 text-xs font-medium w-12 text-center ${rateColorClass}`}
-            title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total`}
+            title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total ${unit}`}
           >
             {rate}%
           </span>
@@ -139,18 +152,18 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
         <span
           className="inline-flex items-center justify-end gap-1 text-gray-400 dark:text-gray-500"
           title={
-            hasStats && stats.retest_wall_clock_ms
+            hasStats && stats?.retest_wall_clock_ms
               ? 'Parallel shard batch, then separate retest run'
               : undefined
           }
         >
-          {hasStats && stats.wall_clock_ms != null && stats.wall_clock_ms > 0 && (
+          {hasStats && stats?.wall_clock_ms != null && stats.wall_clock_ms > 0 && (
             <>
               <Clock className="h-3 w-3" />
               {formatDuration(stats.wall_clock_ms)}
             </>
           )}
-          {hasStats && stats.retest_wall_clock_ms != null && stats.retest_wall_clock_ms > 0 && (
+          {hasStats && stats?.retest_wall_clock_ms != null && stats.retest_wall_clock_ms > 0 && (
             <span className="text-gray-400 dark:text-gray-500">
               {' + '}
               {formatDuration(stats.retest_wall_clock_ms)}
@@ -162,6 +175,24 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
         </span>
       </div>
     </Link>
+  );
+}
+
+/**
+ * Renders the orchestration progress strip beneath a run row when the
+ * report_group has a matching orchestration_run. Kept as a sibling element
+ * so the existing run row layout (status + stats + duration) stays intact
+ * and the orchestration data flows below as a secondary detail.
+ */
+function orchestration_strip(entry: RunEntry) {
+  // Only surface the live progress strip while the orchestration is
+  // actually running. Once it terminates the row's main test_stats line
+  // already conveys the outcome, so the strip becomes redundant noise.
+  if (!entry.orchestration || entry.orchestration.status !== 'in_progress') return null;
+  return (
+    <div className="px-3 pb-2 -mt-1">
+      <OrchestrationInlineSummary orchestration={entry.orchestration} />
+    </div>
   );
 }
 
@@ -187,12 +218,14 @@ export function RepoGroupCard({ group }: RepoGroupCardProps) {
         {group.runs.map((entry) => {
           const isLatest = entry.created_at === latestByKey.get(entry.url_path);
           const urlPath = isLatest ? entry.url_path : `${entry.url_path}?gid=${entry.report_id}`;
+          const decoratedEntry = { ...entry, url_path: urlPath };
           return (
             <div key={entry.report_id}>
               {run_entry_row({
-                entry: { ...entry, url_path: urlPath },
+                entry: decoratedEntry,
                 repoName: group.repository_name || entry.url_path.split('/')[2] || '',
               })}
+              {orchestration_strip(decoratedEntry)}
             </div>
           );
         })}

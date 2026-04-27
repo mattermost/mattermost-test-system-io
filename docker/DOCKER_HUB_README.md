@@ -1,6 +1,8 @@
 # Mattermost Test System IO
 
-API server and web frontend for uploading and viewing test reports (Playwright, Cypress, Detox).
+API server and web frontend for uploading and viewing test reports
+(Playwright, Cypress, Detox), and for orchestrating test-shard execution
+across an arbitrary number of CI workers (Playwright on GitHub Actions).
 
 ## Quick Start
 
@@ -47,6 +49,8 @@ All configuration is read from `TSIO_*` environment variables. The list below mi
 | `TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE` | No | — | Expected `aud` claim. Empty disables aud validation; set in production. |
 | `TSIO_MAX_UPLOAD_BYTES` | No | `1073741824` (1 GiB) | Max total upload size. |
 | `TSIO_MAX_ARTIFACT_BYTES` | No | `104857600` (100 MiB) | Max individual artifact size. |
+| `TSIO_ORCH_REAPER_INTERVAL_MS` | No | `5000` | Tick interval for the orchestration lease/run-timeout reaper. Lower values reclaim expired leases faster at the cost of more DB scans. |
+| `TSIO_ORCH_MAX_SPECS_PER_RUN` | No | `5000` | Total spec-count cap (summed across every dispatch unit) for a single orchestration `begin run` request. Requests over the cap are rejected with `TOO_MANY_SPECS`. |
 | `TSIO_UPLOAD_TIMEOUT_MS` | No | `3600000` (1h) | Client-facing upload timeout surfaced via `/api/v1/config`. |
 | `TSIO_HTML_VIEW_ENABLED` | No | `false` | Enable in-browser HTML report viewing. |
 | `TSIO_SEARCH_MIN_LENGTH` | No | `3` | Minimum characters for search queries. |

@@ -18,6 +18,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,6 +34,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/session"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/db"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/server"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/testutil/oidcmock"
@@ -39,10 +43,11 @@ import (
 // Env is what a test fixture receives. Test code uses ServerURL to make
 // requests, Pool for direct DB setup/assertions, and Mock to mint tokens.
 type Env struct {
-	Pool      *pgxpool.Pool
-	ServerURL string
-	Mock      *oidcmock.Provider
-	Store     *FakeStore
+	Pool         *pgxpool.Pool
+	ServerURL    string
+	Mock         *oidcmock.Provider
+	Store        *FakeStore
+	Orchestrator *orchestration.Store
 }
 
 // Start boots Postgres + migrations + the real HTTP handler. When the OIDC
@@ -98,21 +103,47 @@ func Start(t *testing.T) *Env {
 	store := NewFakeStore()
 
 	hub := events.NewHub()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var logOut io.Writer = io.Discard
+	if os.Getenv("TSIO_TEST_LOG") == "1" {
+		logOut = os.Stderr
+	}
+	logger := slog.New(slog.NewTextHandler(logOut, nil))
+
+	orchStore := &orchestration.Store{Pool: pool, Logger: logger}
+	orchPublisher := &orchestration.Publisher{Hub: hub, Logger: logger}
+
+	// Start a fast-ticking reaper so run-timeout / lease-timeout E2E tests do
+	// not have to wait for the production 5 s default. Stops in t.Cleanup.
+	reaperCtx, reaperCancel := context.WithCancel(context.Background())
+	reaper := &orchestration.Reaper{
+		Store:     orchStore,
+		Publisher: orchPublisher,
+		Logger:    logger,
+		Interval:  500 * time.Millisecond,
+	}
+	if err := reaper.Start(reaperCtx); err != nil {
+		t.Fatalf("start reaper: %v", err)
+	}
+	t.Cleanup(func() {
+		reaperCancel()
+		reaper.Stop()
+	})
 
 	handler := server.Build(server.Deps{
-		Logger:    logger,
-		Pool:      pool,
-		Store:     store,
-		APIKeys:   &apikey.Repo{Pool: pool},
-		Sessions:  &session.Manager{Pool: pool, TTL: time.Hour},
-		Refresh:   &session.RefreshManager{Pool: pool, TTL: time.Hour},
-		Policy:    &policy.Engine{Pool: pool},
-		OIDC:      oidcV,
-		OAuth:     nil, // human sign-in not exercised in these tests
-		Hub:       hub,
-		Publisher: &events.Publisher{Hub: hub},
-		Version:   "test",
+		Logger:                 logger,
+		Pool:                   pool,
+		Store:                  store,
+		APIKeys:                &apikey.Repo{Pool: pool},
+		Sessions:               &session.Manager{Pool: pool, TTL: time.Hour},
+		Refresh:                &session.RefreshManager{Pool: pool, TTL: time.Hour},
+		Policy:                 &policy.Engine{Pool: pool},
+		OIDC:                   oidcV,
+		OAuth:                  nil, // human sign-in not exercised in these tests
+		Hub:                    hub,
+		Publisher:              &events.Publisher{Hub: hub},
+		OrchestrationStore:     orchStore,
+		OrchestrationPublisher: orchPublisher,
+		Version:                "test",
 		// Client-facing /config + /info defaults — match the production env
 		// defaults (see internal/config).
 		UploadTimeoutMs: 3_600_000, // 1h
@@ -130,10 +161,11 @@ func Start(t *testing.T) *Env {
 	t.Cleanup(srv.Close)
 
 	return &Env{
-		Pool:      pool,
-		ServerURL: srv.URL,
-		Mock:      mockProv,
-		Store:     store,
+		Pool:         pool,
+		ServerURL:    srv.URL,
+		Mock:         mockProv,
+		Store:        store,
+		Orchestrator: orchStore,
 	}
 }
 
@@ -322,6 +354,21 @@ func (f *FakeStore) Delete(_ context.Context, key string) error {
 	delete(f.objects, key)
 	delete(f.meta, key)
 	return nil
+}
+
+// List returns every key with the given prefix, in lexicographic order so the
+// output is deterministic across test runs.
+func (f *FakeStore) List(_ context.Context, prefix string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	keys := make([]string, 0)
+	for k := range f.objects {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 // PresignGet returns a phony URL that tests never dereference.

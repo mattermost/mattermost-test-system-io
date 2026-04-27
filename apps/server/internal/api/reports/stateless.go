@@ -495,6 +495,13 @@ func (h *Handlers) extractReport(ctx context.Context, groupID, reportID uuid.UUI
 		reportEnd = later(reportEnd, pe)
 	}
 
+	// Collapse duplicate suites by (file, title) before consolidation. A
+	// shard that uploads multiple JSONs for the same spec — e.g. an
+	// orchestration worker that ran a spec, failed, and ran the retest under
+	// the same gh_job_id — would otherwise produce two suite rows on the
+	// dashboard for the same file.
+	allSuites = ingest.MergeSuitesByFile(allSuites)
+
 	totals, err := ingest.Consolidate(ctx, h.Pool, reportID, allSuites, reportStart, reportEnd)
 	if err != nil {
 		return 0, fmt.Errorf("consolidate: %w", err)

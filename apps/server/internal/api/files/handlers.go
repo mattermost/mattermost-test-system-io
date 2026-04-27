@@ -21,11 +21,21 @@ type Handlers struct {
 	PresignTTL time.Duration
 }
 
+// allowedPrefixes enumerates the object-store key prefixes that the files
+// redirect endpoint is permitted to serve. Keys outside these prefixes are
+// rejected with 404 to prevent path-traversal reads of arbitrary bucket
+// contents.
+var allowedPrefixes = []string{
+	"reports/",
+	"orchestration/",
+}
+
 // Get redirects to a presigned URL for the given object key. The key is the
 // full URL path after /files/ (rejoined from chi's wildcard segment).
 //
-// Sandboxing: only keys under the known upload prefix are allowed, preventing
-// an attacker from reading arbitrary bucket contents via path traversal.
+// Sandboxing: only keys under the reports/ and orchestration/ prefixes are
+// allowed, preventing an attacker from reading arbitrary bucket contents via
+// path traversal.
 func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 	raw := chi.URLParam(r, "*")
 	if raw == "" {
@@ -33,7 +43,7 @@ func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimLeft(raw, "/")
-	if !strings.HasPrefix(key, "reports/") {
+	if !hasAllowedPrefix(key) {
 		api.WriteError(w, r, api.ErrNotFound)
 		return
 	}
@@ -43,4 +53,15 @@ func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, url, http.StatusFound)
+}
+
+// hasAllowedPrefix reports whether the given key falls under one of the
+// allowedPrefixes that the files redirect endpoint is permitted to serve.
+func hasAllowedPrefix(key string) bool {
+	for _, p := range allowedPrefixes {
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
 }

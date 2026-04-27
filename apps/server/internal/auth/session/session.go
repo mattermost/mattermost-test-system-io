@@ -17,6 +17,13 @@ import (
 // CookieName is the cookie that carries the opaque session token.
 const CookieName = "tsio_session"
 
+// TokenPrefix is the literal marker carried at the start of every opaque
+// session token. Its purpose is to give secret-scanning tooling a stable,
+// recognizable shape so leaks are caught before they propagate. Both Issue
+// and Verify use the full prefixed token, so existing tokens minted before
+// this prefix existed are intentionally invalidated.
+const TokenPrefix = "tsio_sess_"
+
 // Errors.
 var (
 	ErrNotFound = errors.New("session: not found or expired")
@@ -90,13 +97,15 @@ func (m *Manager) Revoke(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-// newOpaqueToken returns (cookieValue, sha256HexHash).
+// newOpaqueToken returns (cookieValue, sha256HexHash). The cookie value is
+// the literal TokenPrefix concatenated with 32 hex chars of random material;
+// the hash covers the full prefixed string.
 func newOpaqueToken() (string, string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return "", "", err
 	}
-	tok := hex.EncodeToString(buf)
+	tok := TokenPrefix + hex.EncodeToString(buf)
 	return tok, hashToken(tok), nil
 }
 

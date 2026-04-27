@@ -56,19 +56,32 @@ func extractPlaywright(body []byte, seq *int) []ExtractedSuite {
 	}
 	var out []ExtractedSuite
 	for _, s := range r.Suites {
-		out = append(out, walkPlaywrightSuite(s, "", seq)...)
+		out = append(out, walkPlaywrightSuite(s, "", "", seq)...)
 	}
 	return out
 }
 
-func walkPlaywrightSuite(s playwrightSuite, ancestorPrefix string, seq *int) []ExtractedSuite {
+// walkPlaywrightSuite recurses Playwright's nested suite tree. ancestorFile
+// carries the enclosing file path so nested describe-level suites inherit
+// the spec file's identity — without this the describe-level Cases land in
+// rows with FilePath=nil and the per-file dedup in MergeSuitesByFile cannot
+// match them across multiple JSON uploads of the same spec.
+func walkPlaywrightSuite(
+	s playwrightSuite,
+	ancestorPrefix, ancestorFile string,
+	seq *int,
+) []ExtractedSuite {
 	title := s.Title
 	if title == "" {
 		title = s.File
 	}
-	var filePath *string
+	currentFile := ancestorFile
 	if s.File != "" {
-		f := s.File
+		currentFile = s.File
+	}
+	var filePath *string
+	if currentFile != "" {
+		f := currentFile
 		filePath = &f
 	}
 
@@ -131,7 +144,7 @@ func walkPlaywrightSuite(s playwrightSuite, ancestorPrefix string, seq *int) []E
 		out = append(out, suite)
 	}
 	for _, nested := range s.Suites {
-		out = append(out, walkPlaywrightSuite(nested, fullPrefix, seq)...)
+		out = append(out, walkPlaywrightSuite(nested, fullPrefix, currentFile, seq)...)
 	}
 	return out
 }

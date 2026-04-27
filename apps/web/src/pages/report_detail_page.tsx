@@ -7,6 +7,7 @@ import { Breadcrumb } from '@/components/breadcrumb';
 import { ReportSummary } from '@/components/report_summary';
 import { isRetestName } from '@/components/report_card_parts';
 import { EnvironmentMetadataDisplay } from '@/components/report_card_parts/environment_metadata';
+import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
 
 export function ReportDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -159,6 +160,15 @@ export function ReportDetailPage() {
         ghRunId={report.gh_run_id}
         ghJobId={individualReport?.gh_job_id}
       />
+
+      {/* Live orchestration progress (when this report_group has a matching orchestration_run).
+          Only rendered while the run is still in flight; once it terminates the report
+          summary above already conveys the outcome and this strip becomes redundant. */}
+      {report.orchestration?.status === 'in_progress' && (
+        <div className="px-4 sm:px-6">
+          <OrchestrationInlineSummary orchestration={report.orchestration} />
+        </div>
+      )}
 
       {/* Environment metadata (tool + server info) */}
       {report.environment_metadata && (

@@ -18,6 +18,7 @@ import (
 	filesapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/files"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/health"
 	apimw "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/middleware"
+	orchapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 	wsapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/ws"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
@@ -26,6 +27,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/session"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/webui"
 )
@@ -45,6 +47,12 @@ type Deps struct {
 
 	Hub       *events.Hub
 	Publisher *events.Publisher
+
+	// Test shard orchestration domain wiring. The concrete implementations
+	// live in internal/orchestration. May be nil during early-phase scaffolding
+	// — the handler stubs return 501 regardless.
+	OrchestrationStore     *orchestration.Store
+	OrchestrationPublisher *orchestration.Publisher
 
 	Version   string
 	CommitSHA string
@@ -172,11 +180,28 @@ func Build(d Deps) chi.Router {
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
 
+		// --- Public: orchestration status snapshot ---
+		// The dashboard fetches this without credentials, alongside the public
+		// report-reads above. Mutations (begin/checkout/complete/screenshots)
+		// stay in the protected group below.
+		publicOrchH := &orchapi.Handlers{
+			Pool:               d.Pool,
+			Store:              d.OrchestrationStore,
+			ObjectStore:        d.Store,
+			Publisher:          d.OrchestrationPublisher,
+			ReportsPublisher:   d.Publisher,
+			Logger:             d.Logger,
+			LeaseRetentionMs:   60_000,
+			MaxScreenshotBytes: 10 * 1024 * 1024,
+		}
+		orchapi.RegisterPublic(r, publicOrchH)
+
 		// --- Protected: writes + admin-ish reads ---
 		r.Group(func(r chi.Router) {
 			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
 
-			// Stateless upload lifecycle (feature 004-stateless-upload).
+			// Stateless upload lifecycle: each shard authenticates and registers
+			// itself independently; no controller-side coordination is required.
 			r.Post("/reports/begin", reportsH.Begin)
 			r.Post("/reports/register", reportsH.Register)
 			r.Post("/reports/upload/{rid}/{uid}/json", reportsH.UploadJSON)
@@ -188,6 +213,19 @@ func Build(d Deps) chi.Router {
 			r.Delete("/reports/{id}", reportsH.Delete)
 
 			r.Get("/artifacts/{id}", artifactsH.Get)
+
+			// Test shard orchestration.
+			orchH := &orchapi.Handlers{
+				Pool:               d.Pool,
+				Store:              d.OrchestrationStore,
+				ObjectStore:        d.Store,
+				Publisher:          d.OrchestrationPublisher,
+				ReportsPublisher:   d.Publisher,
+				Logger:             d.Logger,
+				LeaseRetentionMs:   60_000,
+				MaxScreenshotBytes: 10 * 1024 * 1024,
+			}
+			orchapi.Register(r, orchH)
 		})
 	})
 

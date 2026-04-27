@@ -3,7 +3,7 @@
 
 // Package contract asserts that representative requests against the real
 // handler tree produce responses that conform to apps/server/api/openapi.yaml.
-// This is T092 — the automated contract-parity gate.
+// Serves as the automated contract-parity gate.
 //
 // Approach: start a testenv (real Postgres + real handlers), issue real calls,
 // validate both the request AND response with kin-openapi's filter.

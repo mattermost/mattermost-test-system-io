@@ -24,8 +24,10 @@ import type {
   ReportEntryInfo,
   CrossShardAttempt,
 } from '@/types';
+import type { Divergence, SnapshotUnit } from '@/types/orchestration';
 import { ScreenshotGallery } from '@/components/ui/screenshot-gallery';
 import { useSearchTestCases, useClientConfig, type SearchSuiteResult } from '@/services/api';
+import { DivergenceBadge } from '@/components/orchestration/divergence_badge';
 import {
   StatPill,
   ProgressBar,
@@ -53,6 +55,19 @@ interface TestSuitesViewProps {
    * Populated from the consolidated view; omitted in single-report contexts.
    */
   crossShardHistory?: Map<string, CrossShardAttempt[]>;
+  /**
+   * Per-spec disagreements between the orchestration view and the canonical
+   * artifact view, keyed by `spec.file_path`. Populated only when both data
+   * sources are available; the badge renders next to any matching spec row.
+   */
+  divergencesBySpecPath?: Map<string, Divergence>;
+  /**
+   * Optional orchestration snapshot units, used solely to display the
+   * canonical repo-root-relative spec path (e.g. `tests/login.spec.ts`)
+   * instead of the framework's `testDir`-relative `file_path`. When the
+   * lookup misses, `file_path` is rendered as-is.
+   */
+  orchestrationUnits?: SnapshotUnit[];
 }
 
 export function TestSuitesView({
@@ -62,6 +77,8 @@ export function TestSuitesView({
   title,
   reports,
   crossShardHistory,
+  divergencesBySpecPath,
+  orchestrationUnits,
 }: TestSuitesViewProps) {
   const [expandedSuiteIds, setExpandedSuiteIds] = useState<Set<number>>(new Set());
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -77,6 +94,28 @@ export function TestSuitesView({
   // Get client config for search_min_length
   const { data: clientConfig } = useClientConfig();
   const minSearchLength = clientConfig?.search_min_length ?? 2;
+
+  // Map a suite's framework-reported file_path to the orchestration's
+  // canonical repo-root-relative spec_path. Match priorities: exact
+  // equality, then suite_path that ends with `/<file_path>` (the
+  // common testDir-relative case), then falls back to no override.
+  const canonicalSpecPathByFilePath = useMemo(() => {
+    const out = new Map<string, string>();
+    if (!orchestrationUnits || orchestrationUnits.length === 0) return out;
+    const unitPaths = orchestrationUnits.map((u) => u.spec_path).filter((p): p is string => !!p);
+    for (const suite of suites) {
+      const fp = suite.file_path;
+      if (!fp || out.has(fp)) continue;
+      const exact = unitPaths.find((p) => p === fp);
+      if (exact) {
+        out.set(fp, exact);
+        continue;
+      }
+      const suffix = unitPaths.find((p) => p.endsWith('/' + fp));
+      if (suffix) out.set(fp, suffix);
+    }
+    return out;
+  }, [orchestrationUnits, suites]);
 
   // Single debounce for both client-side filtering and API calls (500ms)
   useEffect(() => {
@@ -234,13 +273,22 @@ export function TestSuitesView({
     if (statusFilter === 'all') return deduplicatedSuites;
     return deduplicatedSuites.filter((suite) => {
       switch (statusFilter) {
-        case 'passed':
-          return suite.passed_count > 0;
-        case 'failed':
-          return suite.failed_count > 0;
-        case 'flaky':
+        // Suite-file-level: the suite's overall outcome equals the chip
+        case 'spec_passed':
+          return (
+            (suite.failed_count ?? 0) === 0 &&
+            (suite.passed_count ?? 0) + (suite.flaky_count ?? 0) > 0
+          );
+        case 'spec_failed':
+          return (suite.failed_count ?? 0) > 0;
+        // Test-case-level: at least one test in the suite has the status
+        case 'test_passed':
+          return (suite.passed_count ?? 0) > 0;
+        case 'test_failed':
+          return (suite.failed_count ?? 0) > 0;
+        case 'test_flaky':
           return (suite.flaky_count ?? 0) > 0;
-        case 'skipped':
+        case 'test_skipped':
           return (suite.skipped_count ?? 0) > 0;
         default:
           return true;
@@ -289,6 +337,20 @@ export function TestSuitesView({
       totals: calculated,
       totalTests: calculated.passed + calculated.failed + calculated.flaky + calculated.skipped,
     };
+  }, [deduplicatedSuites]);
+
+  // Suite-file-level pass/fail counts for the title-bar chips. A suite is
+  // considered passed when none of its tests failed (flaky still counts
+  // as passed, mirroring the run-level rule). Used by the chips next to
+  // the "Test Suites (N)" title to filter at the suite level.
+  const { specPassed, specFailed } = useMemo(() => {
+    let passed = 0;
+    let failed = 0;
+    for (const s of deduplicatedSuites) {
+      if ((s.failed_count ?? 0) > 0) failed++;
+      else if ((s.passed_count ?? 0) + (s.flaky_count ?? 0) > 0) passed++;
+    }
+    return { specPassed: passed, specFailed: failed };
   }, [deduplicatedSuites]);
 
   // Build map: file_path -> list of report badge info (ordered by created_at) for all reports that tested this file
@@ -373,16 +435,16 @@ export function TestSuitesView({
                 label="Passed"
                 value={stats.expected}
                 variant="success"
-                isActive={statusFilter === 'passed'}
-                onClick={() => setStatusFilter('passed')}
+                isActive={statusFilter === 'test_passed'}
+                onClick={() => setStatusFilter('test_passed')}
               />
               {stats.unexpected > 0 && (
                 <StatPill
                   label="Failed"
                   value={stats.unexpected}
                   variant="error"
-                  isActive={statusFilter === 'failed'}
-                  onClick={() => setStatusFilter('failed')}
+                  isActive={statusFilter === 'test_failed'}
+                  onClick={() => setStatusFilter('test_failed')}
                 />
               )}
               {stats.flaky > 0 && (
@@ -390,8 +452,8 @@ export function TestSuitesView({
                   label="Flaky"
                   value={stats.flaky}
                   variant="warning"
-                  isActive={statusFilter === 'flaky'}
-                  onClick={() => setStatusFilter('flaky')}
+                  isActive={statusFilter === 'test_flaky'}
+                  onClick={() => setStatusFilter('test_flaky')}
                 />
               )}
               {stats.skipped > 0 && (
@@ -399,8 +461,8 @@ export function TestSuitesView({
                   label="Skipped"
                   value={stats.skipped}
                   variant="muted"
-                  isActive={statusFilter === 'skipped'}
-                  onClick={() => setStatusFilter('skipped')}
+                  isActive={statusFilter === 'test_skipped'}
+                  onClick={() => setStatusFilter('test_skipped')}
                 />
               )}
             </div>
@@ -416,47 +478,59 @@ export function TestSuitesView({
       {/* Suites Summary */}
       <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
         <div className="mb-4 flex items-center gap-4">
-          {/* Section 1: Title (fixed width) */}
-          <h3 className="w-40 flex-shrink-0 text-sm font-medium text-gray-900 dark:text-white">
-            Test Suites ({filteredSuites.length}
-            {statusFilter !== 'all' || normalizedSearch ? ` of ${deduplicatedSuites.length}` : ''})
-          </h3>
-
-          {/* Section 2: Search input (fixed width, centered) */}
-          <div className="relative flex-shrink-0">
-            {isSearching ? (
-              <Loader2 className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-blue-500 animate-spin" />
-            ) : (
-              <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
-            )}
-            <input
-              ref={searchInputRef}
-              type="text"
-              placeholder="Search tests..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-7 w-56 rounded border border-gray-200 bg-white pl-7 pr-7 text-xs text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-500 dark:focus:border-blue-400 dark:focus:ring-blue-400"
-            />
-            {searchQuery && (
+          {/* Section 1: Title + suite-level chips */}
+          <h3 className="flex flex-shrink-0 items-center gap-2 text-sm font-medium text-gray-900 dark:text-white">
+            <button
+              type="button"
+              onClick={() => {
+                setStatusFilter('all');
+                setSearchQuery('');
+                setDebouncedSearch('');
+                setEffectiveSearch('');
+              }}
+              title="Show all suites"
+              className={`cursor-pointer rounded px-1 py-0.5 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700 ${
+                statusFilter === 'all' && !normalizedSearch ? 'bg-gray-200 dark:bg-gray-600' : ''
+              }`}
+            >
+              Test Suites ({deduplicatedSuites.length})
+            </button>
+            {specPassed > 0 && (
               <button
                 type="button"
-                onClick={() => {
-                  setSearchQuery('');
-                  setDebouncedSearch('');
-                  setEffectiveSearch('');
-                  searchInputRef.current?.focus();
-                }}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-600 dark:hover:text-gray-300"
+                onClick={() =>
+                  setStatusFilter(statusFilter === 'spec_passed' ? 'all' : 'spec_passed')
+                }
+                title="Filter passed suites"
+                className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-green-600 transition-colors hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20 ${
+                  statusFilter === 'spec_passed' ? 'bg-green-100 dark:bg-green-900/40' : ''
+                }`}
               >
-                <X className="h-3.5 w-3.5" />
+                <CheckCircle2 className="h-3 w-3" />
+                {specPassed}
               </button>
             )}
-          </div>
+            {specFailed > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setStatusFilter(statusFilter === 'spec_failed' ? 'all' : 'spec_failed')
+                }
+                title="Filter failed suites"
+                className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 ${
+                  statusFilter === 'spec_failed' ? 'bg-red-100 dark:bg-red-900/40' : ''
+                }`}
+              >
+                <XCircle className="h-3 w-3" />
+                {specFailed}
+              </button>
+            )}
+          </h3>
 
           {/* Spacer */}
           <div className="flex-1" />
 
-          {/* Section 3: Filters (status + report dropdown) */}
+          {/* Section 2: Test-case-level pills + report dropdown */}
           <div className="flex flex-shrink-0 items-center gap-2">
             {/* Status filter buttons */}
             <div className="flex items-center gap-1">
@@ -473,9 +547,9 @@ export function TestSuitesView({
               </button>
               <button
                 type="button"
-                onClick={() => setStatusFilter('passed')}
+                onClick={() => setStatusFilter('test_passed')}
                 className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                  statusFilter === 'passed'
+                  statusFilter === 'test_passed'
                     ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
                     : 'text-green-600 hover:bg-green-50 dark:text-green-500 dark:hover:bg-green-900/20'
                 }`}
@@ -488,9 +562,9 @@ export function TestSuitesView({
               {totals.failed > 0 && (
                 <button
                   type="button"
-                  onClick={() => setStatusFilter('failed')}
+                  onClick={() => setStatusFilter('test_failed')}
                   className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                    statusFilter === 'failed'
+                    statusFilter === 'test_failed'
                       ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
                       : 'text-red-600 hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-900/20'
                   }`}
@@ -504,9 +578,9 @@ export function TestSuitesView({
               {totals.flaky > 0 && (
                 <button
                   type="button"
-                  onClick={() => setStatusFilter('flaky')}
+                  onClick={() => setStatusFilter('test_flaky')}
                   className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                    statusFilter === 'flaky'
+                    statusFilter === 'test_flaky'
                       ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
                       : 'text-yellow-600 hover:bg-yellow-50 dark:text-yellow-500 dark:hover:bg-yellow-900/20'
                   }`}
@@ -520,9 +594,9 @@ export function TestSuitesView({
               {totals.skipped > 0 && (
                 <button
                   type="button"
-                  onClick={() => setStatusFilter('skipped')}
+                  onClick={() => setStatusFilter('test_skipped')}
                   className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                    statusFilter === 'skipped'
+                    statusFilter === 'test_skipped'
                       ? 'bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-300'
                       : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
                   }`}
@@ -602,6 +676,37 @@ export function TestSuitesView({
           </div>
         </div>
 
+        {/* Search row (own line, below the header) */}
+        <div className="relative mb-4 inline-block w-[21rem]">
+          {isSearching ? (
+            <Loader2 className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-blue-500" />
+          ) : (
+            <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
+          )}
+          <input
+            ref={searchInputRef}
+            type="text"
+            placeholder="Search tests..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-7 w-full rounded border border-gray-200 bg-white pl-7 pr-7 text-xs text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-500 dark:focus:border-blue-400 dark:focus:ring-blue-400"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearchQuery('');
+                setDebouncedSearch('');
+                setEffectiveSearch('');
+                searchInputRef.current?.focus();
+              }}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-600 dark:hover:text-gray-300"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+
         {/* Pagination controls (top) */}
         {totalPages > 1 && (
           <div className="flex items-center justify-between border-b border-gray-200 pb-4 mb-4 dark:border-gray-700">
@@ -637,7 +742,7 @@ export function TestSuitesView({
           <p className="text-sm text-gray-500 dark:text-gray-400">
             {statusFilter === 'all'
               ? 'No test suites found'
-              : `No suites with ${statusFilter} tests`}
+              : `No suites match the ${statusFilter.replace(/^(spec|test)_/, '')} filter`}
           </p>
         ) : (
           <div className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -661,6 +766,8 @@ export function TestSuitesView({
                   suiteMatchedByPath={suiteMatchedByPath}
                   allReportsForFile={filePathReportsMap.get(suite.file_path) || []}
                   crossShardHistory={crossShardHistory}
+                  divergencesBySpecPath={divergencesBySpecPath}
+                  displayPath={canonicalSpecPathByFilePath.get(suite.file_path) ?? suite.file_path}
                 />
               );
             })}
@@ -760,6 +867,14 @@ interface SuiteRowProps {
   }[];
   /** Per-spec cross-shard attempt history keyed by `${suite.title} › ${spec.title}`. */
   crossShardHistory?: Map<string, CrossShardAttempt[]>;
+  /** Per-spec orchestration/artifact divergences keyed by `spec.file_path`. */
+  divergencesBySpecPath?: Map<string, Divergence>;
+  /**
+   * The path text rendered next to the file icon. Defaults to
+   * `suite.file_path`; the parent overrides with the orchestration's
+   * canonical repo-root-relative `spec_path` when one is known.
+   */
+  displayPath: string;
 }
 
 const LOADING_DELAY_MS = 1000;
@@ -776,6 +891,8 @@ const SuiteRow = memo(function SuiteRow({
   suiteMatchedByPath,
   allReportsForFile,
   crossShardHistory,
+  divergencesBySpecPath,
+  displayPath,
 }: SuiteRowProps) {
   // Memoize status calculations
   const { hasFlaky, hasFailed, hasSkipped, StatusIcon, statusIconColor } = useMemo(() => {
@@ -868,15 +985,17 @@ const SuiteRow = memo(function SuiteRow({
       );
 
       switch (statusFilter) {
-        case 'passed':
+        case 'test_passed':
           // All specs that ultimately passed (including flaky)
           return spec.ok;
-        case 'failed':
+        case 'test_failed':
           return !spec.ok && finalResult?.status !== 'skipped';
-        case 'flaky':
+        case 'test_flaky':
           return isFlaky;
-        case 'skipped':
+        case 'test_skipped':
           return finalResult?.status === 'skipped';
+        // Suite-file-level filters don't drill into individual specs —
+        // when a suite matches, every spec in it is shown.
         default:
           return true;
       }
@@ -916,7 +1035,7 @@ const SuiteRow = memo(function SuiteRow({
                 <FileCode className="h-3.5 w-3.5 text-gray-400 dark:text-gray-500 flex-shrink-0" />
                 <span className="truncate">
                   {suite.file_path ? (
-                    <HighlightText text={suite.file_path} search={searchQuery} />
+                    <HighlightText text={displayPath} search={searchQuery} />
                   ) : (
                     <span className="text-red-500 italic">Missing file path</span>
                   )}
@@ -1000,6 +1119,7 @@ const SuiteRow = memo(function SuiteRow({
                     rowLabel={`${rowNumber}.${specIndex + 1}`}
                     searchQuery={searchQuery}
                     crossShardAttempts={crossShardHistory?.get(fullTitle)}
+                    divergence={divergencesBySpecPath?.get(spec.file_path)}
                   />
                 );
               })}
@@ -1025,6 +1145,12 @@ interface SpecRowProps {
    * report contexts pass undefined.
    */
   crossShardAttempts?: CrossShardAttempt[];
+  /**
+   * Disagreement between this spec's orchestration verdict and its
+   * artifact verdict, if any. Surfaces a small inline pill so reviewers
+   * spot divergences at a glance.
+   */
+  divergence?: Divergence;
 }
 
 const SpecRow = memo(function SpecRow({
@@ -1032,6 +1158,7 @@ const SpecRow = memo(function SpecRow({
   rowLabel,
   searchQuery,
   crossShardAttempts,
+  divergence,
 }: SpecRowProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -1195,6 +1322,12 @@ const SpecRow = memo(function SpecRow({
             {failedShardCount} of {shardSummaries.length} shards failed
           </span>
         )}
+        {divergence && (
+          <DivergenceBadge
+            orchestrationStatus={divergence.orchestration_status}
+            artifactStatus={divergence.artifact_status}
+          />
+        )}
       </div>
       {/* Show all attempts for flaky tests with inline errors */}
       {isExpanded && hasMultipleAttempts && (
@@ -1242,23 +1375,59 @@ const SpecRow = memo(function SpecRow({
           <AttachmentsDisplay attachments={latestResult.attachments} />
         </div>
       )}
-      {isExpanded && spec.screenshots && spec.screenshots.length > 0 && (
-        <div className="ml-[5.25rem] mt-2">
-          <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
-            Screenshots ({spec.screenshots.length})
-          </p>
-          <ScreenshotGallery
-            screenshots={spec.screenshots.map((screenshot, idx) => ({
-              path: screenshot.file_path,
-              s3_key: screenshot.file_path,
-              content_type: 'image/png',
-              retry: 0,
-              missing: false,
-              sequence: idx,
-            }))}
-          />
-        </div>
-      )}
+      {(() => {
+        // Spec-level aggregate gallery. Dedupe against paths already shown
+        // in any per-attempt AttachmentsDisplay so screenshots that exist
+        // in BOTH test_cases.attachments (Playwright JSON path) and
+        // report_screenshots (multipart upload path) don't render twice.
+        if (!isExpanded || !spec.screenshots || spec.screenshots.length === 0) {
+          return null;
+        }
+        // Spec-level Screenshots use the S3 key as `file_path`. Per-attempt
+        // attachments carry both the original local Playwright path AND the
+        // resolved s3_key — match on s3_key (or basename when s3_key is
+        // missing) so the dedup actually catches duplicates.
+        const seenInAttempts = new Set<string>();
+        const baseName = (p: string) => {
+          const i = p.lastIndexOf('/');
+          return i >= 0 ? p.slice(i + 1) : p;
+        };
+        for (const r of spec.results ?? []) {
+          for (const a of r.attachments ?? []) {
+            const s3 = (a as { s3_key?: string | null }).s3_key;
+            if (typeof s3 === 'string' && s3.length > 0) {
+              seenInAttempts.add(s3);
+              seenInAttempts.add(baseName(s3));
+              continue;
+            }
+            const path = (a as { path?: string }).path;
+            if (typeof path === 'string' && path.length > 0) {
+              seenInAttempts.add(baseName(path));
+            }
+          }
+        }
+        const matchesSeen = (filePath: string) =>
+          seenInAttempts.has(filePath) || seenInAttempts.has(baseName(filePath));
+        const extras = spec.screenshots.filter((s) => !matchesSeen(s.file_path));
+        if (extras.length === 0) return null;
+        return (
+          <div className="ml-16 mt-2 border-l-2 border-gray-200 pl-3 dark:border-gray-600">
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+              Screenshots ({extras.length})
+            </p>
+            <ScreenshotGallery
+              screenshots={extras.map((screenshot, idx) => ({
+                path: screenshot.file_path,
+                s3_key: screenshot.file_path,
+                content_type: 'image/png',
+                retry: 0,
+                missing: false,
+                sequence: idx,
+              }))}
+            />
+          </div>
+        );
+      })()}
       {isExpanded && hasCrossShardDivergence && (
         <div className="ml-16 mt-2 space-y-3 border-l-2 border-yellow-300 pl-3 dark:border-yellow-700">
           <p className="text-xs font-medium text-yellow-700 dark:text-yellow-400">Across shards</p>

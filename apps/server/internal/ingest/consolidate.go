@@ -215,27 +215,55 @@ func basename(p string) string {
 	return p
 }
 
-// countStatuses collapses results for the same case-identity down to one
-// "unique" case (so flaky retries aren't double-counted) and returns the
-// per-suite passed/failed/skipped/flaky/unique counts.
+// countStatuses collapses results for the same test (by full_title) down
+// to one "unique" case and returns the per-suite
+// passed/failed/skipped/flaky/unique counts.
+//
+// Why dedupe by full_title and not just by retry=0: Playwright's internal
+// retries within ONE JSON file are retry=0,1,2,...; filtering by retry=0
+// dedupes those correctly. But when a single shard report is built from
+// MULTIPLE Playwright JSON files (e.g. an orchestration retest re-runs
+// the same spec under the same gh_job_id), each file independently
+// produces retry=0 entries for the same test, and the retry filter does
+// not catch the duplicates. Grouping by full_title catches both cases.
+//
+// The collapsed status uses the LAST entry per title (the test's terminal
+// outcome) and promotes to `flaky` when at least one earlier entry was a
+// failure but the final result is `passed` — same semantics as
+// Playwright's `test.outcome()`.
 func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, unique int) {
-	// A "unique" case in this schema is one (title, retry=0) row. Since the
-	// Playwright extractor emits one ExtractedCase per result (retry included),
-	// we count only retry=0 toward unique. Cypress/Detox emit retry=0 only.
+	type group struct {
+		final      ExtractedCase
+		everFailed bool
+	}
+	byTitle := make(map[string]*group, len(cases))
+	order := make([]string, 0, len(cases))
 	for _, c := range cases {
-		if c.RetryCount != 0 {
+		isFailure := c.Status == StatusFailed || c.Status == StatusTimedOut
+		g, ok := byTitle[c.FullTitle]
+		if !ok {
+			g = &group{final: c, everFailed: isFailure}
+			byTitle[c.FullTitle] = g
+			order = append(order, c.FullTitle)
 			continue
 		}
+		g.final = c
+		g.everFailed = g.everFailed || isFailure
+	}
+	for _, k := range order {
+		g := byTitle[k]
 		unique++
-		switch c.Status {
-		case StatusPassed:
-			passed++
-		case StatusFailed, StatusTimedOut:
-			failed++
-		case StatusSkipped:
-			skipped++
-		case StatusFlaky:
+		switch {
+		case g.final.Status == StatusFlaky:
 			flaky++
+		case g.final.Status == StatusPassed && g.everFailed:
+			flaky++
+		case g.final.Status == StatusPassed:
+			passed++
+		case g.final.Status == StatusFailed, g.final.Status == StatusTimedOut:
+			failed++
+		case g.final.Status == StatusSkipped:
+			skipped++
 		default:
 			passed++
 		}

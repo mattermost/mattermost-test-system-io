@@ -265,6 +265,7 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	summaries := make([]reportSummary, 0)
+	orchLookup := newOrchestrationLookup()
 	for rows.Next() {
 		g, err := scanGroup(rows)
 		if err != nil {
@@ -276,7 +277,14 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, r, err)
 			return
 		}
-		summaries = append(summaries, toReportSummary(g, stats))
+		summary := toReportSummary(g, stats)
+		orch, err := orchLookup.getForGroup(r.Context(), h.Pool, g)
+		if err != nil {
+			api.WriteError(w, r, err)
+			return
+		}
+		summary.Orchestration = orch
+		summaries = append(summaries, summary)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"reports": summaries,
@@ -315,7 +323,15 @@ func (h *Handlers) Detail(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toReportDetail(g, entries, stats))
+	orch, err := aggregateOrchestrationSummary(r.Context(), h.Pool,
+		g.Repository, g.CommitSHA, g.GHRunID, g.Name, g.GHRunAttempt)
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	detail := toReportDetail(g, entries, stats)
+	detail.Orchestration = orch
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // fetchGroupByReportID resolves a report_group from a per-shard reports.id.

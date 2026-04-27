@@ -1,8 +1,8 @@
 //go:build e2e
 // +build e2e
 
-// Package admincli exercises the tsioctl keys lifecycle (T083) against
-// a real Postgres via testcontainers. It invokes the public apikey APIs —
+// Package admincli exercises the tsioctl keys lifecycle against a real
+// Postgres via testcontainers. It invokes the public apikey APIs —
 // equivalent to the cobra subcommands — and asserts the DB side-effects.
 
 package admincli

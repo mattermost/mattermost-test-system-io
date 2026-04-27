@@ -1,7 +1,9 @@
 package reports
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,6 +13,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 )
@@ -43,20 +47,65 @@ type testStats struct {
 	RetestWallClockMs *int64 `json:"retest_wall_clock_ms,omitempty"`
 }
 
+// orchestrationCounts is the wire-shape projection of the materialized
+// dispatch-unit counters on orchestration_runs. Field names mirror the
+// orchestration RunCounts payload so the frontend can reuse the same
+// rendering as the OrchestrationTab's CountsRow.
+type orchestrationCounts struct {
+	Pending          int `json:"pending"`
+	Leased           int `json:"leased"`
+	CompletedPass    int `json:"completed_pass"`
+	CompletedFail    int `json:"completed_fail"`
+	CompletedSkipped int `json:"completed_skipped"`
+	Abandoned        int `json:"abandoned"`
+	RetestEligible   int `json:"retest_eligible"`
+}
+
+// orchestrationTestCounts is the test-case-level rollup derived by
+// walking every attempt's `test_cases` JSONB array for a given
+// orchestration_runs row. Counts use the same any-passed-AND-any-failed
+// → flaky rule the OrchestrationTab applies client-side, so listing
+// rows can show test-level numbers (rather than spec-file counts) while
+// shard reports are still uploading.
+type orchestrationTestCounts struct {
+	Passed  int `json:"passed"`
+	Failed  int `json:"failed"`
+	Flaky   int `json:"flaky"`
+	Skipped int `json:"skipped"`
+	Total   int `json:"total"`
+}
+
+// orchestrationSummary surfaces the live orchestration_runs status and
+// counts alongside the existing canonical test_stats on each report-index
+// row. Emitted only when an orchestration_run row matches the report_group's
+// composite identity; when omitted, the UI falls back to canonical stats
+// alone.
+type orchestrationSummary struct {
+	Status     string              `json:"status"`
+	TotalUnits int                 `json:"total_units"`
+	Counts     orchestrationCounts `json:"counts"`
+	// Tests is omitted while no attempts have reported test_cases yet
+	// (e.g. all units still pending). When present, it carries the
+	// rolling test-case rollup so listing rows can quote test-level
+	// numbers during in-flight runs.
+	Tests *orchestrationTestCounts `json:"tests,omitempty"`
+}
+
 type reportSummary struct {
-	ID           string     `json:"id"`
-	ShortID      string     `json:"short_id"`
-	Name         string     `json:"name"`
-	Status       string     `json:"status"`
-	Framework    string     `json:"framework"`
-	TestStats    *testStats `json:"test_stats,omitempty"`
-	Repository   string     `json:"repository"`
-	Branch       string     `json:"branch"`
-	Commit       string     `json:"commit"`
-	GHRunID      string     `json:"gh_run_id"`
-	GHPRNumber   *int       `json:"gh_pr_number,omitempty"`
-	GHRunAttempt string     `json:"gh_run_attempt"`
-	CreatedAt    string     `json:"created_at"`
+	ID            string                `json:"id"`
+	ShortID       string                `json:"short_id"`
+	Name          string                `json:"name"`
+	Status        string                `json:"status"`
+	Framework     string                `json:"framework"`
+	TestStats     *testStats            `json:"test_stats,omitempty"`
+	Orchestration *orchestrationSummary `json:"orchestration,omitempty"`
+	Repository    string                `json:"repository"`
+	Branch        string                `json:"branch"`
+	Commit        string                `json:"commit"`
+	GHRunID       string                `json:"gh_run_id"`
+	GHPRNumber    *int                  `json:"gh_pr_number,omitempty"`
+	GHRunAttempt  string                `json:"gh_run_attempt"`
+	CreatedAt     string                `json:"created_at"`
 }
 
 type reportEntry struct {
@@ -78,20 +127,21 @@ type reportDetail struct {
 }
 
 type runEntry struct {
-	ReportID     string     `json:"report_id"`
-	Framework    string     `json:"framework"`
-	Name         string     `json:"name"`
-	Status       string     `json:"status"`
-	Branch       string     `json:"branch"`
-	Commit       string     `json:"commit"`
-	ShortSHA     string     `json:"short_sha"`
-	RunNumber    string     `json:"run_number,omitempty"`
-	GHRunAttempt string     `json:"gh_run_attempt"`
-	GHRunID      string     `json:"gh_run_id,omitempty"`
-	GHPRNumber   *int       `json:"gh_pr_number,omitempty"`
-	TestStats    *testStats `json:"test_stats,omitempty"`
-	CreatedAt    string     `json:"created_at"`
-	URLPath      string     `json:"url_path"`
+	ReportID      string                `json:"report_id"`
+	Framework     string                `json:"framework"`
+	Name          string                `json:"name"`
+	Status        string                `json:"status"`
+	Branch        string                `json:"branch"`
+	Commit        string                `json:"commit"`
+	ShortSHA      string                `json:"short_sha"`
+	RunNumber     string                `json:"run_number,omitempty"`
+	GHRunAttempt  string                `json:"gh_run_attempt"`
+	GHRunID       string                `json:"gh_run_id,omitempty"`
+	GHPRNumber    *int                  `json:"gh_pr_number,omitempty"`
+	TestStats     *testStats            `json:"test_stats,omitempty"`
+	Orchestration *orchestrationSummary `json:"orchestration,omitempty"`
+	CreatedAt     string                `json:"created_at"`
+	URLPath       string                `json:"url_path"`
 }
 
 type repoGroup struct {
@@ -102,18 +152,19 @@ type repoGroup struct {
 }
 
 type individualReportSummary struct {
-	ID            string     `json:"id"`
-	ShortID       string     `json:"short_id"`
-	ReportGroupID string     `json:"report_group_id"`
-	Name          string     `json:"name"`
-	Status        string     `json:"status"`
-	GHJobID       string     `json:"gh_job_id,omitempty"`
-	GHJobName     string     `json:"gh_job_name,omitempty"`
-	Repository    string     `json:"repository"`
-	Branch        string     `json:"branch"`
-	Commit        string     `json:"commit"`
-	TestStats     *testStats `json:"test_stats,omitempty"`
-	CreatedAt     string     `json:"created_at"`
+	ID            string                `json:"id"`
+	ShortID       string                `json:"short_id"`
+	ReportGroupID string                `json:"report_group_id"`
+	Name          string                `json:"name"`
+	Status        string                `json:"status"`
+	GHJobID       string                `json:"gh_job_id,omitempty"`
+	GHJobName     string                `json:"gh_job_name,omitempty"`
+	Repository    string                `json:"repository"`
+	Branch        string                `json:"branch"`
+	Commit        string                `json:"commit"`
+	TestStats     *testStats            `json:"test_stats,omitempty"`
+	Orchestration *orchestrationSummary `json:"orchestration,omitempty"`
+	CreatedAt     string                `json:"created_at"`
 }
 
 // ---------- shape mappers ----------
@@ -265,6 +316,7 @@ func (h *Handlers) Grouped(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	orchLookup := newOrchestrationLookup()
 	byRepo := map[string]*repoGroup{}
 	order := []string{}
 	for rows.Next() {
@@ -274,6 +326,11 @@ func (h *Handlers) Grouped(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		stats, err := aggregateGroupStats(r.Context(), h.Pool, g.ID)
+		if err != nil {
+			api.WriteError(w, r, err)
+			return
+		}
+		orch, err := orchLookup.getForGroup(r.Context(), h.Pool, g)
 		if err != nil {
 			api.WriteError(w, r, err)
 			return
@@ -293,7 +350,9 @@ func (h *Handlers) Grouped(w http.ResponseWriter, r *http.Request) {
 			byRepo[key] = bucket
 			order = append(order, key)
 		}
-		bucket.Runs = append(bucket.Runs, toRunEntry(g, stats))
+		entry := toRunEntry(g, stats)
+		entry.Orchestration = orch
+		bucket.Runs = append(bucket.Runs, entry)
 	}
 	if err := rows.Err(); err != nil {
 		api.WriteError(w, r, err)
@@ -342,6 +401,7 @@ func (h *Handlers) Individual(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	orchLookup := newOrchestrationLookup()
 	out := make([]individualReportSummary, 0)
 	for rows.Next() {
 		var e reportEntryDTO
@@ -361,7 +421,14 @@ func (h *Handlers) Individual(w http.ResponseWriter, r *http.Request) {
 		}
 		rs.DurationMs = dur
 		_ = env
-		out = append(out, toIndividualSummary(g, e, rs))
+		summary := toIndividualSummary(g, e, rs)
+		orch, err := orchLookup.getForGroup(r.Context(), h.Pool, g)
+		if err != nil {
+			api.WriteError(w, r, err)
+			return
+		}
+		summary.Orchestration = orch
+		out = append(out, summary)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"reports": out,
@@ -982,6 +1049,141 @@ func atoiDefault(s string, dflt int) int {
 		return n
 	}
 	return dflt
+}
+
+// orchestrationKey is the identity tuple used to memoize per-request
+// orchestration_runs lookups. Five fields uniquely identify a run.
+type orchestrationKey struct {
+	repository, commitSHA, ghRunID, name, ghRunAttempt string
+}
+
+// aggregateOrchestrationSummary returns the live orchestration_runs status
+// and counts that match the supplied composite identity, or nil when no
+// orchestration_runs row exists for that tuple. Used by Grouped, Individual,
+// and Detail to decorate report-index rows with the in-flight run's progress.
+func aggregateOrchestrationSummary(
+	ctx context.Context, pool *pgxpool.Pool,
+	repository, commitSHA, ghRunID, name, ghRunAttempt string,
+) (*orchestrationSummary, error) {
+	var (
+		runID  uuid.UUID
+		status string
+		total  int
+		c      orchestrationCounts
+	)
+	err := pool.QueryRow(ctx, `
+		SELECT id, status, total_units,
+		       pending_count, leased_count,
+		       completed_pass_count, completed_fail_count,
+		       completed_skipped_count, abandoned_count,
+		       retest_eligible_count
+		  FROM orchestration_runs
+		 WHERE repository = $1
+		   AND commit_sha = $2
+		   AND gh_run_id  = $3
+		   AND name       = $4
+		   AND gh_run_attempt = $5
+		 LIMIT 1
+	`, repository, commitSHA, ghRunID, name, ghRunAttempt).Scan(
+		&runID, &status, &total,
+		&c.Pending, &c.Leased,
+		&c.CompletedPass, &c.CompletedFail,
+		&c.CompletedSkipped, &c.Abandoned,
+		&c.RetestEligible,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	tests, err := aggregateOrchestrationTestCounts(ctx, pool, runID)
+	if err != nil {
+		return nil, err
+	}
+	return &orchestrationSummary{
+		Status:     status,
+		TotalUnits: total,
+		Counts:     c,
+		Tests:      tests,
+	}, nil
+}
+
+// aggregateOrchestrationTestCounts walks every reported test_case across
+// all attempts of every dispatch_unit on the run and rolls them up to
+// per-test-case statuses, applying the same any-passed-AND-any-failed →
+// flaky rule the OrchestrationTab uses on the client. Returns nil when
+// no attempts have yet reported test_cases (a fresh run with all units
+// pending), which the listing rows render as "no test stats available".
+func aggregateOrchestrationTestCounts(
+	ctx context.Context, pool *pgxpool.Pool, runID uuid.UUID,
+) (*orchestrationTestCounts, error) {
+	var t orchestrationTestCounts
+	err := pool.QueryRow(ctx, `
+		WITH per_test AS (
+			SELECT
+				a.dispatch_unit_id,
+				tc->>'full_title' AS full_title,
+				BOOL_OR(tc->>'status' IN ('passed', 'flaky')) AS ever_passed,
+				BOOL_OR(tc->>'status' IN ('failed', 'timedOut', 'interrupted')) AS ever_failed,
+				BOOL_OR(tc->>'status' = 'skipped') AS ever_skipped
+			  FROM attempts a
+			 CROSS JOIN LATERAL jsonb_array_elements(a.test_cases) AS tc
+			 WHERE a.run_id = $1
+			   AND a.test_cases IS NOT NULL
+			 GROUP BY a.dispatch_unit_id, tc->>'full_title'
+		)
+		SELECT
+			COUNT(*) FILTER (WHERE ever_passed AND NOT ever_failed) AS passed,
+			COUNT(*) FILTER (WHERE ever_failed AND NOT ever_passed) AS failed,
+			COUNT(*) FILTER (WHERE ever_passed AND ever_failed) AS flaky,
+			COUNT(*) FILTER (WHERE ever_skipped AND NOT ever_passed AND NOT ever_failed) AS skipped,
+			COUNT(*) AS total
+		  FROM per_test
+	`, runID).Scan(&t.Passed, &t.Failed, &t.Flaky, &t.Skipped, &t.Total)
+	if err != nil {
+		return nil, err
+	}
+	if t.Total == 0 {
+		return nil, nil
+	}
+	return &t, nil
+}
+
+// orchestrationLookup is a per-request memo over aggregateOrchestrationSummary
+// so a single Grouped or Individual response that visits the same composite
+// identity twice (rare but defensible) issues exactly one DB read per tuple.
+type orchestrationLookup struct {
+	cache map[orchestrationKey]*orchestrationSummary
+}
+
+func newOrchestrationLookup() *orchestrationLookup {
+	return &orchestrationLookup{cache: map[orchestrationKey]*orchestrationSummary{}}
+}
+
+// getForGroup pulls the orchestration summary for a report_group's identity
+// tuple. Returns (nil, nil) when no orchestration_run matches — that's the
+// common case for legacy report uploads with no orchestration coverage.
+func (o *orchestrationLookup) getForGroup(
+	ctx context.Context, pool *pgxpool.Pool, g groupDTO,
+) (*orchestrationSummary, error) {
+	key := orchestrationKey{
+		repository:   g.Repository,
+		commitSHA:    g.CommitSHA,
+		ghRunID:      g.GHRunID,
+		name:         g.Name,
+		ghRunAttempt: g.GHRunAttempt,
+	}
+	if v, ok := o.cache[key]; ok {
+		return v, nil
+	}
+	v, err := aggregateOrchestrationSummary(ctx, pool,
+		key.repository, key.commitSHA, key.ghRunID, key.name, key.ghRunAttempt)
+	if err != nil {
+		return nil, err
+	}
+	o.cache[key] = v
+	return v, nil
 }
 
 // buildErrorsJSON produces the JSON-encoded string the web's inline-error

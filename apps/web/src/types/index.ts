@@ -79,6 +79,39 @@ export interface ReportEnvironmentMetadata {
   server?: Record<string, unknown>;
 }
 
+/**
+ * Live orchestration_runs status and counts attached to a report-index row
+ * whose composite identity matches an orchestration run. Surfaced on the
+ * /reports index endpoints so the dashboard can show in-flight progress
+ * alongside (or before) the canonical artifact-derived test_stats.
+ */
+export interface OrchestrationSummary {
+  status: 'in_progress' | 'completed' | 'timed_out';
+  total_units: number;
+  counts: {
+    pending: number;
+    leased: number;
+    completed_pass: number;
+    completed_fail: number;
+    completed_skipped: number;
+    abandoned: number;
+    retest_eligible: number;
+  };
+  /**
+   * Test-case-level rollup derived server-side from every attempt's
+   * `test_cases` JSONB. Uses the same any-passed-AND-any-failed → flaky
+   * rule the OrchestrationTab applies on the client. Omitted when no
+   * attempts have yet reported test_cases (e.g. fresh run, all pending).
+   */
+  tests?: {
+    passed: number;
+    failed: number;
+    flaky: number;
+    skipped: number;
+    total: number;
+  };
+}
+
 // Report summary (current API)
 export interface ReportSummary {
   id: string;
@@ -87,6 +120,7 @@ export interface ReportSummary {
   status: ReportStatus;
   framework: Framework;
   test_stats?: TestStats;
+  orchestration?: OrchestrationSummary;
   repository: string;
   branch: string;
   commit: string;
@@ -225,6 +259,7 @@ export interface ReportDetail {
   gh_pr_number?: number;
   gh_run_attempt: string;
   environment_metadata?: ReportEnvironmentMetadata;
+  orchestration?: OrchestrationSummary;
   created_at: string;
   updated_at: string;
   reports: ReportEntry[];
@@ -246,6 +281,7 @@ export interface RunEntry {
   gh_run_id?: string;
   gh_pr_number?: number;
   test_stats?: TestStats;
+  orchestration?: OrchestrationSummary;
   created_at: string;
   url_path: string;
 }

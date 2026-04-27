@@ -5,6 +5,7 @@ import { useGroupedReports } from '@/services/api';
 import { RepoGroupCard } from '@/components/repo_group_card';
 import { Breadcrumb } from '@/components/breadcrumb';
 import { ReportSummary } from '@/components/report_summary';
+import { resolveDisplayStats } from '@/components/report_card_parts';
 import type { RepositoryGroup, RunEntry } from '@/types';
 
 function short_branch(branch: string): string {
@@ -92,7 +93,10 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
       }
     }
 
-    const stats = run.test_stats;
+    // Source-of-truth resolver: prefer orchestration counts, fall back
+    // to the framework's `test_stats`. Keeps the branch/repo-level
+    // summary numbers aligned with the per-row display in `RepoGroupCard`.
+    const stats = resolveDisplayStats(run);
     if (stats) {
       passed += stats.passed;
       failed += stats.failed;

@@ -41,6 +41,43 @@ func autoDetect(body []byte, seq *int) []ExtractedSuite {
 	return nil
 }
 
+// MergeSuitesByFile collapses ExtractedSuites that address the same spec
+// file + title into one entry, concatenating their Cases. Used after
+// parsing multiple JSON uploads for a single shard report so a worker that
+// re-ran the same spec (e.g. an orchestration retest under the same
+// gh_job_id) does not surface as two suite rows on the dashboard. Suites
+// without a FilePath identity pass through unchanged.
+func MergeSuitesByFile(suites []ExtractedSuite) []ExtractedSuite {
+	if len(suites) <= 1 {
+		return suites
+	}
+	type key struct{ file, title string }
+	indexByKey := make(map[key]int, len(suites))
+	out := make([]ExtractedSuite, 0, len(suites))
+	for _, s := range suites {
+		var k key
+		if s.FilePath != nil {
+			k.file = *s.FilePath
+		}
+		k.title = s.Title
+		if k.file == "" {
+			out = append(out, s)
+			continue
+		}
+		if idx, ok := indexByKey[k]; ok {
+			out[idx].Cases = append(out[idx].Cases, s.Cases...)
+			if s.StartTime != nil &&
+				(out[idx].StartTime == nil || s.StartTime.Before(*out[idx].StartTime)) {
+				out[idx].StartTime = s.StartTime
+			}
+		} else {
+			indexByKey[k] = len(out)
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // parseReportStats extracts Cypress-style `stats.start`/`stats.end` (or
 // Playwright's future equivalent) from the raw JSON without re-parsing the
 // whole document. Returns (nil, nil) when absent.

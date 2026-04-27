@@ -5,6 +5,7 @@ import {
   useConsolidatedResults,
   useReportDetail,
   useReportSuites,
+  useOrchestrationRun,
   fetchReportDetail,
   fetchReportSuites,
 } from '@/services/api';
@@ -20,9 +21,15 @@ import {
   AlertCircle,
   XCircle,
   ExternalLink,
+  Layers,
+  ListTree,
+  GitMerge,
 } from 'lucide-react';
 import { ReportSummary } from '@/components/report_summary';
 import { isRetestName } from '@/components/report_card_parts';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { OrchestrationTab } from '@/components/orchestration/orchestration_tab';
+import type { CompositeIdentity } from '@/types/orchestration';
 
 const TIMED_OUT_THRESHOLD_MS = 3_600_000; // 1 hour
 
@@ -44,10 +51,12 @@ export function FilteredReportPage() {
     name: string;
   }>();
 
-  const [search_params] = useSearchParams();
+  const [search_params, setSearchParams] = useSearchParams();
   const run_attempt_param = search_params.get('run_attempt');
   const run_attempt = run_attempt_param ? parseInt(run_attempt_param, 10) : undefined;
   const gid = search_params.get('gid') || undefined;
+  const gh_run_id_param = search_params.get('gh_run_id') || undefined;
+  const gh_run_attempt_param = search_params.get('gh_run_attempt') || undefined;
 
   // Step 1: Get consolidated results to find contributing report IDs
   const { data, isLoading, error } = useConsolidatedResults(
@@ -85,6 +94,24 @@ export function FilteredReportPage() {
 
   const { data: report } = useReportDetail(latestReportId);
   const { data: suitesData, isLoading: isLoadingSuites } = useReportSuites(latestReportId);
+
+  // Composite identity for the orchestration query. `gh_run_id` may arrive
+  // from either the URL search param (preferred, set by direct links) or the
+  // latest contributing report's metadata once the report fetch resolves.
+  // Only when both are absent will the orchestration query stay disabled.
+  const orchestrationIdentity = useMemo<CompositeIdentity>(
+    () => ({
+      repository: repo || '',
+      commit_sha: commit || '',
+      gh_run_id: gh_run_id_param || report?.gh_run_id || '',
+      name: name || '',
+      gh_run_attempt: gh_run_attempt_param ?? '1',
+      branch: branch || undefined,
+    }),
+    [repo, commit, gh_run_id_param, report?.gh_run_id, name, gh_run_attempt_param, branch],
+  );
+
+  const { data: orchestrationRun } = useOrchestrationRun(orchestrationIdentity);
 
   // Sum report entries across every contributing group, split by retest vs
   // numbered shard so the summary can render the "4+1 reports" form.
@@ -216,6 +243,189 @@ export function FilteredReportPage() {
     return groups;
   })();
 
+  // Tab control. The default is "combine" — it routes to the dispatch
+  // view when orchestration data exists and falls back to reports when
+  // only the framework's report group is available, so the user lands
+  // on whichever single source of truth applies.
+  const reportGroupHasData = !!data && data.total_specs > 0;
+  const orchestrationHasData = !!orchestrationRun;
+  const tabFromUrl = search_params.get('tab');
+  const isValidTab =
+    tabFromUrl === 'combine' || tabFromUrl === 'dispatch' || tabFromUrl === 'reports';
+  const activeTab = isValidTab ? tabFromUrl : 'combine';
+
+  // Tabs are hidden by default — the page renders only the Combine view,
+  // which is the merged single-source-of-truth picture. They're revealed
+  // when the user opts into comparison via `?compare=1`, or implicitly
+  // when an explicit `?tab=...` deep-link is followed (so existing links
+  // still land on the requested tab without also passing `compare=1`).
+  const showTabs = search_params.get('compare') === '1' || isValidTab;
+
+  const handleTabChange = (next: string) => {
+    const sp = new URLSearchParams(search_params);
+    sp.set('tab', next);
+    setSearchParams(sp, { replace: true });
+  };
+
+  const bothMissing =
+    !isLoading && !error && data && data.total_specs === 0 && !orchestrationHasData;
+
+  const orchestrationIdentityIsResolvable = !!orchestrationIdentity.gh_run_id;
+
+  // Reports tab body, hoisted into a closure so the Combine tab can fall
+  // back to it verbatim when no orchestration data is available. Closes
+  // over the page-scoped data/loading flags rather than receiving props.
+  const renderReportsBody = () => (
+    <div className="space-y-6">
+      {/* Header with report metadata */}
+      {report && (
+        <ReportSummary
+          testStatus={
+            data?.overall_status === 'failed'
+              ? 'failed'
+              : data?.overall_status === 'flaky'
+                ? 'flaky'
+                : 'passed'
+          }
+          name={name}
+          passed={data?.passed ?? 0}
+          failed={data?.failed ?? 0}
+          flaky={data?.flaky ?? 0}
+          skipped={data?.skipped ?? 0}
+          total={data?.total_specs ?? 0}
+          durationMs={data?.wall_clock_ms ?? data?.duration_ms ?? null}
+          retestDurationMs={data?.retest_wall_clock_ms}
+          createdAt={report.created_at}
+          framework={report.framework}
+          reportCount={reportCountSplit.numbered}
+          retestReportCount={reportCountSplit.retest}
+          progressStatus={
+            report.status === 'in_progress'
+              ? new Date(report.created_at).getTime() < Date.now() - TIMED_OUT_THRESHOLD_MS
+                ? 'timed_out'
+                : 'in_progress'
+              : 'completed'
+          }
+          repository={report.repository}
+          branch={report.branch}
+          commit={report.commit}
+          ghPrNumber={report.gh_pr_number}
+          ghRunId={report.gh_run_id}
+        />
+      )}
+
+      {/* Test suites view */}
+      {isLoadingSuites ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-600 dark:text-blue-400" />
+        </div>
+      ) : (
+        latestReportId && (
+          <TestSuitesView
+            reportId={latestReportId}
+            suites={suitesData?.suites || []}
+            title={`${name} — ${branch}/${commit}`}
+            reports={suitesData?.reports}
+            crossShardHistory={crossShardHistory}
+            orchestrationUnits={orchestrationRun?.units}
+          />
+        )
+      )}
+
+      {/* Reports */}
+      {reportsByRun.length > 0 && (
+        <div className="mt-4">
+          <h2 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Reports</h2>
+          {reportsByRun.map(({ runId, createdAt, attempts }) => (
+            <div key={runId} className="mb-3">
+              {reportsByRun.length > 1 && (
+                <div className="flex items-center gap-2 text-xs mb-1">
+                  {report?.repository && runId !== 'unknown' ? (
+                    <a
+                      href={`https://github.com/${report.repository}/actions/runs/${runId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 font-medium text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 transition-colors"
+                    >
+                      <Play className="h-3 w-3" />
+                      Run {runId}
+                      <ExternalLink className="h-3 w-3 opacity-50" />
+                    </a>
+                  ) : (
+                    <span className="font-medium text-gray-600 dark:text-gray-300">
+                      Run {runId}
+                    </span>
+                  )}
+                  <span className="text-gray-400 dark:text-gray-500">{formatDate(createdAt)}</span>
+                </div>
+              )}
+              {attempts.map(({ attempt, reports }) => (
+                <div key={attempt} className="mb-2">
+                  {attempts.length > 1 && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1 ml-1">
+                      Run Attempt {attempt}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {reports.map((entry) => {
+                      const testResult = reportTestStatus.get(entry.id);
+                      const isFailed = testResult === 'failed';
+                      const isFlaky = testResult === 'flaky';
+                      return (
+                        <a
+                          key={entry.id}
+                          href={`/reports/r/${entry.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${
+                            isFailed
+                              ? 'bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-300 dark:hover:bg-red-900/70'
+                              : isFlaky
+                                ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/50 dark:text-yellow-300 dark:hover:bg-yellow-900/70'
+                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'
+                          }`}
+                        >
+                          {isFailed ? (
+                            <XCircle className="h-3 w-3 text-red-500" />
+                          ) : isFlaky ? (
+                            <AlertCircle className="h-3 w-3 text-yellow-500" />
+                          ) : entry.status === 'complete' ? (
+                            <CheckCircle className="h-3 w-3 text-green-500" />
+                          ) : (
+                            <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                          )}
+                          {entry.display_name}
+                          <ExternalLink className="h-3 w-3 opacity-50" />
+                        </a>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  // Combine view body. Picks the dispatch view when orchestration data
+  // exists, falls back to the reports body when only reports exist, and
+  // an empty state when neither does. Hoisted so it can be rendered
+  // either standalone (default, no tabs) or inside the Combine tab.
+  const renderCombineBody = () =>
+    orchestrationIdentityIsResolvable && orchestrationHasData ? (
+      <OrchestrationTab identity={orchestrationIdentity} />
+    ) : reportGroupHasData ? (
+      renderReportsBody()
+    ) : (
+      <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
+        <Inbox className="h-12 w-12 mb-3" />
+        <p className="text-sm">Nothing to combine yet</p>
+        <p className="text-xs mt-1">Awaiting orchestration or report uploads for this run.</p>
+      </div>
+    );
+
   return (
     <div className="space-y-6">
       {/* Breadcrumb */}
@@ -266,151 +476,71 @@ export function FilteredReportPage() {
         </div>
       )}
 
-      {/* Empty state */}
-      {data && data.total_specs === 0 && (
+      {/* Empty state — only when BOTH sources are empty (no reports AND no orchestration run) */}
+      {bothMissing && (
         <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
           <Inbox className="h-12 w-12 mb-3" />
           <p className="text-sm">No matching reports</p>
           <p className="text-xs mt-1">
-            No test results found for {repo}/{branch}/{commit}/{name}
+            No test results or orchestration run found for {repo}/{branch}/{commit}/{name}
           </p>
         </div>
       )}
 
-      {/* Report header + suites view */}
-      {data && data.total_specs > 0 && (
-        <>
-          {/* Header with report metadata */}
-          {report && (
-            <ReportSummary
-              testStatus={
-                data.overall_status === 'failed'
-                  ? 'failed'
-                  : data.overall_status === 'flaky'
-                    ? 'flaky'
-                    : 'passed'
-              }
-              name={name}
-              passed={data.passed}
-              failed={data.failed}
-              flaky={data.flaky}
-              skipped={data.skipped}
-              total={data.total_specs}
-              durationMs={data.wall_clock_ms ?? data.duration_ms}
-              retestDurationMs={data.retest_wall_clock_ms}
-              createdAt={report.created_at}
-              framework={report.framework}
-              reportCount={reportCountSplit.numbered}
-              retestReportCount={reportCountSplit.retest}
-              progressStatus={
-                report.status === 'in_progress'
-                  ? new Date(report.created_at).getTime() < Date.now() - TIMED_OUT_THRESHOLD_MS
-                    ? 'timed_out'
-                    : 'in_progress'
-                  : 'completed'
-              }
-              repository={report.repository}
-              branch={report.branch}
-              commit={report.commit}
-              ghPrNumber={report.gh_pr_number}
-              ghRunId={report.gh_run_id}
-            />
-          )}
+      {/* Default view: just the Combine body, no tab bar. */}
+      {!isLoading && !error && !bothMissing && !showTabs && renderCombineBody()}
 
-          {/* Test suites view */}
-          {isLoadingSuites ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-8 w-8 animate-spin text-blue-600 dark:text-blue-400" />
-            </div>
-          ) : (
-            latestReportId && (
-              <TestSuitesView
-                reportId={latestReportId}
-                suites={suitesData?.suites || []}
-                title={`${name} — ${branch}/${commit}`}
-                reports={suitesData?.reports}
-                crossShardHistory={crossShardHistory}
-              />
-            )
-          )}
+      {/* Tabbed view: Combine + Dispatch + Reports — opt-in via ?compare=1
+          (or implicit via an explicit ?tab= deep-link). */}
+      {!isLoading && !error && !bothMissing && showTabs && (
+        <Tabs value={activeTab} onValueChange={handleTabChange}>
+          <TabsList>
+            <TabsTrigger value="combine">
+              <GitMerge className="h-3.5 w-3.5" />
+              Combine
+            </TabsTrigger>
+            <TabsTrigger value="dispatch">
+              <Layers className="h-3.5 w-3.5" />
+              Dispatch
+            </TabsTrigger>
+            <TabsTrigger value="reports">
+              <ListTree className="h-3.5 w-3.5" />
+              Reports
+            </TabsTrigger>
+          </TabsList>
 
-          {/* Reports */}
-          {reportsByRun.length > 0 && (
-            <div className="mt-4">
-              <h2 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Reports</h2>
-              {reportsByRun.map(({ runId, createdAt, attempts }) => (
-                <div key={runId} className="mb-3">
-                  {reportsByRun.length > 1 && (
-                    <div className="flex items-center gap-2 text-xs mb-1">
-                      {report?.repository && runId !== 'unknown' ? (
-                        <a
-                          href={`https://github.com/${report.repository}/actions/runs/${runId}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 font-medium text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 transition-colors"
-                        >
-                          <Play className="h-3 w-3" />
-                          Run {runId}
-                          <ExternalLink className="h-3 w-3 opacity-50" />
-                        </a>
-                      ) : (
-                        <span className="font-medium text-gray-600 dark:text-gray-300">
-                          Run {runId}
-                        </span>
-                      )}
-                      <span className="text-gray-400 dark:text-gray-500">
-                        {formatDate(createdAt)}
-                      </span>
-                    </div>
-                  )}
-                  {attempts.map(({ attempt, reports }) => (
-                    <div key={attempt} className="mb-2">
-                      {attempts.length > 1 && (
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mb-1 ml-1">
-                          Run Attempt {attempt}
-                        </p>
-                      )}
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {reports.map((entry) => {
-                          const testResult = reportTestStatus.get(entry.id);
-                          const isFailed = testResult === 'failed';
-                          const isFlaky = testResult === 'flaky';
-                          return (
-                            <a
-                              key={entry.id}
-                              href={`/reports/r/${entry.id}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${
-                                isFailed
-                                  ? 'bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-300 dark:hover:bg-red-900/70'
-                                  : isFlaky
-                                    ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/50 dark:text-yellow-300 dark:hover:bg-yellow-900/70'
-                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'
-                              }`}
-                            >
-                              {isFailed ? (
-                                <XCircle className="h-3 w-3 text-red-500" />
-                              ) : isFlaky ? (
-                                <AlertCircle className="h-3 w-3 text-yellow-500" />
-                              ) : entry.status === 'complete' ? (
-                                <CheckCircle className="h-3 w-3 text-green-500" />
-                              ) : (
-                                <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
-                              )}
-                              {entry.display_name}
-                              <ExternalLink className="h-3 w-3 opacity-50" />
-                            </a>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          )}
-        </>
+          <TabsContent value="combine">{renderCombineBody()}</TabsContent>
+
+          <TabsContent value="dispatch">
+            {orchestrationIdentityIsResolvable ? (
+              <OrchestrationTab identity={orchestrationIdentity} />
+            ) : (
+              <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
+                <Inbox className="h-12 w-12 mb-3" />
+                <p className="text-sm">Dispatch not applicable</p>
+                <p className="text-xs mt-1">
+                  No <code className="font-mono">gh_run_id</code> available for this view.
+                </p>
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="reports">
+            {data && data.total_specs > 0 ? (
+              renderReportsBody()
+            ) : (
+              <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
+                <Inbox className="h-12 w-12 mb-3" />
+                <p className="text-sm">No reports uploaded</p>
+                <p className="text-xs mt-1">
+                  {orchestrationHasData
+                    ? 'Awaiting test report uploads for this run.'
+                    : `No test results found for ${repo}/${branch}/${commit}/${name}`}
+                </p>
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       )}
     </div>
   );

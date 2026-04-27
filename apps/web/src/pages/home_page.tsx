@@ -22,7 +22,9 @@ import {
   formatDuration,
   calculatePassRate,
   getPassRateColorClass,
+  resolveDisplayStats,
 } from '@/components/report_card_parts';
+import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
 
 type ViewMode = 'grouped' | 'individual';
 
@@ -39,13 +41,19 @@ function format_time(date_string: string): string {
 }
 
 function IndividualReportCard({ report }: { report: IndividualReportSummary }) {
-  const stats = report.test_stats;
-  const hasStats = stats && stats.total > 0;
+  // Prefer the orchestration counts over the framework's `test_stats` so
+  // an in-flight individual report still surfaces meaningful "x of y
+  // done" numbers before its shard upload completes.
+  const stats = resolveDisplayStats(report);
+  const hasStats = !!stats && stats.total > 0;
   const rate = hasStats ? calculatePassRate(stats) : null;
   const rateColorClass = getPassRateColorClass(rate);
   const repoName = report.repository?.split('/').pop() || '';
   const branch = report.branch?.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '') || '';
   const shortSha = report.commit?.slice(0, 7) || '';
+  // Both source branches of `resolveDisplayStats` (test_stats and the
+  // orchestration server-side rollup) are at test-case granularity.
+  const unit = 'tests';
 
   const statusIcon =
     report.status !== 'complete' && report.status !== 'failed' ? (
@@ -61,100 +69,111 @@ function IndividualReportCard({ report }: { report: IndividualReportSummary }) {
   const hasFailed = hasStats && stats.failed > 0;
 
   return (
-    <Link
-      to={`/reports/r/${report.id}`}
-      className={`flex items-center rounded-md px-3 py-2 text-sm transition-colors ${
-        hasFailed
-          ? 'bg-red-50/50 hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/30'
-          : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-      }`}
-    >
-      {/* Left: status, repo, branch, commit, name / job name */}
-      <div className="flex items-center gap-2 min-w-0 flex-shrink-0">
-        {statusIcon}
-        {repoName && (
-          <span className="truncate max-w-[100px] text-xs font-medium text-gray-500 dark:text-gray-400">
-            {repoName}
-          </span>
-        )}
-        {branch && (
-          <span className="inline-flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 flex-shrink-0">
-            <GitBranch className="h-3 w-3" />
-            <span className="max-w-[100px] truncate">{branch}</span>
-          </span>
-        )}
-        {shortSha && (
-          <span className="inline-flex items-center gap-1 font-mono text-xs text-gray-500 dark:text-gray-500 flex-shrink-0">
-            <GitCommit className="h-3 w-3" />
-            {shortSha}
-          </span>
-        )}
-        <span className="truncate text-xs text-gray-700 dark:text-gray-300">{report.name}</span>
-        {report.gh_job_name && (
-          <>
-            <span className="text-xs text-gray-400 dark:text-gray-500">/</span>
-            <span className="truncate text-xs text-gray-500 dark:text-gray-400">
-              {report.gh_job_name}
+    <div>
+      <Link
+        to={`/reports/r/${report.id}`}
+        className={`flex items-center rounded-md px-3 py-2 text-sm transition-colors ${
+          hasFailed
+            ? 'bg-red-50/50 hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/30'
+            : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+        }`}
+      >
+        {/* Left: status, repo, branch, commit, name / job name */}
+        <div className="flex items-center gap-2 min-w-0 flex-shrink-0">
+          {statusIcon}
+          {repoName && (
+            <span className="truncate max-w-[100px] text-xs font-medium text-gray-500 dark:text-gray-400">
+              {repoName}
             </span>
-          </>
-        )}
-      </div>
+          )}
+          {branch && (
+            <span className="inline-flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 flex-shrink-0">
+              <GitBranch className="h-3 w-3" />
+              <span className="max-w-[100px] truncate">{branch}</span>
+            </span>
+          )}
+          {shortSha && (
+            <span className="inline-flex items-center gap-1 font-mono text-xs text-gray-500 dark:text-gray-500 flex-shrink-0">
+              <GitCommit className="h-3 w-3" />
+              {shortSha}
+            </span>
+          )}
+          <span className="truncate text-xs text-gray-700 dark:text-gray-300">{report.name}</span>
+          {report.gh_job_name && (
+            <>
+              <span className="text-xs text-gray-400 dark:text-gray-500">/</span>
+              <span className="truncate text-xs text-gray-500 dark:text-gray-400">
+                {report.gh_job_name}
+              </span>
+            </>
+          )}
+        </div>
 
-      {/* Middle: test summary + pass rate */}
-      <div className="flex-1 flex items-center justify-end gap-2 text-xs mx-2">
-        {hasStats && (
-          <span
-            className="text-gray-500 dark:text-gray-400"
-            title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total`}
-          >
-            <span className="text-green-700 dark:text-green-400">{stats.passed}</span>
-            {stats.failed > 0 && (
-              <>
-                {' / '}
-                <span className="text-red-700 dark:text-red-400">{stats.failed} failed</span>
-              </>
-            )}
-            {(stats.flaky ?? 0) > 0 && (
-              <>
-                {' / '}
-                <span className="text-yellow-700 dark:text-yellow-400">{stats.flaky}</span>
-              </>
-            )}
-            {(stats.skipped ?? 0) > 0 && (
-              <>
-                {' / '}
-                <span className="text-gray-500 dark:text-gray-400">{stats.skipped}</span>
-              </>
-            )}
-          </span>
-        )}
-        {hasStats && rate !== null && (
-          <span
-            className={`rounded px-1.5 py-0.5 text-xs font-medium w-12 text-center ${rateColorClass}`}
-            title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total`}
-          >
-            {rate}%
-          </span>
-        )}
-      </div>
+        {/* Middle: test summary + pass rate */}
+        <div className="flex-1 flex items-center justify-end gap-2 text-xs mx-2">
+          {hasStats && stats && (
+            <span
+              className="text-gray-500 dark:text-gray-400"
+              title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total ${unit}`}
+            >
+              <span className="text-green-700 dark:text-green-400">{stats.passed}</span>
+              {stats.failed > 0 && (
+                <>
+                  {' / '}
+                  <span className="text-red-700 dark:text-red-400">{stats.failed} failed</span>
+                </>
+              )}
+              {(stats.flaky ?? 0) > 0 && (
+                <>
+                  {' / '}
+                  <span className="text-yellow-700 dark:text-yellow-400">{stats.flaky}</span>
+                </>
+              )}
+              {(stats.skipped ?? 0) > 0 && (
+                <>
+                  {' / '}
+                  <span className="text-gray-500 dark:text-gray-400">{stats.skipped}</span>
+                </>
+              )}
+            </span>
+          )}
+          {hasStats && stats && rate !== null && (
+            <span
+              className={`rounded px-1.5 py-0.5 text-xs font-medium w-12 text-center ${rateColorClass}`}
+              title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total ${unit}`}
+            >
+              {rate}%
+            </span>
+          )}
+        </div>
 
-      {/* Right: duration + relative time */}
-      <div className="flex items-center text-xs flex-shrink-0">
-        <span className="inline-flex items-center justify-end gap-1 text-gray-400 dark:text-gray-500 w-20 text-right">
-          {hasStats &&
-            (stats.duration_ms ?? report.duration_ms) != null &&
-            (stats.duration_ms ?? report.duration_ms ?? 0) > 0 && (
-              <>
-                <Clock className="h-3 w-3" />
-                {formatDuration((stats.duration_ms ?? report.duration_ms)!)}
-              </>
-            )}
-        </span>
-        <span className="text-gray-400 dark:text-gray-600 w-16 text-right">
-          {format_time(report.created_at)}
-        </span>
-      </div>
-    </Link>
+        {/* Right: duration + relative time */}
+        <div className="flex items-center text-xs flex-shrink-0">
+          <span className="inline-flex items-center justify-end gap-1 text-gray-400 dark:text-gray-500 w-20 text-right">
+            {hasStats &&
+              stats &&
+              (stats.duration_ms ?? report.duration_ms) != null &&
+              (stats.duration_ms ?? report.duration_ms ?? 0) > 0 && (
+                <>
+                  <Clock className="h-3 w-3" />
+                  {formatDuration((stats.duration_ms ?? report.duration_ms)!)}
+                </>
+              )}
+          </span>
+          <span className="text-gray-400 dark:text-gray-600 w-16 text-right">
+            {format_time(report.created_at)}
+          </span>
+        </div>
+      </Link>
+      {/* Live progress strip only while the orchestration is actively
+          running. Once it terminates, the row above already conveys the
+          outcome via test_stats, so the strip would be redundant. */}
+      {report.orchestration?.status === 'in_progress' && (
+        <div className="px-3 pb-2 -mt-1">
+          <OrchestrationInlineSummary orchestration={report.orchestration} />
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -51,7 +51,7 @@ cp .env.example .env
 ```bash
 make docker-up    # Postgres 18.3 + MinIO + adminer
 make db-reset     # apply migrations/*.sql
-make seed         # fixtures: default report group + DEV_API_KEY
+make seed         # fixtures: default report group + TSIO_API_KEY
 make dev          # server :8080 and web :3000
 ```
 

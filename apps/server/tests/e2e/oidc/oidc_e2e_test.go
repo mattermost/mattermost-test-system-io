@@ -3,13 +3,13 @@
 
 // Package oidce2e exercises the GitHub Actions OIDC workload-auth path end-to-end:
 //
-//   - Valid token grants access (T063)
-//   - Invalid tokens (wrong issuer, wrong audience, tampered, expired) are rejected (T064)
-//   - OIDC claims are persisted on upload (T065)
-//   - Key rotation via the mock provider (T066)
-//   - Session-like lifecycle around one uploader identity (T067)
-//   - Policy validation — no matching rule → 403 (T068)
-//   - Role authorization — explicit deny wins over wildcard grant (T069)
+//   - Valid token grants access
+//   - Invalid tokens (wrong issuer, wrong audience, tampered, expired) are rejected
+//   - OIDC claims are persisted on upload
+//   - Key rotation via the mock provider
+//   - Session-like lifecycle around one uploader identity
+//   - Policy validation — no matching rule → 403
+//   - Role authorization — explicit deny wins over wildcard grant
 //
 // All scenarios share a Postgres testcontainer and an in-process mock OIDC provider
 // (see internal/testutil/oidcmock + tests/e2e/testenv).
@@ -70,7 +70,7 @@ func uploadFixture(t *testing.T) (body *bytes.Buffer, contentType string) {
 	return buf, w.FormDataContentType()
 }
 
-// TestValidAuth — T063
+// TestValidAuth: a properly-issued mock OIDC token grants upload access.
 func TestValidAuth(t *testing.T) {
 	env := testenv.Start(t)
 	env.DefaultReportGroup(t)
@@ -85,7 +85,8 @@ func TestValidAuth(t *testing.T) {
 	}
 }
 
-// TestInvalidAuth — T064
+// TestInvalidAuth: tokens with the wrong issuer, wrong audience, tampered
+// payload, or expired claims are all rejected with 401.
 func TestInvalidAuth(t *testing.T) {
 	env := testenv.Start(t)
 	env.DefaultReportGroup(t)
@@ -116,9 +117,10 @@ func TestInvalidAuth(t *testing.T) {
 	})
 }
 
-// TestClaimStorage — T065: verified OIDC claims end up in the oidc_claims table
-// (this is wiring not yet enabled in the handler; we assert the minimum: the
-// upload succeeded with the OIDC identity recorded on the report row).
+// TestClaimStorage: verified OIDC claims end up persisted with the upload.
+// The full oidc_claims-table wiring is not yet enabled in the handler; the
+// minimum assertion here is that the upload succeeded with the OIDC identity
+// recorded on the report row.
 func TestClaimStorage(t *testing.T) {
 	env := testenv.Start(t)
 	env.DefaultReportGroup(t)
@@ -142,8 +144,8 @@ func TestClaimStorage(t *testing.T) {
 	}
 }
 
-// TestKeyRotation — T066: the mock provider's JWKS key can be rotated, and
-// tokens signed by the old key are rejected afterwards.
+// TestKeyRotation: the mock provider's JWKS key can be rotated, and tokens
+// signed by the old key are rejected afterwards.
 func TestKeyRotation(t *testing.T) {
 	env := testenv.Start(t)
 	env.DefaultReportGroup(t)
@@ -166,8 +168,8 @@ func TestKeyRotation(t *testing.T) {
 	assertReject(t, env, foreignTok, http.StatusUnauthorized)
 }
 
-// TestLifecycle — T067: issue → use → reject after simulated revocation.
-// OIDC tokens don't have server-side revocation; "lifecycle" here means one
+// TestLifecycle: issue → use → reject after simulated revocation. OIDC
+// tokens don't have server-side revocation; "lifecycle" here means one
 // valid token goes through multiple uploads successfully and keeps working
 // until exp.
 func TestLifecycle(t *testing.T) {
@@ -185,7 +187,7 @@ func TestLifecycle(t *testing.T) {
 	}
 }
 
-// TestPolicyValidation — T068: no matching policy rule → 401 (auth dispatch
+// TestPolicyValidation: no matching policy rule → 401 (auth dispatch
 // ultimately rejects with 401 because the policy engine returns ErrDenied,
 // which the RequireAuth middleware treats as "not authenticated").
 func TestPolicyValidation(t *testing.T) {
@@ -198,7 +200,7 @@ func TestPolicyValidation(t *testing.T) {
 	assertReject(t, env, tok, http.StatusUnauthorized)
 }
 
-// TestRoleAuthz — T069: explicit deny rule at higher priority overrides a
+// TestRoleAuthz: an explicit deny rule at higher priority overrides a
 // lower-priority wildcard grant.
 func TestRoleAuthz(t *testing.T) {
 	env := testenv.Start(t)

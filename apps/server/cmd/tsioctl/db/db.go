@@ -118,7 +118,7 @@ func seedCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("seeded: api_key id=%s\n", row.ID)
-			fmt.Printf("DEV_API_KEY=%s\n", iss.PlainText)
+			fmt.Printf("TSIO_API_KEY=%s\n", iss.PlainText)
 			return nil
 		},
 	}

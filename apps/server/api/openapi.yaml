@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Test System IO API
-  version: 0.5.0-go.1
+  version: 0.6.0
   description: |
     HTTP API for uploading and viewing Playwright, Cypress, and Detox test
     reports. This spec is hand-authored and is the source of truth for the
@@ -19,6 +19,18 @@ tags:
   - name: auth
   - name: reports
   - name: report-groups
+  - name: orchestration
+    description: |
+      Test shard orchestration. CI controllers register a run with an ordered
+      list of dispatch units; workers check out units in order, run them, and
+      report completion. The orchestrator does not analyze duration history or
+      optimize makespan — ordering is the caller's responsibility.
+
+      Every endpoint addresses the run by the same composite identity tuple
+      already used by /api/v1/reports/begin: (repository, commit_sha,
+      gh_run_id, name, gh_run_attempt). Workers obtain these values from
+      their GitHub Actions environment; no server-issued run_id is shared
+      between the controller and worker jobs.
   - name: artifacts
   - name: admin
   - name: health
@@ -41,7 +53,7 @@ paths:
           name: key
           required: true
           schema: { type: string }
-          description: "Full object key, e.g. reports/{report_id}/screenshots/{rel_path}. Sandboxed to the reports/ prefix."
+          description: "Full object key, e.g. reports/{report_id}/screenshots/{rel_path} or orchestration/{run_uuid}/{lease_uuid}/screenshots/{spec_path}/{rel_path}. Sandboxed to the `reports/` and `orchestration/` prefixes."
       responses:
         '302': { description: Redirect to presigned object-store URL }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -521,6 +533,309 @@ paths:
       responses:
         '302': { description: Redirect to presigned S3 URL }
 
+  # ─── Test shard orchestration ──────────────────────────────────────────────
+  # Live progress events are published onto the existing internal/events Hub
+  # and delivered over /api/v1/ws. Subscribers send a frame
+  #   { type: "subscribe.orchestration", identity: <CompositeIdentity> }
+  # to receive only events for that run. Event types:
+  #   - orchestration.run.started
+  #   - orchestration.unit.leased
+  #   - orchestration.unit.completed
+  #   - orchestration.lease.expired
+  #   - orchestration.run.completed
+  #   - orchestration.run.timed_out
+
+  /api/v1/orchestration/begin:
+    post:
+      tags: [orchestration]
+      summary: Begin a new orchestration run
+      operationId: orchestrationBegin
+      description: |
+        Register a new run with the suite's spec files. Idempotent on the
+        composite identity: a second call with the same identity AND a
+        byte-equivalent dispatch-unit list returns the existing run's snapshot
+        without modifying any state. A second call with the same identity but
+        a different dispatch-unit list returns 409.
+
+        IMPORTANT: This endpoint does NOT touch report_groups. Orchestration
+        and report_groups are independent tables that share the same identity
+        scheme; they are joined only at UI query time.
+
+        Authentication: requires Uploader role. The OIDC subject of the
+        caller becomes the run's owner; subsequent calls (checkout, complete,
+        run-status) require a token whose subject matches the owner (or the
+        admin key).
+      security:
+        - apiKey: []
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeginRunRequest'
+      responses:
+        '200':
+          description: Idempotent retry — existing run returned unchanged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunSnapshot'
+        '201':
+          description: New run created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunSnapshot'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Same composite identity, different dispatch units
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/orchestration/checkout:
+    post:
+      tags: [orchestration]
+      summary: Check out the next dispatch units for a worker
+      operationId: orchestrationCheckout
+      description: |
+        Atomically dispatches up to `batch_size` pending units from the run's
+        queue (FIFO over `dispatch_seq`) to the calling worker. The worker
+        MUST report completion via /complete before the lease deadline,
+        otherwise the units return to the pool.
+
+        The run is identified by the composite identity in the body — no
+        path-level or response-level run_id is required. The worker
+        identifies itself by (gh_job_name, gh_job_id), the same pair the
+        existing /api/v1/reports/* flow uses for per-shard upload identity.
+        No lease_id is exposed; the orchestrator looks up the worker's
+        lease by (run, gh_job_id) on the matching /complete call.
+
+        A worker MAY hold at most one active lease per run at a time:
+        attempting checkout while an active lease already exists for this
+        worker returns 409.
+
+        If the queue is empty, returns 200 with `units: []` and
+        `queue_empty: true`; the worker SHOULD exit cleanly.
+
+        Authentication: Uploader role; calling subject MUST match the run's
+        owner (recorded at begin).
+      security:
+        - apiKey: []
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '200':
+          description: Checkout response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No orchestration run found for that composite identity
+        '409':
+          description: |
+            Run is not in_progress (already completed or timed_out), OR the
+            worker (gh_job_id) already holds an active lease on this run.
+            The error body distinguishes the two cases via `code`:
+            `RUN_NOT_IN_PROGRESS` vs. `WORKER_HAS_ACTIVE_LEASE`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/orchestration/complete:
+    post:
+      tags: [orchestration]
+      summary: Report completion for an issued lease
+      operationId: orchestrationComplete
+      description: |
+        Worker reports the outcome of every spec in its currently-held lease.
+        The orchestrator identifies the lease by (composite identity,
+        gh_job_name, gh_job_id) — the worker does NOT pass a lease_id.
+        Completion reports are idempotent on (run, gh_job_name, gh_job_id):
+        a duplicate report against the same worker's already-completed lease
+        for the run is a no-op and returns 200 (first answer wins).
+
+        Late reports (received after the lease deadline) are accepted and
+        recorded as additional attempts on the corresponding specs. They do
+        NOT change unit state if the unit has already finalized via another
+        worker's subsequent lease.
+
+        Reports from a worker that never had a lease issued for this run
+        (no matching (run, gh_job_id) row in `leases`) are rejected with 404.
+
+        The report MUST cover ALL specs in the leased unit set, atomically.
+        Partial reports are rejected with 400.
+      security:
+        - apiKey: []
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteRequest'
+      responses:
+        '200':
+          description: Report accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompleteResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/orchestration/screenshots:
+    post:
+      tags: [orchestration]
+      summary: Upload a screenshot/attachment for an orchestration run
+      operationId: orchestrationUploadScreenshot
+      description: |
+        Streaming multipart upload of a single screenshot (or other attachment
+        binary) tied to the worker's current or most recent lease for the run.
+        Independent of the existing `/api/v1/reports/upload/{rid}/{uid}/screenshots`
+        path — workers using orchestration do NOT need to drive the reports
+        flow to attach a failure screenshot for live diagnostic visibility on
+        the Orchestration tab.
+
+        Identity is supplied as multipart form fields (composite identity,
+        `gh_job_name`, `gh_job_id`, `spec_path`, `relative_path`); the file
+        binary is the multipart `file` part. The orchestrator looks up the
+        worker's lease by `(run, gh_job_id)`, persists the binary under the
+        `orchestration/` key prefix in the existing object store, and returns
+        the resulting storage key. Workers then reference that key inside
+        `test_cases[*].attachments` on the matching `complete` request.
+
+        The same `/files/{key}` redirect endpoint already used to serve
+        `reports/`-prefixed objects is extended to serve `orchestration/`-prefixed
+        keys, so the Orchestration UI tab can render screenshots via the same
+        download path used by Report Group views.
+
+        Late uploads (after the lease deadline has passed) are accepted within
+        a retention window so workers can finish posting attachments after a
+        crash recovery, mirroring the late-report acceptance rule.
+      security:
+        - apiKey: []
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [repository, commit_sha, gh_run_id, name, gh_job_name, gh_job_id, spec_path, relative_path, file]
+              properties:
+                repository: { type: string }
+                commit_sha: { type: string }
+                gh_run_id: { type: string }
+                name: { type: string }
+                gh_run_attempt: { type: string, default: "1" }
+                gh_job_name: { type: string }
+                gh_job_id: { type: string }
+                spec_path:
+                  type: string
+                  description: The spec file the screenshot belongs to (must match a spec in the worker's leased units).
+                relative_path:
+                  type: string
+                  maxLength: 512
+                  description: Worker-supplied relative path, e.g. "login_test/failure-1.png". Used in the storage key and surfaced back in the response.
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Upload accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key, size_bytes]
+                properties:
+                  key:
+                    type: string
+                    description: Full object-store key, e.g. `orchestration/<run_uuid>/<lease_uuid>/screenshots/<spec_path>/<relative_path>`. Use this value inside `test_cases[*].attachments` on the next `complete` call. Resolvable via `GET /files/{key}`.
+                  size_bytes:
+                    type: integer
+                    minimum: 0
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: No lease ever issued for this worker on this run
+        '413':
+          description: File exceeds the configured per-screenshot size limit
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/orchestration/status:
+    get:
+      tags: [orchestration]
+      summary: Get run status
+      operationId: orchestrationStatus
+      description: |
+        Returns the run's current status (in_progress, completed, timed_out)
+        and the breakdown of unit counts. The CI controller polls this
+        endpoint to decide when it is safe to tear down workers.
+
+        A run is `completed` when every unit has reached a terminal state and
+        no leases are active. A run is `timed_out` when the run-level
+        deadline elapsed before that condition was met. Late completion
+        reports are still accepted after the run is `completed` or
+        `timed_out` but never change the run's terminal status.
+
+        The composite identity is supplied via query parameters (the only
+        non-mutating endpoint, so a query-string addressing is friendlier
+        for browser-side calls than a body).
+      parameters:
+        - in: query
+          name: repository
+          required: true
+          schema: { type: string }
+        - in: query
+          name: commit_sha
+          required: true
+          schema: { type: string, minLength: 7 }
+          description: Full or short SHA. Short-SHA prefix matching is supported.
+        - in: query
+          name: gh_run_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: gh_run_attempt
+          required: false
+          schema: { type: string, default: "1" }
+      security: []
+      responses:
+        '200':
+          description: Run status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunSnapshot'
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /api/v1/artifacts/{id}:
     parameters:
       - in: path
@@ -764,6 +1079,47 @@ components:
           type: integer
           description: "Wall-clock span of the retest shards. Omitted when no retest shard exists in the group."
 
+    OrchestrationSummary:
+      type: object
+      description: |
+        Live orchestration_runs status and counts attached to a report-index
+        row whose composite identity matches an orchestration run. Surfaced
+        on the /reports index endpoints so the dashboard can show in-flight
+        progress alongside (or before) the canonical artifact-derived
+        test_stats.
+      required: [status, total_units, counts]
+      properties:
+        status:
+          type: string
+          enum: [in_progress, completed, timed_out]
+        total_units: { type: integer }
+        counts:
+          type: object
+          required: [pending, leased, completed_pass, completed_fail, completed_skipped, abandoned, retest_eligible]
+          properties:
+            pending: { type: integer }
+            leased: { type: integer }
+            completed_pass: { type: integer }
+            completed_fail: { type: integer }
+            completed_skipped: { type: integer }
+            abandoned: { type: integer }
+            retest_eligible: { type: integer }
+        tests:
+          type: object
+          description: |
+            Test-case-level rollup derived from every attempt's test_cases
+            JSONB array on this orchestration run. Applies the same
+            any-passed-AND-any-failed → flaky rule the OrchestrationTab
+            uses on the client. Omitted when no attempts have yet
+            reported test_cases (e.g. a fresh run with all units pending).
+          required: [passed, failed, flaky, skipped, total]
+          properties:
+            passed: { type: integer }
+            failed: { type: integer }
+            flaky: { type: integer }
+            skipped: { type: integer }
+            total: { type: integer }
+
     ReportSummary:
       type: object
       required: [id, short_id, name, status, framework, repository, branch, commit, gh_run_id, gh_run_attempt, created_at]
@@ -774,6 +1130,7 @@ components:
         status: { type: string, enum: [in_progress, completed] }
         framework: { type: string, enum: [playwright, cypress, detox] }
         test_stats: { $ref: '#/components/schemas/TestStats' }
+        orchestration: { $ref: '#/components/schemas/OrchestrationSummary' }
         repository: { type: string }
         branch: { type: string }
         commit: { type: string }
@@ -861,6 +1218,7 @@ components:
         branch: { type: string }
         commit: { type: string }
         test_stats: { $ref: '#/components/schemas/TestStats' }
+        orchestration: { $ref: '#/components/schemas/OrchestrationSummary' }
         duration_ms: { type: integer }
         created_at: { type: string, format: date-time }
 
@@ -891,6 +1249,7 @@ components:
         gh_run_id: { type: string }
         gh_pr_number: { type: integer }
         test_stats: { $ref: '#/components/schemas/TestStats' }
+        orchestration: { $ref: '#/components/schemas/OrchestrationSummary' }
         created_at: { type: string, format: date-time }
         url_path: { type: string }
 
@@ -1143,6 +1502,446 @@ components:
         match_environment: { type: string, nullable: true }
         grant_role: { type: string, enum: [uploader, viewer, editor, admin, denied] }
 
+    # ─── Test shard orchestration ──────────────────────────────────────────────
+
+    CompositeIdentity:
+      type: object
+      required: [repository, commit_sha, gh_run_id, name]
+      properties:
+        repository:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: e.g. "mattermost/mattermost" — full GitHub repository slug.
+        commit_sha:
+          type: string
+          minLength: 7
+          maxLength: 64
+          description: Full Git SHA preferred; short SHA accepted.
+        gh_run_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        name:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Workflow-defined name (e.g. "playwright-full-enterprise").
+        gh_run_attempt:
+          type: string
+          default: "1"
+          maxLength: 16
+        branch:
+          type: string
+          maxLength: 256
+        gh_pr_number:
+          type: integer
+        framework:
+          type: string
+          enum: [playwright]
+          default: playwright
+
+    WorkerIdentity:
+      type: object
+      required: [gh_job_name, gh_job_id]
+      properties:
+        gh_job_name:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: |
+            Workflow-defined GitHub Actions job name (e.g. "playwright-test-shard-1").
+            Workers obtain this from `${{ github.job }}` or the GITHUB_JOB env var.
+        gh_job_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: |
+            Runtime numeric job ID assigned by GitHub Actions, unique within a
+            workflow run. Workers obtain this via the GitHub Actions REST API
+            (GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs) or runner metadata.
+            Used by the orchestrator to look up the worker's lease on `complete`;
+            workers do NOT need to store any other identifier.
+
+    BeginRunRequest:
+      allOf:
+        - $ref: '#/components/schemas/CompositeIdentity'
+        - type: object
+          required: [dispatch_units]
+          properties:
+            playwright_project:
+              type: string
+              maxLength: 64
+            lease_timeout_ms:
+              type: integer
+              minimum: 1000
+              maximum: 86400000
+              default: 300000
+            run_timeout_ms:
+              type: integer
+              minimum: 1000
+              maximum: 86400000
+              default: 1200000
+            retest_on_fail:
+              type: boolean
+              default: false
+              description: |
+                When true, dispatch units that complete with `failed` status may be
+                re-leased to a different worker (up to `retest_budget` times per unit)
+                after first-pass dispatch is complete. The retest is offered to a
+                worker that did NOT previously fail the unit; if the worker pool is
+                exhausted (every worker has failed it) the unit waits until a new
+                worker requests work or the run-level timeout fires.
+            retest_budget:
+              type: integer
+              minimum: 0
+              maximum: 10
+              default: 1
+              description: |
+                Per-spec retry allowance. A unit with `fail_count <= retest_budget` is
+                retest-eligible; once `fail_count > retest_budget` the unit is
+                terminal `completed_fail`. Ignored when `retest_on_fail` is false.
+            dispatch_units:
+              type: array
+              minItems: 1
+              maxItems: 5000
+              description: |
+                Ordered list. Each entry addresses exactly one spec file.
+                The orchestrator dispatches in this exact order (FIFO);
+                index 0 is dispatched first.
+              items:
+                type: object
+                required: [spec_path]
+                properties:
+                  spec_path:
+                    type: string
+                    minLength: 1
+                    maxLength: 1024
+
+    CheckoutRequest:
+      allOf:
+        - $ref: '#/components/schemas/CompositeIdentity'
+        - $ref: '#/components/schemas/WorkerIdentity'
+        - type: object
+          properties:
+            batch_size:
+              type: integer
+              minimum: 1
+              maximum: 64
+              default: 1
+
+    CheckoutResponse:
+      type: object
+      required: [queue_empty, units]
+      properties:
+        deadline:
+          type: string
+          format: date-time
+          description: |
+            Lease deadline. Present only when a lease was issued. Workers SHOULD
+            call /complete before this time. Workers do NOT need a lease_id —
+            their (gh_job_name, gh_job_id) is sufficient to identify the lease
+            on /complete.
+        queue_empty:
+          type: boolean
+          description: |
+            True when there is no work for the calling worker — the run
+            has no pending units AND no retest-eligible units. The worker
+            SHOULD exit cleanly.
+        is_retest:
+          type: boolean
+          default: false
+          description: |
+            True when the dispatched units came from the retest queue (i.e.
+            previously failed units, re-leased per the retest_on_fail
+            configuration). Surfaced so workers can log this distinctly and so
+            the UI can mark the lease as a retest in the per-worker timeline.
+        units:
+          type: array
+          items:
+            type: object
+            required: [unit_id, dispatch_seq, spec_path]
+            properties:
+              unit_id: { type: string, format: uuid }
+              dispatch_seq: { type: integer, minimum: 0 }
+              spec_path: { type: string }
+              fail_count:
+                type: integer
+                minimum: 0
+                description: |
+                  Present only when the unit is being dispatched as a retest.
+                  Indicates how many times this unit has previously failed.
+
+    TestCaseStatus:
+      type: string
+      enum: [passed, failed, skipped, flaky, timedOut, interrupted]
+      description: |
+        Mirrors the existing `test_cases.status` enum so orchestration's
+        per-attempt records and the canonical uploaded reports use the same
+        vocabulary, easing comparison.
+
+    SpecResultTestCase:
+      type: object
+      description: |
+        Framework-specific per-test-case detail. Mirrors the columns on the
+        existing `test_cases` table. Optional within a spec result; included
+        when the worker's framework runner produces this detail (e.g.
+        Playwright's JSON reporter). When omitted, only the aggregate
+        spec-level status/duration is recorded.
+      required: [title, full_title, status, ordinal]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          description: The test case's leaf title.
+        full_title:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Ancestor-prefixed path (e.g. "Login > logs in with email").
+        status:
+          $ref: '#/components/schemas/TestCaseStatus'
+        retry_count:
+          type: integer
+          minimum: 0
+          default: 0
+        duration_ms:
+          type: integer
+          minimum: 0
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        error_stack:
+          type: string
+          nullable: true
+        annotations:
+          type: array
+          default: []
+          description: Framework-defined free-form annotations (Playwright `test.info().annotations`).
+          items:
+            type: object
+        attachments:
+          type: object
+          nullable: true
+          description: |
+            Framework-defined attachment metadata. Typically an object
+            containing a list of attachments where each item references a
+            storage key returned by `POST /api/v1/orchestration/screenshots`
+            (e.g. `{ "screenshots": [{ "key": "orchestration/...", "relative_path": "..." }] }`).
+            Resolvable via the existing `GET /files/{key}` redirect.
+            Orchestration's screenshot uploads are independent of the existing
+            reports/upload flow.
+        ordinal:
+          type: integer
+          minimum: 0
+          description: Position of the test case within the spec file.
+
+    SpecResult:
+      type: object
+      required: [spec_path, status]
+      properties:
+        spec_path:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        status:
+          $ref: '#/components/schemas/TestCaseStatus'
+          description: |
+            Aggregate per-spec-file status. Workers report the broader
+            test_cases.status enum so flaky/timedOut/interrupted are first-class.
+            The orchestrator maps this onto the narrower `dispatch_units.state`
+            transition: passed/flaky → completed_pass; failed/timedOut/interrupted →
+            completed_fail; skipped → completed_skipped.
+        actual_duration_ms:
+          type: integer
+          minimum: 0
+        error_message:
+          type: string
+          nullable: true
+          description: Aggregate error message for the spec file when failure occurred at the file level (e.g. setup failure). Per-case errors live inside `test_cases[]`.
+        error_stack:
+          type: string
+          nullable: true
+        test_cases:
+          type: array
+          description: |
+            OPTIONAL framework-specific per-test-case detail. When present,
+            mirrors the shape of rows in the existing `test_cases` table.
+            Stored as JSONB on the orchestration `attempts` record.
+          items:
+            $ref: '#/components/schemas/SpecResultTestCase'
+
+    CompleteRequest:
+      allOf:
+        - $ref: '#/components/schemas/CompositeIdentity'
+        - $ref: '#/components/schemas/WorkerIdentity'
+        - type: object
+          required: [results]
+          properties:
+            results:
+              type: array
+              minItems: 1
+              description: |
+                One entry per spec in the leased unit set. MUST cover every
+                spec; partial reports rejected. The orchestrator looks up the
+                worker's lease by (composite identity, gh_job_name, gh_job_id) —
+                no lease_id is required.
+              items:
+                $ref: '#/components/schemas/SpecResult'
+
+    CompleteResponse:
+      type: object
+      required: [accepted, late_report]
+      properties:
+        accepted:
+          type: boolean
+        late_report:
+          type: boolean
+          description: True if the report was received after the lease deadline.
+        unit_states_changed:
+          type: array
+          description: |
+            Empty when the report was late and unit state was already
+            terminal.
+          items:
+            type: object
+            required: [unit_id, new_state]
+            properties:
+              unit_id: { type: string, format: uuid }
+              new_state:
+                type: string
+                enum: [completed_pass, completed_fail, completed_skipped]
+
+    RunSnapshot:
+      allOf:
+        - $ref: '#/components/schemas/CompositeIdentity'
+        - type: object
+          required: [status, total_units, started_at, deadline, counts]
+          properties:
+            status:
+              type: string
+              enum: [in_progress, completed, timed_out]
+            total_units: { type: integer }
+            started_at: { type: string, format: date-time }
+            deadline: { type: string, format: date-time }
+            terminal_at:
+              type: string
+              format: date-time
+              nullable: true
+            counts:
+              type: object
+              required: [pending, leased, completed_pass, completed_fail, completed_skipped, abandoned]
+              properties:
+                pending: { type: integer }
+                leased: { type: integer }
+                completed_pass: { type: integer }
+                completed_fail: { type: integer }
+                completed_skipped: { type: integer }
+                abandoned: { type: integer }
+                retest_eligible:
+                  type: integer
+                  description: |
+                    Subset of `completed_fail` whose `fail_count` is still
+                    within `retest_budget` and could be re-leased. The run is
+                    `completed` only when this is zero alongside pending and
+                    leased. Always 0 when `retest_on_fail` was false.
+            units:
+              type: array
+              description: |
+                Per-dispatch-unit state, ordered by `dispatch_seq`. Each unit
+                addresses exactly one spec file. Returned by /begin (all
+                pending) and /status.
+              items: { $ref: '#/components/schemas/Unit' }
+
+    Unit:
+      type: object
+      required: [id, dispatch_seq, spec_path, state, lease_count, fail_count, attempts]
+      properties:
+        id: { type: string, format: uuid }
+        dispatch_seq:
+          type: integer
+          description: Caller-supplied submission order; the FIFO checkout key.
+        spec_path:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum: [pending, leased, completed_pass, completed_fail, completed_skipped, abandoned]
+        lease_count:
+          type: integer
+          description: Total leases ever issued for this unit (timeouts + retests).
+        fail_count:
+          type: integer
+          description: Number of leases that completed with status=failed.
+        outcome_set_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the unit reached its current terminal outcome; null while non-terminal.
+        current_lease:
+          allOf: [ { $ref: '#/components/schemas/CurrentLease' } ]
+          nullable: true
+          description: Populated only while `state = leased`.
+        attempts:
+          type: array
+          description: Per-spec attempt history, oldest first. One row per (lease, spec_path).
+          items: { $ref: '#/components/schemas/Attempt' }
+
+    CurrentLease:
+      type: object
+      required: [id, gh_job_name, gh_job_id, issued_at, deadline]
+      properties:
+        id: { type: string, format: uuid }
+        gh_job_name: { type: string }
+        gh_job_id: { type: string }
+        issued_at: { type: string, format: date-time }
+        deadline: { type: string, format: date-time }
+
+    Attempt:
+      type: object
+      required: [id, lease_id, spec_path, late_report, expired, created_at, gh_job_name, gh_job_id]
+      properties:
+        id: { type: string, format: uuid }
+        lease_id: { type: string, format: uuid }
+        spec_path: { type: string }
+        status:
+          type: string
+          nullable: true
+          enum: [passed, failed, skipped, flaky, timedOut, interrupted]
+          description: Null until the worker reports; null also if the lease expired without a late report.
+        actual_duration_ms:
+          type: integer
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+          description: File-level error when present (e.g. setup failure).
+        reported_at:
+          type: string
+          format: date-time
+          nullable: true
+        late_report:
+          type: boolean
+          description: True if the worker reported after the lease deadline.
+        expired:
+          type: boolean
+          description: True once the reaper marked the lease expired (persists through any later late report).
+        created_at: { type: string, format: date-time }
+        gh_job_name: { type: string }
+        gh_job_id: { type: string }
+        test_cases:
+          type: array
+          nullable: true
+          description: |
+            Framework-specific per-test-case detail the worker supplied on
+            /complete. Mirrors SpecResultTestCase. Includes per-case
+            attachments — `attachments.screenshots[]` carries storage keys
+            previously returned by /api/v1/orchestration/screenshots so the
+            dashboard can render failure screenshots inline via /files/{key}.
+          items: { $ref: '#/components/schemas/SpecResultTestCase' }
+
     Error:
       type: object
       description: |
@@ -1185,6 +1984,11 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
     OAuthDisabled:
       description: GitHub OAuth not configured
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServiceUnavailable:
+      description: Service temporarily unavailable
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

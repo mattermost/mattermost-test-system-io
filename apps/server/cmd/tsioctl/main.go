@@ -18,6 +18,7 @@ func main() {
 	}
 	root.AddCommand(keyscmd.New())
 	root.AddCommand(dbcmd.New())
+	root.AddCommand(newOrchestrationCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

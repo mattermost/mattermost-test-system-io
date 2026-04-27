@@ -23,6 +23,13 @@ const (
 
 	prefixLen = 8
 	secretLen = 22 // base62-ish; 128 bits of entropy
+
+	// PlaintextPrefix is the literal token marker carried at the start of every
+	// issued plaintext key. Its purpose is to give secret-scanning tooling a
+	// stable, recognizable shape so leaks are caught before they propagate.
+	// The argon2id hash covers the full prefixed plaintext, so existing keys
+	// minted before this prefix existed are intentionally invalidated.
+	PlaintextPrefix = "tsio_key_"
 )
 
 // Issued represents a freshly minted API key. PlainText is shown once; never
@@ -33,9 +40,12 @@ type Issued struct {
 	Hash      string // argon2id-encoded
 }
 
-// Issue produces a new API key: "<prefix>.<secret>", where prefix is 8 chars
-// of URL-safe random material, and secret is 22 chars of URL-safe random.
-// Returns the plaintext, the lookup prefix, and the argon2id-encoded hash.
+// Issue produces a new API key: "tsio_key_<prefix>.<secret>", where prefix is
+// 8 chars of URL-safe random material and secret is 22 chars of URL-safe
+// random. The literal "tsio_key_" front-matter exists so secret-scanning
+// tooling can flag leaks. Returns the plaintext, the lookup prefix, and the
+// argon2id-encoded hash (which covers the full plaintext including the
+// literal prefix).
 func Issue() (Issued, error) {
 	prefix, err := randomBase62(prefixLen)
 	if err != nil {
@@ -45,7 +55,7 @@ func Issue() (Issued, error) {
 	if err != nil {
 		return Issued{}, err
 	}
-	plaintext := prefix + "." + secret
+	plaintext := PlaintextPrefix + prefix + "." + secret
 	hash, err := hashArgon2id(plaintext)
 	if err != nil {
 		return Issued{}, err
@@ -63,16 +73,21 @@ func Verify(plaintext, encodedHash string) bool {
 	return subtle.ConstantTimeCompare(got, wantKey) == 1
 }
 
-// ParsePlaintext splits "<prefix>.<secret>"; returns (prefix, "", false) when malformed.
+// ParsePlaintext splits "tsio_key_<prefix>.<secret>"; returns ("", "", false)
+// when the literal prefix is absent or the body shape is wrong.
 func ParsePlaintext(plaintext string) (prefix, secret string, ok bool) {
-	i := strings.IndexByte(plaintext, '.')
+	body, found := strings.CutPrefix(plaintext, PlaintextPrefix)
+	if !found {
+		return "", "", false
+	}
+	i := strings.IndexByte(body, '.')
 	if i != prefixLen {
 		return "", "", false
 	}
-	if len(plaintext)-i-1 != secretLen {
+	if len(body)-i-1 != secretLen {
 		return "", "", false
 	}
-	return plaintext[:i], plaintext[i+1:], true
+	return body[:i], body[i+1:], true
 }
 
 // randomBase62 returns n base62 chars (0-9 A-Z a-z) of entropy.

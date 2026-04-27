@@ -24,7 +24,12 @@ Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or 
 - `GET /api/v1/reports/{id}/json` — raw Playwright JSON, 302 → presigned S3 (public)
 - Stateless upload (auth): `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots` → `complete`
 - `GET /api/v1/artifacts/{id}` — 302 → presigned S3 (auth required)
-- `GET /api/v1/ws` — WebSocket for live ingest progress (anonymous)
+- `POST /api/v1/orchestration/begin` — register a run with composite identity + dispatch units (idempotent on identity + units hash)
+- `POST /api/v1/orchestration/checkout` — atomically dispatch up to N units to a worker (worker identified by gh_job_name + gh_job_id)
+- `POST /api/v1/orchestration/complete` — report per-spec results for a worker's lease (late reports accepted; idempotent on (run, gh_job_id))
+- `POST /api/v1/orchestration/screenshots` — upload an orchestration-flow screenshot under the `orchestration/` key prefix
+- `GET /api/v1/orchestration/status` — poll run status by composite identity (`?repository=...&commit_sha=...&gh_run_id=...&name=...&gh_run_attempt=...`)
+- `GET /api/v1/ws` — WebSocket for live ingest progress (anonymous); orchestration subscribers send `subscribe.orchestration` / `unsubscribe.orchestration` frames and receive `orchestration.run.started`, `orchestration.unit.leased`, `orchestration.unit.completed`, `orchestration.lease.expired`, `orchestration.run.completed`, `orchestration.run.timed_out` events
 - `POST /api/v1/auth/github/start`, `GET /api/v1/auth/github/callback`, `POST /api/v1/auth/logout`
 - `/swagger-ui/` — hand-authored OpenAPI 3.1 spec browser
 - Legacy `POST /api/v1/reports` bundle upload now returns 410 Gone.

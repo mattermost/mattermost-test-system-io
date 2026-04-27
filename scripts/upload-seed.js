@@ -465,16 +465,13 @@ function getScreenshotFiles(screenshotsDir) {
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
 
 /**
- * Build admin auth headers (used only for OIDC policy setup).
+ * Build admin auth headers. Used only by the OIDC policy bootstrap call,
+ * which requires the X-Admin-Key header — the OpenAPI validator rejects
+ * X-API-Key on this endpoint with a 400. Send X-Admin-Key unconditionally
+ * even when TSIO_API_KEY is also set in the env.
  */
 function getAdminAuthHeaders() {
-  const headers = {};
-  if (API_KEY) {
-    headers["X-API-Key"] = API_KEY;
-  } else {
-    headers["X-Admin-Key"] = ADMIN_KEY;
-  }
-  return headers;
+  return { "X-Admin-Key": ADMIN_KEY };
 }
 
 /**

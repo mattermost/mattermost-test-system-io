@@ -13,12 +13,12 @@ func TestIssueFormat(t *testing.T) {
 	if got, want := len(iss.Prefix), prefixLen; got != want {
 		t.Fatalf("prefix length = %d, want %d", got, want)
 	}
-	// plaintext is "<prefix>.<secret>" with prefix 8 chars + '.' + secret 22 chars
-	if got, want := len(iss.PlainText), prefixLen+1+secretLen; got != want {
+	// plaintext is "tsio_key_<prefix>.<secret>" — literal marker + 8 chars + '.' + 22 chars.
+	if got, want := len(iss.PlainText), len(PlaintextPrefix)+prefixLen+1+secretLen; got != want {
 		t.Fatalf("plaintext length = %d, want %d", got, want)
 	}
-	if !strings.HasPrefix(iss.PlainText, iss.Prefix+".") {
-		t.Fatalf("plaintext %q does not start with prefix+dot", iss.PlainText)
+	if !strings.HasPrefix(iss.PlainText, PlaintextPrefix+iss.Prefix+".") {
+		t.Fatalf("plaintext %q does not start with literal prefix + lookup-prefix + dot", iss.PlainText)
 	}
 	if !strings.HasPrefix(iss.Hash, "$argon2id$") {
 		t.Fatalf("hash is not argon2id-encoded: %q", iss.Hash)
@@ -41,7 +41,7 @@ func TestVerifyRejectsWrongSecret(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 	// Swap the tail while keeping the prefix — still well-formed, wrong secret.
-	tampered := iss.Prefix + "." + strings.Repeat("A", secretLen)
+	tampered := PlaintextPrefix + iss.Prefix + "." + strings.Repeat("A", secretLen)
 	if Verify(tampered, iss.Hash) {
 		t.Fatal("Verify accepted a wrong-secret plaintext")
 	}
@@ -65,7 +65,7 @@ func TestVerifyRejectsMalformedHash(t *testing.T) {
 }
 
 func TestParsePlaintext(t *testing.T) {
-	good := strings.Repeat("a", prefixLen) + "." + strings.Repeat("b", secretLen)
+	good := PlaintextPrefix + strings.Repeat("a", prefixLen) + "." + strings.Repeat("b", secretLen)
 	prefix, secret, ok := ParsePlaintext(good)
 	if !ok {
 		t.Fatal("ParsePlaintext failed on well-formed input")
@@ -76,12 +76,14 @@ func TestParsePlaintext(t *testing.T) {
 }
 
 func TestParsePlaintextRejectsBadShape(t *testing.T) {
+	body := strings.Repeat("a", prefixLen) + "." + strings.Repeat("b", secretLen)
 	cases := []string{
 		"",
 		"nodothere",
-		strings.Repeat("a", prefixLen+1) + "." + strings.Repeat("b", secretLen), // wrong prefix length
-		strings.Repeat("a", prefixLen) + "." + strings.Repeat("b", secretLen-1), // short secret
-		strings.Repeat("a", prefixLen) + "." + strings.Repeat("b", secretLen+1), // long secret
+		body, // missing the literal "tsio_key_" front-matter
+		PlaintextPrefix + strings.Repeat("a", prefixLen+1) + "." + strings.Repeat("b", secretLen), // wrong prefix length
+		PlaintextPrefix + strings.Repeat("a", prefixLen) + "." + strings.Repeat("b", secretLen-1), // short secret
+		PlaintextPrefix + strings.Repeat("a", prefixLen) + "." + strings.Repeat("b", secretLen+1), // long secret
 	}
 	for _, bad := range cases {
 		if _, _, ok := ParsePlaintext(bad); ok {

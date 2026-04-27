@@ -5,4 +5,6 @@ export {
   calculatePassRate,
   getPassRateColorClass,
   isRetestName,
+  resolveDisplayStats,
+  type DisplayStats,
 } from './utils';

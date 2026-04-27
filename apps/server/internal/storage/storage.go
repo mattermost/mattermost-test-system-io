@@ -30,6 +30,11 @@ type ObjectStore interface {
 	Put(ctx context.Context, key string, body io.Reader, contentType string, size int64) error
 	Get(ctx context.Context, key string) (io.ReadCloser, ObjectMeta, error)
 	Delete(ctx context.Context, key string) error
+	// List returns every object key under the given prefix. Paginates
+	// internally and accumulates results — only used by admin tooling that
+	// walks per-run subtrees, so callers should pass a sufficiently narrow
+	// prefix (e.g. `orchestration/<run_uuid>/`) to keep the result bounded.
+	List(ctx context.Context, prefix string) ([]string, error)
 	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 
@@ -119,6 +124,26 @@ func (s *s3Store) Delete(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	return err
+}
+
+func (s *s3Store) List(ctx context.Context, prefix string) ([]string, error) {
+	var keys []string
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(prefix),
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("s3 list %s: %w", prefix, err)
+		}
+		for _, obj := range page.Contents {
+			if obj.Key != nil {
+				keys = append(keys, *obj.Key)
+			}
+		}
+	}
+	return keys, nil
 }
 
 func (s *s3Store) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {

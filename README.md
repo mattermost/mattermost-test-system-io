@@ -1,6 +1,9 @@
 # Mattermost Test System IO
 
-API server and web dashboard for collecting, storing, and viewing Test Automation reports. Currently supports Playwright, Cypress, and Detox.
+API server and web dashboard for collecting, storing, and viewing Test
+Automation reports — and for orchestrating test-shard execution across an
+arbitrary number of CI workers. Currently supports Playwright, Cypress, and
+Detox for report ingestion; orchestration targets Playwright on GitHub Actions.
 
 ## Stack
 
@@ -41,7 +44,10 @@ Reads are public. Writes and admin endpoints require `X-API-Key`, `Authorization
 | `GET /api/v1/reports/{id}/json` | Raw Playwright JSON, presigned redirect (public) |
 | `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots` → `complete` | Stateless upload lifecycle (auth required) |
 | `GET /api/v1/artifacts/{id}` | Artifact download, presigned redirect (auth required) |
-| `GET /api/v1/ws` | WebSocket for live ingest progress (anonymous) |
+| `POST /api/v1/orchestration/begin` → `checkout` → `complete` | Test-shard orchestration: register a run by composite identity, dispatch units to workers, report results (auth required) |
+| `POST /api/v1/orchestration/screenshots` | Upload an orchestration-flow screenshot; resolvable via `/files/{key}` (auth required) |
+| `GET /api/v1/orchestration/status` | Poll a run's status by composite identity (auth required) |
+| `GET /api/v1/ws` | WebSocket for live ingest progress and orchestration events; clients send a `subscribe.orchestration` frame to receive run-scoped events (anonymous) |
 | `POST /api/v1/auth/github/start`, `GET /api/v1/auth/github/callback` | GitHub OAuth sign-in |
 | `POST /api/v1/auth/logout` | Clear session |
 | `/swagger-ui/` | Interactive OpenAPI browser |
@@ -62,7 +68,7 @@ make help              # Show all available targets
 make dev               # Run server + web concurrently
 make test              # Run all tests (unit + E2E)
 make test-server       # Go unit + integration (race detector)
-make test-server-e2e   # All -tags=e2e suites (admin_cli, oidc, contract) — needs Docker
+make test-server-e2e   # All -tags=e2e suites (admin_cli, oidc, contract, orchestration) — needs Docker
 make lint              # Run all linters (golangci-lint + oxlint)
 make fmt               # Format all code (gofmt + goimports + oxfmt)
 make build             # Build server binaries + web bundle

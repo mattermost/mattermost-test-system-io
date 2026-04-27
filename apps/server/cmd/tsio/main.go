@@ -20,6 +20,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/config"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/db"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/server"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/telemetry"
@@ -98,33 +99,49 @@ func run() error {
 	hub := events.NewHub()
 	publisher := &events.Publisher{Hub: hub}
 
+	orchestrationStore := &orchestration.Store{Pool: pool, Logger: logger}
+	orchestrationPublisher := &orchestration.Publisher{Hub: hub, Logger: logger}
+	reaper := &orchestration.Reaper{
+		Store:     orchestrationStore,
+		Publisher: orchestrationPublisher,
+		Logger:    logger,
+	}
+	if err := reaper.Start(ctx); err != nil {
+		// Log and continue: the reaper is a backstop for lease expiration;
+		// every checkout also lazily expires overdue leases inline.
+		logger.Error("orchestration reaper start", slog.String("error", err.Error()))
+	}
+	defer reaper.Stop()
+
 	handler := server.Build(server.Deps{
-		Logger:             logger,
-		Pool:               pool,
-		Store:              store,
-		APIKeys:            &apikey.Repo{Pool: pool},
-		Sessions:           &session.Manager{Pool: pool, TTL: cfg.SessionTTL},
-		Refresh:            &session.RefreshManager{Pool: pool, TTL: cfg.RefreshTokenTTL},
-		Policy:             &policy.Engine{Pool: pool},
-		OIDC:               oidcVerifier,
-		OAuth:              oauthFlow,
-		Hub:                hub,
-		Publisher:          publisher,
-		Version:            version,
-		CommitSHA:          commitSHA,
-		BuildTime:          buildTime,
-		AdminKey:           cfg.AdminKey,
-		UploadTimeoutMs:    cfg.UploadTimeoutMs,
-		HTMLViewEnabled:    cfg.HTMLViewEnabled,
-		SearchMinLength:    cfg.SearchMinLength,
-		Environment:        cfg.Environment,
-		RepoURL:            cfg.RepoURL,
-		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
-		OpenAPISpecPath:    "api/openapi.yaml",
-		PostLoginRedirect:  "/",
-		MaxUploadBytes:     cfg.MaxUploadBytes,
-		MaxArtifactBytes:   cfg.MaxArtifactBytes,
-		PresignTTL:         5 * time.Minute,
+		Logger:                 logger,
+		Pool:                   pool,
+		Store:                  store,
+		APIKeys:                &apikey.Repo{Pool: pool},
+		Sessions:               &session.Manager{Pool: pool, TTL: cfg.SessionTTL},
+		Refresh:                &session.RefreshManager{Pool: pool, TTL: cfg.RefreshTokenTTL},
+		Policy:                 &policy.Engine{Pool: pool},
+		OIDC:                   oidcVerifier,
+		OAuth:                  oauthFlow,
+		Hub:                    hub,
+		Publisher:              publisher,
+		OrchestrationStore:     orchestrationStore,
+		OrchestrationPublisher: orchestrationPublisher,
+		Version:                version,
+		CommitSHA:              commitSHA,
+		BuildTime:              buildTime,
+		AdminKey:               cfg.AdminKey,
+		UploadTimeoutMs:        cfg.UploadTimeoutMs,
+		HTMLViewEnabled:        cfg.HTMLViewEnabled,
+		SearchMinLength:        cfg.SearchMinLength,
+		Environment:            cfg.Environment,
+		RepoURL:                cfg.RepoURL,
+		CORSAllowedOrigins:     cfg.CORSAllowedOrigins,
+		OpenAPISpecPath:        "api/openapi.yaml",
+		PostLoginRedirect:      "/",
+		MaxUploadBytes:         cfg.MaxUploadBytes,
+		MaxArtifactBytes:       cfg.MaxArtifactBytes,
+		PresignTTL:             5 * time.Minute,
 	})
 
 	srv := &http.Server{

@@ -232,19 +232,19 @@ type RunWithUnits struct {
 // typically the HTTP handler).
 func (ci CompositeIdentity) Validate() error {
 	if ci.Repository == "" {
-		return fmt.Errorf("composite identity: repository is required")
+		return errors.New("composite identity: repository is required")
 	}
 	if ci.CommitSHA == "" {
-		return fmt.Errorf("composite identity: commit_sha is required")
+		return errors.New("composite identity: commit_sha is required")
 	}
 	if ci.GHRunID == "" {
-		return fmt.Errorf("composite identity: gh_run_id is required")
+		return errors.New("composite identity: gh_run_id is required")
 	}
 	if ci.Name == "" {
-		return fmt.Errorf("composite identity: name is required")
+		return errors.New("composite identity: name is required")
 	}
 	if ci.GHRunAttempt == "" {
-		return fmt.Errorf("composite identity: gh_run_attempt is required")
+		return errors.New("composite identity: gh_run_attempt is required")
 	}
 	if ci.Framework != Framework {
 		return fmt.Errorf("composite identity: framework must be %q, got %q", Framework, ci.Framework)

@@ -118,22 +118,22 @@ func (s *Store) AtomicCheckout(
 		return nil, nil, false, txErr
 	}
 	if lease == nil {
-		logEvent(s.Logger, ctx, "orchestration.checkout.empty", "orchestration checkout empty", run,
+		logEvent(ctx, s.Logger, "orchestration.checkout.empty", "orchestration checkout empty", run,
 			slog.String("gh_job_id", worker.GHJobID),
 			slog.String("gh_job_name", worker.GHJobName),
 			slog.Bool("is_retest", false),
 		)
-		logMetric(s.Logger, ctx, "orchestration_checkouts_total", "empty", 1)
+		logMetric(ctx, s.Logger, "orchestration_checkouts_total", "empty", 1)
 		return nil, nil, false, nil
 	}
-	logEvent(s.Logger, ctx, "orchestration.checkout.dispatched", "orchestration checkout dispatched", run,
+	logEvent(ctx, s.Logger, "orchestration.checkout.dispatched", "orchestration checkout dispatched", run,
 		slog.String("gh_job_id", worker.GHJobID),
 		slog.String("gh_job_name", worker.GHJobName),
 		slog.String("lease_id", lease.ID.String()),
 		slog.Int("unit_count", len(units)),
 		slog.Bool("is_retest", false),
 	)
-	logMetric(s.Logger, ctx, "orchestration_checkouts_total", "dispatched", 1)
+	logMetric(ctx, s.Logger, "orchestration_checkouts_total", "dispatched", 1)
 	return lease, units, false, nil
 }
 
@@ -255,15 +255,15 @@ func (s *Store) AtomicRetestCheckout(
 	if lease == nil {
 		return nil, nil, false, nil
 	}
-	logEvent(s.Logger, ctx, "orchestration.retest.dispatched", "orchestration retest dispatched", run,
+	logEvent(ctx, s.Logger, "orchestration.retest.dispatched", "orchestration retest dispatched", run,
 		slog.String("gh_job_id", worker.GHJobID),
 		slog.String("gh_job_name", worker.GHJobName),
 		slog.String("lease_id", lease.ID.String()),
 		slog.Int("unit_count", len(units)),
 		slog.Bool("is_retest", true),
 	)
-	logMetric(s.Logger, ctx, "orchestration_retests_total", "", 1)
-	logMetric(s.Logger, ctx, "orchestration_checkouts_total", "retest", 1)
+	logMetric(ctx, s.Logger, "orchestration_retests_total", "", 1)
+	logMetric(ctx, s.Logger, "orchestration_checkouts_total", "retest", 1)
 	return lease, units, true, nil
 }
 
@@ -436,7 +436,7 @@ func insertInitialAttemptsTx(
 		`, leaseID, u.ID, runID, u.SpecPath)
 	}
 	br := tx.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 	for i := range units {
 		if _, err := br.Exec(); err != nil {
 			return fmt.Errorf("insert attempts row %d: %w", i, err)

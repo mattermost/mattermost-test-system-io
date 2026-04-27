@@ -45,7 +45,7 @@ type Reaper struct {
 }
 
 // Start launches the reaper goroutine. It returns immediately; the goroutine
-// runs until the supplied ctx is cancelled or Stop is called. Calling Start
+// runs until the supplied ctx is canceled or Stop is called. Calling Start
 // twice is a no-op (the existing goroutine continues).
 func (r *Reaper) Start(ctx context.Context) error {
 	r.mu.Lock()
@@ -152,14 +152,14 @@ func (r *Reaper) expireOverdueLeases(ctx context.Context) error {
 			continue
 		}
 		if expired != nil && expired.Lease != nil {
-			logEventIdentity(r.Logger, ctx, "orchestration.lease.expired", "orchestration lease expired",
+			logEventIdentity(ctx, r.Logger, "orchestration.lease.expired", "orchestration lease expired",
 				expired.Lease.RunID, expired.Identity,
 				slog.String("gh_job_id", expired.Lease.Worker.GHJobID),
 				slog.String("gh_job_name", expired.Lease.Worker.GHJobName),
 				slog.String("lease_id", expired.Lease.ID.String()),
 				slog.Int("unit_count", len(expired.ReclaimedUnitIDs)),
 			)
-			logMetric(r.Logger, ctx, "orchestration_reclaims_total", "", 1)
+			logMetric(ctx, r.Logger, "orchestration_reclaims_total", "", 1)
 			if r.Publisher != nil {
 				r.Publisher.LeaseExpired(ctx, expired.Identity,
 					expired.Lease.Worker.GHJobName, expired.Lease.Worker.GHJobID,
@@ -208,7 +208,7 @@ func (r *Reaper) markTimedOutRuns(ctx context.Context) error {
 			continue
 		}
 		if out != nil && out.TerminalAt != nil {
-			logEventIdentity(r.Logger, ctx, "orchestration.run.timed_out", "orchestration run timed out",
+			logEventIdentity(ctx, r.Logger, "orchestration.run.timed_out", "orchestration run timed out",
 				id, out.Identity,
 				slog.String("from_state", RunStatusInProgress),
 				slog.String("to_state", RunStatusTimedOut),

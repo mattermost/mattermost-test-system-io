@@ -1,6 +1,6 @@
 package orchestration
 
-// The meaningful behaviour of AtomicCheckout — the FIFO CTE that picks
+// The meaningful behavior of AtomicCheckout — the FIFO CTE that picks
 // 'pending' dispatch_units in dispatch_seq order, the FOR UPDATE SKIP LOCKED
 // concurrency, and the partial-unique-index rejection that surfaces as
 // ErrWorkerHasActiveLease — is inherently DB-coupled. Those paths are
@@ -75,7 +75,7 @@ func TestUnitStateCompletedFailConstant(t *testing.T) {
 
 // TestAtomicRetestCheckout_PackageCompiles is a placeholder that confirms the
 // retest-dispatch entry point has the documented (lease, units, isRetest, err)
-// signature. The meaningful retest behaviour — the dispatch CTE, the
+// signature. The meaningful retest behavior — the dispatch CTE, the
 // first-pass-complete gate, and the counter-update math — is inherently
 // DB-coupled; the e2e suite under tests/e2e/orchestration exercises those
 // paths against a real Postgres testcontainer.
@@ -84,7 +84,7 @@ func TestAtomicRetestCheckout_PackageCompiles(t *testing.T) {
 	// Compile-time assertion via a function value reference. If the signature
 	// of AtomicRetestCheckout drifts from the documented contract, this file
 	// will fail to compile and the test won't run.
-	var _ func(*Store) = func(s *Store) {
+	var _ = func(s *Store) {
 		_ = s.AtomicRetestCheckout
 	}
 }

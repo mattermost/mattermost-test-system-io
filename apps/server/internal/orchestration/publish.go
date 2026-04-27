@@ -1,4 +1,4 @@
-// Package orchestration's Publisher emits the live state-change events
+// Package orchestration provides a Publisher that emits live state-change events
 // consumed by the WebSocket Orchestration tab. Backed by internal/events Hub.
 //
 // Design note: orchestration.CompositeIdentity is a SUPERSET of

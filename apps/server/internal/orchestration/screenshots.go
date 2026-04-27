@@ -45,10 +45,10 @@ func (s *Store) StoreScreenshot(
 	store storage.ObjectStore,
 ) (string, error) {
 	if specPath == "" {
-		return "", fmt.Errorf("orchestration screenshot: spec_path is required")
+		return "", errors.New("orchestration screenshot: spec_path is required")
 	}
 	if relativePath == "" {
-		return "", fmt.Errorf("orchestration screenshot: relative_path is required")
+		return "", errors.New("orchestration screenshot: relative_path is required")
 	}
 
 	run, err := s.FindRunByIdentity(ctx, identity)
@@ -76,13 +76,13 @@ func (s *Store) StoreScreenshot(
 	if err := store.Put(ctx, key, body, contentType, size); err != nil {
 		return "", fmt.Errorf("orchestration screenshot put: %w", err)
 	}
-	logEvent(s.Logger, ctx, "orchestration.screenshot.uploaded", "orchestration screenshot uploaded", run,
+	logEvent(ctx, s.Logger, "orchestration.screenshot.uploaded", "orchestration screenshot uploaded", run,
 		slog.String("gh_job_id", worker.GHJobID),
 		slog.String("lease_id", lease.ID.String()),
 		slog.String("spec_path", specPath),
 		slog.Int64("size_bytes", size),
 	)
-	logMetric(s.Logger, ctx, "orchestration_screenshot_uploads_total", "", 1)
+	logMetric(ctx, s.Logger, "orchestration_screenshot_uploads_total", "", 1)
 	return key, nil
 }
 

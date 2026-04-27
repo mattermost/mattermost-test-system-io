@@ -103,7 +103,7 @@ func Start(t *testing.T) *Env {
 	store := NewFakeStore()
 
 	hub := events.NewHub()
-	var logOut io.Writer = io.Discard
+	var logOut = io.Discard
 	if os.Getenv("TSIO_TEST_LOG") == "1" {
 		logOut = os.Stderr
 	}

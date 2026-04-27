@@ -31,7 +31,7 @@ import (
 // logEvent emits a structured Info line for a state-changing event. attrs are
 // appended after the canonical event/run/identity attributes. No-op when
 // logger is nil.
-func logEvent(logger *slog.Logger, ctx context.Context, event, message string, run *Run, attrs ...slog.Attr) {
+func logEvent(ctx context.Context, logger *slog.Logger, event, message string, run *Run, attrs ...slog.Attr) {
 	if logger == nil {
 		return
 	}
@@ -53,7 +53,7 @@ func logEvent(logger *slog.Logger, ctx context.Context, event, message string, r
 // logEventIdentity is the variant used when the caller has a CompositeIdentity
 // and a run UUID but not a fully hydrated Run (e.g. the reaper's lease and
 // run-timeout paths).
-func logEventIdentity(logger *slog.Logger, ctx context.Context, event, message string, runID uuid.UUID, identity CompositeIdentity, attrs ...slog.Attr) {
+func logEventIdentity(ctx context.Context, logger *slog.Logger, event, message string, runID uuid.UUID, identity CompositeIdentity, attrs ...slog.Attr) {
 	if logger == nil {
 		return
 	}
@@ -73,7 +73,7 @@ func logEventIdentity(logger *slog.Logger, ctx context.Context, event, message s
 // logMetric emits a slog-based counter increment. name is the metric name,
 // outcome is an optional partition label ("" omits it), and value is the
 // delta (typically 1). No-op when logger is nil.
-func logMetric(logger *slog.Logger, ctx context.Context, name, outcome string, value int) {
+func logMetric(ctx context.Context, logger *slog.Logger, name, outcome string, value int) {
 	if logger == nil {
 		return
 	}

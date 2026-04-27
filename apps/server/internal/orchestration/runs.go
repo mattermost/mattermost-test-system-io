@@ -62,7 +62,7 @@ func (s *Store) BeginRun(
 		return nil, false, nil, fmt.Errorf("orchestration begin: %w", err)
 	}
 	if len(specPaths) == 0 {
-		return nil, false, nil, fmt.Errorf("orchestration begin: dispatch_units must not be empty")
+		return nil, false, nil, errors.New("orchestration begin: dispatch_units must not be empty")
 	}
 	for i, p := range specPaths {
 		if p == "" {
@@ -70,7 +70,7 @@ func (s *Store) BeginRun(
 		}
 	}
 	if owner.OIDCSubject == nil && owner.APIKeyID == nil {
-		return nil, false, nil, fmt.Errorf("orchestration begin: owner is required")
+		return nil, false, nil, errors.New("orchestration begin: owner is required")
 	}
 
 	hash := identity.HashUnits(specPaths)
@@ -123,13 +123,13 @@ func (s *Store) BeginRun(
 		return nil, false, nil, txErr
 	}
 	if created {
-		logEvent(s.Logger, ctx, "orchestration.run.begin", "orchestration run started", existing,
+		logEvent(ctx, s.Logger, "orchestration.run.begin", "orchestration run started", existing,
 			slog.Int("unit_count", existing.Counts.Total),
 			slog.Int64("lease_timeout_ms", existing.LeaseTimeoutMs),
 			slog.Int64("run_timeout_ms", existing.RunTimeoutMs),
 			slog.Bool("retest_on_fail", existing.RetestOnFail),
 		)
-		logMetric(s.Logger, ctx, "orchestration_runs_started_total", "", 1)
+		logMetric(ctx, s.Logger, "orchestration_runs_started_total", "", 1)
 	}
 	return existing, created, seeded, nil
 }
@@ -505,7 +505,7 @@ func bulkInsertDispatchUnitsTx(
 		`, runID, i, sp)
 	}
 	br := tx.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 	for i := range specPaths {
 		if _, err := br.Exec(); err != nil {
 			return fmt.Errorf("insert dispatch_units[%d]: %w", i, err)

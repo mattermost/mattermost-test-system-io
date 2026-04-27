@@ -13,7 +13,7 @@
 // identity to the connection. A matching `unsubscribe.orchestration` frame
 // (same identity) tears that subscription down. A single connection may hold
 // multiple orchestration subscriptions concurrently alongside the default
-// feed; each is cancelled independently.
+// feed; each is canceled independently.
 package ws
 
 import (
@@ -90,7 +90,7 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, hub hubAPI) {
 	}
 
 	// forwardChan reads from a hub channel and relays each event to the wire
-	// until the channel closes or the connection ctx is cancelled. Tracked in
+	// until the channel closes or the connection ctx is canceled. Tracked in
 	// a WaitGroup so we can cleanly shut down on disconnect.
 	var wg sync.WaitGroup
 	forwardChan := func(ch <-chan events.Event) {
@@ -184,7 +184,7 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, hub hubAPI) {
 	}
 
 	// Reader loop: parse client control frames and act on them. A failed
-	// read (peer closed, ctx cancelled) tears down the connection so the
+	// read (peer closed, ctx canceled) tears down the connection so the
 	// forwarder goroutines unblock and exit.
 	for {
 		_, data, err := conn.Read(ctx)

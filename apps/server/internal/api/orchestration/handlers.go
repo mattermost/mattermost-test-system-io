@@ -579,7 +579,7 @@ func (h *Handlers) Screenshots(w http.ResponseWriter, r *http.Request) {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "cannot read file part")
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
@@ -647,10 +647,10 @@ func workerFromFields(f workerFields) (orchestration.WorkerIdentity, error) {
 	name := strings.TrimSpace(f.GHJobName)
 	id := strings.TrimSpace(f.GHJobID)
 	if name == "" {
-		return orchestration.WorkerIdentity{}, fmt.Errorf("gh_job_name is required")
+		return orchestration.WorkerIdentity{}, errors.New("gh_job_name is required")
 	}
 	if id == "" {
-		return orchestration.WorkerIdentity{}, fmt.Errorf("gh_job_id is required")
+		return orchestration.WorkerIdentity{}, errors.New("gh_job_id is required")
 	}
 	return orchestration.WorkerIdentity{GHJobName: name, GHJobID: id}, nil
 }

@@ -10,6 +10,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// CompleteOutcome summarizes the side-effects of a successful RecordCompletion
+// call. Handlers consume this to emit live events and to construct the HTTP
+// response.
+//
 // Counter invariants maintained across every state transition the
 // orchestration domain performs. All transitions are atomic with their
 // owning transaction; the per-row state column on dispatch_units is updated
@@ -45,10 +49,6 @@ import (
 // A timeout-driven re-lease (lease expired without a report) does NOT
 // increment fail_count — it is not a definitive failure. Only an explicit
 // `failed`/`timedOut`/`interrupted` status from a worker bumps fail_count.
-//
-// CompleteOutcome summarises the side-effects of a successful RecordCompletion
-// call. Handlers consume this to emit live events and to construct the HTTP
-// response.
 type CompleteOutcome struct {
 	LeaseID           uuid.UUID
 	LateReport        bool
@@ -84,11 +84,11 @@ func (s *Store) RecordCompletion(
 	// Idempotent path: if the lease is already released as 'completed', first
 	// answer wins (no DB mutation, no events).
 	if lease.ReleasedAt != nil && lease.ReleaseReason != nil && *lease.ReleaseReason == LeaseReleaseCompleted {
-		logEvent(s.Logger, ctx, "orchestration.complete.idempotent", "orchestration complete idempotent replay", run,
+		logEvent(ctx, s.Logger, "orchestration.complete.idempotent", "orchestration complete idempotent replay", run,
 			slog.String("gh_job_id", worker.GHJobID),
 			slog.String("lease_id", lease.ID.String()),
 		)
-		logMetric(s.Logger, ctx, "orchestration_completions_total", "late_idempotent", 1)
+		logMetric(ctx, s.Logger, "orchestration_completions_total", "late_idempotent", 1)
 		return &CompleteOutcome{
 			LeaseID:    lease.ID,
 			Idempotent: true,
@@ -205,7 +205,7 @@ func (s *Store) RecordCompletion(
 	}
 
 	for _, change := range stateChanges {
-		logEvent(s.Logger, ctx, "orchestration.complete.applied", "orchestration complete applied", run,
+		logEvent(ctx, s.Logger, "orchestration.complete.applied", "orchestration complete applied", run,
 			slog.String("gh_job_id", worker.GHJobID),
 			slog.String("lease_id", lease.ID.String()),
 			slog.String("unit_id", change.UnitID.String()),
@@ -213,11 +213,11 @@ func (s *Store) RecordCompletion(
 			slog.String("to_state", change.ToState),
 			slog.Bool("late_report", lateReport),
 		)
-		logMetric(s.Logger, ctx, "orchestration_completions_total", attemptOutcomeFromUnitState(change.ToState), 1)
+		logMetric(ctx, s.Logger, "orchestration_completions_total", attemptOutcomeFromUnitState(change.ToState), 1)
 	}
 	if runNowCompleted {
 		durationMs := time.Since(run.StartedAt).Milliseconds()
-		logEvent(s.Logger, ctx, "orchestration.run.completed", "orchestration run completed", run,
+		logEvent(ctx, s.Logger, "orchestration.run.completed", "orchestration run completed", run,
 			slog.String("from_state", RunStatusInProgress),
 			slog.String("to_state", RunStatusCompleted),
 			slog.Int64("duration_ms", durationMs),
@@ -347,7 +347,7 @@ func updateAttemptsForCompletionTx(
 		`, leaseID, r.SpecPath, r.Status, r.ActualDurationMs, r.ErrorMessage, r.ErrorStack, testCases, now, lateReport)
 	}
 	br := tx.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 	for i := 0; i < len(results); i++ {
 		if _, err := br.Exec(); err != nil {
 			return fmt.Errorf("update attempt row %d: %w", i, err)

@@ -22,6 +22,8 @@ const CookieName = "tsio_session"
 // recognizable shape so leaks are caught before they propagate. Both Issue
 // and Verify use the full prefixed token, so existing tokens minted before
 // this prefix existed are intentionally invalidated.
+//
+//nolint:gosec // G101: public session token prefix for scanners, not a secret.
 const TokenPrefix = "tsio_sess_"
 
 // Errors.

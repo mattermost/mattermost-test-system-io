@@ -41,12 +41,14 @@ All configuration is read from `TSIO_*` environment variables. The list below mi
 | `TSIO_SESSION_TTL` | No | `720h` | Session lifetime. |
 | `TSIO_REFRESH_TOKEN_TTL` | No | `720h` | Refresh-token lifetime. |
 | `TSIO_APIKEY_ROTATION_GRACE` | No | `24h` | Grace window during API-key rotation. |
-| `TSIO_ADMIN_KEY` | No | `dev-admin-key-do-not-use-in-production` | Gates privileged setup endpoints. MUST be overridden in production. |
+| `TSIO_ADMIN_KEY` | No | `dev-admin-key-do-not-use-in-production` | Gates privileged setup endpoints (e.g. `POST /api/v1/auth/oidc-policies`). MUST be overridden in production; staging/prod CDK auto-generate via Secrets Manager. |
+| `TSIO_BOOTSTRAP_OIDC_POLICIES` | No | — | Comma-separated `pattern=role` list seeded into `github_oidc_policies` at startup (`ON CONFLICT (name) DO NOTHING`). Used by ephemeral staging deploys to re-seed the org-wide CI grant after the DB is recreated. Example: `mattermost/*=uploader`. |
+| `TSIO_OPENAPI_SPEC_PATH` | No | `api/openapi.yaml` | Path to the OpenAPI spec used for request validation. Pinned to `/api/openapi.yaml` in this image. |
 | `TSIO_GITHUB_OAUTH_CLIENT_ID` | No | — | GitHub OAuth app client ID. Leave unset to disable human sign-in. |
 | `TSIO_GITHUB_OAUTH_CLIENT_SECRET` | No | — | GitHub OAuth app client secret. |
 | `TSIO_GITHUB_OAUTH_REDIRECT_URL` | No | — | OAuth redirect URL (e.g. `https://<host>/api/v1/auth/github/callback`). |
 | `TSIO_GITHUB_ACTIONS_OIDC_ISSUER` | No | `https://token.actions.githubusercontent.com` | OIDC issuer for CI workload auth. Empty disables OIDC. |
-| `TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE` | No | — | Expected `aud` claim. Empty disables aud validation; set in production. |
+| `TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE` | No | — | Expected `aud` claim. Empty disables aud validation; production sets `mattermost-test-system-io`. Workflows MUST request the same audience when minting tokens. |
 | `TSIO_MAX_UPLOAD_BYTES` | No | `1073741824` (1 GiB) | Max total upload size. |
 | `TSIO_MAX_ARTIFACT_BYTES` | No | `104857600` (100 MiB) | Max individual artifact size. |
 | `TSIO_ORCH_REAPER_INTERVAL_MS` | No | `5000` | Tick interval for the orchestration lease/run-timeout reaper. Lower values reclaim expired leases faster at the cost of more DB scans. |

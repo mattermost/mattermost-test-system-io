@@ -34,7 +34,7 @@ export class EcsPostgres extends Construct {
   constructor(scope: Construct, id: string, props: EcsPostgresProps) {
     super(scope, id);
 
-    const postgresVersion = props.postgresVersion ?? "18.1";
+    const postgresVersion = props.postgresVersion ?? "18.3";
     const cpu = props.cpu ?? 256;
     const memoryLimitMiB = props.memoryLimitMiB ?? 512;
     const ephemeralStorageGiB = props.ephemeralStorageGiB ?? 30;

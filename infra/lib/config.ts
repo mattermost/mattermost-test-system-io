@@ -45,7 +45,7 @@ export const APP_CONFIG: AppConfig = {
     desiredCount: 1,
     minimumHealthyPercent: 0,
     maximumPercent: 200,
-    postgresVersion: "18.1",
+    postgresVersion: "18.3",
     postgresEphemeralStorageGiB: 30,
   },
 

@@ -32,7 +32,7 @@ docker run --rm -p 8080:8080 \
   -e TSIO_S3_REGION=us-east-1 \
   -e TSIO_S3_FORCE_PATH_STYLE=true \
   -e TSIO_SESSION_SECRET=dev-session-secret-change-me \
-  -e TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=tsio \
+  -e TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=mattermost-test-system-io \
   mattermost-test-system-io:local
 
 # 4. Verify
@@ -101,7 +101,7 @@ docker run --rm -p 8080:8080 \
   -e TSIO_S3_REGION=us-east-1 \
   -e TSIO_S3_FORCE_PATH_STYLE=true \
   -e TSIO_SESSION_SECRET=dev-session-secret-change-me \
-  -e TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=tsio \
+  -e TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=mattermost-test-system-io \
   mattermost-test-system-io:local
 ```
 
@@ -149,7 +149,7 @@ TSIO_S3_SECRET_KEY=minioadmin
 TSIO_S3_REGION=us-east-1
 TSIO_S3_FORCE_PATH_STYLE=true
 TSIO_SESSION_SECRET=dev-session-secret-change-me
-TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=tsio
+TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=mattermost-test-system-io
 ```
 
 Then run:

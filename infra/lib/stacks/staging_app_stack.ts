@@ -71,6 +71,19 @@ export class StagingAppStack extends cdk.Stack {
       },
     });
 
+    // Admin key gates POST /api/v1/auth/oidc-policies (and any future admin-only
+    // HTTP endpoints). Auto-generated; rotate via `aws secretsmanager
+    // put-secret-value ... && aws ecs update-service --force-new-deployment`.
+    const adminKey = new secretsmanager.Secret(this, "AdminKey", {
+      secretName: `${config.projectName}-staging-admin-key`,
+      description: "TSIO admin key (X-Admin-Key) — staging",
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: true,
+        includeSpace: false,
+      },
+    });
+
     const appService = new EcsAppService(this, "AppService", {
       environment: "staging",
       projectName: config.projectName,
@@ -99,10 +112,19 @@ export class StagingAppStack extends cdk.Stack {
         // require would fail SSL handshake.
         TSIO_DB_SSLMODE: "disable",
         TSIO_S3_BUCKET: bucket.bucket.bucketName,
+        // Enforce GitHub Actions OIDC `aud` claim. Workflows MUST request this
+        // exact audience or token validation fails.
+        TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE: "mattermost-test-system-io",
+        // Re-seed the org-wide CI policy on every deploy. Staging recreates
+        // its Postgres task on each deploy, so the github_oidc_policies row
+        // would otherwise have to be POSTed manually after every cdk deploy.
+        // Format: comma-separated `pattern=role`. ON CONFLICT DO NOTHING.
+        TSIO_BOOTSTRAP_OIDC_POLICIES: "mattermost/*=uploader",
       },
       secrets: {
         TSIO_DB_PASSWORD: ecs.Secret.fromSecretsManager(postgres.dbPasswordSecret),
         TSIO_SESSION_SECRET: ecs.Secret.fromSecretsManager(sessionSecret),
+        TSIO_ADMIN_KEY: ecs.Secret.fromSecretsManager(adminKey),
       },
       healthCheckGracePeriod: cdk.Duration.seconds(300),
       dbReadinessCheck: {

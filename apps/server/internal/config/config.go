@@ -61,6 +61,17 @@ type Config struct {
 	// that production MUST override.
 	AdminKey string `env:"TSIO_ADMIN_KEY" envDefault:"dev-admin-key-do-not-use-in-production"`
 
+	// Comma-separated `pattern=role` list applied as github_oidc_policies rows
+	// at startup (ON CONFLICT DO NOTHING on name). Typically used by ephemeral
+	// staging stacks that wipe the DB on each deploy; production seeds via the
+	// HTTP admin endpoint instead. Example: "mattermost/*=uploader".
+	BootstrapOIDCPolicies string `env:"TSIO_BOOTSTRAP_OIDC_POLICIES"`
+
+	// Path the OpenAPI request validator loads at startup. Relative paths are
+	// resolved against the process cwd. Production images set this to an
+	// absolute path so the file is discoverable regardless of WORKDIR.
+	OpenAPISpecPath string `env:"TSIO_OPENAPI_SPEC_PATH" envDefault:"api/openapi.yaml"`
+
 	MaxUploadBytes   int64 `env:"TSIO_MAX_UPLOAD_BYTES" envDefault:"1073741824"`  // 1 GiB
 	MaxArtifactBytes int64 `env:"TSIO_MAX_ARTIFACT_BYTES" envDefault:"104857600"` // 100 MiB
 

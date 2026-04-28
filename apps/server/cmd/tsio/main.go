@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
 	authoidc "github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oidc"
@@ -67,6 +68,13 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+
+	// Idempotent OIDC policy bootstrap. Used by ephemeral staging deploys to
+	// re-seed the org-wide CI grant after the database is recreated. Empty
+	// TSIO_BOOTSTRAP_OIDC_POLICIES is a no-op (production path).
+	if err := authapi.BootstrapPolicies(ctx, pool, cfg.BootstrapOIDCPolicies, logger); err != nil {
+		return fmt.Errorf("bootstrap oidc policies: %w", err)
+	}
 
 	store, err := storage.New(ctx, storage.Config{
 		Endpoint:       cfg.S3Endpoint,
@@ -137,7 +145,7 @@ func run() error {
 		Environment:            cfg.Environment,
 		RepoURL:                cfg.RepoURL,
 		CORSAllowedOrigins:     cfg.CORSAllowedOrigins,
-		OpenAPISpecPath:        "api/openapi.yaml",
+		OpenAPISpecPath:        cfg.OpenAPISpecPath,
 		PostLoginRedirect:      "/",
 		MaxUploadBytes:         cfg.MaxUploadBytes,
 		MaxArtifactBytes:       cfg.MaxArtifactBytes,

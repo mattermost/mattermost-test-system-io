@@ -61,7 +61,11 @@ COPY --from=go-builder /out/tsio /tsio
 COPY --from=go-builder /out/tsioctl /tsioctl
 COPY --from=go-builder /src/apps/server/api/openapi.yaml /api/openapi.yaml
 
-ENV TSIO_HTTP_LISTEN_ADDR=0.0.0.0:8080
+# Pin the OpenAPI path absolutely. The runtime image has no explicit WORKDIR
+# and the relative default ("api/openapi.yaml") had been resolving to the wrong
+# path on distroless, silently disabling request validation.
+ENV TSIO_HTTP_LISTEN_ADDR=0.0.0.0:8080 \
+    TSIO_OPENAPI_SPEC_PATH=/api/openapi.yaml
 EXPOSE 8080
 
 USER nonroot:nonroot

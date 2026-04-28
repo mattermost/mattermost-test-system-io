@@ -83,7 +83,7 @@ export class EcsAppService extends Construct {
       const dbPort = db.port ?? 5432;
       const dbUser = db.user ?? "tsio";
       const dbName = db.dbName ?? "tsio";
-      const pgImage = db.postgresImage ?? "postgres:18.1";
+      const pgImage = db.postgresImage ?? "postgres:18.3";
 
       const waitForDb = this.taskDefinition.addContainer("wait-for-db", {
         containerName: "wait-for-db",

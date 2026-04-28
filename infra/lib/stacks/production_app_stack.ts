@@ -56,6 +56,19 @@ export class ProductionAppStack extends cdk.Stack {
       },
     });
 
+    // Admin key gates POST /api/v1/auth/oidc-policies (and any future admin-only
+    // HTTP endpoints). Auto-generated; rotate via `aws secretsmanager
+    // put-secret-value ... && aws ecs update-service --force-new-deployment`.
+    const adminKey = new secretsmanager.Secret(this, "AdminKey", {
+      secretName: `${config.projectName}-production-admin-key`,
+      description: "TSIO admin key (X-Admin-Key) — production",
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: true,
+        includeSpace: false,
+      },
+    });
+
     const appService = new EcsAppService(this, "AppService", {
       environment: "production",
       projectName: config.projectName,
@@ -82,10 +95,14 @@ export class ProductionAppStack extends cdk.Stack {
         TSIO_DB_NAME: props.rdsDbName,
         TSIO_DB_SSLMODE: "require",
         TSIO_S3_BUCKET: props.bucket.bucketName,
+        // Enforce GitHub Actions OIDC `aud` claim. Workflows MUST request this
+        // exact audience or token validation fails.
+        TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE: "mattermost-test-system-io",
       },
       secrets: {
         TSIO_DB_PASSWORD: ecs.Secret.fromSecretsManager(props.rdsSecret, "password"),
         TSIO_SESSION_SECRET: ecs.Secret.fromSecretsManager(sessionSecret),
+        TSIO_ADMIN_KEY: ecs.Secret.fromSecretsManager(adminKey),
       },
       healthCheckGracePeriod: cdk.Duration.seconds(300),
     });

@@ -836,6 +836,60 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
+  /api/v1/orchestration/runs:
+    get:
+      tags: [orchestration]
+      summary: List runs matching a display identity
+      operationId: orchestrationListRuns
+      description: |
+        Lists every orchestration run matching the dashboard URL's display
+        identity: repository (full slug or trailing segment), commit_sha (full
+        or 7-char short SHA), name, and optional branch. Ordered newest-first
+        by created_at.
+
+        Used by the dashboard to resolve `/reports/<repo>/<branch>/<commit>/
+        <name>` to a specific gh_run_id when the URL doesn't carry one. The
+        client picks a single run when exactly one matches, or renders a
+        chooser when multiple do.
+
+        Each entry is a RunSnapshot — call /orchestration/status with a
+        fully-qualified identity for per-unit detail.
+      parameters:
+        - in: query
+          name: repository
+          required: true
+          schema: { type: string }
+          description: Full slug ("owner/repo") or trailing segment alone.
+        - in: query
+          name: commit_sha
+          required: true
+          schema: { type: string, minLength: 7 }
+          description: Full or 7-char short SHA.
+        - in: query
+          name: name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: branch
+          required: false
+          schema: { type: string }
+          description: When omitted (or empty), matches any branch.
+      responses:
+        '200':
+          description: Matching runs (possibly empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RunSnapshot'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /api/v1/artifacts/{id}:
     parameters:
       - in: path

@@ -164,6 +164,12 @@ func seedReportGroupTx(ctx context.Context, tx pgx.Tx, identity CompositeIdentit
 
 // GetRunSnapshot returns a stable read of the run identified by ci. Used by
 // the run-status endpoint and the live-events bootstrap path.
+//
+// The repository field accepts both the full GitHub slug ("owner/repo", what
+// CI workers send from their OIDC token) and the trailing segment alone
+// ("repo", what the dashboard URL carries — see filtered_report_page.tsx and
+// the matching aggregations.go suffix-match). Both forms map to the same
+// row when only one repo with that trailing segment exists in the table.
 func (s *Store) GetRunSnapshot(ctx context.Context, ci CompositeIdentity) (*Run, error) {
 	row := s.Pool.QueryRow(ctx, runSelectByIdentity,
 		ci.Repository, ci.CommitSHA, ci.GHRunID, ci.Name, ci.GHRunAttempt)
@@ -202,6 +208,33 @@ func (s *Store) GetRunWithUnits(ctx context.Context, ci CompositeIdentity) (*Run
 	}
 
 	return &RunWithUnits{Run: run, Units: units}, nil
+}
+
+// ListRunsByDisplayIdentity returns every run matching the dashboard URL's
+// display-identity tuple: repository (full slug or trailing segment), commit
+// (full or 7-char short SHA), name, and optional branch. Ordered newest-first
+// by created_at so callers can pick the most recent without an extra sort.
+//
+// Used by the dashboard to resolve a bare /reports/<repo>/<branch>/<commit>/
+// <name> URL to a specific gh_run_id when the URL has no `?gh_run_id=` query
+// param — auto-selecting when exactly one match exists, surfacing a picker
+// when multiple do.
+func (s *Store) ListRunsByDisplayIdentity(ctx context.Context, repository, commitSHA, name, branch string) ([]*Run, error) {
+	rows, err := s.Pool.Query(ctx, runListByDisplayIdentity, repository, commitSHA, name, branch)
+	if err != nil {
+		return nil, fmt.Errorf("list runs by display identity: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*Run
+	for rows.Next() {
+		run, err := scanRunRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan run: %w", err)
+		}
+		out = append(out, run)
+	}
+	return out, rows.Err()
 }
 
 // fetchUnitsWithLeases returns units in dispatch_seq order with their current
@@ -307,6 +340,11 @@ func (s *Store) attachAttempts(ctx context.Context, runID uuid.UUID, units []Uni
 // segments). Other lengths intentionally miss so callers cannot search by
 // arbitrary prefixes. Stored values are always full SHAs, so the equality
 // branch and the substr branch never overlap for valid input.
+//
+// repository accepts the full slug ("owner/repo") OR the trailing segment
+// alone ("repo"). The full slug is what CI inserts (from the OIDC token);
+// the trailing segment is what the dashboard URL carries. Mirrors the
+// suffix-match in aggregations.go for /reports/consolidated.
 const runSelectByIdentity = `
 	SELECT id, repository, commit_sha, gh_run_id, name, gh_run_attempt,
 	       framework, branch, gh_pr_number, playwright_project,
@@ -318,11 +356,34 @@ const runSelectByIdentity = `
 	       dispatch_units_hash, started_at, deadline, terminal_at,
 	       owner_oidc_subject, owner_api_key_id, created_at, updated_at
 	  FROM orchestration_runs
-	 WHERE repository = $1
+	 WHERE (repository = $1 OR repository LIKE '%/' || $1)
 	   AND (commit_sha = $2 OR substr(commit_sha, 1, 7) = $2)
 	   AND gh_run_id = $3
 	   AND name = $4 AND gh_run_attempt = $5
 	 LIMIT 1
+`
+
+// runListByDisplayIdentity selects multiple runs that match a dashboard URL
+// identity: repository accepts the full slug or trailing segment, commit_sha
+// accepts the full SHA or its 7-char prefix, branch is filtered when supplied
+// (an empty string matches any branch). Newest-first by created_at so the
+// caller sees the latest run at index 0.
+const runListByDisplayIdentity = `
+	SELECT id, repository, commit_sha, gh_run_id, name, gh_run_attempt,
+	       framework, branch, gh_pr_number, playwright_project,
+	       lease_timeout_ms, run_timeout_ms,
+	       retest_on_fail, retest_budget, retest_eligible_count,
+	       status,
+	       pending_count, leased_count, completed_pass_count, completed_fail_count,
+	       completed_skipped_count, abandoned_count, total_units,
+	       dispatch_units_hash, started_at, deadline, terminal_at,
+	       owner_oidc_subject, owner_api_key_id, created_at, updated_at
+	  FROM orchestration_runs
+	 WHERE (repository = $1 OR repository LIKE '%/' || $1)
+	   AND (commit_sha = $2 OR substr(commit_sha, 1, 7) = $2)
+	   AND name = $3
+	   AND ($4 = '' OR branch = $4)
+	 ORDER BY created_at DESC
 `
 
 // scanRunRow scans a row produced by runSelectByIdentity (or any equivalent

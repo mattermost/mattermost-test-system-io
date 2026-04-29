@@ -159,7 +159,7 @@ export interface TestSuite {
   report_id?: string;
   report_name?: string;
   report_number?: number;
-  specs_count: number;
+  tests_count: number;
   passed_count: number;
   failed_count: number;
   flaky_count?: number;

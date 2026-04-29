@@ -418,7 +418,7 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
             )}
             {total > 0 && (
               <span className="text-gray-600 dark:text-gray-300">
-                {total} {total === 1 ? 'spec' : 'specs'}
+                {total} {total === 1 ? 'test' : 'tests'}
               </span>
             )}
             {passed > 0 && (
@@ -784,7 +784,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
     );
   }
 
-  const headerCount = `${allRows.length}`;
+  const headerCount = allRows.length;
 
   // Spec-file-level pass/fail counts for the header summary chip. Flaky
   // suites land in effectiveState='completed_pass' so they roll into the
@@ -814,7 +814,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
               statusFilter === 'all' && !normalizedSearch ? 'bg-gray-200 dark:bg-gray-600' : ''
             }`}
           >
-            Test Suites ({headerCount})
+            {headerCount} {headerCount === 1 ? 'spec' : 'specs'}
           </button>
           {specPassed > 0 && (
             <button
@@ -874,7 +874,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
                   : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
               }`}
             >
-              All ({tcCounts.total})
+              {tcCounts.total} {tcCounts.total === 1 ? 'test' : 'tests'}
             </button>
             <button
               type="button"

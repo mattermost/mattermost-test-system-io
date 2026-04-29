@@ -206,7 +206,7 @@ export function TestSuitesView({
     const sorted = suites
       .filter((suite) => {
         // Skip empty suites (no specs extracted)
-        if (suite.specs_count === 0) return false;
+        if (suite.tests_count === 0) return false;
 
         // Report filter
         if (selectedReports.size > 0 && suite.report_id && !selectedReports.has(suite.report_id)) {
@@ -364,7 +364,7 @@ export function TestSuitesView({
     if (!reports || reports.length <= 1) return new Map<string, ReportBadge[]>();
     const map = new Map<string, ReportBadge[]>();
     for (const suite of suites) {
-      if (!suite.file_path || suite.specs_count === 0) continue;
+      if (!suite.file_path || suite.tests_count === 0) continue;
       const entry: ReportBadge = {
         report_number: suite.report_number ?? 0,
         report_name: suite.report_name || '',
@@ -493,7 +493,7 @@ export function TestSuitesView({
                 statusFilter === 'all' && !normalizedSearch ? 'bg-gray-200 dark:bg-gray-600' : ''
               }`}
             >
-              Test Suites ({deduplicatedSuites.length})
+              {deduplicatedSuites.length} {deduplicatedSuites.length === 1 ? 'spec' : 'specs'}
             </button>
             {specPassed > 0 && (
               <button
@@ -543,7 +543,7 @@ export function TestSuitesView({
                     : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
                 }`}
               >
-                All ({totalTests})
+                {totalTests} {totalTests === 1 ? 'test' : 'tests'}
               </button>
               <button
                 type="button"
@@ -815,7 +815,7 @@ export function TestSuitesView({
                 {formatDuration(stats.duration_ms)}
               </span>
               <span className="text-gray-600 dark:text-gray-300">
-                {stats.expected + stats.unexpected + stats.flaky + stats.skipped} specs
+                {stats.expected + stats.unexpected + stats.flaky + stats.skipped} tests
               </span>
               <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
                 <CheckCircle2 className="h-3 w-3" />
@@ -1076,7 +1076,9 @@ const SuiteRow = memo(function SuiteRow({
               <Clock className="h-3 w-3" />
               {formatDuration(suite.duration_ms || 0)}
             </span>
-            <span className="text-gray-600 dark:text-gray-300">{suite.specs_count} specs</span>
+            <span className="text-gray-600 dark:text-gray-300">
+              {suite.tests_count} {suite.tests_count === 1 ? 'test' : 'tests'}
+            </span>
             {suite.passed_count > 0 && (
               <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
                 <CheckCircle2 className="h-3 w-3" />
@@ -1126,7 +1128,7 @@ const SuiteRow = memo(function SuiteRow({
             </div>
           ) : (
             <p className="py-2 text-sm text-gray-500 dark:text-gray-400">
-              {statusFilter === 'all' ? 'No specs found' : `No ${statusFilter} specs`}
+              {statusFilter === 'all' ? 'No tests found' : `No ${statusFilter} tests`}
             </p>
           )}
         </div>

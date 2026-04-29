@@ -100,13 +100,15 @@ jobs:
           # 1. Find every spec file.
           SPECS=$(find tests -type f -name '*.spec.ts' | sort)
 
-          # 2. Pack them into dispatch_units. The simplest possible policy
-          #    (one spec per unit) is shown here; replace with weight-based
-          #    bin-packing if your suite has uneven spec runtimes.
+          # 2. Pack them into dispatch_units. Each unit addresses exactly one
+          #    spec file via `spec_path` (singular string per the
+          #    BeginRunRequest schema). To bundle multiple specs into a single
+          #    lease, repeat the unit, or change the discovery to emit one
+          #    object per spec — the orchestrator dispatches in FIFO order.
           UNITS=$(echo "$SPECS" | jq -R -s -c '
             split("\n")
             | map(select(length > 0))
-            | map({ spec_paths: [.] })
+            | map({ spec_path: . })
           ')
 
           # 3. Stash the units list for the begin step.
@@ -283,7 +285,9 @@ jobs:
             fi
 
             # Gather every spec_path across every unit in this lease.
-            SPEC_FILES=$(echo "$CHECKOUT_RESP" | jq -r '[.units[].spec_paths[]] | .[]')
+            # Each unit has a single `spec_path` (string) per the
+            # CheckoutResponse schema.
+            SPEC_FILES=$(echo "$CHECKOUT_RESP" | jq -r '.units[].spec_path')
             echo "Leased specs:"
             while IFS= read -r line; do
               [ -n "$line" ] && echo "  $line"

@@ -201,8 +201,12 @@ interface RepoGroupCardProps {
 }
 
 export function RepoGroupCard({ group }: RepoGroupCardProps) {
-  // Find the latest entry per unique consolidated key (url_path without gid)
-  // so non-latest entries get a gid query param
+  // Find the latest entry per unique consolidated key (url_path without query)
+  // so non-latest entries get a `gh_run_id` query param. Disambiguating by
+  // gh_run_id (rather than the report-group UUID via `gid`) keeps the URL
+  // human-readable and matches the GitHub Actions run id surfaced elsewhere
+  // in the UI; the orchestration tab and the consolidated view both pick up
+  // this query param at page-load time.
   const latestByKey = new Map<string, string>();
   for (const entry of group.runs) {
     const key = entry.url_path;
@@ -217,7 +221,13 @@ export function RepoGroupCard({ group }: RepoGroupCardProps) {
       <div className="divide-y divide-gray-50 dark:divide-gray-700/50">
         {group.runs.map((entry) => {
           const isLatest = entry.created_at === latestByKey.get(entry.url_path);
-          const urlPath = isLatest ? entry.url_path : `${entry.url_path}?gid=${entry.report_id}`;
+          // Latest entry keeps the bare URL; older entries with the same
+          // (repo, branch, commit, name) get a `gh_run_id` disambiguator.
+          // Fall back to `gid` when gh_run_id is missing (older rows).
+          const disambiguator = entry.gh_run_id
+            ? `gh_run_id=${encodeURIComponent(entry.gh_run_id)}`
+            : `gid=${entry.report_id}`;
+          const urlPath = isLatest ? entry.url_path : `${entry.url_path}?${disambiguator}`;
           const decoratedEntry = { ...entry, url_path: urlPath };
           return (
             <div key={entry.report_id}>

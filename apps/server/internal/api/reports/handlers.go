@@ -418,7 +418,7 @@ func (h *Handlers) Suites(w http.ResponseWriter, r *http.Request) {
 			"line":          line,
 			"col":           col,
 			"duration_ms":   dur,
-			"specs_count":   total,
+			"tests_count":   total,
 			"passed_count":  passed,
 			"failed_count":  failed,
 			"skipped_count": skipped,

@@ -481,6 +481,48 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// ListRuns serves GET /api/v1/orchestration/runs. Returns every run matching
+// the supplied display identity (repository may be the trailing segment alone,
+// matching aggregations.go's suffix-match convention; commit_sha may be a
+// 7-char short SHA). The dashboard uses this to resolve a single bare URL
+// like /reports/<repo>/<branch>/<commit>/<name> to a specific gh_run_id when
+// the URL doesn't carry one — avoiding the "page is empty until shards
+// upload" gap that the consolidated-report path otherwise introduces.
+//
+// Returned shape is run summaries only — no per-unit detail. Clients that
+// need the unit list call /orchestration/status with a fully-qualified
+// identity once they've picked a run.
+func (h *Handlers) ListRuns(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	repository := strings.TrimSpace(q.Get("repository"))
+	commitSHA := strings.TrimSpace(q.Get("commit_sha"))
+	name := strings.TrimSpace(q.Get("name"))
+	if repository == "" || commitSHA == "" || name == "" {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST",
+			"repository, commit_sha, and name are required")
+		return
+	}
+	branch := strings.TrimSpace(q.Get("branch"))
+
+	runs, err := h.Store.ListRunsByDisplayIdentity(r.Context(), repository, commitSHA, name, branch)
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+
+	out := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, runSnapshotPayload(run))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": out})
+}
+
+// Note for clients: when a single (repo, branch, commit, name) display
+// identity matches multiple gh_run_ids, the dashboard should auto-select if
+// exactly one match exists, otherwise present a chooser (one entry per
+// gh_run_id). The runs[] array surfaces enough metadata (status, started_at,
+// counts) for the chooser to be readable without a follow-up call.
+
 // Screenshots serves POST /api/v1/orchestration/screenshots. Streaming
 // multipart upload of a single screenshot tied to the worker's current or
 // most recent lease for the run.

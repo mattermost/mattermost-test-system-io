@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { useQueries } from '@tanstack/react-query';
 import {
@@ -6,6 +6,7 @@ import {
   useReportDetail,
   useReportSuites,
   useOrchestrationRun,
+  useOrchestrationRuns,
   fetchReportDetail,
   fetchReportSuites,
 } from '@/services/api';
@@ -95,20 +96,66 @@ export function FilteredReportPage() {
   const { data: report } = useReportDetail(latestReportId);
   const { data: suitesData, isLoading: isLoadingSuites } = useReportSuites(latestReportId);
 
+  // Auto-resolve gh_run_id when neither the URL nor the latest contributing
+  // report carries one. Hits /orchestration/runs to find every run matching
+  // the display identity (repo trailing-segment + branch + commit + name)
+  // and:
+  //   - exactly 1 match → stamps gh_run_id into the URL via setSearchParams
+  //     so the link becomes shareable and subsequent refreshes pick it up
+  //     directly without the extra round-trip,
+  //   - >1 matches      → leaves the URL alone so the page renders a chooser
+  //     (handled by orchestration_tab below),
+  //   - 0 matches       → no-op, falls through to the existing empty state.
+  // Disabled once any source provides a gh_run_id.
+  const need_resolve = !gh_run_id_param && !report?.gh_run_id;
+  const { data: candidate_runs } = useOrchestrationRuns(
+    {
+      repository: repo || '',
+      commit_sha: commit || '',
+      name: name || '',
+      branch: branch || undefined,
+    },
+    need_resolve,
+  );
+
+  const sole_candidate =
+    need_resolve && candidate_runs && candidate_runs.length === 1 ? candidate_runs[0] : undefined;
+  useEffect(() => {
+    if (!sole_candidate) return;
+    const next = new URLSearchParams(search_params);
+    next.set('gh_run_id', sole_candidate.gh_run_id);
+    if (sole_candidate.gh_run_attempt && !gh_run_attempt_param) {
+      next.set('gh_run_attempt', sole_candidate.gh_run_attempt);
+    }
+    setSearchParams(next, { replace: true });
+  }, [sole_candidate, search_params, setSearchParams, gh_run_attempt_param]);
+
   // Composite identity for the orchestration query. `gh_run_id` may arrive
-  // from either the URL search param (preferred, set by direct links) or the
-  // latest contributing report's metadata once the report fetch resolves.
-  // Only when both are absent will the orchestration query stay disabled.
+  // from the URL search param (preferred, set by direct links), the latest
+  // contributing report's metadata once the report fetch resolves, or the
+  // single auto-resolved candidate from /orchestration/runs (stamped into the
+  // URL by the effect above on its next render). Only when all three sources
+  // are absent does the orchestration query stay disabled.
+  const auto_resolved_run_id = sole_candidate?.gh_run_id;
   const orchestrationIdentity = useMemo<CompositeIdentity>(
     () => ({
       repository: repo || '',
       commit_sha: commit || '',
-      gh_run_id: gh_run_id_param || report?.gh_run_id || '',
+      gh_run_id: gh_run_id_param || report?.gh_run_id || auto_resolved_run_id || '',
       name: name || '',
       gh_run_attempt: gh_run_attempt_param ?? '1',
       branch: branch || undefined,
     }),
-    [repo, commit, gh_run_id_param, report?.gh_run_id, name, gh_run_attempt_param, branch],
+    [
+      repo,
+      commit,
+      gh_run_id_param,
+      report?.gh_run_id,
+      auto_resolved_run_id,
+      name,
+      gh_run_attempt_param,
+      branch,
+    ],
   );
 
   const { data: orchestrationRun } = useOrchestrationRun(orchestrationIdentity);

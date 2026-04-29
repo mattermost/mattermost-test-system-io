@@ -346,6 +346,70 @@ export function useOrchestrationRun(identity: CompositeIdentity) {
   });
 }
 
+// ─── Resolve gh_run_id from a display identity ─────────────────────────────
+
+/** Lighter shape returned by /orchestration/runs — RunSnapshot without units. */
+export interface OrchestrationRunSummary {
+  gh_run_id: string;
+  gh_run_attempt: string;
+  status: 'in_progress' | 'completed' | 'timed_out';
+  total_units: number;
+  started_at: string;
+  deadline: string;
+  terminal_at: string | null;
+  counts: RunSnapshot['counts'];
+}
+
+interface ListRunsResponse {
+  runs: OrchestrationRunSummary[];
+}
+
+export interface DisplayIdentity {
+  repository: string;
+  commit_sha: string;
+  name: string;
+  branch?: string;
+}
+
+/**
+ * List every orchestration run matching a display identity (repository may be
+ * the trailing segment alone, commit_sha may be a 7-char short SHA). Used by
+ * FilteredReportPage to resolve a bare URL to a specific gh_run_id when the
+ * URL doesn't carry one. Returns runs newest-first.
+ */
+export async function fetchOrchestrationRuns(
+  ident: DisplayIdentity,
+): Promise<OrchestrationRunSummary[]> {
+  const params = new URLSearchParams({
+    repository: ident.repository,
+    commit_sha: ident.commit_sha,
+    name: ident.name,
+  });
+  if (ident.branch) params.set('branch', ident.branch);
+  const response = await fetch(`${API_URL}/orchestration/runs?${params}`);
+  const body = await handleResponse<ListRunsResponse>(response);
+  return body.runs ?? [];
+}
+
+/** React Query hook backing the auto-resolve flow. Disabled when any of the
+ *  required identity fields are missing.
+ */
+export function useOrchestrationRuns(ident: DisplayIdentity, enabled = true) {
+  return useQuery<OrchestrationRunSummary[]>({
+    queryKey: [
+      'orchestration',
+      'runs',
+      ident.repository,
+      ident.commit_sha,
+      ident.name,
+      ident.branch ?? '',
+    ],
+    queryFn: () => fetchOrchestrationRuns(ident),
+    enabled: enabled && !!ident.repository && !!ident.commit_sha && !!ident.name,
+    staleTime: 5_000,
+  });
+}
+
 /**
  * Dev/admin mutation: begin a new orchestration run.
  *

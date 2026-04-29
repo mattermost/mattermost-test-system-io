@@ -16,6 +16,7 @@ import "github.com/go-chi/chi/v5"
 // without chi's "Mount on an existing path" guard tripping.
 func RegisterPublic(r chi.Router, h *Handlers) {
 	r.With(timingMiddleware(h.Logger, "status")).Get("/orchestration/status", h.Status)
+	r.With(timingMiddleware(h.Logger, "list")).Get("/orchestration/runs", h.ListRuns)
 }
 
 // Register mounts the write-side orchestration endpoints. The caller MUST

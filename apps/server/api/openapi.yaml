@@ -620,8 +620,11 @@ paths:
         attempting checkout while an active lease already exists for this
         worker returns 409.
 
-        If the queue is empty, returns 200 with `units: []` and
-        `queue_empty: true`; the worker SHOULD exit cleanly.
+        If there is no work right now, returns 200 with `units: []` and
+        `queue_empty: true`. The worker MUST consult `retry_after_ms`:
+        when present, sleep that long and re-poll (other workers are still
+        in flight or the retest pool is non-empty); when absent, the run
+        is finished and the worker SHOULD exit cleanly.
 
         Authentication: Uploader role; calling subject MUST match the run's
         owner (recorded at begin).
@@ -1706,9 +1709,20 @@ components:
         queue_empty:
           type: boolean
           description: |
-            True when there is no work for the calling worker — the run
-            has no pending units AND no retest-eligible units. The worker
-            SHOULD exit cleanly.
+            True when there is no work for the calling worker right now.
+            See `retry_after_ms`: when present, more work may still arrive
+            (other workers in flight, retest pool non-empty); the worker
+            SHOULD sleep that long and re-poll. When absent, the run has
+            no work outstanding anywhere — the worker SHOULD exit cleanly.
+        retry_after_ms:
+          type: integer
+          minimum: 0
+          description: |
+            Polling hint, only set when `queue_empty: true` AND the run
+            still has work that might be assignable to this worker on a
+            subsequent call (other workers leased, or retest pool not
+            empty). Workers SHOULD sleep this long and re-call /checkout
+            instead of exiting. Absent ⇒ truly nothing left, exit cleanly.
         is_retest:
           type: boolean
           default: false

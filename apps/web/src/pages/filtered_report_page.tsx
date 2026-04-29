@@ -344,7 +344,14 @@ export function FilteredReportPage() {
               return 'passed';
             }
             if (data?.overall_status === 'failed') return 'failed';
-            if (data?.overall_status === 'passed' || data?.overall_status === 'flaky') {
+            // A consolidated rollup with no recorded specs has nothing
+            // to verdict on yet — the in-flight reports row exists but
+            // no test_cases have been ingested. Skip the badge so the
+            // header doesn't claim "Passed" with 0 / 0.
+            if (
+              (data?.total_specs ?? 0) > 0 &&
+              (data?.overall_status === 'passed' || data?.overall_status === 'flaky')
+            ) {
               return 'passed';
             }
             return undefined;
@@ -375,7 +382,7 @@ export function FilteredReportPage() {
             }
             return 'completed';
           })()}
-          runStartedAt={orchestrationRun?.started_at}
+          runStartedAt={orchestrationRun?.started_at ?? report.created_at}
           firstCheckoutAt={(() => {
             // Earliest unit attempt across the whole run = the moment a
             // worker leased its first spec. Used to split the live "In
@@ -458,6 +465,15 @@ export function FilteredReportPage() {
                       const testResult = reportTestStatus.get(entry.id);
                       const isFailed = testResult === 'failed';
                       const isFlaky = testResult === 'flaky';
+                      // Workers in a matrix all share the same display name
+                      // base (e.g. "orch-worker") with a trailing index that
+                      // identifies the matrix slot (e.g. "orch-worker-3").
+                      // Split the suffix off so the chip's main label stays
+                      // compact across N workers and the slot number lives
+                      // in a small badge that color-matches the chip.
+                      const slotMatch = entry.display_name.match(/^(.*)-(\d+)$/);
+                      const baseLabel = slotMatch ? slotMatch[1] : entry.display_name;
+                      const slot = slotMatch ? slotMatch[2] : null;
                       return (
                         <a
                           key={entry.id}
@@ -481,7 +497,21 @@ export function FilteredReportPage() {
                           ) : (
                             <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
                           )}
-                          {entry.display_name}
+                          {baseLabel}
+                          {slot && (
+                            <span
+                              className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${
+                                isFailed
+                                  ? 'bg-red-200 text-red-800 dark:bg-red-800 dark:text-red-200'
+                                  : isFlaky
+                                    ? 'bg-yellow-200 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200'
+                                    : 'bg-gray-200 text-gray-800 dark:bg-gray-600 dark:text-gray-200'
+                              }`}
+                              title={entry.display_name}
+                            >
+                              {slot}
+                            </span>
+                          )}
                           <ExternalLink className="h-3 w-3 opacity-50" />
                         </a>
                       );

@@ -23,6 +23,11 @@ CREATE TABLE dispatch_units (
     -- runs.retest_budget for retest eligibility. Timeouts do NOT increment this
     -- — only definitive `failed` reports.
     fail_count       integer     NOT NULL DEFAULT 0,
+    -- Name of the worker that most recently leased this unit. Used by the
+    -- retest dispatch CTE to prefer NOT handing a unit back to the worker
+    -- that just failed it, while other workers in the run are still alive.
+    -- Populated on every state -> 'leased' transition (fresh + retest).
+    last_lease_gh_job_name text,
     outcome_set_at   timestamptz,
     created_at       timestamptz NOT NULL DEFAULT now(),
     updated_at       timestamptz NOT NULL DEFAULT now(),

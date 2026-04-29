@@ -259,7 +259,10 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 			slog.String("report_id", reportID.String()),
 			slog.String("error", extractErr.Error()))
 	}
-	h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
+	autoCompleted := h.tryAutoFinalize(r.Context(), groupID, reportID, "json")
+	if !autoCompleted {
+		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
+	}
 	if suiteCount > 0 {
 		h.Publisher.SuitesAvailable(reportID, suiteCount)
 	}
@@ -313,7 +316,9 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Debug("screenshots linked", slog.Int("count", linked), slog.String("report_id", reportID.String()))
 	}
 
-	h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
+	if !h.tryAutoFinalize(r.Context(), groupID, reportID, "screenshots") {
+		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"files_uploaded": uploaded,
@@ -764,4 +769,93 @@ func ssStartedIf(n int) *string {
 	}
 	s := "started"
 	return &s
+}
+
+// tryAutoFinalize self-heals the report group when an upload pipeline
+// step (json or screenshots) just landed. It first checks whether this
+// report's pipeline is now fully complete (json + optional screenshots),
+// and if so flips the row from `processing` to `complete` and publishes
+// ReportEntryUpdated("complete"). When that flip happens, it then
+// attempts to flip the parent group from `in_progress` to `completed`
+// (only when no sibling reports remain `processing`). Returns true when
+// the per-report flip occurred — callers should skip publishing the
+// usual ReportEntryUpdated("processing") event so the UI doesn't see a
+// "complete → processing" sequence.
+//
+// This is the per-report counterpart of the explicit
+// /api/v1/reports/complete cleanup. It is the safety net for runs where
+// /reports/complete fails (e.g. OIDC mint expired in the report job),
+// which would otherwise leave reports stuck at status='processing'
+// indefinitely.
+func (h *Handlers) tryAutoFinalize(ctx context.Context, groupID, reportID uuid.UUID, source string) bool {
+	flipped, err := tryAutoCompleteReport(ctx, h.Pool, reportID)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("auto-complete report failed",
+				slog.String("report_id", reportID.String()),
+				slog.String("source", source),
+				slog.String("error", err.Error()))
+		}
+		return false
+	}
+	if !flipped {
+		return false
+	}
+	h.Publisher.ReportEntryUpdated(groupID, reportID, "complete", time.Now().UTC())
+	if _, err := tryAutoCompleteGroup(ctx, h.Pool, groupID); err != nil && h.Logger != nil {
+		h.Logger.Warn("auto-complete group failed",
+			slog.String("group_id", groupID.String()),
+			slog.String("error", err.Error()))
+	}
+	return true
+}
+
+// tryAutoCompleteReport flips a report from `processing` to `complete` when
+// its upload pipeline has fully landed: json_upload_status='completed' AND
+// screenshots_upload_status is either 'completed' or NULL (no screenshots
+// were declared at /reports/register time). Idempotent — repeated calls on
+// an already-`complete` row affect zero rows. Returns true when this call
+// performed the flip; the caller publishes ReportEntryUpdated and considers
+// auto-completing the parent group. The /reports/complete endpoint remains
+// the explicit, group-wide cleanup; this function is the per-report
+// self-healing path so a missed or 401'd /reports/complete does not leave
+// rows stuck at `processing` forever.
+func tryAutoCompleteReport(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID) (bool, error) {
+	res, err := pool.Exec(ctx, `
+		UPDATE reports
+		   SET status = 'complete', updated_at = now()
+		 WHERE id = $1
+		   AND status = 'processing'
+		   AND json_upload_status = 'completed'
+		   AND (screenshots_upload_status IS NULL
+		        OR screenshots_upload_status = 'completed')
+	`, reportID)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() == 1, nil
+}
+
+// tryAutoCompleteGroup flips a report_group from `in_progress` to `completed`
+// once none of its child reports are still `processing`. Idempotent. Only
+// safe to call after at least one report under the group has reached a
+// terminal state — calling it on a freshly-created empty group would
+// short-circuit the NOT EXISTS predicate and prematurely mark the group
+// complete. The upload handlers gate this call on a successful per-report
+// auto-complete, which guarantees the row exists.
+func tryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) (bool, error) {
+	res, err := pool.Exec(ctx, `
+		UPDATE report_groups
+		   SET status = 'completed', updated_at = now()
+		 WHERE id = $1
+		   AND status = 'in_progress'
+		   AND NOT EXISTS (
+		       SELECT 1 FROM reports
+		        WHERE report_group_id = $1 AND status = 'processing'
+		   )
+	`, groupID)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() == 1, nil
 }

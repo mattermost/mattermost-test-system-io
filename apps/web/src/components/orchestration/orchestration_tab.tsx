@@ -718,6 +718,7 @@ type SpecListFilter =
   | 'spec_passed'
   | 'spec_failed'
   | 'spec_in_progress'
+  | 'spec_skipped'
   | 'test_passed'
   | 'test_failed'
   | 'test_flaky'
@@ -781,6 +782,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
           (statusFilter === 'spec_passed' && row.effectiveState === 'completed_pass') ||
           (statusFilter === 'spec_failed' && row.effectiveState === 'completed_fail') ||
           (statusFilter === 'spec_in_progress' && inProgress) ||
+          (statusFilter === 'spec_skipped' && row.effectiveState === 'completed_skipped') ||
           // Test-case-level: any test in the suite has the chosen status
           (statusFilter === 'test_passed' && row.testCounts.passed > 0) ||
           (statusFilter === 'test_failed' && row.testCounts.failed > 0) ||
@@ -836,6 +838,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
   // `pending` and `abandoned` rows render with their own visual cues
   // (gray clock and amber warning) and do not roll into this count.
   const specInProgress = allRows.filter((r) => r.effectiveState === 'leased').length;
+  const specSkipped = allRows.filter((r) => r.effectiveState === 'completed_skipped').length;
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
@@ -899,6 +902,21 @@ function SpecList({ run }: { run: RunSnapshot }) {
             >
               <Loader2 className="h-3 w-3 animate-spin" />
               {specInProgress}
+            </button>
+          )}
+          {specSkipped > 0 && (
+            <button
+              type="button"
+              onClick={() =>
+                setStatusFilter(statusFilter === 'spec_skipped' ? 'all' : 'spec_skipped')
+              }
+              title="Filter skipped suites"
+              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700 ${
+                statusFilter === 'spec_skipped' ? 'bg-gray-200 dark:bg-gray-600' : ''
+              }`}
+            >
+              <MinusCircle className="h-3 w-3" />
+              {specSkipped}
             </button>
           )}
         </h3>
@@ -1141,6 +1159,22 @@ export function OrchestrationTab({ identity }: OrchestrationTabProps) {
         ? 'timed_out'
         : 'completed';
 
+  // Earliest attempt.created_at across all units = the moment a worker
+  // first leased a spec. Fed into ReportSummary so the in-progress
+  // header can split its live duration into setup vs. running.
+  const firstCheckoutAt: string | null = (() => {
+    let earliest: number | null = null;
+    for (const u of run.units ?? []) {
+      for (const a of u.attempts ?? []) {
+        if (!a.created_at) continue;
+        const ms = Date.parse(a.created_at);
+        if (!Number.isFinite(ms)) continue;
+        if (earliest == null || ms < earliest) earliest = ms;
+      }
+    }
+    return earliest != null ? new Date(earliest).toISOString() : null;
+  })();
+
   return (
     <div className="space-y-6">
       <ReportSummary
@@ -1156,6 +1190,8 @@ export function OrchestrationTab({ identity }: OrchestrationTabProps) {
         createdAt={run.started_at}
         framework={run.framework}
         progressStatus={progressStatus}
+        runStartedAt={run.started_at}
+        firstCheckoutAt={firstCheckoutAt}
         repository={run.repository}
         branch={run.branch}
         commit={run.commit_sha}

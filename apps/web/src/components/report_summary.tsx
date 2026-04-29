@@ -275,63 +275,67 @@ export function ReportSummary(props: ReportSummaryProps) {
         )}
       </div>
 
-      {/* Row 2: Pass rate + stats + duration */}
-      <div className="flex items-center gap-3 mt-2">
-        {passRate !== null && (
-          <span
-            className={`rounded px-1.5 py-0.5 text-sm font-medium ${passRateColorClass}`}
-            title={statsTitle}
-          >
-            {passRate}%
-          </span>
-        )}
-        <span className="text-sm text-gray-600 dark:text-gray-300" title={statsTitle}>
-          <span className="font-medium">{passed}</span> passed
-          {failed > 0 && (
-            <>
-              {' / '}
-              <span className="font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300">
-                {failed} failed
-              </span>
-            </>
+      {/* Row 2: Pass rate + stats + duration. Suppressed entirely
+          when no specs have been recorded yet — "0 passed / 0 total"
+          on a fresh in-progress run is noise, not signal. */}
+      {total > 0 && (
+        <div className="flex items-center gap-3 mt-2">
+          {passRate !== null && (
+            <span
+              className={`rounded px-1.5 py-0.5 text-sm font-medium ${passRateColorClass}`}
+              title={statsTitle}
+            >
+              {passRate}%
+            </span>
           )}
-          {flaky > 0 && (
-            <>
-              {' / '}
-              <span className="font-medium px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300">
-                {flaky} flaky
-              </span>
-            </>
-          )}
-          {skipped > 0 && (
-            <>
-              {' / '}
-              <span className="font-medium">{skipped}</span> skipped
-            </>
-          )}
-          {' / '}
-          <span className="font-medium">{total}</span> total
-        </span>
-        {durationMs != null && (
-          <span
-            className="inline-flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400"
-            title={
-              retestDurationMs != null && retestDurationMs > 0
-                ? 'Parallel shard batch, then separate retest run'
-                : undefined
-            }
-          >
-            <Clock className="h-3.5 w-3.5" />
-            {formatDuration(durationMs)}
-            {retestDurationMs != null && retestDurationMs > 0 && (
-              <span className="text-gray-400 dark:text-gray-500">
-                {' + '}
-                {formatDuration(retestDurationMs)}
-              </span>
+          <span className="text-sm text-gray-600 dark:text-gray-300" title={statsTitle}>
+            <span className="font-medium">{passed}</span> passed
+            {failed > 0 && (
+              <>
+                {' / '}
+                <span className="font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300">
+                  {failed} failed
+                </span>
+              </>
             )}
+            {flaky > 0 && (
+              <>
+                {' / '}
+                <span className="font-medium px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300">
+                  {flaky} flaky
+                </span>
+              </>
+            )}
+            {skipped > 0 && (
+              <>
+                {' / '}
+                <span className="font-medium">{skipped}</span> skipped
+              </>
+            )}
+            {' / '}
+            <span className="font-medium">{total}</span> total
           </span>
-        )}
-      </div>
+          {durationMs != null && (
+            <span
+              className="inline-flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400"
+              title={
+                retestDurationMs != null && retestDurationMs > 0
+                  ? 'Parallel shard batch, then separate retest run'
+                  : undefined
+              }
+            >
+              <Clock className="h-3.5 w-3.5" />
+              {formatDuration(durationMs)}
+              {retestDurationMs != null && retestDurationMs > 0 && (
+                <span className="text-gray-400 dark:text-gray-500">
+                  {' + '}
+                  {formatDuration(retestDurationMs)}
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Row 3: Metadata (date, framework, report count, progress status) */}
       {hasMetadata && (
@@ -348,7 +352,7 @@ export function ReportSummary(props: ReportSummaryProps) {
               {framework.charAt(0).toUpperCase() + framework.slice(1)}
             </span>
           )}
-          {reportCount != null && (
+          {reportCount != null && reportCount + (retestReportCount ?? 0) > 0 && (
             <span
               className="inline-flex items-center gap-1"
               title={

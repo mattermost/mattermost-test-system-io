@@ -64,7 +64,7 @@ func (s *Store) AtomicCheckout(
 			return err
 		}
 
-		dispatched, err := dispatchPendingUnitsTx(ctx, tx, run.ID, l.ID, batchSize)
+		dispatched, err := dispatchPendingUnitsTx(ctx, tx, run.ID, l.ID, worker.GHJobName, batchSize)
 		if err != nil {
 			return err
 		}
@@ -140,17 +140,24 @@ func (s *Store) AtomicCheckout(
 }
 
 // AtomicRetestCheckout is the retest variant of AtomicCheckout — re-leases a
-// previously-failed unit (within retest_budget). Any worker that calls this
-// path is eligible, including the worker that previously failed the unit;
-// the simpler "any worker may retest" semantics keep single-worker queues
-// from stalling on a failed unit. Lazy and gated on first-pass completion:
-// the run must have zero pending and zero leased units before any retest
-// is dispatched. The retest budget is per-unit (fail_count <= retest_budget).
+// previously-failed unit (within retest_budget). Lazy and gated on first-pass
+// dispatch completion: the run must have zero pending units (no fresh work
+// remaining to hand out) before any retest is dispatched. Workers still
+// running their last fresh-pass spec are NOT a barrier — as soon as a fresh
+// finisher reports, surviving workers all become eligible to pull from the
+// retest pool, so the retests parallelize. The dispatch SQL prefers handing
+// a unit to a worker that didn't last fail it (worker-fairness via ORDER
+// BY), and falls back to self-retest naturally when no other candidate is
+// left — single-worker runs and "last surviving worker" both progress. The
+// retest budget is per-unit (fail_count <= retest_budget).
 //
 // Returns the zero value (lease=nil, units=nil, isRetest=false, err=nil)
 // when there is no retest-eligible work — either because retest is
-// disabled, first-pass is not yet complete, or no eligible units remain.
-// The caller maps this to a queue_empty: true response.
+// disabled, first-pass dispatch is not yet complete, or no eligible units
+// remain for this caller. The caller maps this to a queue_empty: true
+// response and uses the run's current counts to decide whether to set
+// retry_after_ms (more might still come from in-flight workers) or let
+// the worker exit.
 //
 // Returns ErrRunNotInProgress when the run has reached a terminal state
 // and ErrWorkerHasActiveLease when the partial unique index on
@@ -172,11 +179,15 @@ func (s *Store) AtomicRetestCheckout(
 	if run.Status != RunStatusInProgress {
 		return nil, nil, false, ErrRunNotInProgress
 	}
-	// Retest gating: must be enabled, first-pass complete, and retest pool non-empty.
+	// Retest gating: must be enabled, fresh-pool exhausted (pending == 0),
+	// and retest pool non-empty. Other workers may still be leased on their
+	// last fresh-pass spec — that's intentional: as soon as the fresh queue
+	// is dry, every surviving worker can pull from the retest pool, so the
+	// retests run in parallel rather than serialized on the slowest finisher.
 	if !run.RetestOnFail {
 		return nil, nil, false, nil
 	}
-	if run.Counts.Pending != 0 || run.Counts.Leased != 0 {
+	if run.Counts.Pending != 0 {
 		return nil, nil, false, nil
 	}
 	if run.Counts.RetestEligible <= 0 {
@@ -194,7 +205,7 @@ func (s *Store) AtomicRetestCheckout(
 			return err
 		}
 
-		dispatched, err := dispatchRetestUnitsTx(ctx, tx, run.ID, l.ID, batchSize)
+		dispatched, err := dispatchRetestUnitsTx(ctx, tx, run.ID, l.ID, worker.GHJobName, batchSize)
 		if err != nil {
 			return err
 		}
@@ -271,15 +282,27 @@ func (s *Store) AtomicRetestCheckout(
 }
 
 // dispatchRetestUnitsTx is the retest-dispatch CTE: pick `completed_fail`
-// units whose fail_count is still within the run's retest_budget, order
-// them by dispatch_seq, lock with FOR UPDATE SKIP LOCKED, and flip them
-// back to `leased` under the supplied leaseID. Any caller is eligible —
-// retest no longer excludes the worker that previously failed the unit,
-// so single-worker queues continue to make progress on retest.
+// units whose fail_count is still within the run's retest_budget, prefer
+// units NOT last leased by the calling worker, then FIFO by dispatch_seq,
+// lock with FOR UPDATE SKIP LOCKED, and flip them back to `leased` under
+// the supplied leaseID.
+//
+// Worker-fairness ORDER BY: rows where last_lease_gh_job_name = caller
+// sort AFTER rows where it differs (or is NULL), so as long as another
+// worker's failure is retest-eligible, this caller gets that one first.
+// When the caller is the only candidate left (single-worker run, or last
+// surviving worker after others exited), self-retest happens automatically
+// with no separate fallback path.
+//
+// Gate: r.pending_count = 0. r.leased_count is intentionally NOT in the
+// gate — once the fresh pool is dry, every surviving worker may pull from
+// the retest pool in parallel, instead of waiting for the slowest fresh
+// finisher to drop its lease.
 func dispatchRetestUnitsTx(
 	ctx context.Context,
 	tx pgx.Tx,
 	runID, leaseID uuid.UUID,
+	workerJobName string,
 	batchSize int,
 ) ([]*DispatchUnit, error) {
 	rows, err := tx.Query(ctx, `
@@ -291,8 +314,9 @@ func dispatchRetestUnitsTx(
 		       AND r.retest_on_fail = TRUE
 		       AND du.state = 'completed_fail'
 		       AND du.fail_count <= r.retest_budget
-		       AND r.pending_count = 0 AND r.leased_count = 0
-		     ORDER BY du.dispatch_seq
+		       AND r.pending_count = 0
+		     ORDER BY (du.last_lease_gh_job_name IS NOT DISTINCT FROM $4),
+		              du.dispatch_seq
 		     LIMIT $2
 		     FOR UPDATE SKIP LOCKED
 		)
@@ -300,13 +324,14 @@ func dispatchRetestUnitsTx(
 		   SET state = 'leased',
 		       current_lease_id = $3,
 		       lease_count = lease_count + 1,
+		       last_lease_gh_job_name = $4,
 		       outcome_set_at = NULL,
 		       updated_at = now()
 		  FROM retestable rt
 		 WHERE du.id = rt.id
 		RETURNING du.id, du.run_id, du.dispatch_seq, du.spec_path,
 		          du.lease_count, du.fail_count
-	`, runID, batchSize, leaseID)
+	`, runID, batchSize, leaseID, workerJobName)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch retest units: %w", err)
 	}
@@ -374,10 +399,13 @@ func insertLeaseTx(ctx context.Context, tx pgx.Tx, run *Run, worker WorkerIdenti
 // dispatchPendingUnitsTx runs the FIFO CTE that picks up to batchSize pending
 // dispatch_units in dispatch_seq order, marks them leased under leaseID, and
 // returns the picked units. SKIP LOCKED keeps concurrent checkouts disjoint.
+// Stamps last_lease_gh_job_name so the retest dispatch can prefer not to
+// hand a unit back to the worker that just failed it.
 func dispatchPendingUnitsTx(
 	ctx context.Context,
 	tx pgx.Tx,
 	runID, leaseID uuid.UUID,
+	workerJobName string,
 	batchSize int,
 ) ([]*DispatchUnit, error) {
 	rows, err := tx.Query(ctx, `
@@ -392,12 +420,13 @@ func dispatchPendingUnitsTx(
 		   SET state = 'leased',
 		       current_lease_id = $3,
 		       lease_count = lease_count + 1,
+		       last_lease_gh_job_name = $4,
 		       updated_at = now()
 		  FROM picked p
 		 WHERE du.id = p.id
 		RETURNING du.id, du.run_id, du.dispatch_seq, du.spec_path,
 		          du.lease_count, du.fail_count
-	`, runID, batchSize, leaseID)
+	`, runID, batchSize, leaseID, workerJobName)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch pending units: %w", err)
 	}

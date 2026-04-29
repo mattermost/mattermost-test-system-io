@@ -38,6 +38,12 @@ const defaultMaxSpecsPerRun = 5000
 // unparseable values fall back to defaultMaxSpecsPerRun.
 const maxSpecsPerRunEnvVar = "TSIO_ORCH_MAX_SPECS_PER_RUN"
 
+// checkoutRetryAfterMs is the polling hint returned to a worker that called
+// /checkout while there was no work for it but more might still arrive
+// (other workers leased, retest pool non-empty). The worker is expected to
+// sleep this long and re-poll, instead of exiting on queue_empty.
+const checkoutRetryAfterMs = 5000
+
 // Handlers bundles the orchestration HTTP handlers. All fields are populated
 // by server.Build; nil-checks are the responsibility of individual handler
 // methods once they move beyond stubs.
@@ -310,11 +316,23 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if lease == nil {
-		writeJSON(w, http.StatusOK, map[string]any{
+		// Re-read counts to decide whether the worker should poll again or
+		// exit cleanly. Counts loaded earlier (line ~252) are stale after
+		// AtomicCheckout / AtomicRetestCheckout. When something is still
+		// in flight (leased > 0) or queued for retest (retest_eligible > 0),
+		// the worker should sleep and re-check rather than exit.
+		resp := map[string]any{
 			"queue_empty": true,
 			"is_retest":   false,
 			"units":       []any{},
-		})
+		}
+		if freshRun, ferr := h.Store.FindRunByIdentity(r.Context(), identity); ferr == nil {
+			c := freshRun.Counts
+			if c.Leased > 0 || c.RetestEligible > 0 {
+				resp["retry_after_ms"] = checkoutRetryAfterMs
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 

@@ -24,7 +24,7 @@ func TestLateReportAcceptedAfterReassign(t *testing.T) {
 			"tests/spare.spec.ts",
 		}, map[string]any{
 			"lease_timeout_ms": 1000, // 1s
-			"run_timeout_ms":   60_000,
+			"idle_timeout_ms":  60_000,
 		}))
 	expectStatus(t, beginResp, http.StatusCreated)
 

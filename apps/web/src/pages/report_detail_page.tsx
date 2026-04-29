@@ -131,13 +131,10 @@ export function ReportDetailPage() {
       {/* Header */}
       <ReportSummary
         testStatus={
-          testStats.total === 0
-            ? 'passed'
-            : testStats.failed > 0
-              ? 'failed'
-              : testStats.flaky > 0
-                ? 'flaky'
-                : 'passed'
+          // Overall verdict is Passed / Failed only at this level —
+          // flaky lives per-test-case; a run with flaky-but-passed
+          // tests rolls up as Passed.
+          testStats.total === 0 ? undefined : testStats.failed > 0 ? 'failed' : 'passed'
         }
         name={report.name}
         nameHref={nameHref}

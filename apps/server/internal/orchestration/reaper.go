@@ -31,8 +31,9 @@ const reaperEnvVar = "TSIO_ORCH_REAPER_INTERVAL_MS"
 const reaperBatchLimit = 100
 
 // Reaper periodically expires overdue leases and times out runs whose
-// run-level deadline has passed. It is a backstop: every checkout call also
-// lazily expires matching leases inline for tighter latency.
+// idle window has elapsed (no checkout / complete activity for
+// idle_timeout_ms). It is a backstop: every checkout call also lazily
+// expires matching leases inline for tighter latency.
 type Reaper struct {
 	Store     *Store
 	Publisher *Publisher
@@ -170,16 +171,19 @@ func (r *Reaper) expireOverdueLeases(ctx context.Context) error {
 	return nil
 }
 
-// markTimedOutRuns finds in-progress runs whose run-level deadline has
-// passed and transitions them to 'timed_out'.
+// markTimedOutRuns finds in-progress runs whose idle window has elapsed
+// (last_activity_at + idle_timeout_ms < now()) and transitions them to
+// 'timed_out'. Activity = a successful checkout or complete; the
+// inactivity window resets on every such call.
 func (r *Reaper) markTimedOutRuns(ctx context.Context) error {
 	if r.Store == nil {
 		return nil
 	}
 	rows, err := r.Store.Pool.Query(ctx, `
 		SELECT id FROM orchestration_runs
-		 WHERE status = 'in_progress' AND deadline < now()
-		 ORDER BY deadline
+		 WHERE status = 'in_progress'
+		   AND last_activity_at + (idle_timeout_ms || ' milliseconds')::interval < now()
+		 ORDER BY last_activity_at
 		 LIMIT $1
 	`, reaperBatchLimit)
 	if err != nil {
@@ -473,12 +477,12 @@ func loadRunByIDTx(ctx context.Context, tx pgx.Tx, runID uuid.UUID) (*Run, error
 	row := tx.QueryRow(ctx, `
 		SELECT id, repository, commit_sha, gh_run_id, name, gh_run_attempt,
 		       framework, branch, gh_pr_number, playwright_project,
-		       lease_timeout_ms, run_timeout_ms,
+		       lease_timeout_ms, idle_timeout_ms,
 		       retest_on_fail, retest_budget, retest_eligible_count,
 		       status,
 		       pending_count, leased_count, completed_pass_count, completed_fail_count,
 		       completed_skipped_count, abandoned_count, total_units,
-		       dispatch_units_hash, started_at, deadline, terminal_at,
+		       dispatch_units_hash, started_at, last_activity_at, terminal_at,
 		       owner_oidc_subject, owner_api_key_id, created_at, updated_at
 		  FROM orchestration_runs WHERE id = $1
 	`, runID)

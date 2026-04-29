@@ -10,13 +10,15 @@ import (
 )
 
 // TestRunLevelTimeout asserts the reaper-driven run-timeout transition: a run
-// whose run-level deadline elapses before any worker reports flips to
+// that sees no checkout / complete activity within its idle window flips to
 // `timed_out`, all units become `abandoned`, and subsequent /checkout and
 // /complete calls bounce with the documented error codes.
 func TestRunLevelTimeout(t *testing.T) {
 	env, tok := startEnv(t)
 
-	// 5 dispatch units, each a single spec. Run-level timeout 1 s.
+	// 5 dispatch units, each a single spec. Idle timeout 1 s — with no
+	// checkout activity at all, last_activity_at stays at started_at and
+	// the reaper marks the run timed_out one window later.
 	units := []string{
 		"tests/u-0.spec.ts",
 		"tests/u-1.spec.ts",
@@ -26,7 +28,7 @@ func TestRunLevelTimeout(t *testing.T) {
 	}
 	beginResp := postJSON(t, env, tok, "/api/v1/orchestration/begin",
 		beginRunBody(units, map[string]any{
-			"run_timeout_ms":   1000,
+			"idle_timeout_ms":  1000,
 			"lease_timeout_ms": 60000,
 		}))
 	expectStatus(t, beginResp, http.StatusCreated)

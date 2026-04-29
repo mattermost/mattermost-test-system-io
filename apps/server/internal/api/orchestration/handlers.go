@@ -91,7 +91,7 @@ type beginRunBody struct {
 	identityFields
 	PlaywrightProject string          `json:"playwright_project"`
 	LeaseTimeoutMs    int64           `json:"lease_timeout_ms"`
-	RunTimeoutMs      int64           `json:"run_timeout_ms"`
+	IdleTimeoutMs     int64           `json:"idle_timeout_ms"`
 	RetestOnFail      bool            `json:"retest_on_fail"`
 	RetestBudget      int             `json:"retest_budget"`
 	DispatchUnits     []beginUnitBody `json:"dispatch_units"`
@@ -162,7 +162,7 @@ func (h *Handlers) BeginRun(w http.ResponseWriter, r *http.Request) {
 
 	options := orchestration.BeginRunOptions{
 		LeaseTimeoutMs:    body.LeaseTimeoutMs,
-		RunTimeoutMs:      body.RunTimeoutMs,
+		IdleTimeoutMs:     body.IdleTimeoutMs,
 		RetestOnFail:      body.RetestOnFail,
 		RetestBudget:      body.RetestBudget,
 		PlaywrightProject: body.PlaywrightProject,
@@ -188,7 +188,7 @@ func (h *Handlers) BeginRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if created && h.Publisher != nil {
-		h.Publisher.RunStarted(r.Context(), run.Identity, run.Counts.Total, run.Deadline, run.LeaseTimeoutMs)
+		h.Publisher.RunStarted(r.Context(), run.Identity, run.Counts.Total, run.IdleTimeoutMs, run.LeaseTimeoutMs)
 	}
 	// Notify the reports-side WebSocket subscribers so the /reports index
 	// pages pick up the run-as-report_group as soon as begin commits. Only
@@ -742,16 +742,17 @@ func refFromBranch(branch string) string {
 // Layout matches the OpenAPI RunSnapshot schema.
 func runSnapshotPayload(run *orchestration.Run) map[string]any {
 	out := map[string]any{
-		"repository":     run.Identity.Repository,
-		"commit_sha":     run.Identity.CommitSHA,
-		"gh_run_id":      run.Identity.GHRunID,
-		"name":           run.Identity.Name,
-		"gh_run_attempt": run.Identity.GHRunAttempt,
-		"framework":      run.Identity.Framework,
-		"status":         run.Status,
-		"total_units":    run.Counts.Total,
-		"started_at":     run.StartedAt.UTC(),
-		"deadline":       run.Deadline.UTC(),
+		"repository":       run.Identity.Repository,
+		"commit_sha":       run.Identity.CommitSHA,
+		"gh_run_id":        run.Identity.GHRunID,
+		"name":             run.Identity.Name,
+		"gh_run_attempt":   run.Identity.GHRunAttempt,
+		"framework":        run.Identity.Framework,
+		"status":           run.Status,
+		"total_units":      run.Counts.Total,
+		"started_at":       run.StartedAt.UTC(),
+		"last_activity_at": run.LastActivityAt.UTC(),
+		"idle_timeout_ms":  run.IdleTimeoutMs,
 		"counts": map[string]any{
 			"pending":           run.Counts.Pending,
 			"leased":            run.Counts.Leased,

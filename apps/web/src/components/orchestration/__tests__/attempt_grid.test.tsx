@@ -25,7 +25,8 @@ const run: RunSnapshot = {
   status: 'completed',
   total_units: 1,
   started_at: '2026-04-25T10:00:00Z',
-  deadline: '2026-04-25T11:00:00Z',
+  last_activity_at: '2026-04-25T10:45:00Z',
+  idle_timeout_ms: 600000,
   terminal_at: '2026-04-25T10:45:00Z',
   counts: {
     pending: 0,

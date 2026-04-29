@@ -44,7 +44,7 @@ func TestRetestLazyDispatchAndPassFlipsUnitToCompletedPass(t *testing.T) {
 			"retest_budget":  1,
 			// Generous timeouts so the reaper does not interfere.
 			"lease_timeout_ms": 60_000,
-			"run_timeout_ms":   60_000,
+			"idle_timeout_ms":  60_000,
 		}))
 	expectStatus(t, beginResp, http.StatusCreated)
 
@@ -171,7 +171,7 @@ func TestRetestExhaustedBudgetIsTerminal(t *testing.T) {
 			"retest_on_fail":   true,
 			"retest_budget":    1,
 			"lease_timeout_ms": 60_000,
-			"run_timeout_ms":   60_000,
+			"idle_timeout_ms":  60_000,
 		}))
 	expectStatus(t, beginResp, http.StatusCreated)
 
@@ -244,7 +244,7 @@ func TestRetestDisabledNoSecondAttempt(t *testing.T) {
 	beginResp := postJSON(t, env, tok, "/api/v1/orchestration/begin",
 		beginRunBody(units, map[string]any{
 			"lease_timeout_ms": 60_000,
-			"run_timeout_ms":   60_000,
+			"idle_timeout_ms":  60_000,
 		}))
 	expectStatus(t, beginResp, http.StatusCreated)
 

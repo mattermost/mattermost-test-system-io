@@ -129,19 +129,24 @@ type Run struct {
 	Identity          CompositeIdentity
 	PlaywrightProject string
 	LeaseTimeoutMs    int64
-	RunTimeoutMs      int64
+	// IdleTimeoutMs is the inactivity window: a run is reaped when no
+	// checkout/complete has touched it for this many milliseconds.
+	IdleTimeoutMs     int64
 	RetestOnFail      bool
 	RetestBudget      int
 	Status            string
 	Counts            RunCounts
 	DispatchUnitsHash []byte
 	StartedAt         time.Time
-	Deadline          time.Time
-	TerminalAt        *time.Time
-	OwnerOIDCSubject  *string
-	OwnerAPIKeyID     *uuid.UUID
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// LastActivityAt is bumped to now() on every successful checkout and
+	// complete. Combined with IdleTimeoutMs by the reaper to decide when
+	// the run transitions to 'timed_out'.
+	LastActivityAt   time.Time
+	TerminalAt       *time.Time
+	OwnerOIDCSubject *string
+	OwnerAPIKeyID    *uuid.UUID
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // DispatchUnit is the in-memory view of a dispatch_units row. Each unit

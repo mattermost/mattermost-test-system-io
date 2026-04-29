@@ -16,8 +16,11 @@ import (
 // the caller at begin run. Counterparts to the corresponding columns on
 // orchestration_runs.
 type BeginRunOptions struct {
-	LeaseTimeoutMs    int64
-	RunTimeoutMs      int64
+	LeaseTimeoutMs int64
+	// IdleTimeoutMs is the inactivity window for the whole run. A run with
+	// no checkout/complete activity for this many milliseconds is reaped.
+	// Defaults to 600_000 (10 minutes) when unset.
+	IdleTimeoutMs     int64
 	RetestOnFail      bool
 	RetestBudget      int
 	PlaywrightProject string
@@ -126,7 +129,7 @@ func (s *Store) BeginRun(
 		logEvent(ctx, s.Logger, "orchestration.run.begin", "orchestration run started", existing,
 			slog.Int("unit_count", existing.Counts.Total),
 			slog.Int64("lease_timeout_ms", existing.LeaseTimeoutMs),
-			slog.Int64("run_timeout_ms", existing.RunTimeoutMs),
+			slog.Int64("idle_timeout_ms", existing.IdleTimeoutMs),
 			slog.Bool("retest_on_fail", existing.RetestOnFail),
 		)
 		logMetric(ctx, s.Logger, "orchestration_runs_started_total", "", 1)
@@ -348,12 +351,12 @@ func (s *Store) attachAttempts(ctx context.Context, runID uuid.UUID, units []Uni
 const runSelectByIdentity = `
 	SELECT id, repository, commit_sha, gh_run_id, name, gh_run_attempt,
 	       framework, branch, gh_pr_number, playwright_project,
-	       lease_timeout_ms, run_timeout_ms,
+	       lease_timeout_ms, idle_timeout_ms,
 	       retest_on_fail, retest_budget, retest_eligible_count,
 	       status,
 	       pending_count, leased_count, completed_pass_count, completed_fail_count,
 	       completed_skipped_count, abandoned_count, total_units,
-	       dispatch_units_hash, started_at, deadline, terminal_at,
+	       dispatch_units_hash, started_at, last_activity_at, terminal_at,
 	       owner_oidc_subject, owner_api_key_id, created_at, updated_at
 	  FROM orchestration_runs
 	 WHERE (repository = $1 OR repository LIKE '%/' || $1)
@@ -371,12 +374,12 @@ const runSelectByIdentity = `
 const runListByDisplayIdentity = `
 	SELECT id, repository, commit_sha, gh_run_id, name, gh_run_attempt,
 	       framework, branch, gh_pr_number, playwright_project,
-	       lease_timeout_ms, run_timeout_ms,
+	       lease_timeout_ms, idle_timeout_ms,
 	       retest_on_fail, retest_budget, retest_eligible_count,
 	       status,
 	       pending_count, leased_count, completed_pass_count, completed_fail_count,
 	       completed_skipped_count, abandoned_count, total_units,
-	       dispatch_units_hash, started_at, deadline, terminal_at,
+	       dispatch_units_hash, started_at, last_activity_at, terminal_at,
 	       owner_oidc_subject, owner_api_key_id, created_at, updated_at
 	  FROM orchestration_runs
 	 WHERE (repository = $1 OR repository LIKE '%/' || $1)
@@ -402,12 +405,12 @@ func scanRunRow(row pgx.Row) (*Run, error) {
 		&r.ID, &r.Identity.Repository, &r.Identity.CommitSHA, &r.Identity.GHRunID,
 		&r.Identity.Name, &r.Identity.GHRunAttempt,
 		&r.Identity.Framework, &r.Identity.Branch, &ghPRNumber, &playwrightProj,
-		&r.LeaseTimeoutMs, &r.RunTimeoutMs,
+		&r.LeaseTimeoutMs, &r.IdleTimeoutMs,
 		&r.RetestOnFail, &r.RetestBudget, &retestEligible,
 		&r.Status,
 		&r.Counts.Pending, &r.Counts.Leased, &r.Counts.CompletedPass, &r.Counts.CompletedFail,
 		&r.Counts.CompletedSkipped, &r.Counts.Abandoned, &r.Counts.Total,
-		&r.DispatchUnitsHash, &r.StartedAt, &r.Deadline, &terminalAt,
+		&r.DispatchUnitsHash, &r.StartedAt, &r.LastActivityAt, &terminalAt,
 		&ownerOIDCSubject, &ownerAPIKeyID, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -439,9 +442,12 @@ func insertRunTx(
 	if leaseTimeoutMs <= 0 {
 		leaseTimeoutMs = 5 * 60 * 1000
 	}
-	runTimeoutMs := options.RunTimeoutMs
-	if runTimeoutMs <= 0 {
-		runTimeoutMs = 20 * 60 * 1000
+	// 10 minutes of idleness reaps the run. Long enough to absorb a slow
+	// spec or a brief network hiccup; short enough that a stuck workflow
+	// fails closed instead of holding the queue indefinitely.
+	idleTimeoutMs := options.IdleTimeoutMs
+	if idleTimeoutMs <= 0 {
+		idleTimeoutMs = 10 * 60 * 1000
 	}
 	retestBudget := options.RetestBudget
 	if retestBudget < 0 {
@@ -465,26 +471,26 @@ func insertRunTx(
 	totalUnits := len(specPaths)
 
 	var (
-		runID      uuid.UUID
-		startedAt  time.Time
-		deadline   time.Time
-		createdAt  time.Time
-		updatedAt  time.Time
-		ghPROut    *int
-		projectOut *string
+		runID          uuid.UUID
+		startedAt      time.Time
+		lastActivityAt time.Time
+		createdAt      time.Time
+		updatedAt      time.Time
+		ghPROut        *int
+		projectOut     *string
 	)
 	err := tx.QueryRow(ctx, `
 		INSERT INTO orchestration_runs (
 			repository, commit_sha, gh_run_id, name, gh_run_attempt,
 			framework, branch, gh_pr_number, playwright_project,
-			lease_timeout_ms, run_timeout_ms,
+			lease_timeout_ms, idle_timeout_ms,
 			retest_on_fail, retest_budget, retest_eligible_count,
 			status,
 			pending_count, leased_count,
 			completed_pass_count, completed_fail_count,
 			completed_skipped_count, abandoned_count, total_units,
 			dispatch_units_hash,
-			started_at, deadline,
+			started_at, last_activity_at,
 			owner_oidc_subject, owner_api_key_id
 		) VALUES (
 			$1, $2, $3, $4, $5,
@@ -496,22 +502,21 @@ func insertRunTx(
 			0, 0,
 			0, 0, $14,
 			$15,
-			now(), now() + make_interval(secs => $18),
+			now(), now(),
 			$16, $17
 		)
-		RETURNING id, started_at, deadline, gh_pr_number, playwright_project,
+		RETURNING id, started_at, last_activity_at, gh_pr_number, playwright_project,
 		          created_at, updated_at
 	`,
 		identity.Repository, identity.CommitSHA, identity.GHRunID,
 		identity.Name, identity.GHRunAttempt,
 		identity.Framework, branch, ghPR, playwrightProj,
-		leaseTimeoutMs, runTimeoutMs,
+		leaseTimeoutMs, idleTimeoutMs,
 		options.RetestOnFail, retestBudget,
 		totalUnits,
 		hash,
 		owner.OIDCSubject, owner.APIKeyID,
-		float64(runTimeoutMs)/1000.0,
-	).Scan(&runID, &startedAt, &deadline, &ghPROut, &projectOut, &createdAt, &updatedAt)
+	).Scan(&runID, &startedAt, &lastActivityAt, &ghPROut, &projectOut, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert orchestration_runs: %w", err)
 	}
@@ -525,7 +530,7 @@ func insertRunTx(
 		Identity:          identity,
 		PlaywrightProject: options.PlaywrightProject,
 		LeaseTimeoutMs:    leaseTimeoutMs,
-		RunTimeoutMs:      runTimeoutMs,
+		IdleTimeoutMs:     idleTimeoutMs,
 		RetestOnFail:      options.RetestOnFail,
 		RetestBudget:      retestBudget,
 		Status:            RunStatusInProgress,
@@ -535,7 +540,7 @@ func insertRunTx(
 		},
 		DispatchUnitsHash: hash,
 		StartedAt:         startedAt,
-		Deadline:          deadline,
+		LastActivityAt:    lastActivityAt,
 		OwnerOIDCSubject:  owner.OIDCSubject,
 		OwnerAPIKeyID:     owner.APIKeyID,
 		CreatedAt:         createdAt,

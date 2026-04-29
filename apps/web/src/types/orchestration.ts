@@ -66,7 +66,14 @@ export interface RunSnapshot extends CompositeIdentity {
   status: RunStatus;
   total_units: number;
   started_at: string;
-  deadline: string;
+  /**
+   * Bumped to now() on every successful checkout / complete. Combined
+   * with `idle_timeout_ms` by the server-side reaper to decide when an
+   * in-progress run transitions to `timed_out`.
+   */
+  last_activity_at: string;
+  /** Inactivity window in milliseconds; run is reaped when no activity within this window. */
+  idle_timeout_ms: number;
   terminal_at?: string | null;
   counts: RunCounts;
   /**
@@ -371,7 +378,7 @@ export interface CheckoutResponse {
 export interface BeginRunRequest extends CompositeIdentity {
   playwright_project?: string;
   lease_timeout_ms?: number;
-  run_timeout_ms?: number;
+  idle_timeout_ms?: number;
   retest_on_fail?: boolean;
   retest_budget?: number;
   dispatch_units: Array<{ spec_path: string }>;

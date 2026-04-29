@@ -48,12 +48,12 @@ func (p *Publisher) RunStarted(
 	ctx context.Context,
 	identity CompositeIdentity,
 	totalUnits int,
-	deadline time.Time,
+	idleTimeoutMs int64,
 	leaseTimeoutMs int64,
 ) {
 	p.emit(ctx, EventTypeRunStarted, identity, map[string]any{
 		"total_units":      totalUnits,
-		"deadline":         deadline.UTC(),
+		"idle_timeout_ms":  idleTimeoutMs,
 		"lease_timeout_ms": leaseTimeoutMs,
 	})
 }

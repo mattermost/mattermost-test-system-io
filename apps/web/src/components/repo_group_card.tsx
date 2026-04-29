@@ -6,6 +6,8 @@ import {
   Clock,
   Loader2,
   AlertCircle,
+  Play,
+  RotateCcw,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { RepositoryGroup, RunEntry } from '@/types';
@@ -107,6 +109,24 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
           {entry.short_sha}
         </span>
         <span className="truncate text-xs text-gray-700 dark:text-gray-300">{entry.name}</span>
+        {entry.gh_run_id && (
+          <span
+            className="inline-flex items-center gap-1 font-mono text-xs text-gray-500 dark:text-gray-500 flex-shrink-0"
+            title={`GitHub Actions run ${entry.gh_run_id}`}
+          >
+            <Play className="h-3 w-3" />
+            {entry.gh_run_id}
+          </span>
+        )}
+        {entry.gh_run_attempt && entry.gh_run_attempt !== '1' && (
+          <span
+            className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-500 flex-shrink-0"
+            title={`GitHub Actions run attempt ${entry.gh_run_attempt}`}
+          >
+            <RotateCcw className="h-3 w-3" />
+            attempt {entry.gh_run_attempt}
+          </span>
+        )}
       </div>
 
       {/* Middle: test summary, pass rate (flex-1 pushes right group to edge) */}

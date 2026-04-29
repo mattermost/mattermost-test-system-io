@@ -17,7 +17,10 @@ CREATE TABLE orchestration_runs (
     playwright_project       text,
     -- Configuration knobs supplied (or defaulted) by the caller at begin-run.
     lease_timeout_ms         bigint      NOT NULL CHECK (lease_timeout_ms > 0),
-    run_timeout_ms           bigint      NOT NULL CHECK (run_timeout_ms > 0),
+    -- Idle timeout: a run is reaped when no activity (checkout/complete) has
+    -- happened on it for this many milliseconds. The reaper compares
+    -- last_activity_at + idle_timeout_ms against now().
+    idle_timeout_ms          bigint      NOT NULL CHECK (idle_timeout_ms > 0),
     retest_on_fail           boolean     NOT NULL DEFAULT FALSE,
     retest_budget            integer     NOT NULL DEFAULT 1 CHECK (retest_budget >= 0),
     -- Materialized counters; updated transactionally with dispatch_units state.
@@ -38,7 +41,11 @@ CREATE TABLE orchestration_runs (
     -- replays the existing snapshot; a retry with a different hash conflicts.
     dispatch_units_hash      bytea       NOT NULL,
     started_at               timestamptz NOT NULL DEFAULT now(),
-    deadline                 timestamptz NOT NULL,
+    -- Touched on every checkout / complete. Combined with idle_timeout_ms
+    -- by the reaper to decide when an in-progress run should transition to
+    -- 'timed_out'. Initialized to now() at begin so a run that never sees a
+    -- worker checkout still gets reaped after one idle window.
+    last_activity_at         timestamptz NOT NULL DEFAULT now(),
     terminal_at              timestamptz,
     -- Owner of the run: exactly one of these is non-null. Enforced by the
     -- orchestration_runs_owner_ck CHECK below.
@@ -64,9 +71,10 @@ CREATE TABLE orchestration_runs (
 CREATE UNIQUE INDEX orchestration_runs_identity_idx
     ON orchestration_runs (repository, commit_sha, gh_run_id, name, gh_run_attempt);
 
--- Reaper scan: find in-progress runs whose deadline has passed.
-CREATE INDEX orchestration_runs_status_deadline_idx
-    ON orchestration_runs (status, deadline)
+-- Reaper scan: find in-progress runs whose idle window has elapsed. Partial
+-- index keeps the row count tiny — only in-progress runs are candidates.
+CREATE INDEX orchestration_runs_idle_idx
+    ON orchestration_runs (last_activity_at)
     WHERE status = 'in_progress';
 
 -- UI listing scoped to caller (most-recent-first by creation time).

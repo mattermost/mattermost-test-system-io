@@ -47,7 +47,7 @@ interface AggregatedStats {
   total: number;
   duration_ms: number | null;
   retest_duration_ms: number | null;
-  test_status: 'passed' | 'failed' | 'flaky';
+  test_status: 'passed' | 'failed' | 'timed_out';
   progress_status: 'in_progress' | 'completed' | 'timed_out';
   latest_created_at: string;
   nameLinks: { label: string; href: string }[];
@@ -113,13 +113,15 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
     }
   }
 
-  const test_status: AggregatedStats['test_status'] =
-    failed > 0 ? 'failed' : flaky > 0 ? 'flaky' : 'passed';
   const progress_status: AggregatedStats['progress_status'] = hasActiveInProgress
     ? 'in_progress'
     : hasTimedOut
       ? 'timed_out'
       : 'completed';
+  // Overall verdict is Passed / Failed / Timed Out — flaky-but-passed
+  // tests count as Passed at the run level (flaky lives per-test-case).
+  const test_status: AggregatedStats['test_status'] =
+    progress_status === 'timed_out' ? 'timed_out' : failed > 0 ? 'failed' : 'passed';
 
   return {
     passed,

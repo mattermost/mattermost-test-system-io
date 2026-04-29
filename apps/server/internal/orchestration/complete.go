@@ -511,6 +511,7 @@ func finalizeUnitStateTx(
 		   SET leased_count = leased_count - 1,
 		       %s = %s + 1,
 		       retest_eligible_count = retest_eligible_count + $2,
+		       last_activity_at = now(),
 		       updated_at = now()
 		 WHERE id = $1
 	`, counterCol, counterCol), runID, retestEligibleDelta)

@@ -1119,8 +1119,17 @@ export function OrchestrationTab({ identity }: OrchestrationTabProps) {
   // nothing (no test_cases yet); total grows as each unit completes.
   const tc = computeTestCaseCounts(run.units ?? []);
   const { durationMs, retestDurationMs } = computeTestDurations(run.units ?? []);
-  const testStatus: 'passed' | 'failed' | 'flaky' =
-    tc.failed > 0 ? 'failed' : tc.flaky > 0 ? 'flaky' : 'passed';
+  // Overall verdict is Passed / Failed / Timed Out / nothing (still in
+  // flight). Flaky is per-test-case detail, not a run-level outcome — a
+  // run with flaky-but-eventually-passed tests rolls up as Passed.
+  const testStatus: 'passed' | 'failed' | 'timed_out' | undefined =
+    run.status === 'in_progress'
+      ? undefined
+      : run.status === 'timed_out'
+        ? 'timed_out'
+        : tc.failed > 0
+          ? 'failed'
+          : 'passed';
 
   // RunStatus values are already a strict subset of ProgressStatus, so the
   // map is a pass-through. Kept explicit so a future RunStatus addition

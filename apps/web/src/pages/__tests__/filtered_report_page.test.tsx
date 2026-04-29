@@ -123,7 +123,8 @@ function orchestrationSnapshot(): RunSnapshot {
     status: 'in_progress',
     total_units: 4,
     started_at: '2026-04-25T10:00:00Z',
-    deadline: '2026-04-25T11:00:00Z',
+    last_activity_at: '2026-04-25T10:00:00Z',
+    idle_timeout_ms: 600000,
     counts: {
       pending: 4,
       leased: 0,

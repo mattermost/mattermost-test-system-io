@@ -327,13 +327,28 @@ export function FilteredReportPage() {
       {/* Header with report metadata */}
       {report && (
         <ReportSummary
-          testStatus={
-            data?.overall_status === 'failed'
-              ? 'failed'
-              : data?.overall_status === 'flaky'
-                ? 'flaky'
-                : 'passed'
-          }
+          // Overall verdict is one of: Passed, Failed, Timed Out, or
+          // nothing (run hasn't started or is still in flight). Flaky
+          // lives at the test-case level, not the run level — a run with
+          // any flaky-but-eventually-passed test still rolls up as
+          // Passed. When an active orchestration is present its
+          // lifecycle wins over the consolidated report aggregate.
+          testStatus={(() => {
+            if (orchestrationRun) {
+              if (orchestrationRun.status === 'in_progress') return undefined;
+              if (orchestrationRun.status === 'timed_out') return 'timed_out';
+              // Terminal: 'completed'. RunCounts rolls flaky-passed
+              // units into completed_pass, so any failures wins.
+              const c = orchestrationRun.counts;
+              if ((c.completed_fail ?? 0) > 0) return 'failed';
+              return 'passed';
+            }
+            if (data?.overall_status === 'failed') return 'failed';
+            if (data?.overall_status === 'passed' || data?.overall_status === 'flaky') {
+              return 'passed';
+            }
+            return undefined;
+          })()}
           name={name}
           passed={data?.passed ?? 0}
           failed={data?.failed ?? 0}
@@ -346,13 +361,38 @@ export function FilteredReportPage() {
           framework={report.framework}
           reportCount={reportCountSplit.numbered}
           retestReportCount={reportCountSplit.retest}
-          progressStatus={
-            report.status === 'in_progress'
-              ? new Date(report.created_at).getTime() < Date.now() - TIMED_OUT_THRESHOLD_MS
+          progressStatus={(() => {
+            // When an active orchestration is present, its lifecycle is
+            // the source of truth — the consolidated report record can
+            // appear `completed` early when an older run at this commit
+            // already finished, even though the new run is still pending.
+            const status = orchestrationRun?.status ?? report.status;
+            if (status === 'timed_out') return 'timed_out';
+            if (status === 'in_progress') {
+              return new Date(report.created_at).getTime() < Date.now() - TIMED_OUT_THRESHOLD_MS
                 ? 'timed_out'
-                : 'in_progress'
-              : 'completed'
-          }
+                : 'in_progress';
+            }
+            return 'completed';
+          })()}
+          runStartedAt={orchestrationRun?.started_at}
+          firstCheckoutAt={(() => {
+            // Earliest unit attempt across the whole run = the moment a
+            // worker leased its first spec. Used to split the live "In
+            // Progress" duration into setup vs. running.
+            const units = orchestrationRun?.units;
+            if (!units || units.length === 0) return null;
+            let earliest: number | null = null;
+            for (const u of units) {
+              for (const a of u.attempts ?? []) {
+                if (!a.created_at) continue;
+                const ms = Date.parse(a.created_at);
+                if (!Number.isFinite(ms)) continue;
+                if (earliest == null || ms < earliest) earliest = ms;
+              }
+            }
+            return earliest != null ? new Date(earliest).toISOString() : null;
+          })()}
           repository={report.repository}
           branch={report.branch}
           commit={report.commit}

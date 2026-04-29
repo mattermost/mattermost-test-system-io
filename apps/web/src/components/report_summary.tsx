@@ -1,7 +1,6 @@
 import {
   CheckCircle,
   XCircle,
-  AlertTriangle,
   AlertCircle,
   Clock,
   Calendar,
@@ -14,6 +13,7 @@ import {
   Play,
   ExternalLink,
 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import {
   formatDuration,
   calculatePassRate,
@@ -32,12 +32,17 @@ function formatDate(dateString: string): string {
   });
 }
 
-type TestStatus = 'passed' | 'failed' | 'flaky';
+type TestStatus = 'passed' | 'failed' | 'timed_out';
 type ProgressStatus = 'in_progress' | 'completed' | 'timed_out';
 
 export interface ReportSummaryProps {
   // Row 1: test result badge + optional name(s) with links
-  testStatus: TestStatus;
+  /**
+   * Pass/fail/flaky verdict for the run. Optional — when undefined the
+   * badge is omitted, used while the run is still pending or in flight
+   * and there are no completed test results to roll up yet.
+   */
+  testStatus?: TestStatus;
   name?: string;
   nameHref?: string;
   /** Multiple name links (used on commit/target pages with several report groups) */
@@ -64,6 +69,19 @@ export interface ReportSummaryProps {
   /** Retest shard count. Rendered as `{reportCount}+{retestReportCount}` when > 0. */
   retestReportCount?: number;
   progressStatus?: ProgressStatus;
+  /**
+   * For orchestrated runs in progress: when the run was begun. Combined
+   * with `firstCheckoutAt` (or now, when no spec has been leased yet) to
+   * surface a live "setup + running" duration next to the In Progress
+   * badge so users can tell how long the run has been going.
+   */
+  runStartedAt?: string;
+  /**
+   * For orchestrated runs in progress: when the first spec was checked
+   * out by a worker (= earliest unit attempt). When undefined the run is
+   * still in the setup phase (cloud-init / start-server / prepare).
+   */
+  firstCheckoutAt?: string | null;
 
   // Row 4: git context badges
   repository?: string;
@@ -90,14 +108,47 @@ function TestStatusBadge({ status }: { status: TestStatus }) {
           Failed
         </span>
       );
-    case 'flaky':
+    case 'timed_out':
       return (
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-200">
-          <AlertTriangle className="h-4 w-4" />
-          Flaky
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-200">
+          <AlertCircle className="h-4 w-4" />
+          Timed Out
         </span>
       );
   }
+}
+
+function ProgressDurations({
+  runStartedAt,
+  firstCheckoutAt,
+}: {
+  runStartedAt: string;
+  firstCheckoutAt?: string | null;
+}) {
+  // Live tick so the running counter updates without a refetch. Cheap —
+  // a single 1s interval scoped to the in-progress badge only.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const startMs = Date.parse(runStartedAt);
+  if (!Number.isFinite(startMs)) return null;
+  const checkoutMs = firstCheckoutAt ? Date.parse(firstCheckoutAt) : NaN;
+  const hasCheckout = Number.isFinite(checkoutMs);
+  const setupMs = hasCheckout ? Math.max(0, checkoutMs - startMs) : Math.max(0, nowMs - startMs);
+  const runningMs = hasCheckout ? Math.max(0, nowMs - checkoutMs) : 0;
+  const label = hasCheckout
+    ? `(${formatDuration(setupMs)} setup) + ${formatDuration(runningMs)} running`
+    : `(${formatDuration(setupMs)} setup)`;
+  return (
+    <span
+      className="text-xs text-gray-500 dark:text-gray-400 tabular-nums"
+      title="Setup = run begin → first spec checkout. Running = first checkout → now."
+    >
+      {label}
+    </span>
+  );
 }
 
 function ProgressBadge({ status, createdAt }: { status: ProgressStatus; createdAt?: string }) {
@@ -160,6 +211,8 @@ export function ReportSummary(props: ReportSummaryProps) {
     reportCount,
     retestReportCount,
     progressStatus,
+    runStartedAt,
+    firstCheckoutAt,
     repository,
     branch,
     commit,
@@ -179,7 +232,7 @@ export function ReportSummary(props: ReportSummaryProps) {
     <div>
       {/* Row 1: Test status badge + name(s) */}
       <div className="flex flex-wrap items-center gap-2 mt-3">
-        <TestStatusBadge status={testStatus} />
+        {testStatus && <TestStatusBadge status={testStatus} />}
         {nameLinks && nameLinks.length > 0 ? (
           nameLinks.map((link) => (
             <a
@@ -311,6 +364,9 @@ export function ReportSummary(props: ReportSummaryProps) {
             </span>
           )}
           {progressStatus && <ProgressBadge status={progressStatus} createdAt={createdAt} />}
+          {progressStatus === 'in_progress' && runStartedAt && (
+            <ProgressDurations runStartedAt={runStartedAt} firstCheckoutAt={firstCheckoutAt} />
+          )}
         </div>
       )}
 

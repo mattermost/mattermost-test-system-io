@@ -94,11 +94,13 @@ func (s *Store) AtomicCheckout(
 			return err
 		}
 
-		// Update run counters: pending -= len, leased += len.
+		// Update run counters: pending -= len, leased += len. Bump
+		// last_activity_at so the reaper's idle window starts from now.
 		if _, err := tx.Exec(ctx, `
 			UPDATE orchestration_runs
 			   SET pending_count = pending_count - $2,
 			       leased_count = leased_count + $2,
+			       last_activity_at = now(),
 			       updated_at = now()
 			 WHERE id = $1
 		`, run.ID, len(dispatched)); err != nil {
@@ -235,6 +237,7 @@ func (s *Store) AtomicRetestCheckout(
 			   SET completed_fail_count = completed_fail_count - $2,
 			       leased_count = leased_count + $2,
 			       retest_eligible_count = retest_eligible_count - $2,
+			       last_activity_at = now(),
 			       updated_at = now()
 			 WHERE id = $1
 		`, run.ID, len(dispatched)); err != nil {

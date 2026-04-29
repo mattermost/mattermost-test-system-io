@@ -1631,11 +1631,18 @@ components:
               minimum: 1000
               maximum: 86400000
               default: 300000
-            run_timeout_ms:
+            idle_timeout_ms:
               type: integer
               minimum: 1000
               maximum: 86400000
-              default: 1200000
+              default: 600000
+              description: |
+                Inactivity window in milliseconds. The reaper marks the run
+                `timed_out` when no successful checkout or complete has
+                touched it for this duration. Every successful activity
+                resets the timer. Initialized to the run's `started_at`,
+                so a run that never sees a worker checkout is reaped one
+                idle window after begin.
             retest_on_fail:
               type: boolean
               default: false
@@ -1872,14 +1879,25 @@ components:
       allOf:
         - $ref: '#/components/schemas/CompositeIdentity'
         - type: object
-          required: [status, total_units, started_at, deadline, counts]
+          required: [status, total_units, started_at, last_activity_at, idle_timeout_ms, counts]
           properties:
             status:
               type: string
               enum: [in_progress, completed, timed_out]
             total_units: { type: integer }
             started_at: { type: string, format: date-time }
-            deadline: { type: string, format: date-time }
+            last_activity_at:
+              type: string
+              format: date-time
+              description: |
+                Timestamp of the most recent successful checkout or
+                complete on this run. Combined with `idle_timeout_ms`
+                drives the run-level inactivity timeout.
+            idle_timeout_ms:
+              type: integer
+              description: |
+                Inactivity window in milliseconds. Run is reaped when
+                `last_activity_at + idle_timeout_ms < now()`.
             terminal_at:
               type: string
               format: date-time

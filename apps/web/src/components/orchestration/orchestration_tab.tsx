@@ -342,6 +342,26 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
   // — a worker is currently re-running this spec because an earlier lease
   // for it ended in failure or got abandoned.
   const isRetestInFlight = row.effectiveState === 'leased' && row.unit.lease_count > 1;
+
+  // Live elapsed counter while the unit is leased. Ticks every 1s so the
+  // user sees the wall-clock time the worker has been running this spec.
+  // Once the lease releases, `actual_duration_ms` from the attempt takes
+  // over (rendered below).
+  const leaseIssuedAtMs = useMemo(() => {
+    const t = row.unit.current_lease?.issued_at;
+    if (!t) return null;
+    const ms = Date.parse(t);
+    return Number.isFinite(ms) ? ms : null;
+  }, [row.unit.current_lease?.issued_at]);
+  const isLeased = row.effectiveState === 'leased' && leaseIssuedAtMs != null;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isLeased) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [isLeased]);
+  const liveElapsedMs =
+    isLeased && leaseIssuedAtMs != null ? Math.max(0, nowMs - leaseIssuedAtMs) : null;
   const { Icon, className, spin } = statusIconForRow(
     row.effectiveState,
     row.flaky,
@@ -410,12 +430,20 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
             </div>
           </div>
           <div className="flex flex-shrink-0 items-center gap-3 text-xs">
-            {row.latest?.actual_duration_ms != null && (
+            {liveElapsedMs != null ? (
+              <span
+                className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400"
+                title="Time elapsed since the worker leased this spec"
+              >
+                <Clock className="h-3 w-3" />
+                {formatDuration(liveElapsedMs)}
+              </span>
+            ) : row.latest?.actual_duration_ms != null ? (
               <span className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-400">
                 <Clock className="h-3 w-3" />
                 {formatDuration(row.latest.actual_duration_ms)}
               </span>
-            )}
+            ) : null}
             {total > 0 && (
               <span className="text-gray-600 dark:text-gray-300">
                 {total} {total === 1 ? 'test' : 'tests'}
@@ -742,7 +770,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
 
   const filteredRows = useMemo(() => {
     const q = normalizedSearch;
-    return allRows.filter((row) => {
+    const matched = allRows.filter((row) => {
       if (statusFilter !== 'all') {
         // "In progress" means a worker has the unit checked out right
         // now (`leased`) — distinct from `pending` (queued, awaiting
@@ -773,6 +801,18 @@ function SpecList({ run }: { run: RunSnapshot }) {
       }
       return true;
     });
+    // Bubble currently-running specs to the top so they're visible without
+    // scrolling 100+ queued rows. Stable within each group → keeps the
+    // controller's dispatch order otherwise.
+    return matched
+      .map((row, idx) => ({ row, idx }))
+      .sort((a, b) => {
+        const ai = a.row.effectiveState === 'leased' ? 0 : 1;
+        const bi = b.row.effectiveState === 'leased' ? 0 : 1;
+        if (ai !== bi) return ai - bi;
+        return a.idx - b.idx;
+      })
+      .map((x) => x.row);
   }, [allRows, statusFilter, normalizedSearch]);
 
   if (allRows.length === 0) {

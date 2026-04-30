@@ -1,0 +1,69 @@
+name: Test System IO — worker
+description: >
+  Drain this matrix entry's slice of the orchestration queue. For each
+  spec lease, invoke `npx playwright test`, archive the per-iteration
+  Playwright JSON + screenshots, and report the result. At queue-empty,
+  upload the worker's accumulated artifacts as one shard report via
+  /api/v1/reports/*.
+author: Mattermost
+
+inputs:
+  use-staging:
+    description: >
+      When true, target the staging deployment
+      (https://staging-test-io.test.mattermost.com) instead of production
+      (https://test-io.test.mattermost.com).
+    required: false
+    default: "false"
+  oidc-audience:
+    description: OIDC audience claim that the orchestrator expects
+    required: false
+    default: mattermost-test-system-io
+  composite-identity:
+    description: Composite identity JSON (same payload the begin action received)
+    required: true
+  repo-dir:
+    description: >
+      Path to the checked-out repo whose Playwright suite this run covers
+      (e.g. mattermost/mattermost). The e2e stack must already be up;
+      the worker dispatches `npx playwright test` inside
+      `<repo-dir>/<playwright-dir>`.
+    required: true
+  playwright-dir:
+    description: >
+      Path to the Playwright project, relative to `repo-dir`. Defaults to
+      `e2e-tests/playwright` (the layout used by mattermost/mattermost);
+      override for repos that put Playwright somewhere else.
+    required: false
+    default: e2e-tests/playwright
+  results-dir:
+    description: >
+      Path to Playwright's results output, relative to `playwright-dir`.
+      Must match the `outputDir` configured in the consumer repo's
+      `playwright.config.ts`. Defaults to `results`.
+    required: false
+    default: results
+  artifacts-root:
+    description: Writable directory for per-iteration archived results
+    required: true
+  github-token:
+    description: Token with actions:read; used to look up gh_job_id
+    required: true
+  gh-job-name:
+    description: >
+      Rendered job name of the calling matrix entry (e.g. `orch-worker-3`).
+      Used to resolve gh_job_id via the GitHub API and sent to the
+      orchestrator + uploader as gh_job_name. Caller MUST keep this in
+      sync with the workers job's `name:` field.
+    required: true
+  playwright-retries:
+    description: >
+      Value passed to `npx playwright test --retries=N` so Playwright
+      handles flaky-test retries within a single process invocation.
+      Set to 0 to disable Playwright-internal retries.
+    required: false
+    default: "1"
+
+runs:
+  using: node24
+  main: dist/index.js

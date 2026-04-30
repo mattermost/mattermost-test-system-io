@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
-  ChevronLeft,
   ChevronRight,
   ChevronDown,
   CheckCircle2,
@@ -25,6 +24,7 @@ import type {
   CrossShardAttempt,
 } from '@/types';
 import type { Divergence, SnapshotUnit } from '@/types/orchestration';
+import { PaginationBar } from '@/components/ui/pagination_bar';
 import { ScreenshotGallery } from '@/components/ui/screenshot-gallery';
 import { useSearchTestCases, useClientConfig, type SearchSuiteResult } from '@/services/api';
 import { DivergenceBadge } from '@/components/orchestration/divergence_badge';
@@ -36,6 +36,7 @@ import {
   AttachmentsDisplay,
   calcPassRate,
   formatDuration,
+  workerSlot,
   type StatusFilter,
 } from './test_suites';
 
@@ -646,7 +647,11 @@ export function TestSuitesView({
                       </button>
                       <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
                       {[...reports]
-                        .sort((a, b) => a.report_number - b.report_number)
+                        .sort(
+                          (a, b) =>
+                            workerSlot(a.report_name, a.report_number) -
+                            workerSlot(b.report_name, b.report_number),
+                        )
                         .map((entry) => (
                           <button
                             key={entry.report_id}
@@ -660,7 +665,7 @@ export function TestSuitesView({
                           >
                             <span className="flex items-center gap-2 min-w-0">
                               <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-gray-200 px-1 text-[10px] font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-300">
-                                {entry.report_number}
+                                {workerSlot(entry.report_name, entry.report_number)}
                               </span>
                               <span className="truncate" title={entry.report_name}>
                                 {entry.report_name}
@@ -707,35 +712,16 @@ export function TestSuitesView({
           )}
         </div>
 
-        {/* Pagination controls (top) */}
         {totalPages > 1 && (
-          <div className="flex items-center justify-between border-b border-gray-200 pb-4 mb-4 dark:border-gray-700">
-            <div className="text-sm text-gray-500 dark:text-gray-400">
-              Showing {(currentPage - 1) * PAGE_SIZE + 1} to{' '}
-              {Math.min(currentPage * PAGE_SIZE, filteredSuites.length)} of {filteredSuites.length}{' '}
-              suites
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setCurrentPage(currentPage - 1)}
-                disabled={currentPage === 1}
-                className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-              >
-                <ChevronLeft className="h-4 w-4" />
-                Previous
-              </button>
-              <button
-                type="button"
-                onClick={() => setCurrentPage(currentPage + 1)}
-                disabled={currentPage >= totalPages}
-                className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-              >
-                Next
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
+          <PaginationBar
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalItems={filteredSuites.length}
+            pageSize={PAGE_SIZE}
+            onPageChange={setCurrentPage}
+            itemLabel="suite"
+            position="top"
+          />
         )}
 
         {filteredSuites.length === 0 ? (
@@ -774,35 +760,16 @@ export function TestSuitesView({
           </div>
         )}
 
-        {/* Pagination controls */}
         {totalPages > 1 && (
-          <div className="flex items-center justify-between border-t border-gray-200 pt-4 mt-4 dark:border-gray-700">
-            <div className="text-sm text-gray-500 dark:text-gray-400">
-              Showing {(currentPage - 1) * PAGE_SIZE + 1} to{' '}
-              {Math.min(currentPage * PAGE_SIZE, filteredSuites.length)} of {filteredSuites.length}{' '}
-              suites
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setCurrentPage(currentPage - 1)}
-                disabled={currentPage === 1}
-                className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-              >
-                <ChevronLeft className="h-4 w-4" />
-                Previous
-              </button>
-              <button
-                type="button"
-                onClick={() => setCurrentPage(currentPage + 1)}
-                disabled={currentPage >= totalPages}
-                className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-              >
-                Next
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
+          <PaginationBar
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalItems={filteredSuites.length}
+            pageSize={PAGE_SIZE}
+            onPageChange={setCurrentPage}
+            itemLabel="suite"
+            position="bottom"
+          />
         )}
 
         {/* Totals - use stats for consistency with header */}
@@ -1057,7 +1024,7 @@ const SuiteRow = memo(function SuiteRow({
                           className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${colorClass}`}
                           title={j.report_name || `Report ${j.report_number}`}
                         >
-                          {j.report_number}
+                          {workerSlot(j.report_name, j.report_number)}
                         </span>
                       );
                     })}

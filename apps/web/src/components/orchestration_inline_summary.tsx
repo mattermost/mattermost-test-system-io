@@ -59,7 +59,7 @@ export function OrchestrationInlineSummary({ orchestration }: OrchestrationInlin
         )}`}
         title={`Orchestration ${STATUS_LABEL[status]}`}
       >
-        {statusIcon(status)}
+        {status !== 'in_progress' && statusIcon(status)}
         Live · {STATUS_LABEL[status]}
       </span>
       <span className="tabular-nums">

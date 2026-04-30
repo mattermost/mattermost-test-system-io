@@ -13,7 +13,6 @@ import {
   Play,
   ExternalLink,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
 import {
   formatDuration,
   calculatePassRate,
@@ -77,19 +76,6 @@ export interface ReportSummaryProps {
   /** Retest shard count. Rendered as `{reportCount}+{retestReportCount}` when > 0. */
   retestReportCount?: number;
   progressStatus?: ProgressStatus;
-  /**
-   * For orchestrated runs in progress: when the run was begun. Combined
-   * with `firstCheckoutAt` (or now, when no spec has been leased yet) to
-   * surface a live "setup + running" duration next to the In Progress
-   * badge so users can tell how long the run has been going.
-   */
-  runStartedAt?: string;
-  /**
-   * For orchestrated runs in progress: when the first spec was checked
-   * out by a worker (= earliest unit attempt). When undefined the run is
-   * still in the setup phase (cloud-init / start-server / prepare).
-   */
-  firstCheckoutAt?: string | null;
 
   // Row 4: git context badges
   repository?: string;
@@ -124,39 +110,6 @@ function TestStatusBadge({ status }: { status: TestStatus }) {
         </span>
       );
   }
-}
-
-function ProgressDurations({
-  runStartedAt,
-  firstCheckoutAt,
-}: {
-  runStartedAt: string;
-  firstCheckoutAt?: string | null;
-}) {
-  // Live tick so the running counter updates without a refetch. Cheap —
-  // a single 1s interval scoped to the in-progress badge only.
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
-  const startMs = Date.parse(runStartedAt);
-  if (!Number.isFinite(startMs)) return null;
-  const checkoutMs = firstCheckoutAt ? Date.parse(firstCheckoutAt) : NaN;
-  const hasCheckout = Number.isFinite(checkoutMs);
-  const setupMs = hasCheckout ? Math.max(0, checkoutMs - startMs) : Math.max(0, nowMs - startMs);
-  const runningMs = hasCheckout ? Math.max(0, nowMs - checkoutMs) : 0;
-  const label = hasCheckout
-    ? `(${formatDuration(setupMs)} setup) + ${formatDuration(runningMs)} running`
-    : `(${formatDuration(setupMs)} setup)`;
-  return (
-    <span
-      className="text-xs text-gray-500 dark:text-gray-400 tabular-nums"
-      title="Setup = run begin → first spec checkout. Running = first checkout → now."
-    >
-      {label}
-    </span>
-  );
 }
 
 function ProgressBadge({ status, createdAt }: { status: ProgressStatus; createdAt?: string }) {
@@ -220,8 +173,6 @@ export function ReportSummary(props: ReportSummaryProps) {
     reportCount,
     retestReportCount,
     progressStatus,
-    runStartedAt,
-    firstCheckoutAt,
     repository,
     branch,
     commit,
@@ -392,9 +343,6 @@ export function ReportSummary(props: ReportSummaryProps) {
             </span>
           )}
           {progressStatus && <ProgressBadge status={progressStatus} createdAt={createdAt} />}
-          {progressStatus === 'in_progress' && runStartedAt && (
-            <ProgressDurations runStartedAt={runStartedAt} firstCheckoutAt={firstCheckoutAt} />
-          )}
         </div>
       )}
 

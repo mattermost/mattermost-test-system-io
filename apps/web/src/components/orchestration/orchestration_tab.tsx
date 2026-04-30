@@ -40,22 +40,12 @@ import {
   type UnitState,
 } from '@/types/orchestration';
 import { ReportSummary } from '@/components/report_summary';
+import { PaginationBar } from '@/components/ui/pagination_bar';
 import { ScreenshotGallery } from '@/components/ui/screenshot-gallery';
-import { HighlightText } from '@/components/test_suites';
+import { HighlightText, workerSlot } from '@/components/test_suites';
 
 interface OrchestrationTabProps {
   identity: CompositeIdentity;
-}
-
-/**
- * Render a Playwright test status as human-readable English. Plays with
- * the camelCase `timedOut` → `timed out` and falls back to the lowercased
- * value for the rest. `null`/`undefined` mean a test is still running.
- */
-function formatTestStatus(status: TestCaseStatus | null | undefined): string {
-  if (!status) return 'in flight';
-  if (status === 'timedOut') return 'timed out';
-  return status;
 }
 
 function formatDuration(ms: number | null | undefined): string {
@@ -456,6 +446,36 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
                 <span className="truncate">
                   <HighlightText text={row.unit.spec_path} search={searchQuery} />
                 </span>
+                {row.attempts.length > 0 && (
+                  <span className="ml-1 inline-flex flex-shrink-0 items-center gap-0.5">
+                    {row.attempts.map((a, i) => {
+                      const slot = workerSlot(a.gh_job_name, i + 1);
+                      const inFlight = !a.status && !a.expired;
+                      const passed = a.status === 'passed' || a.status === 'flaky';
+                      const failed =
+                        a.expired ||
+                        a.status === 'failed' ||
+                        a.status === 'timedOut' ||
+                        a.status === 'interrupted';
+                      const color = inFlight
+                        ? 'bg-blue-200 text-blue-700 dark:bg-blue-800 dark:text-blue-200'
+                        : passed
+                          ? 'bg-green-200 text-green-700 dark:bg-green-800 dark:text-green-200'
+                          : failed
+                            ? 'bg-red-200 text-red-700 dark:bg-red-800 dark:text-red-200'
+                            : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200';
+                      return (
+                        <span
+                          key={a.id}
+                          className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${color}`}
+                          title={a.gh_job_name || `Attempt ${i + 1}`}
+                        >
+                          {slot}
+                        </span>
+                      );
+                    })}
+                  </span>
+                )}
               </p>
               {suiteTitle && (
                 <p className="truncate text-xs text-gray-500 dark:text-gray-400">
@@ -473,12 +493,45 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
                 <Clock className="h-3 w-3" />
                 {formatDuration(liveElapsedMs)}
               </span>
-            ) : row.latest?.actual_duration_ms != null ? (
-              <span className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-400">
-                <Clock className="h-3 w-3" />
-                {formatDuration(row.latest.actual_duration_ms)}
-              </span>
-            ) : null}
+            ) : (
+              (() => {
+                // Per-attempt wall-clock split. First-pass is the first
+                // orchestration lease — its `actual_duration_ms` already
+                // covers all Playwright `--retries` reruns within that
+                // single invocation. Retest is the sum of every later
+                // orchestration lease's wall-clock. Showing them as
+                // `first + retest` makes it visible that a flaky spec
+                // burned both windows.
+                const attempts = row.attempts;
+                if (attempts.length === 0) return null;
+                const firstMs = attempts[0]!.actual_duration_ms ?? null;
+                let retestMs = 0;
+                for (let i = 1; i < attempts.length; i++) {
+                  const d = attempts[i]!.actual_duration_ms;
+                  if (d != null) retestMs += d;
+                }
+                if (firstMs == null && retestMs === 0) return null;
+                return (
+                  <span
+                    className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-400"
+                    title={
+                      retestMs > 0
+                        ? 'First-pass lease + orchestration retest lease(s) (each lease wall-clock includes its own Playwright --retries reruns)'
+                        : 'First-pass lease wall-clock (includes any Playwright --retries reruns within the lease)'
+                    }
+                  >
+                    <Clock className="h-3 w-3" />
+                    {firstMs != null ? formatDuration(firstMs) : '—'}
+                    {retestMs > 0 && (
+                      <span className="text-gray-400 dark:text-gray-500">
+                        {' + '}
+                        {formatDuration(retestMs)}
+                      </span>
+                    )}
+                  </span>
+                );
+              })()
+            )}
             {total > 0 && (
               <span className="text-gray-600 dark:text-gray-300">
                 {total} {total === 1 ? 'test' : 'tests'}
@@ -545,12 +598,17 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
  */
 /**
  * One per-test entry collected for the expanded row. Bundles the test
- * case payload with the worker job name from the parent attempt so the
- * UI can show "Attempt N (worker-0)" without a second lookup.
+ * case payload with the worker job name from the parent attempt and
+ * the orchestration-attempt index it came from. `attemptIdx === 0` is
+ * the first lease on the unit (first-pass — possibly with Playwright
+ * `--retries` re-runs producing multiple test_cases at idx 0); any
+ * higher index is a retest from the orchestration retest queue, which
+ * usually means a different worker.
  */
 interface TestCaseEntry {
   tc: SnapshotTestCase;
   ghJobName: string;
+  attemptIdx: number;
 }
 
 function TestCasesList({
@@ -564,9 +622,10 @@ function TestCasesList({
 }) {
   const byTitle = new Map<string, TestCaseEntry[]>();
   const order: string[] = [];
-  for (const a of row.attempts) {
+  for (let attemptIdx = 0; attemptIdx < row.attempts.length; attemptIdx++) {
+    const a = row.attempts[attemptIdx]!;
     for (const tc of a.test_cases ?? []) {
-      const entry: TestCaseEntry = { tc, ghJobName: a.gh_job_name };
+      const entry: TestCaseEntry = { tc, ghJobName: a.gh_job_name, attemptIdx };
       const list = byTitle.get(tc.full_title);
       if (list) {
         list.push(entry);
@@ -673,7 +732,7 @@ function TestCaseRow({
       </div>
       {expanded && (
         <div className="ml-16 mt-1 space-y-2 border-l-2 border-gray-200 pl-3 dark:border-gray-600">
-          {entries.map(({ tc, ghJobName }, i) => {
+          {entries.map(({ tc, ghJobName, attemptIdx }, i) => {
             const isFailure =
               tc.status === 'failed' || tc.status === 'timedOut' || tc.status === 'interrupted';
             const isSkipped = tc.status === 'skipped';
@@ -684,6 +743,13 @@ function TestCaseRow({
               : isPassed
                 ? 'text-green-500'
                 : 'text-red-500';
+            // Phase tag: anything from the unit's first orchestration
+            // attempt is "first-pass" (Playwright `--retries` reruns inside
+            // the same lease still count as first-pass — the lease only
+            // cycles via the orchestration retest queue). Higher attempt
+            // indices are orchestration-level retests, which usually land
+            // on a different worker.
+            const isRetestPhase = attemptIdx > 0;
             return (
               <div key={`${tc.full_title}-${i}`} className="space-y-1">
                 <div className="flex items-center gap-2 text-xs">
@@ -701,7 +767,14 @@ function TestCaseRow({
                   {ghJobName && (
                     <span className="text-xs text-gray-500 dark:text-gray-500">({ghJobName})</span>
                   )}
-                  <span className={`text-xs ${attemptColor}`}>({formatTestStatus(tc.status)})</span>
+                  {isRetestPhase && (
+                    <span
+                      className="inline-flex items-center rounded bg-orange-100 px-1 text-[10px] font-medium text-orange-700 dark:bg-orange-900/40 dark:text-orange-300"
+                      title="Orchestration-level retest (re-leased to a worker after the first lease ended in failure)"
+                    >
+                      retest
+                    </span>
+                  )}
                   {tc.duration_ms != null && (
                     <span className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-500">
                       <Clock className="h-3 w-3" />
@@ -762,6 +835,9 @@ type SpecListFilter =
 // 500ms debounce, matching the Reports tab so typing in either view feels
 // the same.
 const SEARCH_DEBOUNCE_MS = 500;
+// Same per-page count the Reports tab uses, so a run with hundreds of
+// dispatch units paginates instead of scrolling forever in a single list.
+const PAGE_SIZE = 100;
 
 function SpecList({ run }: { run: RunSnapshot }) {
   const units = run.units ?? [];
@@ -803,6 +879,14 @@ function SpecList({ run }: { run: RunSnapshot }) {
 
   const normalizedSearch = useMemo(() => effectiveSearch.toLowerCase(), [effectiveSearch]);
   const isSearching = searchQuery.trim() !== effectiveSearch;
+
+  // Page index, 1-based to match the Reports tab. Reset to 1 whenever the
+  // filtered set changes shape (status filter or search) so the user
+  // doesn't land on a now-empty page.
+  const [currentPage, setCurrentPage] = useState(1);
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, normalizedSearch]);
 
   const filteredRows = useMemo(() => {
     const q = normalizedSearch;
@@ -851,6 +935,12 @@ function SpecList({ run }: { run: RunSnapshot }) {
       })
       .map((x) => x.row);
   }, [allRows, statusFilter, normalizedSearch]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return filteredRows.slice(start, start + PAGE_SIZE);
+  }, [filteredRows, currentPage]);
 
   if (allRows.length === 0) {
     return (
@@ -1065,13 +1155,24 @@ function SpecList({ run }: { run: RunSnapshot }) {
           </button>
         )}
       </div>
+      {totalPages > 1 && (
+        <PaginationBar
+          currentPage={currentPage}
+          totalPages={totalPages}
+          totalItems={filteredRows.length}
+          pageSize={PAGE_SIZE}
+          onPageChange={setCurrentPage}
+          itemLabel="spec"
+          position="top"
+        />
+      )}
       <div className="divide-y divide-gray-100 dark:divide-gray-700">
         {filteredRows.length === 0 ? (
           <div className="py-6 text-center text-xs text-gray-400 dark:text-gray-500">
             No matching dispatch units
           </div>
         ) : (
-          filteredRows.map((row) => {
+          paginatedRows.map((row) => {
             const originalIdx = allRows.indexOf(row);
             return (
               <SpecListRow
@@ -1084,6 +1185,17 @@ function SpecList({ run }: { run: RunSnapshot }) {
           })
         )}
       </div>
+      {totalPages > 1 && (
+        <PaginationBar
+          currentPage={currentPage}
+          totalPages={totalPages}
+          totalItems={filteredRows.length}
+          pageSize={PAGE_SIZE}
+          onPageChange={setCurrentPage}
+          itemLabel="spec"
+          position="bottom"
+        />
+      )}
     </div>
   );
 }
@@ -1199,22 +1311,6 @@ export function OrchestrationTab({ identity }: OrchestrationTabProps) {
         ? 'timed_out'
         : 'completed';
 
-  // Earliest attempt.created_at across all units = the moment a worker
-  // first leased a spec. Fed into ReportSummary so the in-progress
-  // header can split its live duration into setup vs. running.
-  const firstCheckoutAt: string | null = (() => {
-    let earliest: number | null = null;
-    for (const u of run.units ?? []) {
-      for (const a of u.attempts ?? []) {
-        if (!a.created_at) continue;
-        const ms = Date.parse(a.created_at);
-        if (!Number.isFinite(ms)) continue;
-        if (earliest == null || ms < earliest) earliest = ms;
-      }
-    }
-    return earliest != null ? new Date(earliest).toISOString() : null;
-  })();
-
   return (
     <div className="space-y-6">
       <ReportSummary
@@ -1231,8 +1327,6 @@ export function OrchestrationTab({ identity }: OrchestrationTabProps) {
         createdAt={run.started_at}
         framework={run.framework}
         progressStatus={progressStatus}
-        runStartedAt={run.started_at}
-        firstCheckoutAt={firstCheckoutAt}
         repository={run.repository}
         branch={run.branch}
         commit={run.commit_sha}

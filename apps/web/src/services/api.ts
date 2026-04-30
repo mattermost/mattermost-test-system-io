@@ -129,6 +129,13 @@ export interface IndividualReportSummary {
   id: string;
   short_id: string;
   report_group_id: string;
+  /**
+   * Parent report group's name (e.g. "playwright-orchestrated-test") —
+   * the matrix-target label shared across every shard in the run. Use
+   * this as the row's primary label; `gh_job_name` is the per-shard
+   * worker tag.
+   */
+  group_name: string;
   name: string;
   status: string;
   gh_job_id?: string;

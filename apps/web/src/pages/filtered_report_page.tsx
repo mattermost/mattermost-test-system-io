@@ -13,19 +13,8 @@ import {
 import { Breadcrumb } from '@/components/breadcrumb';
 import { TestSuitesView } from '@/components/test_suites_view';
 import { RunAttemptSelector } from '@/components/run_attempt_selector';
-import {
-  Loader2,
-  Inbox,
-  AlertTriangle,
-  Play,
-  CheckCircle,
-  AlertCircle,
-  XCircle,
-  ExternalLink,
-  Layers,
-  ListTree,
-  GitMerge,
-} from 'lucide-react';
+import { Loader2, Inbox, AlertTriangle, Layers, ListTree, GitMerge } from 'lucide-react';
+import { ContributingReportsList } from '@/components/contributing_reports_list';
 import { ReportSummary } from '@/components/report_summary';
 import { isRetestName } from '@/components/report_card_parts';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
@@ -325,6 +314,15 @@ export function FilteredReportPage() {
 
   const orchestrationIdentityIsResolvable = !!orchestrationIdentity.gh_run_id;
 
+  const contributingReportsNode = (
+    <ContributingReportsList
+      reportsByRun={reportsByRun}
+      reportTestStatus={reportTestStatus}
+      repository={report?.repository}
+      formatDate={formatDate}
+    />
+  );
+
   // Reports tab body, hoisted into a closure so the Combine tab can fall
   // back to it verbatim when no orchestration data is available. Closes
   // over the page-scoped data/loading flags rather than receiving props.
@@ -388,24 +386,6 @@ export function FilteredReportPage() {
             }
             return 'completed';
           })()}
-          runStartedAt={orchestrationRun?.started_at ?? report.created_at}
-          firstCheckoutAt={(() => {
-            // Earliest unit attempt across the whole run = the moment a
-            // worker leased its first spec. Used to split the live "In
-            // Progress" duration into setup vs. running.
-            const units = orchestrationRun?.units;
-            if (!units || units.length === 0) return null;
-            let earliest: number | null = null;
-            for (const u of units) {
-              for (const a of u.attempts ?? []) {
-                if (!a.created_at) continue;
-                const ms = Date.parse(a.created_at);
-                if (!Number.isFinite(ms)) continue;
-                if (earliest == null || ms < earliest) earliest = ms;
-              }
-            }
-            return earliest != null ? new Date(earliest).toISOString() : null;
-          })()}
           repository={report.repository}
           branch={report.branch}
           commit={report.commit}
@@ -432,103 +412,7 @@ export function FilteredReportPage() {
         )
       )}
 
-      {/* Reports */}
-      {reportsByRun.length > 0 && (
-        <div className="mt-4">
-          <h2 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Reports</h2>
-          {reportsByRun.map(({ runId, createdAt, attempts }) => (
-            <div key={runId} className="mb-3">
-              {reportsByRun.length > 1 && (
-                <div className="flex items-center gap-2 text-xs mb-1">
-                  {report?.repository && runId !== 'unknown' ? (
-                    <a
-                      href={`https://github.com/${report.repository}/actions/runs/${runId}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 font-medium text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 transition-colors"
-                    >
-                      <Play className="h-3 w-3" />
-                      Run {runId}
-                      <ExternalLink className="h-3 w-3 opacity-50" />
-                    </a>
-                  ) : (
-                    <span className="font-medium text-gray-600 dark:text-gray-300">
-                      Run {runId}
-                    </span>
-                  )}
-                  <span className="text-gray-400 dark:text-gray-500">{formatDate(createdAt)}</span>
-                </div>
-              )}
-              {attempts.map(({ attempt, reports }) => (
-                <div key={attempt} className="mb-2">
-                  {attempts.length > 1 && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1 ml-1">
-                      Run Attempt {attempt}
-                    </p>
-                  )}
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {reports.map((entry) => {
-                      const testResult = reportTestStatus.get(entry.id);
-                      const isFailed = testResult === 'failed';
-                      const isFlaky = testResult === 'flaky';
-                      // Workers in a matrix all share the same display name
-                      // base (e.g. "orch-worker") with a trailing index that
-                      // identifies the matrix slot (e.g. "orch-worker-3").
-                      // Split the suffix off so the chip's main label stays
-                      // compact across N workers and the slot number lives
-                      // in a small badge that color-matches the chip.
-                      const slotMatch = entry.display_name.match(/^(.*)-(\d+)$/);
-                      const baseLabel = slotMatch ? slotMatch[1] : entry.display_name;
-                      const slot = slotMatch ? slotMatch[2] : null;
-                      return (
-                        <a
-                          key={entry.id}
-                          href={`/reports/r/${entry.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${
-                            isFailed
-                              ? 'bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/50 dark:text-red-300 dark:hover:bg-red-900/70'
-                              : isFlaky
-                                ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200 dark:bg-yellow-900/50 dark:text-yellow-300 dark:hover:bg-yellow-900/70'
-                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'
-                          }`}
-                        >
-                          {isFailed ? (
-                            <XCircle className="h-3 w-3 text-red-500" />
-                          ) : isFlaky ? (
-                            <AlertCircle className="h-3 w-3 text-yellow-500" />
-                          ) : entry.status === 'complete' ? (
-                            <CheckCircle className="h-3 w-3 text-green-500" />
-                          ) : (
-                            <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
-                          )}
-                          {baseLabel}
-                          {slot && (
-                            <span
-                              className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${
-                                isFailed
-                                  ? 'bg-red-200 text-red-800 dark:bg-red-800 dark:text-red-200'
-                                  : isFlaky
-                                    ? 'bg-yellow-200 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200'
-                                    : 'bg-gray-200 text-gray-800 dark:bg-gray-600 dark:text-gray-200'
-                              }`}
-                              title={entry.display_name}
-                            >
-                              {slot}
-                            </span>
-                          )}
-                          <ExternalLink className="h-3 w-3 opacity-50" />
-                        </a>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
+      {contributingReportsNode}
     </div>
   );
 
@@ -538,7 +422,10 @@ export function FilteredReportPage() {
   // either standalone (default, no tabs) or inside the Combine tab.
   const renderCombineBody = () =>
     orchestrationIdentityIsResolvable && orchestrationHasData ? (
-      <OrchestrationTab identity={orchestrationIdentity} />
+      <>
+        <OrchestrationTab identity={orchestrationIdentity} />
+        {contributingReportsNode}
+      </>
     ) : reportGroupHasData ? (
       renderReportsBody()
     ) : (
@@ -636,7 +523,10 @@ export function FilteredReportPage() {
 
           <TabsContent value="dispatch">
             {orchestrationIdentityIsResolvable ? (
-              <OrchestrationTab identity={orchestrationIdentity} />
+              <>
+                <OrchestrationTab identity={orchestrationIdentity} />
+                {contributingReportsNode}
+              </>
             ) : (
               <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
                 <Inbox className="h-12 w-12 mb-3" />

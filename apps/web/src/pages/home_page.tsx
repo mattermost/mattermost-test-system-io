@@ -22,7 +22,6 @@ import {
   formatDuration,
   calculatePassRate,
   getPassRateColorClass,
-  resolveDisplayStats,
 } from '@/components/report_card_parts';
 import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
 
@@ -41,18 +40,19 @@ function format_time(date_string: string): string {
 }
 
 function IndividualReportCard({ report }: { report: IndividualReportSummary }) {
-  // Prefer the orchestration counts over the framework's `test_stats` so
-  // an in-flight individual report still surfaces meaningful "x of y
-  // done" numbers before its shard upload completes.
-  const stats = resolveDisplayStats(report);
+  // Per-shard counts only — `test_stats` is computed from this shard's
+  // own uploaded JSON. Don't fall back to the orchestration rollup here:
+  // orchestration_runs are group-scoped, so every individual row under
+  // the same group would otherwise display the group's total (the same
+  // numbers across all workers in the matrix). The grouped view, where
+  // a row IS the group, is the place to consult orchestration counts.
+  const stats = report.test_stats && report.test_stats.total > 0 ? report.test_stats : null;
   const hasStats = !!stats && stats.total > 0;
   const rate = hasStats ? calculatePassRate(stats) : null;
   const rateColorClass = getPassRateColorClass(rate);
   const repoName = report.repository?.split('/').pop() || '';
   const branch = report.branch?.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '') || '';
   const shortSha = report.commit?.slice(0, 7) || '';
-  // Both source branches of `resolveDisplayStats` (test_stats and the
-  // orchestration server-side rollup) are at test-case granularity.
   const unit = 'tests';
 
   const statusIcon =
@@ -72,7 +72,7 @@ function IndividualReportCard({ report }: { report: IndividualReportSummary }) {
     <div>
       <Link
         to={`/reports/r/${report.id}`}
-        className={`flex items-center rounded-md px-3 py-2 text-sm transition-colors ${
+        className={`flex cursor-pointer items-center rounded-md px-3 py-2 text-sm transition-colors ${
           hasFailed
             ? 'bg-red-50/50 hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/30'
             : 'hover:bg-gray-50 dark:hover:bg-gray-800'
@@ -98,8 +98,10 @@ function IndividualReportCard({ report }: { report: IndividualReportSummary }) {
               {shortSha}
             </span>
           )}
-          <span className="truncate text-xs text-gray-700 dark:text-gray-300">{report.name}</span>
-          {report.gh_job_name && (
+          <span className="truncate text-xs text-gray-700 dark:text-gray-300">
+            {report.group_name || report.name}
+          </span>
+          {report.gh_job_name && report.gh_job_name !== report.group_name && (
             <>
               <span className="text-xs text-gray-400 dark:text-gray-500">/</span>
               <span className="truncate text-xs text-gray-500 dark:text-gray-400">
@@ -179,7 +181,14 @@ function IndividualReportCard({ report }: { report: IndividualReportSummary }) {
 
 export function HomePage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const viewMode = (searchParams.get('view') as ViewMode) || 'grouped';
+  // Individual-report view is reserved for power users / debugging; only
+  // exposed when the URL opts in via `?individual=1`. Without that flag the
+  // toggle is hidden and the page is locked to the grouped view, so the
+  // average visitor never sees the unfiltered shard list.
+  const showViewToggle = searchParams.get('individual') === '1';
+  const viewMode: ViewMode = showViewToggle
+    ? ((searchParams.get('view') as ViewMode) ?? 'grouped')
+    : 'grouped';
   const setViewMode = (mode: ViewMode) => {
     if (mode === 'grouped') {
       searchParams.delete('view');
@@ -261,33 +270,35 @@ export function HomePage() {
   return (
     <div>
       <div className="mb-6">
-        <div className="flex items-center justify-between">
-          {/* Toggle */}
-          <div className="flex items-center rounded-lg border border-gray-200 dark:border-gray-700 p-0.5 ml-auto">
-            <button
-              onClick={() => setViewMode('grouped')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                viewMode === 'grouped'
-                  ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
-                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
-              }`}
-            >
-              <Layers className="h-3.5 w-3.5" />
-              Grouped
-            </button>
-            <button
-              onClick={() => setViewMode('individual')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                viewMode === 'individual'
-                  ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
-                  : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
-              }`}
-            >
-              <List className="h-3.5 w-3.5" />
-              Individual
-            </button>
+        {showViewToggle && (
+          <div className="flex items-center justify-between">
+            {/* Toggle */}
+            <div className="flex items-center rounded-lg border border-gray-200 dark:border-gray-700 p-0.5 ml-auto">
+              <button
+                onClick={() => setViewMode('grouped')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  viewMode === 'grouped'
+                    ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
+                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+                }`}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                Grouped
+              </button>
+              <button
+                onClick={() => setViewMode('individual')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  viewMode === 'individual'
+                    ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
+                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+                }`}
+              >
+                <List className="h-3.5 w-3.5" />
+                Individual
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Filters */}
         <div className="flex items-center gap-3 mt-3">

@@ -152,9 +152,14 @@ type repoGroup struct {
 }
 
 type individualReportSummary struct {
-	ID            string                `json:"id"`
-	ShortID       string                `json:"short_id"`
+	ID      string `json:"id"`
+	ShortID string `json:"short_id"`
+	// ReportGroupID is the parent group; GroupName is the report group's
+	// name (e.g. "playwright-orchestrated-test") — i.e. the matrix-target
+	// name shared across every worker in the run. The UI renders this as
+	// the row label, then `/ gh_job_name` as the per-shard worker tag.
 	ReportGroupID string                `json:"report_group_id"`
+	GroupName     string                `json:"group_name"`
 	Name          string                `json:"name"`
 	Status        string                `json:"status"`
 	GHJobID       string                `json:"gh_job_id,omitempty"`
@@ -289,6 +294,7 @@ func toIndividualSummary(g groupDTO, e reportEntryDTO, stats groupStats) individ
 		ID:            e.ID.String(),
 		ShortID:       shortID(e.ID.String()),
 		ReportGroupID: g.ID.String(),
+		GroupName:     g.Name,
 		Name:          firstNonEmptyStr(derefOrEmpty(e.GHJobName), e.Name),
 		Status:        e.Status,
 		GHJobID:       derefOrEmpty(e.GHJobID),

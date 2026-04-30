@@ -58,6 +58,14 @@ export interface ReportSummaryProps {
   flaky: number;
   skipped: number;
   total: number;
+  /**
+   * Wall-clock span between run begin and the first worker checkout —
+   * cloud-init / start-server / playwright prepare, before any spec was
+   * leased. Renders before `durationMs` as `(N setup) + ...`. Optional;
+   * the consolidated rollup doesn't expose this, only the orchestration
+   * tab populates it.
+   */
+  setupDurationMs?: number | null;
   durationMs?: number | null;
   /** Wall-clock span of retest shards alone. Renders after `durationMs` with a `+` separator. */
   retestDurationMs?: number | null;
@@ -204,6 +212,7 @@ export function ReportSummary(props: ReportSummaryProps) {
     flaky,
     skipped,
     total,
+    setupDurationMs,
     durationMs,
     retestDurationMs,
     createdAt,
@@ -315,25 +324,40 @@ export function ReportSummary(props: ReportSummaryProps) {
             {' / '}
             <span className="font-medium">{total}</span> total
           </span>
-          {durationMs != null && (
-            <span
-              className="inline-flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400"
-              title={
-                retestDurationMs != null && retestDurationMs > 0
-                  ? 'Parallel shard batch, then separate retest run'
-                  : undefined
+          {durationMs != null &&
+            (() => {
+              const hasSetup = setupDurationMs != null && setupDurationMs > 0;
+              const hasRetest = retestDurationMs != null && retestDurationMs > 0;
+              const titleParts: string[] = [];
+              if (hasSetup) {
+                titleParts.push(
+                  `${formatDuration(setupDurationMs!)} setup time (begin → first checkout)`,
+                );
               }
-            >
-              <Clock className="h-3.5 w-3.5" />
-              {formatDuration(durationMs)}
-              {retestDurationMs != null && retestDurationMs > 0 && (
-                <span className="text-gray-400 dark:text-gray-500">
-                  {' + '}
-                  {formatDuration(retestDurationMs)}
+              titleParts.push(`${formatDuration(durationMs)} first-pass`);
+              if (hasRetest) titleParts.push(`${formatDuration(retestDurationMs!)} retest`);
+              const title = hasSetup || hasRetest ? titleParts.join(' + ') : undefined;
+              return (
+                <span
+                  className="inline-flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400"
+                  title={title}
+                >
+                  <Clock className="h-3.5 w-3.5" />
+                  {hasSetup && (
+                    <span className="text-gray-400 dark:text-gray-500">
+                      {`(${formatDuration(setupDurationMs!)} setup) + `}
+                    </span>
+                  )}
+                  {formatDuration(durationMs)}
+                  {hasRetest && (
+                    <span className="text-gray-400 dark:text-gray-500">
+                      {' + '}
+                      {formatDuration(retestDurationMs!)}
+                    </span>
+                  )}
                 </span>
-              )}
-            </span>
-          )}
+              );
+            })()}
         </div>
       )}
 

@@ -153,27 +153,60 @@ function computeTestCaseCounts(units: SnapshotUnit[]): {
 }
 
 /**
- * Total test execution time across the run. Sums every attempt's
- * test_cases durations so retest attempts are reflected. The first
- * attempt of each unit is treated as the main batch; subsequent attempts
- * roll into the retest total — matching how ReportSummary displays
- * "main + retest" durations on the Reports tab.
+ * Wall-clock duration partitioned into setup, first-pass, and retest.
+ *
+ * Each phase's window is (latest reported_at) − (earliest created_at)
+ * across the attempts in that phase. Setup is the run-begin → first
+ * checkout gap (cloud-init, server start, framework prepare). Attempt
+ * index 0 on a unit is first-pass; subsequent indices are retests.
+ *
+ * The math has to be wall-clock per phase, not Σ test_case.duration_ms,
+ * because the latter is CPU-time across parallel workers and overstates
+ * elapsed time by roughly the worker count — N workers each running for
+ * D minutes in parallel sum to N·D of CPU but only D elapsed.
+ *
+ * Attempts without a reported_at are excluded from the latest-end
+ * calculation so in-flight values stay monotonic until the worker
+ * reports.
  */
-function computeTestDurations(units: SnapshotUnit[]): {
+function computeTestDurations(
+  units: SnapshotUnit[],
+  runStartedAt: string,
+): {
+  setupDurationMs: number;
   durationMs: number;
   retestDurationMs: number;
 } {
-  let durationMs = 0;
-  let retestDurationMs = 0;
+  let firstStart = Number.POSITIVE_INFINITY;
+  let firstEnd = 0;
+  let retestStart = Number.POSITIVE_INFINITY;
+  let retestEnd = 0;
   for (const u of units) {
     for (let i = 0; i < u.attempts.length; i++) {
       const a = u.attempts[i]!;
-      const sum = (a.test_cases ?? []).reduce((acc, tc) => acc + (tc.duration_ms ?? 0), 0);
-      if (i === 0) durationMs += sum;
-      else retestDurationMs += sum;
+      const startMs = Date.parse(a.created_at);
+      const endMs = a.reported_at ? Date.parse(a.reported_at) : NaN;
+      const isRetest = i > 0;
+      if (Number.isFinite(startMs)) {
+        if (isRetest) retestStart = Math.min(retestStart, startMs);
+        else firstStart = Math.min(firstStart, startMs);
+      }
+      if (Number.isFinite(endMs)) {
+        if (isRetest) retestEnd = Math.max(retestEnd, endMs);
+        else firstEnd = Math.max(firstEnd, endMs);
+      }
     }
   }
-  return { durationMs, retestDurationMs };
+  const runStartMs = Date.parse(runStartedAt);
+  const setupDurationMs =
+    Number.isFinite(runStartMs) && Number.isFinite(firstStart)
+      ? Math.max(0, firstStart - runStartMs)
+      : 0;
+  const durationMs =
+    Number.isFinite(firstStart) && firstEnd > 0 ? Math.max(0, firstEnd - firstStart) : 0;
+  const retestDurationMs =
+    Number.isFinite(retestStart) && retestEnd > 0 ? Math.max(0, retestEnd - retestStart) : 0;
+  return { setupDurationMs, durationMs, retestDurationMs };
 }
 
 interface SpecRow {
@@ -310,23 +343,25 @@ function statusIconForRow(
 }
 
 /**
- * Pulls the suite title out of a test_case's full_title — the same string
- * the Reports tab renders below the spec path (e.g. "Login" beneath
- * "login.spec.ts"). The tsio reporter's full_title format is
+ * Pulls the describe-block title out of a test's full_title for display
+ * under the spec path. The Playwright reporter's full_title format is
  *   "<project> > <file> > <describe...> > <test title>"
- * so we anchor on the file segment and take everything between it and the
- * leaf. Returns "" when the test isn't inside a describe block.
+ * where <file> can be either the basename ("foo.spec.ts") or a path
+ * relative to the playwright config root ("dir/foo.spec.ts"). We anchor
+ * on the spec-file extension to skip past the project + file segments
+ * and return everything between them and the leaf test title. Returns
+ * "" when the test isn't inside a describe block, in which case the
+ * caller should omit the second line entirely instead of repeating the
+ * spec path.
  */
 function deriveSuiteTitleFromRow(row: SpecRow): string {
   const tc = row.latest?.test_cases?.[0];
   if (!tc || !tc.full_title) return '';
   const parts = tc.full_title.split(' > ');
   if (parts.length < 2) return '';
-  const specBasename = row.unit.spec_path.split('/').pop() ?? '';
-  const fileIdx = specBasename ? parts.indexOf(specBasename) : -1;
+  const fileIdx = parts.findIndex((p) => /\.spec\.[tj]sx?$/.test(p));
   const start = fileIdx >= 0 ? fileIdx + 1 : 0;
-  const middle = parts.slice(start, -1);
-  return middle.join(' > ');
+  return parts.slice(start, -1).join(' > ');
 }
 
 interface SpecListRowProps {
@@ -921,83 +956,85 @@ function SpecList({ run }: { run: RunSnapshot }) {
           )}
         </h3>
         <div className="flex-1" />
-        <div className="flex flex-shrink-0 items-center gap-2">
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setStatusFilter('all')}
-              className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                statusFilter === 'all'
-                  ? 'bg-gray-200 text-gray-900 dark:bg-gray-600 dark:text-white'
-                  : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
-              }`}
-            >
-              {tcCounts.total} {tcCounts.total === 1 ? 'test' : 'tests'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setStatusFilter('test_passed')}
-              className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                statusFilter === 'test_passed'
-                  ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
-                  : 'text-green-600 hover:bg-green-50 dark:text-green-500 dark:hover:bg-green-900/20'
-              }`}
-            >
-              <span className="inline-flex items-center gap-1">
-                <CheckCircle2 className="h-3 w-3" />
-                {tcCounts.passed}
-              </span>
-            </button>
-            {tcCounts.failed > 0 && (
+        {tcCounts.total > 0 && (
+          <div className="flex flex-shrink-0 items-center gap-2">
+            <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => setStatusFilter('test_failed')}
+                onClick={() => setStatusFilter('all')}
                 className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                  statusFilter === 'test_failed'
-                    ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
-                    : 'text-red-600 hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-900/20'
-                }`}
-              >
-                <span className="inline-flex items-center gap-1">
-                  <XCircle className="h-3 w-3" />
-                  {tcCounts.failed}
-                </span>
-              </button>
-            )}
-            {tcCounts.flaky > 0 && (
-              <button
-                type="button"
-                onClick={() => setStatusFilter('test_flaky')}
-                className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                  statusFilter === 'test_flaky'
-                    ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
-                    : 'text-yellow-600 hover:bg-yellow-50 dark:text-yellow-500 dark:hover:bg-yellow-900/20'
-                }`}
-              >
-                <span className="inline-flex items-center gap-1">
-                  <AlertTriangle className="h-3 w-3" />
-                  {tcCounts.flaky}
-                </span>
-              </button>
-            )}
-            {tcCounts.skipped > 0 && (
-              <button
-                type="button"
-                onClick={() => setStatusFilter('test_skipped')}
-                className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
-                  statusFilter === 'test_skipped'
-                    ? 'bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200'
+                  statusFilter === 'all'
+                    ? 'bg-gray-200 text-gray-900 dark:bg-gray-600 dark:text-white'
                     : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
                 }`}
               >
+                {tcCounts.total} {tcCounts.total === 1 ? 'test' : 'tests'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('test_passed')}
+                className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  statusFilter === 'test_passed'
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
+                    : 'text-green-600 hover:bg-green-50 dark:text-green-500 dark:hover:bg-green-900/20'
+                }`}
+              >
                 <span className="inline-flex items-center gap-1">
-                  <MinusCircle className="h-3 w-3" />
-                  {tcCounts.skipped}
+                  <CheckCircle2 className="h-3 w-3" />
+                  {tcCounts.passed}
                 </span>
               </button>
-            )}
+              {tcCounts.failed > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('test_failed')}
+                  className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                    statusFilter === 'test_failed'
+                      ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
+                      : 'text-red-600 hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-900/20'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    <XCircle className="h-3 w-3" />
+                    {tcCounts.failed}
+                  </span>
+                </button>
+              )}
+              {tcCounts.flaky > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('test_flaky')}
+                  className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                    statusFilter === 'test_flaky'
+                      ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
+                      : 'text-yellow-600 hover:bg-yellow-50 dark:text-yellow-500 dark:hover:bg-yellow-900/20'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    <AlertTriangle className="h-3 w-3" />
+                    {tcCounts.flaky}
+                  </span>
+                </button>
+              )}
+              {tcCounts.skipped > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('test_skipped')}
+                  className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                    statusFilter === 'test_skipped'
+                      ? 'bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200'
+                      : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    <MinusCircle className="h-3 w-3" />
+                    {tcCounts.skipped}
+                  </span>
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
       <div className="relative mb-4 inline-block w-[21rem]">
         {isSearching ? (
@@ -1136,7 +1173,10 @@ export function OrchestrationTab({ identity }: OrchestrationTabProps) {
   // records as separate per-result rows. Pending/leased units contribute
   // nothing (no test_cases yet); total grows as each unit completes.
   const tc = computeTestCaseCounts(run.units ?? []);
-  const { durationMs, retestDurationMs } = computeTestDurations(run.units ?? []);
+  const { setupDurationMs, durationMs, retestDurationMs } = computeTestDurations(
+    run.units ?? [],
+    run.started_at,
+  );
   // Overall verdict is Passed / Failed / Timed Out / nothing (still in
   // flight). Flaky is per-test-case detail, not a run-level outcome — a
   // run with flaky-but-eventually-passed tests rolls up as Passed.
@@ -1185,6 +1225,7 @@ export function OrchestrationTab({ identity }: OrchestrationTabProps) {
         flaky={tc.flaky}
         skipped={tc.skipped}
         total={tc.total}
+        setupDurationMs={setupDurationMs > 0 ? setupDurationMs : null}
         durationMs={durationMs > 0 ? durationMs : null}
         retestDurationMs={retestDurationMs > 0 ? retestDurationMs : null}
         createdAt={run.started_at}

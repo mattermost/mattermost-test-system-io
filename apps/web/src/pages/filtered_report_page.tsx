@@ -99,13 +99,12 @@ export function FilteredReportPage() {
   // Auto-resolve gh_run_id when neither the URL nor the latest contributing
   // report carries one. Hits /orchestration/runs to find every run matching
   // the display identity (repo trailing-segment + branch + commit + name)
-  // and:
-  //   - exactly 1 match → stamps gh_run_id into the URL via setSearchParams
-  //     so the link becomes shareable and subsequent refreshes pick it up
-  //     directly without the extra round-trip,
-  //   - >1 matches      → leaves the URL alone so the page renders a chooser
-  //     (handled by orchestration_tab below),
-  //   - 0 matches       → no-op, falls through to the existing empty state.
+  // and stamps a chosen run's gh_run_id into the URL. Selection rule:
+  //   - prefer the most recent run still in progress so a bare URL during a
+  //     live run lands on the live dispatch view (no reports uploaded yet
+  //     means the consolidated path has nothing to render),
+  //   - else the most recent run overall,
+  //   - 0 matches → no-op, the existing empty state takes over.
   // Disabled once any source provides a gh_run_id.
   const need_resolve = !gh_run_id_param && !report?.gh_run_id;
   const { data: candidate_runs } = useOrchestrationRuns(
@@ -118,17 +117,24 @@ export function FilteredReportPage() {
     need_resolve,
   );
 
-  const sole_candidate =
-    need_resolve && candidate_runs && candidate_runs.length === 1 ? candidate_runs[0] : undefined;
+  const auto_resolved_run = useMemo(() => {
+    if (!need_resolve || !candidate_runs || candidate_runs.length === 0) return undefined;
+    const inProgress = candidate_runs.filter((r) => r.status === 'in_progress');
+    const pool = inProgress.length > 0 ? inProgress : candidate_runs;
+    return [...pool].sort((a, b) =>
+      a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : 0,
+    )[0];
+  }, [need_resolve, candidate_runs]);
+
   useEffect(() => {
-    if (!sole_candidate) return;
+    if (!auto_resolved_run) return;
     const next = new URLSearchParams(search_params);
-    next.set('gh_run_id', sole_candidate.gh_run_id);
-    if (sole_candidate.gh_run_attempt && !gh_run_attempt_param) {
-      next.set('gh_run_attempt', sole_candidate.gh_run_attempt);
+    next.set('gh_run_id', auto_resolved_run.gh_run_id);
+    if (auto_resolved_run.gh_run_attempt && !gh_run_attempt_param) {
+      next.set('gh_run_attempt', auto_resolved_run.gh_run_attempt);
     }
     setSearchParams(next, { replace: true });
-  }, [sole_candidate, search_params, setSearchParams, gh_run_attempt_param]);
+  }, [auto_resolved_run, search_params, setSearchParams, gh_run_attempt_param]);
 
   // Composite identity for the orchestration query. `gh_run_id` may arrive
   // from the URL search param (preferred, set by direct links), the latest
@@ -136,7 +142,7 @@ export function FilteredReportPage() {
   // single auto-resolved candidate from /orchestration/runs (stamped into the
   // URL by the effect above on its next render). Only when all three sources
   // are absent does the orchestration query stay disabled.
-  const auto_resolved_run_id = sole_candidate?.gh_run_id;
+  const auto_resolved_run_id = auto_resolved_run?.gh_run_id;
   const orchestrationIdentity = useMemo<CompositeIdentity>(
     () => ({
       repository: repo || '',

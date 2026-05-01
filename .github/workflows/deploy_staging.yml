@@ -137,12 +137,72 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0   # full history needed for the infra-changed diff below
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
+
+      # Decide whether CDK deploy is needed by comparing infra/** between the
+      # currently-running staging commit (read from /api/v1/info) and the
+      # commit being deployed. Fails open: if the previous SHA can't be
+      # determined or isn't in the fetched history, CDK deploy runs as a
+      # precaution rather than risking task-definition drift.
+      - name: Detect infra changes since last staging deploy
+        id: infra-changed
+        run: |
+          PREVIOUS_SHA=$(curl -sf "$APP_URL/api/v1/info" | jq -r '.commit_sha // empty' || true)
+
+          if [ -z "$PREVIOUS_SHA" ]; then
+            echo "::warning::could not read commit_sha from $APP_URL/api/v1/info — running CDK deploy as a precaution"
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git rev-parse --verify --quiet "${PREVIOUS_SHA}^{commit}" >/dev/null; then
+            echo "::warning::previous SHA ${PREVIOUS_SHA} not in fetched history — running CDK deploy as a precaution"
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          INFRA_CHANGES=$(git diff --name-only "$PREVIOUS_SHA" "$GITHUB_SHA" -- infra/ || true)
+          if [ -z "$INFRA_CHANGES" ]; then
+            echo "no infra/ changes between ${PREVIOUS_SHA} and ${GITHUB_SHA} — skipping CDK deploy"
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "infra/ changes detected:"
+            echo "$INFRA_CHANGES"
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.infra-changed.outputs.should_deploy == 'true'
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install CDK dependencies
+        if: steps.infra-changed.outputs.should_deploy == 'true'
+        working-directory: infra
+        run: npm ci
+
+      # Must precede the image-swap steps below. The image swaps are
+      # field-level patches — they copy the existing task definition and
+      # replace only `image`, so any new env var, secret binding, or IAM
+      # grant added to StagingAppStack only reaches staging when CDK has
+      # refreshed the task definition first.
+      - name: Deploy StagingAppStack
+        if: steps.infra-changed.outputs.should_deploy == 'true'
+        working-directory: infra
+        run: |
+          npx cdk deploy StagingAppStack \
+            --require-approval never \
+            -c imageTag="${BETA_TAG}"
 
       - name: Force new PostgreSQL deployment
         run: |

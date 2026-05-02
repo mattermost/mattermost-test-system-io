@@ -18,19 +18,17 @@ import {
   resolveDisplayStats,
 } from '@/components/report_card_parts';
 import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
-
-const TIMED_OUT_THRESHOLD_MS = 3_600_000; // 1 hour
+import { resolveEffectiveReportStatus } from '@/components/report_summary';
 
 function status_icon(entry: RunEntry) {
-  // Still in progress
-  if (entry.status === 'in_progress') {
-    if (entry.created_at) {
-      const isTimedOut = new Date(entry.created_at).getTime() < Date.now() - TIMED_OUT_THRESHOLD_MS;
-      if (isTimedOut) {
-        return <AlertCircle className="h-4 w-4 text-orange-500" />;
-      }
-    }
+  const effective = resolveEffectiveReportStatus(entry.status, entry.last_upload_at);
+
+  // Still in progress (recent upload activity).
+  if (effective === 'in_progress') {
     return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />;
+  }
+  if (effective === 'incomplete') {
+    return <AlertCircle className="h-4 w-4 text-orange-500" />;
   }
 
   // Completed — use the same source-of-truth resolver as the row body so
@@ -76,7 +74,6 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
   const hasStats = !!stats && stats.total > 0;
   const rate = hasStats ? calculatePassRate(stats) : null;
   const rateColorClass = getPassRateColorClass(rate);
-  const hasFailed = hasStats && stats.failed > 0;
   // Both source branches of `resolveDisplayStats` (test_stats and the
   // orchestration server-side rollup) are at test-case granularity, so
   // the unit label is unconditionally "tests".
@@ -86,11 +83,7 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
     <Link
       key={entry.report_id}
       to={entry.url_path}
-      className={`flex cursor-pointer items-center rounded-md px-3 py-2 text-sm transition-colors ${
-        hasFailed
-          ? 'bg-red-50/50 hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/30'
-          : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-      }`}
+      className="flex cursor-pointer items-center px-3 py-2 text-sm"
     >
       {/* Left: status, repo, branch, commit, name */}
       <div className="flex items-center gap-2 min-w-0 flex-shrink-0">
@@ -249,8 +242,20 @@ export function RepoGroupCard({ group }: RepoGroupCardProps) {
             : `gid=${entry.report_id}`;
           const urlPath = isLatest ? entry.url_path : `${entry.url_path}?${disambiguator}`;
           const decoratedEntry = { ...entry, url_path: urlPath };
+          // Background + hover live on the wrapper so they cover both the
+          // link row AND the orchestration progress strip below it. With
+          // them on the link, hovering past the bottom edge of the link
+          // would lose the highlight while the cursor was still over the
+          // same logical card.
+          const stats = resolveDisplayStats(decoratedEntry);
+          const hasFailed = !!stats && stats.total > 0 && stats.failed > 0;
+          const wrapperClass = `rounded-md transition-colors ${
+            hasFailed
+              ? 'bg-red-50/50 hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/30'
+              : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+          }`;
           return (
-            <div key={entry.report_id}>
+            <div key={entry.report_id} className={wrapperClass}>
               {run_entry_row({
                 entry: decoratedEntry,
                 repoName: group.repository_name || entry.url_path.split('/')[2] || '',

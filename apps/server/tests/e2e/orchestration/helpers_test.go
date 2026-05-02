@@ -233,8 +233,9 @@ func beginRunBody(specPaths []string, extras map[string]any) map[string]any {
 		dispatch = append(dispatch, map[string]any{"spec_path": sp})
 	}
 	body := merge(identity(nil), map[string]any{
-		"playwright_project": defaultPlaywrightPrj,
-		"dispatch_units":     dispatch,
+		"playwright_project":     defaultPlaywrightPrj,
+		"total_reports_expected": 1,
+		"dispatch_units":         dispatch,
 	})
 	for k, v := range extras {
 		body[k] = v

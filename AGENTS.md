@@ -22,7 +22,7 @@ Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or 
 - `GET /api/v1/reports/{id}/suites` — test suites (public)
 - `GET /api/v1/reports/{id}/cases` — test cases (public)
 - `GET /api/v1/reports/{id}/json` — raw Playwright JSON, 302 → presigned S3 (public)
-- Stateless upload (auth): `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots` → `complete`
+- Stateless upload (auth): `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots`. `/reports/begin` declares `total_reports_expected` (the shard count); the report group auto-finalizes once that many shards reach `complete`. Idle groups are flipped to `incomplete` by the staleness reaper.
 - `GET /api/v1/artifacts/{id}` — 302 → presigned S3 (auth required)
 - `POST /api/v1/orchestration/begin` — register a run with composite identity + dispatch units (idempotent on identity + units hash)
 - `POST /api/v1/orchestration/checkout` — atomically dispatch up to N units to a worker (worker identified by gh_job_name + gh_job_id)

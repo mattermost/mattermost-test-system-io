@@ -137,6 +137,10 @@ jobs:
         run: |
           # Compose the BeginRunRequest body: composite identity + run-level
           # config + the dispatch_units array discovered earlier.
+          # total_reports_expected MUST equal the worker matrix size — the
+          # server seeds the report_group with this value and auto-finalizes
+          # once that many shards reach `complete`. Hard-coded here for the
+          # example; in practice, derive from the same source as the matrix.
           BODY=$(jq -nc \
             --argjson identity "$IDENTITY" \
             --slurpfile units dispatch-units.json \
@@ -145,9 +149,10 @@ jobs:
               branch: "'"${GITHUB_REF_NAME}"'",
               playwright_project: "chromium",
               lease_timeout_ms: 600000,
-              run_timeout_ms: 1800000,
+              idle_timeout_ms: 1800000,
               retest_on_fail: true,
               retest_budget: 1,
+              total_reports_expected: 8,
               dispatch_units: $units[0]
             }')
 
@@ -340,9 +345,14 @@ jobs:
         if: always()
         # The orchestrator only stores per-spec outcomes + screenshots
         # uploaded via POST /orchestration/screenshots. Full Playwright
-        # JSON / HTML reports still go through the existing reports flow
-        # (begin → register → upload → complete), keyed by the same
-        # composite identity so the per-group page can join both views.
+        # JSON / HTML reports still go through the reports flow (register
+        # → upload/json → upload/screenshots), keyed by the same composite
+        # identity so the per-group page can join both views. The report
+        # group itself was already seeded by the controller's begin call
+        # (since it sets total_reports_expected on the seeded row), so
+        # workers do NOT call /reports/begin themselves and do NOT call a
+        # finalize endpoint — the group auto-finalizes once
+        # total_reports_expected shards reach `complete`.
         # Replace the placeholder below with that flow when wiring up a
         # real workflow.
         run: |

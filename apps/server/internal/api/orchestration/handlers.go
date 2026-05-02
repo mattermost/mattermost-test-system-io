@@ -95,12 +95,13 @@ type beginUnitBody struct {
 
 type beginRunBody struct {
 	identityFields
-	PlaywrightProject string          `json:"playwright_project"`
-	LeaseTimeoutMs    int64           `json:"lease_timeout_ms"`
-	IdleTimeoutMs     int64           `json:"idle_timeout_ms"`
-	RetestOnFail      bool            `json:"retest_on_fail"`
-	RetestBudget      int             `json:"retest_budget"`
-	DispatchUnits     []beginUnitBody `json:"dispatch_units"`
+	PlaywrightProject    string          `json:"playwright_project"`
+	LeaseTimeoutMs       int64           `json:"lease_timeout_ms"`
+	IdleTimeoutMs        int64           `json:"idle_timeout_ms"`
+	RetestOnFail         bool            `json:"retest_on_fail"`
+	RetestBudget         int             `json:"retest_budget"`
+	TotalReportsExpected int             `json:"total_reports_expected"`
+	DispatchUnits        []beginUnitBody `json:"dispatch_units"`
 }
 
 type checkoutBody struct {
@@ -166,14 +167,20 @@ func (h *Handlers) BeginRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if body.TotalReportsExpected <= 0 {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST",
+			"total_reports_expected is required and must be > 0")
+		return
+	}
 	options := orchestration.BeginRunOptions{
-		LeaseTimeoutMs:    body.LeaseTimeoutMs,
-		IdleTimeoutMs:     body.IdleTimeoutMs,
-		RetestOnFail:      body.RetestOnFail,
-		RetestBudget:      body.RetestBudget,
-		PlaywrightProject: body.PlaywrightProject,
-		Branch:            body.Branch,
-		GHPRNumber:        body.GHPRNumber,
+		LeaseTimeoutMs:       body.LeaseTimeoutMs,
+		IdleTimeoutMs:        body.IdleTimeoutMs,
+		RetestOnFail:         body.RetestOnFail,
+		RetestBudget:         body.RetestBudget,
+		TotalReportsExpected: body.TotalReportsExpected,
+		PlaywrightProject:    body.PlaywrightProject,
+		Branch:               body.Branch,
+		GHPRNumber:           body.GHPRNumber,
 	}
 	owner := ownerFromSubject(subject)
 	if owner.OIDCSubject == nil && owner.APIKeyID == nil {

@@ -19,7 +19,12 @@ import {
   getPassRateColorClass,
 } from '@/components/report_card_parts';
 
-const TIMED_OUT_THRESHOLD_MS = 3_600_000; // 1 hour
+// Idle window past which an in-flight report group is rendered as
+// `incomplete` even though the server hasn't yet committed to the
+// transition. The server-side reaper takes 1 hour; surfacing the optimistic
+// label sooner is honest about the run looking stuck without flipping the
+// DB state. See resolveEffectiveReportStatus.
+const REPORT_INCOMPLETE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleString(undefined, {
@@ -32,7 +37,25 @@ function formatDate(dateString: string): string {
 }
 
 type TestStatus = 'passed' | 'failed' | 'timed_out';
-type ProgressStatus = 'in_progress' | 'completed' | 'timed_out';
+type ProgressStatus = 'in_progress' | 'completed' | 'timed_out' | 'incomplete';
+
+/**
+ * Promote an in_progress report group to `incomplete` when the last upload
+ * is older than REPORT_INCOMPLETE_THRESHOLD_MS. Other states (completed,
+ * incomplete already, orchestration's timed_out) pass through.
+ */
+export function resolveEffectiveReportStatus(
+  status: ProgressStatus,
+  lastUploadAt?: string,
+): ProgressStatus {
+  if (status === 'in_progress' && lastUploadAt) {
+    const idleMs = Date.now() - new Date(lastUploadAt).getTime();
+    if (Number.isFinite(idleMs) && idleMs > REPORT_INCOMPLETE_THRESHOLD_MS) {
+      return 'incomplete';
+    }
+  }
+  return status;
+}
 
 export interface ReportSummaryProps {
   // Row 1: test result badge + optional name(s) with links
@@ -76,6 +99,8 @@ export interface ReportSummaryProps {
   /** Retest shard count. Rendered as `{reportCount}+{retestReportCount}` when > 0. */
   retestReportCount?: number;
   progressStatus?: ProgressStatus;
+  /** Number of shards declared at /reports/begin. Renders as (N/M) on the incomplete badge. */
+  totalReportsExpected?: number;
 
   // Row 4: git context badges
   repository?: string;
@@ -112,20 +137,15 @@ function TestStatusBadge({ status }: { status: TestStatus }) {
   }
 }
 
-function ProgressBadge({ status, createdAt }: { status: ProgressStatus; createdAt?: string }) {
-  // Check for timed-out in_progress
-  if (status === 'in_progress' && createdAt) {
-    const isTimedOut = new Date(createdAt).getTime() < Date.now() - TIMED_OUT_THRESHOLD_MS;
-    if (isTimedOut) {
-      return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300">
-          <AlertCircle className="h-3 w-3" />
-          Timed Out
-        </span>
-      );
-    }
-  }
-
+function ProgressBadge({
+  status,
+  reportsCount,
+  totalReportsExpected,
+}: {
+  status: ProgressStatus;
+  reportsCount?: number;
+  totalReportsExpected?: number;
+}) {
   switch (status) {
     case 'timed_out':
       return (
@@ -134,6 +154,18 @@ function ProgressBadge({ status, createdAt }: { status: ProgressStatus; createdA
           Timed Out
         </span>
       );
+    case 'incomplete': {
+      const counts =
+        totalReportsExpected && reportsCount != null
+          ? ` (${reportsCount}/${totalReportsExpected})`
+          : '';
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300">
+          <AlertCircle className="h-3 w-3" />
+          {`Incomplete${counts}`}
+        </span>
+      );
+    }
     case 'in_progress':
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
@@ -172,6 +204,7 @@ export function ReportSummary(props: ReportSummaryProps) {
     framework,
     reportCount,
     retestReportCount,
+    totalReportsExpected,
     progressStatus,
     repository,
     branch,
@@ -342,7 +375,13 @@ export function ReportSummary(props: ReportSummaryProps) {
               {reportCount + (retestReportCount ?? 0) === 1 ? 'report' : 'reports'}
             </span>
           )}
-          {progressStatus && <ProgressBadge status={progressStatus} createdAt={createdAt} />}
+          {progressStatus && (
+            <ProgressBadge
+              status={progressStatus}
+              reportsCount={reportCount}
+              totalReportsExpected={totalReportsExpected}
+            />
+          )}
         </div>
       )}
 

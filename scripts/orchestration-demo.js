@@ -51,6 +51,16 @@
  *   PLAYWRIGHT_PROJECT=firefox node scripts/orchestration-demo.js
  *                                                       # alternate browser
  *
+ *   PR=4321 node scripts/orchestration-demo.js          # simulate a PR run:
+ *                                                       # branch becomes
+ *                                                       # `pr-4321` and
+ *                                                       # gh_pr_number is
+ *                                                       # threaded through
+ *                                                       # /orchestration/begin
+ *                                                       # and /reports/begin
+ *                                                       # so the dashboard
+ *                                                       # surfaces the PR.
+ *
  * After it starts, open the per-group page to watch live progress:
  *   http://localhost:3000/reports/<repo-encoded>/<branch>/<short-sha>/<name>
  *   (the script prints the exact URL on stdout)
@@ -160,6 +170,21 @@ function ensureWorkerBucket(workerName, workerId) {
 // pinning is useful (e.g. exercising idempotency on the same commit).
 const COMMIT_SHA = (process.env.TSIO_COMMIT_SHA || crypto.randomBytes(20).toString('hex')).toLowerCase();
 
+// PR=<n> simulates a pull-request run: branch becomes `pr-<n>` and the
+// gh_pr_number column on the seeded report_group / orchestration_run is
+// populated. Same convention as upload-seed.js's --branch pr-<n> mode so
+// dashboard URLs and PR badges line up across both seeders.
+const PR_NUMBER = (() => {
+  const raw = process.env.PR;
+  if (!raw) return null;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.error(`PR=${raw} is not a positive integer`);
+    process.exit(2);
+  }
+  return n;
+})();
+
 const IDENTITY = {
   repository: 'orchestration-demo',
   commit_sha: COMMIT_SHA,
@@ -167,7 +192,8 @@ const IDENTITY = {
   name: 'orchestration-demo',
   gh_run_attempt: '1',
   framework: 'playwright',
-  branch: 'main',
+  branch: PR_NUMBER ? `pr-${PR_NUMBER}` : 'main',
+  ...(PR_NUMBER ? { gh_pr_number: PR_NUMBER } : {}),
 };
 
 // Tag-weight ordering. Negative weights sort first; positive weights sort
@@ -271,12 +297,17 @@ function buildDispatchUnits(specFiles) {
 // ─── Orchestration drivers ─────────────────────────────────────────────────
 
 async function beginRun(dispatchUnits) {
+  // total_reports_expected = NUM_WORKERS: each worker uploads one shard at
+  // queue-empty. The server seeds the report_group with this count so it
+  // can auto-finalize once that many shards reach `complete`. /reports/begin
+  // is also called below with the same value, idempotent on identity.
   const body = {
     ...IDENTITY,
     lease_timeout_ms: 60_000,
-    run_timeout_ms: 600_000,
+    idle_timeout_ms: 600_000,
     retest_on_fail: RETEST,
     retest_budget: RETEST_BUDGET,
+    total_reports_expected: NUM_WORKERS,
     dispatch_units: dispatchUnits,
   };
   const resp = await post('/api/v1/orchestration/begin', body);
@@ -704,7 +735,7 @@ function listImagesRecursive(root) {
 }
 
 // reportsIdentityBody returns the body shape the /reports/begin and
-// /reports/complete endpoints expect. NOTE: the field name is `commit`,
+// /reports/register endpoints expect. NOTE: the field name is `commit`,
 // not `commit_sha` — different from the orchestration endpoints.
 function reportsIdentityBody() {
   const body = {
@@ -732,7 +763,12 @@ let reportGroupIDPromise = null;
 async function ensureReportGroup() {
   if (reportGroupIDPromise) return reportGroupIDPromise;
   reportGroupIDPromise = (async () => {
-    const resp = await post('/api/v1/reports/begin', reportsIdentityBody());
+    // The orchestration begin call already seeded the report_group row with
+    // total_reports_expected = NUM_WORKERS. /reports/begin is idempotent on
+    // composite identity; we send the same value so the upsert is a no-op.
+    // (A different value would surface 409 EXPECTED_REPORTS_MISMATCH.)
+    const body = { ...reportsIdentityBody(), total_reports_expected: NUM_WORKERS };
+    const resp = await post('/api/v1/reports/begin', body);
     if (resp.status !== 200 && resp.status !== 201) {
       throw new Error(
         `reports/begin failed: ${resp.status} ${JSON.stringify(resp.body)}`,
@@ -859,22 +895,14 @@ async function uploadWorkerShard(bucket) {
   );
 }
 
-// finalizeReports POSTs /reports/complete after every worker has finished
-// uploading its shard. Idempotent on composite identity. The Report Group
-// view flips to a terminal state once this returns.
-async function finalizeReports() {
+// printReportGroupURL prints the dashboard URL for the report group. The
+// group auto-finalizes server-side once total_reports_expected shards reach
+// `complete`, so there's no explicit finalize call to make from the demo.
+function printReportGroupURL() {
   if (!reportGroupIDPromise) {
-    // No worker uploaded anything — nothing to finalize.
+    // No worker uploaded anything — nothing to point at.
     return;
   }
-  const reportGroupID = await reportGroupIDPromise;
-  const completeResp = await post('/api/v1/reports/complete', reportsIdentityBody());
-  if (completeResp.status !== 200) {
-    throw new Error(
-      `reports/complete failed: ${completeResp.status} ${JSON.stringify(completeResp.body)}`,
-    );
-  }
-  console.log(`[reports] complete: report_group_id=${reportGroupID}`);
 
   const repo = encodeURIComponent(IDENTITY.repository);
   const branch = encodeURIComponent(IDENTITY.branch);
@@ -924,6 +952,9 @@ async function main() {
   console.log(
     `  identity: ${IDENTITY.repository} @ ${IDENTITY.commit_sha.slice(0, 7)} / ${IDENTITY.name} (run ${IDENTITY.gh_run_id})`,
   );
+  console.log(
+    `  branch: ${IDENTITY.branch}${IDENTITY.gh_pr_number != null ? ` (PR #${IDENTITY.gh_pr_number})` : ''}`,
+  );
   console.log(`  artifacts: ${DEMO_ARTIFACTS_ROOT}`);
   console.log('');
 
@@ -949,16 +980,12 @@ async function main() {
   const final = await pollFinalStatus();
   console.log(JSON.stringify(final, null, 2));
 
-  // Each worker has already uploaded its own shard (one /reports/register
-  // + /upload chain per worker, called from inside runWorker right before
-  // it exits — same shape as a CI matrix job uploading at the end of its
-  // execution). Now finalize the run-level report group so the Report
-  // Group view flips to terminal. Idempotent on composite identity.
-  try {
-    await finalizeReports();
-  } catch (err) {
-    console.error(`[reports] finalize failed (non-fatal): ${err.message}`);
-  }
+  // Each worker uploads its own shard (one /reports/register + /upload
+  // chain per worker, called from inside runWorker right before it exits
+  // — same shape as a CI matrix job uploading at the end of its execution).
+  // The report group auto-finalizes server-side once NUM_WORKERS shards
+  // reach `complete`; print the dashboard URL so it's easy to follow.
+  printReportGroupURL();
 
   console.log('');
   console.log(`artifacts preserved at ${DEMO_ARTIFACTS_ROOT}`);

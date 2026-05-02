@@ -42,7 +42,7 @@ Reads are public. Writes and admin endpoints require `X-API-Key`, `Authorization
 | `GET /api/v1/reports/{id}/suites` | Test suites (public) |
 | `GET /api/v1/reports/{id}/cases` | Test cases (public, optional `?status=` filter) |
 | `GET /api/v1/reports/{id}/json` | Raw Playwright JSON, presigned redirect (public) |
-| `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots` → `complete` | Stateless upload lifecycle (auth required) |
+| `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots` | Stateless upload lifecycle (auth required). The report group auto-finalizes server-side once `total_reports_expected` shards reach `complete`; idle groups are flipped to `incomplete` by the staleness reaper. |
 | `GET /api/v1/artifacts/{id}` | Artifact download, presigned redirect (auth required) |
 | `POST /api/v1/orchestration/begin` → `checkout` → `complete` | Test-shard orchestration: register a run by composite identity, dispatch units to workers, report results (auth required) |
 | `POST /api/v1/orchestration/screenshots` | Upload an orchestration-flow screenshot; resolvable via `/files/{key}` (auth required) |

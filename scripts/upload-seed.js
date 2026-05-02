@@ -2,8 +2,13 @@
 /**
  * Upload seed data to the report server using the stateless API.
  *
- * NEW API flow (per report):
- *   beginReport() -> for each shard: registerReport() -> uploadJson() -> completeReport()
+ * API flow (per report):
+ *   beginReport(total_reports_expected) -> for each shard: registerReport() -> uploadJson()
+ *
+ * The report group auto-finalizes server-side once `total_reports_expected`
+ * shards reach `complete`. With --incomplete, the script uploads fewer
+ * shards than declared so the group stays `in_progress` (and the staleness
+ * reaper will eventually flip it to `incomplete`).
  *
  * Authentication: Uses mock OIDC (Bearer tokens) by default. Each shard gets its
  * own signed JWT with a unique `check_run_id` claim, replicating how GitHub
@@ -22,6 +27,7 @@
  *   node scripts/upload-seed.js --branch main            # Upload all seed dirs for branch "main"
  *   node scripts/upload-seed.js --branch release-9.11    # Upload all seed dirs for release branch
  *   node scripts/upload-seed.js --branch pr-1234         # Upload all seed dirs for a pull request
+ *   node scripts/upload-seed.js --pr 1234                # Same as --branch pr-1234 (shortcut)
  *   node scripts/upload-seed.js --branch master           # Upload all seed dirs for "master"
  *   node scripts/upload-seed.js --incomplete              # Skip last shard + don't complete (in_progress)
  *   node scripts/upload-seed.js --commit <sha>            # Rerun on an existing commit (new run ID)
@@ -64,12 +70,25 @@ const MOCK_OIDC_AUDIENCE = process.env.MOCK_OIDC_AUDIENCE || "tsio";
  *
  * For branches: ref=refs/heads/<branch>, head_ref/base_ref unset
  * For PRs:      ref=refs/pull/<n>/merge, head_ref=<generated>, base_ref=main
+ *
+ * `--pr <n>` is a shortcut for `--branch pr-<n>` so callers don't have to
+ * remember the prefix convention. The two forms are equivalent; --pr wins
+ * if both are passed.
  */
 function parseBranchArg(args) {
   let branch = "main"; // default
   const branchIdx = args.indexOf("--branch");
   if (branchIdx !== -1 && branchIdx + 1 < args.length) {
     branch = args[branchIdx + 1];
+  }
+  const prIdx = args.indexOf("--pr");
+  if (prIdx !== -1 && prIdx + 1 < args.length) {
+    const n = parseInt(args[prIdx + 1], 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      console.error(`--pr expects a positive integer, got: ${args[prIdx + 1]}`);
+      process.exit(2);
+    }
+    branch = `pr-${n}`;
   }
 
   const prMatch = branch.match(/^pr-(\d+)$/);
@@ -637,8 +656,10 @@ async function createOidcPolicy() {
 /**
  * POST /api/v1/reports/begin
  * Begins a report session for the given repository/commit/run/framework.
+ * total_reports_expected is required (>0) and frozen on first call; later
+ * begins with a different value would return 409 EXPECTED_REPORTS_MISMATCH.
  */
-async function beginReport(context, authHeaders) {
+async function beginReport(context, totalReportsExpected, authHeaders) {
   const url = `${API_BASE}/reports/begin`;
   const payload = {
     repository: context.repository,
@@ -646,6 +667,7 @@ async function beginReport(context, authHeaders) {
     gh_run_id: context.gh_run_id,
     framework: context.framework,
     name: context.name,
+    total_reports_expected: totalReportsExpected,
   };
   if (context.gh_pr_number !== undefined) {
     payload.gh_pr_number = context.gh_pr_number;
@@ -784,41 +806,6 @@ async function uploadScreenshots(reportId, uploadId, files, authHeaders) {
   return totalUploaded;
 }
 
-/**
- * POST /api/v1/reports/complete
- * Marks a report as complete after all reports have been uploaded.
- */
-async function completeReport(context, authHeaders) {
-  const url = `${API_BASE}/reports/complete`;
-  const payload = {
-    repository: context.repository,
-    commit: context.commit,
-    gh_run_id: context.gh_run_id,
-    framework: context.framework,
-    name: context.name,
-  };
-  if (context.gh_pr_number !== undefined) {
-    payload.gh_pr_number = context.gh_pr_number;
-  }
-  const body = JSON.stringify(payload);
-
-  const headers = {
-    ...authHeaders,
-    "Content-Type": "application/json",
-    "Content-Length": Buffer.byteLength(body),
-  };
-
-  const response = await makeRequest(url, { method: "POST", headers }, body);
-
-  if (response.statusCode !== 200 && response.statusCode !== 201) {
-    throw new Error(
-      `Failed to complete report (${response.statusCode}): ${response.body}`,
-    );
-  }
-
-  return JSON.parse(response.body);
-}
-
 // ── Shard discovery ──────────────────────────────────────────────────────────
 
 /**
@@ -888,15 +875,20 @@ function findShardJsonFiles(shardDir, framework) {
 // ── Main upload logic ────────────────────────────────────────────────────────
 
 /**
- * Upload a single seed directory (e.g. seed/cypress-ci) using the new flow:
- *   beginReport -> for each shard: issue token -> registerReport -> uploadJson -> completeReport
+ * Upload a single seed directory (e.g. seed/cypress-ci):
+ *   beginReport(total_reports_expected = shards.length)
+ *   -> for each shard: issue token -> registerReport -> uploadJson
+ *
+ * No explicit complete call — the report group auto-finalizes once
+ * `total_reports_expected` shards reach `complete`. With --incomplete,
+ * one fewer shard is uploaded so the group stays `in_progress`.
  *
  * @param {string} seedDir - Path to the seed directory
  * @param {string} framework - Framework name (cypress, playwright)
  * @param {string} name - User-defined report name (e.g., "playwright-full-cloud-master")
  * @param {MockOidcProvider} oidcProvider - Mock OIDC provider for issuing per-shard tokens
  * @param {object} [options] - Upload options
- * @param {boolean} [options.incomplete] - Skip last shard and don't complete report (leaves in_progress)
+ * @param {boolean} [options.incomplete] - Skip last shard so the group stays in_progress
  */
 async function uploadSeedDir(seedDir, framework, name, oidcProvider, options = {}) {
   if (!fs.existsSync(seedDir) || !fs.statSync(seedDir).isDirectory()) {
@@ -934,16 +926,20 @@ async function uploadSeedDir(seedDir, framework, name, oidcProvider, options = {
   console.log(`  Branch:     ${SEED_BRANCH_INFO.branch} (${SEED_BRANCH_INFO.ref})`);
   console.log(`  Commit:     ${context.commit.slice(0, 12)}...`);
 
-  // Step 1: Begin report (use a token for the first shard as the "begin" caller)
+  // Step 1: Begin report (use a token for the first shard as the "begin" caller).
+  // total_reports_expected is the discovered shard count — frozen server-side
+  // so the auto-finalize predicate has a target. With --incomplete we still
+  // declare the full count and just upload one fewer, so the group stays
+  // in_progress (and the staleness reaper would eventually flip it).
   console.log("\n  [begin] Starting report...");
   const beginToken = oidcProvider.issueToken({
     check_run_id: `seed-${framework}-begin`,
   });
   const beginAuth = getBearerAuthHeaders(beginToken);
   try {
-    const beginResponse = await beginReport(context, beginAuth);
+    const beginResponse = await beginReport(context, shards.length, beginAuth);
     const reportId = beginResponse.report_id;
-    console.log(`  Report ID: ${reportId}`);
+    console.log(`  Report ID: ${reportId} (total_reports_expected=${shards.length})`);
   } catch (error) {
     console.log(
       `  Warning: beginReport failed (${error.message}) - may already exist, continuing...`,
@@ -1012,22 +1008,17 @@ async function uploadSeedDir(seedDir, framework, name, oidcProvider, options = {
     }
   }
 
-  // Step 3: Complete report (skip if --incomplete)
+  // Step 3: No explicit complete — server auto-finalizes once
+  // total_reports_expected shards have uploaded. --incomplete leaves the
+  // group with one fewer upload than declared so it stays in_progress.
   if (options.incomplete) {
-    console.log("\n  [incomplete] Report left in_progress (not completing)");
+    console.log(
+      `\n  [incomplete] uploaded ${totalReports}/${shards.length} shards — group stays in_progress`,
+    );
   } else {
-    console.log("\n  [complete] Finalizing report...");
-    const completeToken = oidcProvider.issueToken({
-      check_run_id: `seed-${framework}-complete`,
-    });
-    const completeAuth = getBearerAuthHeaders(completeToken);
-    try {
-      const completeResponse = await completeReport(context, completeAuth);
-      const reportsCount = completeResponse.reports_count || "?";
-      console.log(`  Complete: ${reportsCount} reports`);
-    } catch (error) {
-      console.log(`  Warning: completeReport failed (${error.message})`);
-    }
+    console.log(
+      `\n  [done] uploaded ${totalReports}/${shards.length} shards — group will auto-finalize`,
+    );
   }
 
   return { reports: totalReports, files: totalFiles, errors };
@@ -1064,7 +1055,7 @@ async function main() {
   const args = [];
   let incomplete = false;
   for (let i = 0; i < rawArgs.length; i++) {
-    if (rawArgs[i] === "--branch" || rawArgs[i] === "--commit" || rawArgs[i] === "--image" || rawArgs[i] === "--name") {
+    if (rawArgs[i] === "--branch" || rawArgs[i] === "--commit" || rawArgs[i] === "--image" || rawArgs[i] === "--name" || rawArgs[i] === "--pr") {
       i++; // skip the value too
     } else if (rawArgs[i] === "--incomplete") {
       incomplete = true;

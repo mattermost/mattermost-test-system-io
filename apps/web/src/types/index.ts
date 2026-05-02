@@ -225,7 +225,7 @@ export interface TestSpecListResponse {
 
 // Report types
 export type ProcessingStatus = 'pending' | 'processing' | 'complete' | 'failed';
-export type ReportStatus = 'in_progress' | 'completed';
+export type ReportStatus = 'in_progress' | 'completed' | 'incomplete';
 export type Framework = 'playwright' | 'cypress' | 'detox';
 
 export interface ReportEnvironment {
@@ -262,6 +262,8 @@ export interface ReportDetail {
   orchestration?: OrchestrationSummary;
   created_at: string;
   updated_at: string;
+  last_upload_at?: string;
+  total_reports_expected?: number;
   reports: ReportEntry[];
   error_message?: string;
 }
@@ -283,6 +285,15 @@ export interface RunEntry {
   test_stats?: TestStats;
   orchestration?: OrchestrationSummary;
   created_at: string;
+  // ISO timestamp of the most recent shard upload. Together with status,
+  // drives the UI's optimistic 10-min "incomplete" rendering — see
+  // resolveEffectiveReportStatus.
+  last_upload_at?: string;
+  // Number of per-shard reports the run was declared with at /reports/begin.
+  // Set on every group; used to render `(actual/expected)` next to incomplete
+  // badges.
+  total_reports_expected?: number;
+  reports_count?: number;
   url_path: string;
 }
 

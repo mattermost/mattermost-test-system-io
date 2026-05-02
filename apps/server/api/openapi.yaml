@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Test System IO API
-  version: 0.6.0
+  version: 0.7.0
   description: |
     HTTP API for uploading and viewing Playwright, Cypress, and Detox test
     reports. This spec is hand-authored and is the source of truth for the
@@ -1624,7 +1624,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/CompositeIdentity'
         - type: object
-          required: [dispatch_units]
+          required: [dispatch_units, total_reports_expected]
           properties:
             playwright_project:
               type: string
@@ -1665,6 +1665,15 @@ components:
                 Per-spec retry allowance. A unit with `fail_count <= retest_budget` is
                 retest-eligible; once `fail_count > retest_budget` the unit is
                 terminal `completed_fail`. Ignored when `retest_on_fail` is false.
+            total_reports_expected:
+              type: integer
+              minimum: 1
+              description: |
+                Number of per-shard reports the run will produce (== the
+                worker matrix size). Frozen on first /reports/begin; the
+                report group auto-finalizes once that many child reports
+                reach `complete`. A subsequent /reports/begin with a
+                different value returns 409 EXPECTED_REPORTS_MISMATCH.
             dispatch_units:
               type: array
               minItems: 1

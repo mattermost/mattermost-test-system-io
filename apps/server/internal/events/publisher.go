@@ -47,8 +47,8 @@ func (p *Publisher) ReportCreated(
 	p.emit("report_created", payload)
 }
 
-// ReportUpdated fires when /reports/complete (or any later transition) flips
-// the group status or aggregates change.
+// ReportUpdated fires when a report group's status flips (auto-finalize to
+// `completed` or staleness reaper to `incomplete`) or aggregates change.
 func (p *Publisher) ReportUpdated(
 	groupID uuid.UUID, status string, completedReports int, stats *TestStats, updatedAt time.Time,
 ) {

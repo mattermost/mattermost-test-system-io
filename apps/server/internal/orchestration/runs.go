@@ -20,12 +20,16 @@ type BeginRunOptions struct {
 	// IdleTimeoutMs is the inactivity window for the whole run. A run with
 	// no checkout/complete activity for this many milliseconds is reaped.
 	// Defaults to 600_000 (10 minutes) when unset.
-	IdleTimeoutMs     int64
-	RetestOnFail      bool
-	RetestBudget      int
-	PlaywrightProject string
-	Branch            string
-	GHPRNumber        *int
+	IdleTimeoutMs int64
+	// TotalReportsExpected is the shard count the controller declared at
+	// begin time. Stored on the seeded report_groups row so the count-based
+	// auto-finalize predicate has a target value.
+	TotalReportsExpected int
+	RetestOnFail         bool
+	RetestBudget         int
+	PlaywrightProject    string
+	Branch               string
+	GHPRNumber           *int
 }
 
 // OwnerInfo identifies the caller that opened the run. Exactly one of the
@@ -106,7 +110,7 @@ func (s *Store) BeginRun(
 		existing = newRun
 		created = true
 
-		seedID, seedCreated, seedErr := seedReportGroupTx(ctx, tx, newRun.Identity)
+		seedID, seedCreated, seedErr := seedReportGroupTx(ctx, tx, newRun.Identity, options.TotalReportsExpected)
 		if seedErr != nil {
 			return seedErr
 		}
@@ -143,12 +147,16 @@ func (s *Store) BeginRun(
 // the resulting row's id and whether this call created it. The unique key
 // is (repository, commit_sha, gh_run_id, name, gh_run_attempt) — see
 // migrations/000002_report_groups.up.sql.
-func seedReportGroupTx(ctx context.Context, tx pgx.Tx, identity CompositeIdentity) (uuid.UUID, bool, error) {
+//
+// totalReportsExpected is the controller's declared shard count, frozen on
+// insert. A subsequent /reports/begin call with a different value will
+// surface 409 EXPECTED_REPORTS_MISMATCH; matching values are no-ops.
+func seedReportGroupTx(ctx context.Context, tx pgx.Tx, identity CompositeIdentity, totalReportsExpected int) (uuid.UUID, bool, error) {
 	row := tx.QueryRow(ctx, `
 		INSERT INTO report_groups (
 			repository, branch, commit_sha, gh_run_id, gh_run_attempt,
-			framework, name, gh_pr_number, status
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'in_progress')
+			framework, name, gh_pr_number, total_reports_expected, status
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'in_progress')
 		ON CONFLICT (repository, commit_sha, gh_run_id, name, gh_run_attempt)
 		DO UPDATE SET updated_at = now()
 		RETURNING id, (xmax = 0) AS created
@@ -156,6 +164,7 @@ func seedReportGroupTx(ctx context.Context, tx pgx.Tx, identity CompositeIdentit
 		identity.Repository, identity.Branch, identity.CommitSHA,
 		identity.GHRunID, identity.GHRunAttempt,
 		identity.Framework, identity.Name, identity.GHPRNumber,
+		totalReportsExpected,
 	)
 	var id uuid.UUID
 	var created bool

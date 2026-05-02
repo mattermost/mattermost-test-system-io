@@ -4,11 +4,15 @@
 //	POST /api/v1/reports/register                        — create a report entry + declare files
 //	POST /api/v1/reports/upload/{rid}/{uid}/json         — streaming multipart
 //	POST /api/v1/reports/upload/{rid}/{uid}/screenshots  — streaming multipart
-//	POST /api/v1/reports/complete                        — mark group completed
 //
 // Each shard in a parallel CI matrix authenticates with its own GitHub
 // Actions OIDC token and registers itself independently; no pre-registration
 // or shared state across shards is required.
+//
+// Group lifecycle: /reports/begin declares total_reports_expected (the
+// shard count). The group auto-finalizes to `completed` once that many
+// child reports reach `complete`. Groups that go idle past the staleness
+// window are flipped to `incomplete` by the reaper.
 
 package reports
 
@@ -29,7 +33,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
@@ -40,14 +43,15 @@ import (
 // ---------- request/response bodies ----------
 
 type beginBody struct {
-	Repository   string `json:"repository"`
-	Commit       string `json:"commit"`
-	GHRunID      string `json:"gh_run_id"`
-	GHRunAttempt string `json:"gh_run_attempt"`
-	Framework    string `json:"framework"`
-	Name         string `json:"name"`
-	Branch       string `json:"branch"`
-	GHPRNumber   *int   `json:"gh_pr_number,omitempty"`
+	Repository           string `json:"repository"`
+	Commit               string `json:"commit"`
+	GHRunID              string `json:"gh_run_id"`
+	GHRunAttempt         string `json:"gh_run_attempt"`
+	Framework            string `json:"framework"`
+	Name                 string `json:"name"`
+	Branch               string `json:"branch"`
+	GHPRNumber           *int   `json:"gh_pr_number,omitempty"`
+	TotalReportsExpected int    `json:"total_reports_expected"`
 }
 
 type declaredFile struct {
@@ -56,19 +60,20 @@ type declaredFile struct {
 }
 
 type registerBody struct {
-	Repository          string          `json:"repository"`
-	Commit              string          `json:"commit"`
-	GHRunID             string          `json:"gh_run_id"`
-	GHRunAttempt        string          `json:"gh_run_attempt"`
-	Framework           string          `json:"framework"`
-	Name                string          `json:"name"`
-	Branch              string          `json:"branch"`
-	GHPRNumber          *int            `json:"gh_pr_number,omitempty"`
-	GHJobID             string          `json:"gh_job_id"`
-	GHJobName           string          `json:"gh_job_name"`
-	JSONFiles           []declaredFile  `json:"json_files"`
-	Screenshots         []declaredFile  `json:"screenshots"`
-	EnvironmentMetadata json.RawMessage `json:"environment_metadata,omitempty"`
+	Repository           string          `json:"repository"`
+	Commit               string          `json:"commit"`
+	GHRunID              string          `json:"gh_run_id"`
+	GHRunAttempt         string          `json:"gh_run_attempt"`
+	Framework            string          `json:"framework"`
+	Name                 string          `json:"name"`
+	Branch               string          `json:"branch"`
+	GHPRNumber           *int            `json:"gh_pr_number,omitempty"`
+	TotalReportsExpected *int            `json:"total_reports_expected,omitempty"`
+	GHJobID              string          `json:"gh_job_id"`
+	GHJobName            string          `json:"gh_job_name"`
+	JSONFiles            []declaredFile  `json:"json_files"`
+	Screenshots          []declaredFile  `json:"screenshots"`
+	EnvironmentMetadata  json.RawMessage `json:"environment_metadata,omitempty"`
 }
 
 // ---------- handlers ----------
@@ -76,6 +81,11 @@ type registerBody struct {
 // Begin serves POST /api/v1/reports/begin. Upserts a report_group by composite
 // key. Returns 200 with {report_id} whether the group already existed or was
 // just created — the operation is idempotent.
+//
+// total_reports_expected is required and must be > 0. First non-null write
+// wins; subsequent calls with a different value return 409 EXPECTED_REPORTS_MISMATCH
+// to surface workflow misconfigurations rather than silently keeping the
+// first-wins value.
 func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 	if _, err := authapi.SubjectFromContext(r.Context()); err != nil {
 		api.WriteError(w, r, api.ErrUnauthorized)
@@ -90,12 +100,23 @@ func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, err)
 		return
 	}
+	if body.TotalReportsExpected <= 0 {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST",
+			"total_reports_expected is required and must be > 0")
+		return
+	}
 	runAttempt := firstNonEmptyStr(body.GHRunAttempt, "1")
+	total := body.TotalReportsExpected
 
 	groupID, created, err := upsertReportGroup(r.Context(), h.Pool,
 		body.Repository, body.Commit, body.GHRunID, runAttempt, body.Framework,
-		body.Name, body.Branch, body.GHPRNumber, nil)
+		body.Name, body.Branch, body.GHPRNumber, &total, nil)
 	if err != nil {
+		if errors.Is(err, errExpectedReportsMismatch) {
+			api.WriteErrorCode(w, http.StatusConflict, "EXPECTED_REPORTS_MISMATCH",
+				err.Error())
+			return
+		}
 		api.WriteError(w, r, err)
 		return
 	}
@@ -127,6 +148,11 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, err)
 		return
 	}
+	if body.TotalReportsExpected != nil && *body.TotalReportsExpected <= 0 {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST",
+			"total_reports_expected, when supplied, must be > 0")
+		return
+	}
 	runAttempt := firstNonEmptyStr(body.GHRunAttempt, "1")
 
 	var env json.RawMessage
@@ -135,8 +161,13 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	groupID, created, err := upsertReportGroup(r.Context(), h.Pool,
 		body.Repository, body.Commit, body.GHRunID, runAttempt, body.Framework,
-		body.Name, body.Branch, body.GHPRNumber, env)
+		body.Name, body.Branch, body.GHPRNumber, body.TotalReportsExpected, env)
 	if err != nil {
+		if errors.Is(err, errExpectedReportsMismatch) {
+			api.WriteErrorCode(w, http.StatusConflict, "EXPECTED_REPORTS_MISMATCH",
+				err.Error())
+			return
+		}
 		api.WriteError(w, r, err)
 		return
 	}
@@ -248,6 +279,7 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = h.Pool.Exec(r.Context(),
 		`UPDATE reports SET json_upload_status='completed', updated_at=now() WHERE id=$1`, reportID)
+	bumpGroupLastUpload(r.Context(), h.Pool, groupID)
 
 	// Extract the uploaded JSON into suites + test_cases and update the
 	// report's aggregate counts. Fire suites_available if anything parsed;
@@ -306,6 +338,7 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = h.Pool.Exec(r.Context(),
 		`UPDATE reports SET screenshots_upload_status='completed', updated_at=now() WHERE id=$1`, reportID)
+	bumpGroupLastUpload(r.Context(), h.Pool, groupID)
 
 	// Best-effort link against whatever test_cases exist already. If JSON hasn't
 	// been extracted yet, the linker runs again at end-of-UploadJSON and picks
@@ -326,98 +359,57 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Complete serves POST /api/v1/reports/complete. Looks up the report_group by
-// composite key, marks child reports complete, and flips group status.
-func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
-	if _, err := authapi.SubjectFromContext(r.Context()); err != nil {
-		api.WriteError(w, r, api.ErrUnauthorized)
-		return
-	}
-	var body beginBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
-		return
-	}
-	if err := validateGroupKey(body.Repository, body.Commit, body.GHRunID, body.Framework, body.Name, body.Branch); err != nil {
-		api.WriteError(w, r, err)
-		return
-	}
-	runAttempt := firstNonEmptyStr(body.GHRunAttempt, "1")
-
-	var groupID uuid.UUID
-	err := h.Pool.QueryRow(r.Context(), `
-		SELECT id FROM report_groups
-		WHERE repository=$1 AND commit_sha=$2 AND gh_run_id=$3 AND name=$4 AND gh_run_attempt=$5
-	`, body.Repository, body.Commit, body.GHRunID, body.Name, runAttempt).Scan(&groupID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		api.WriteError(w, r, api.ErrNotFound)
-		return
-	}
-	if err != nil {
-		api.WriteError(w, r, err)
-		return
-	}
-
-	// Flip every still-processing child report to complete and capture which
-	// rows actually transitioned so we can emit one event per shard.
-	transitionedRows, _ := h.Pool.Query(r.Context(), `
-		UPDATE reports
-		SET status = 'complete', updated_at = now()
-		WHERE report_group_id = $1 AND status = 'processing'
-		RETURNING id
-	`, groupID)
-	transitioned := []uuid.UUID{}
-	for transitionedRows.Next() {
-		var id uuid.UUID
-		if err := transitionedRows.Scan(&id); err == nil {
-			transitioned = append(transitioned, id)
-		}
-	}
-	transitionedRows.Close()
-
-	_, _ = h.Pool.Exec(r.Context(),
-		`UPDATE report_groups SET status='completed', updated_at=now() WHERE id=$1`, groupID)
-
-	var reportsCount int
-	_ = h.Pool.QueryRow(r.Context(),
-		`SELECT count(*) FROM reports WHERE report_group_id = $1`, groupID).Scan(&reportsCount)
-
-	now := time.Now().UTC()
-	for _, rid := range transitioned {
-		h.Publisher.ReportEntryUpdated(groupID, rid, "complete", now)
-	}
-	h.Publisher.ReportUpdated(groupID, "completed", reportsCount, nil, now)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"report_id":     groupID.String(),
-		"reports_count": reportsCount,
-	})
-}
-
 // ---------- internals ----------
+
+// errExpectedReportsMismatch signals that an upsert was attempted with a
+// total_reports_expected value that disagrees with what the existing row
+// already stores. Surfaced as 409 EXPECTED_REPORTS_MISMATCH.
+var errExpectedReportsMismatch = errors.New("total_reports_expected does not match existing report_group")
+
+// bumpGroupLastUpload best-effort marks a report_group as recently active so
+// the staleness reaper won't reap it. Called at the tail of every successful
+// per-shard upload (json or screenshots). Errors are swallowed — a missed
+// bump just means the reaper might mark the group `incomplete` slightly
+// sooner; data correctness is unaffected.
+func bumpGroupLastUpload(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) {
+	_, _ = pool.Exec(ctx,
+		`UPDATE report_groups SET last_upload_at = now() WHERE id = $1`, groupID)
+}
 
 // upsertReportGroup upserts by the composite grouping key and returns
 // (id, createdNow). branch only updates when the existing row has an empty
-// branch — /begin and /complete pass branch="" but /register knows the real value.
+// branch — /begin passes branch="" but /register knows the real value.
+//
+// totalReportsExpected is nullable: nil means "the caller didn't declare a
+// shard count." On insert with nil, the column stays NULL (group
+// auto-completes on any per-shard upload finalization). On update the
+// existing value wins (frozen-on-insert). When both stored and requested
+// are non-nil and disagree, returns errExpectedReportsMismatch so a
+// mismatched workflow surfaces as 409 instead of silently first-winning.
 func upsertReportGroup(
 	ctx context.Context, pool *pgxpool.Pool,
 	repository, commit, runID, runAttempt, framework, name, branch string,
-	prNumber *int, env json.RawMessage,
+	prNumber *int, totalReportsExpected *int, env json.RawMessage,
 ) (uuid.UUID, bool, error) {
 	var id uuid.UUID
 	var created bool
+	var storedTotal *int
 	err := pool.QueryRow(ctx, `
-		INSERT INTO report_groups (framework, name, repository, branch, commit_sha, gh_run_id, gh_run_attempt, gh_pr_number, environment_metadata)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8, NULLIF($9::text,'')::jsonb)
+		INSERT INTO report_groups (framework, name, repository, branch, commit_sha, gh_run_id, gh_run_attempt, gh_pr_number, total_reports_expected, environment_metadata)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, NULLIF($10::text,'')::jsonb)
 		ON CONFLICT (repository, commit_sha, gh_run_id, name, gh_run_attempt)
 		  DO UPDATE SET updated_at = now(),
 		                branch = CASE WHEN report_groups.branch = '' THEN EXCLUDED.branch ELSE report_groups.branch END,
 		                gh_pr_number = COALESCE(report_groups.gh_pr_number, EXCLUDED.gh_pr_number),
 		                environment_metadata = COALESCE(report_groups.environment_metadata, EXCLUDED.environment_metadata)
-		RETURNING id, (xmax = 0) AS created
-	`, framework, name, repository, branch, commit, runID, runAttempt, prNumber, string(env)).Scan(&id, &created)
+		RETURNING id, (xmax = 0) AS created, total_reports_expected
+	`, framework, name, repository, branch, commit, runID, runAttempt, prNumber, totalReportsExpected, string(env)).Scan(&id, &created, &storedTotal)
 	if err != nil {
 		return uuid.Nil, false, fmt.Errorf("upsert report_group: %w", err)
+	}
+	if !created && totalReportsExpected != nil && storedTotal != nil && *storedTotal != *totalReportsExpected {
+		return uuid.Nil, false, fmt.Errorf("%w: requested=%d stored=%d",
+			errExpectedReportsMismatch, *totalReportsExpected, *storedTotal)
 	}
 	return id, created, nil
 }
@@ -690,8 +682,8 @@ func readLimited(r io.Reader, maxBytes int64) ([]byte, int64, string, error) {
 }
 
 // validateGroupKey ensures the composite identity fields are populated. Branch
-// is intentionally NOT required — /reports/begin and /reports/complete don't
-// carry it; /reports/register is where it's set.
+// is intentionally NOT required — /reports/begin doesn't carry it;
+// /reports/register is where it's set.
 func validateGroupKey(repository, commit, runID, framework, name, _ string) error {
 	if repository == "" || commit == "" || runID == "" || name == "" {
 		return fmt.Errorf("%w: repository, commit, gh_run_id, and name are required", api.ErrBadRequest)
@@ -771,22 +763,16 @@ func ssStartedIf(n int) *string {
 	return &s
 }
 
-// tryAutoFinalize self-heals the report group when an upload pipeline
-// step (json or screenshots) just landed. It first checks whether this
-// report's pipeline is now fully complete (json + optional screenshots),
-// and if so flips the row from `processing` to `complete` and publishes
-// ReportEntryUpdated("complete"). When that flip happens, it then
-// attempts to flip the parent group from `in_progress` to `completed`
-// (only when no sibling reports remain `processing`). Returns true when
-// the per-report flip occurred — callers should skip publishing the
+// tryAutoFinalize finalizes the report (and possibly its group) once an
+// upload pipeline step (json or screenshots) just landed. It first checks
+// whether this report's pipeline is now fully complete (json + optional
+// screenshots), and if so flips the row from `processing` to `complete`
+// and publishes ReportEntryUpdated("complete"). When that flip happens, it
+// then attempts to flip the parent group from `in_progress` to `completed`
+// once count(reports.complete) >= total_reports_expected. Returns true
+// when the per-report flip occurred — callers should skip publishing the
 // usual ReportEntryUpdated("processing") event so the UI doesn't see a
 // "complete → processing" sequence.
-//
-// This is the per-report counterpart of the explicit
-// /api/v1/reports/complete cleanup. It is the safety net for runs where
-// /reports/complete fails (e.g. OIDC mint expired in the report job),
-// which would otherwise leave reports stuck at status='processing'
-// indefinitely.
 func (h *Handlers) tryAutoFinalize(ctx context.Context, groupID, reportID uuid.UUID, source string) bool {
 	flipped, err := tryAutoCompleteReport(ctx, h.Pool, reportID)
 	if err != nil {
@@ -816,10 +802,7 @@ func (h *Handlers) tryAutoFinalize(ctx context.Context, groupID, reportID uuid.U
 // were declared at /reports/register time). Idempotent — repeated calls on
 // an already-`complete` row affect zero rows. Returns true when this call
 // performed the flip; the caller publishes ReportEntryUpdated and considers
-// auto-completing the parent group. The /reports/complete endpoint remains
-// the explicit, group-wide cleanup; this function is the per-report
-// self-healing path so a missed or 401'd /reports/complete does not leave
-// rows stuck at `processing` forever.
+// auto-completing the parent group.
 func tryAutoCompleteReport(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID) (bool, error) {
 	res, err := pool.Exec(ctx, `
 		UPDATE reports
@@ -836,22 +819,31 @@ func tryAutoCompleteReport(ctx context.Context, pool *pgxpool.Pool, reportID uui
 	return res.RowsAffected() == 1, nil
 }
 
-// tryAutoCompleteGroup flips a report_group from `in_progress` to `completed`
-// once none of its child reports are still `processing`. Idempotent. Only
-// safe to call after at least one report under the group has reached a
-// terminal state — calling it on a freshly-created empty group would
-// short-circuit the NOT EXISTS predicate and prematurely mark the group
-// complete. The upload handlers gate this call on a successful per-report
-// auto-complete, which guarantees the row exists.
+// tryAutoCompleteGroup flips a report_group from `in_progress` to `completed`.
+// Dual-mode predicate:
+//
+//   - When total_reports_expected is set, flip when count(reports.complete) >=
+//     total_reports_expected. The controller declared a shard count up front
+//     and we wait for that many reports to land.
+//   - When total_reports_expected is NULL (group was seeded via /reports/register
+//     without a prior /reports/begin), flip on any per-shard upload finalization.
+//     Without a declared count, "we have data" is the strongest terminal signal
+//     we can offer.
+//
+// Idempotent — a repeat call after the flip is a no-op. The upload handlers
+// gate this call on a successful per-report auto-complete, which guarantees
+// the count has just incremented and the predicate has a chance of becoming
+// true.
 func tryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) (bool, error) {
 	res, err := pool.Exec(ctx, `
 		UPDATE report_groups
 		   SET status = 'completed', updated_at = now()
 		 WHERE id = $1
 		   AND status = 'in_progress'
-		   AND NOT EXISTS (
-		       SELECT 1 FROM reports
-		        WHERE report_group_id = $1 AND status = 'processing'
+		   AND (
+		       total_reports_expected IS NULL
+		       OR (SELECT count(*) FROM reports
+		            WHERE report_group_id = $1 AND status = 'complete') >= total_reports_expected
 		   )
 	`, groupID)
 	if err != nil {

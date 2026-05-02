@@ -345,7 +345,16 @@ export function HomePage() {
           )}
           {filteredGroups.length > 0 &&
             (() => {
-              const allRuns = filteredGroups.flatMap((g) => g.runs);
+              // Server's /reports/grouped buckets runs by repository (the
+              // grouped view in commit_reports_page relies on that). The
+              // home page renders one flat list, so re-sort across repos by
+              // created_at so a fresh run from one repo isn't pushed below
+              // older runs from a repo that happened to bucket first.
+              const allRuns = filteredGroups
+                .flatMap((g) => g.runs)
+                .sort((a, b) =>
+                  a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
+                );
               const total = allRuns.length;
               const totalPages = Math.ceil(total / limit);
               const paginatedRuns = allRuns.slice((page - 1) * limit, page * limit);

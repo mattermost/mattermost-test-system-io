@@ -4,7 +4,7 @@ import { Loader2, Inbox } from 'lucide-react';
 import { useGroupedReports } from '@/services/api';
 import { RepoGroupCard } from '@/components/repo_group_card';
 import { Breadcrumb } from '@/components/breadcrumb';
-import { ReportSummary } from '@/components/report_summary';
+import { ReportSummary, resolveEffectiveReportStatus } from '@/components/report_summary';
 import { resolveDisplayStats } from '@/components/report_card_parts';
 import type { RepositoryGroup, RunEntry } from '@/types';
 
@@ -37,8 +37,6 @@ function filterGroups(
     .filter((group) => group.runs.length > 0);
 }
 
-const TIMED_OUT_THRESHOLD_MS = 3_600_000; // 1 hour
-
 interface AggregatedStats {
   passed: number;
   failed: number;
@@ -48,7 +46,7 @@ interface AggregatedStats {
   duration_ms: number | null;
   retest_duration_ms: number | null;
   test_status: 'passed' | 'failed' | 'timed_out';
-  progress_status: 'in_progress' | 'completed' | 'timed_out';
+  progress_status: 'in_progress' | 'completed' | 'timed_out' | 'incomplete';
   latest_created_at: string;
   nameLinks: { label: string; href: string }[];
 }
@@ -80,17 +78,14 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
   let maxWallClock: number | null = null;
   let maxRetestWallClock: number | null = null;
   let hasActiveInProgress = false;
-  let hasTimedOut = false;
-  const now = Date.now();
+  let hasIncomplete = false;
 
   for (const run of runs) {
-    if (run.status === 'in_progress') {
-      const isTimedOut = new Date(run.created_at).getTime() < now - TIMED_OUT_THRESHOLD_MS;
-      if (isTimedOut) {
-        hasTimedOut = true;
-      } else {
-        hasActiveInProgress = true;
-      }
+    const effective = resolveEffectiveReportStatus(run.status, run.last_upload_at);
+    if (effective === 'in_progress') {
+      hasActiveInProgress = true;
+    } else if (effective === 'incomplete' || run.status === 'incomplete') {
+      hasIncomplete = true;
     }
 
     // Source-of-truth resolver: prefer orchestration counts, fall back
@@ -115,13 +110,13 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
 
   const progress_status: AggregatedStats['progress_status'] = hasActiveInProgress
     ? 'in_progress'
-    : hasTimedOut
-      ? 'timed_out'
+    : hasIncomplete
+      ? 'incomplete'
       : 'completed';
   // Overall verdict is Passed / Failed / Timed Out — flaky-but-passed
   // tests count as Passed at the run level (flaky lives per-test-case).
   const test_status: AggregatedStats['test_status'] =
-    progress_status === 'timed_out' ? 'timed_out' : failed > 0 ? 'failed' : 'passed';
+    progress_status === 'incomplete' ? 'timed_out' : failed > 0 ? 'failed' : 'passed';
 
   return {
     passed,

@@ -15,13 +15,11 @@ import { TestSuitesView } from '@/components/test_suites_view';
 import { RunAttemptSelector } from '@/components/run_attempt_selector';
 import { Loader2, Inbox, AlertTriangle, Layers, ListTree, GitMerge } from 'lucide-react';
 import { ContributingReportsList } from '@/components/contributing_reports_list';
-import { ReportSummary } from '@/components/report_summary';
+import { ReportSummary, resolveEffectiveReportStatus } from '@/components/report_summary';
 import { isRetestName } from '@/components/report_card_parts';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { OrchestrationTab } from '@/components/orchestration/orchestration_tab';
 import type { CompositeIdentity } from '@/types/orchestration';
-
-const TIMED_OUT_THRESHOLD_MS = 3_600_000; // 1 hour
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleString(undefined, {
@@ -377,14 +375,12 @@ export function FilteredReportPage() {
             // the source of truth — the consolidated report record can
             // appear `completed` early when an older run at this commit
             // already finished, even though the new run is still pending.
-            const status = orchestrationRun?.status ?? report.status;
-            if (status === 'timed_out') return 'timed_out';
-            if (status === 'in_progress') {
-              return new Date(report.created_at).getTime() < Date.now() - TIMED_OUT_THRESHOLD_MS
-                ? 'timed_out'
-                : 'in_progress';
-            }
-            return 'completed';
+            // For the report-side path, defer to the eager 10-min heuristic
+            // so a stuck shard surfaces as `incomplete` before the server
+            // reaps it.
+            if (orchestrationRun?.status === 'timed_out') return 'timed_out';
+            if (orchestrationRun?.status === 'in_progress') return 'in_progress';
+            return resolveEffectiveReportStatus(report.status, report.last_upload_at);
           })()}
           repository={report.repository}
           branch={report.branch}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
 	authoidc "github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oidc"
@@ -120,6 +121,16 @@ func run() error {
 		logger.Error("orchestration reaper start", slog.String("error", err.Error()))
 	}
 	defer reaper.Stop()
+
+	reportsReaper := &reports.Reaper{
+		Pool:      pool,
+		Publisher: publisher,
+		Logger:    logger,
+	}
+	if err := reportsReaper.Start(ctx); err != nil {
+		logger.Error("reports reaper start", slog.String("error", err.Error()))
+	}
+	defer reportsReaper.Stop()
 
 	handler := server.Build(server.Deps{
 		Logger:                 logger,

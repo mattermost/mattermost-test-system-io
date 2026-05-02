@@ -183,6 +183,8 @@ fmt-server: ## Format Go code (writes)
 	@echo "$(CYAN)Formatting Go code...$(RESET)"
 	cd $(SERVER_DIR) && $(GOFMT) -s -w . && $(GOIMPORTS_CMD) -w .
 
+fmt-check: fmt-check-server fmt-check-web ## Verify formatting on Go + web (matches GitHub `web-checks` / `server-checks` jobs)
+
 fmt-check-server: ## Verify Go is gofmt-clean (CI-friendly; exit 1 on drift)
 	@cd $(SERVER_DIR) && out=$$($(GOFMT) -s -l .); \
 	if [ -n "$$out" ]; then \
@@ -204,7 +206,7 @@ typecheck-web: ## Type-check TypeScript (tsc --noEmit)
 
 ##@ CI
 
-ci: vet lint typecheck test build ## Full CI gate (vet, lint, typecheck, test, build). Excludes e2e (needs Docker).
+ci: vet fmt-check lint typecheck test test-server-e2e build ## Full CI gate (vet, fmt-check, lint, typecheck, test, e2e, build). Mirrors `.github/workflows/ci.yml`; needs Docker for e2e.
 
 # Internal: precheck that Docker is reachable before any testcontainers target.
 ensure-docker:

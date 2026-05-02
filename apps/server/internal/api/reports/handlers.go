@@ -40,20 +40,26 @@ type Handlers struct {
 
 // groupDTO is the report_group row as returned to the web. Field names match
 // the report-summary and report-detail response shapes the dashboard consumes.
+//
+// TotalReportsExpected is *int because the column is nullable for groups that
+// were seeded via /reports/register without a prior /reports/begin. Callers
+// that need a number flatten nil → 0 (omitempty in the JSON shape).
 type groupDTO struct {
-	ID                  uuid.UUID
-	Framework           string
-	Name                string
-	Status              string
-	Repository          string
-	Branch              string
-	CommitSHA           string
-	GHRunID             string
-	GHRunAttempt        string
-	GHPRNumber          *int
-	EnvironmentMetadata *json.RawMessage
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                   uuid.UUID
+	Framework            string
+	Name                 string
+	Status               string
+	TotalReportsExpected *int
+	Repository           string
+	Branch               string
+	CommitSHA            string
+	GHRunID              string
+	GHRunAttempt         string
+	GHPRNumber           *int
+	EnvironmentMetadata  *json.RawMessage
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	LastUploadAt         time.Time
 }
 
 // reportEntryDTO is a per-job upload inside a report_group.
@@ -68,24 +74,27 @@ type reportEntryDTO struct {
 }
 
 const reportGroupSelectCols = `
-	id, framework, name, status, repository, branch, commit_sha,
+	id, framework, name, status, total_reports_expected,
+	repository, branch, commit_sha,
 	gh_run_id, gh_run_attempt, gh_pr_number, environment_metadata,
-	created_at, updated_at
+	created_at, updated_at, last_upload_at
 `
 
 const reportGroupSelectColsPrefixed = `
-	g.id, g.framework, g.name, g.status, g.repository, g.branch, g.commit_sha,
+	g.id, g.framework, g.name, g.status, g.total_reports_expected,
+	g.repository, g.branch, g.commit_sha,
 	g.gh_run_id, g.gh_run_attempt, g.gh_pr_number, g.environment_metadata,
-	g.created_at, g.updated_at
+	g.created_at, g.updated_at, g.last_upload_at
 `
 
 func scanGroup(s interface{ Scan(dst ...any) error }) (groupDTO, error) {
 	var g groupDTO
 	var env []byte
 	if err := s.Scan(
-		&g.ID, &g.Framework, &g.Name, &g.Status, &g.Repository, &g.Branch, &g.CommitSHA,
+		&g.ID, &g.Framework, &g.Name, &g.Status, &g.TotalReportsExpected,
+		&g.Repository, &g.Branch, &g.CommitSHA,
 		&g.GHRunID, &g.GHRunAttempt, &g.GHPRNumber, &env,
-		&g.CreatedAt, &g.UpdatedAt,
+		&g.CreatedAt, &g.UpdatedAt, &g.LastUploadAt,
 	); err != nil {
 		return groupDTO{}, err
 	}
@@ -144,6 +153,7 @@ type groupStats struct {
 	DurationMs          *int64 // sum of per-case durations across all shards
 	NumberedWallClockMs *int64 // span: min(start) → max(end) over non-retest shards
 	RetestWallClockMs   *int64 // same span, over retest shards only
+	ReportsCount        int    // number of reports rows under this group
 }
 
 // retestNamePattern flags shards whose gh_job_name looks like a retest run
@@ -161,9 +171,10 @@ func aggregateGroupStats(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 			COALESCE(SUM(failed_cases),0),
 			COALESCE(SUM(skipped_cases),0),
 			COALESCE(SUM(flaky_cases),0),
-			SUM(duration_ms)
+			SUM(duration_ms),
+			COUNT(*)
 		FROM reports WHERE report_group_id = $1
-	`, groupID).Scan(&s.TotalSuites, &s.TotalCases, &s.Passed, &s.Failed, &s.Skipped, &s.Flaky, &dur); err != nil {
+	`, groupID).Scan(&s.TotalSuites, &s.TotalCases, &s.Passed, &s.Failed, &s.Skipped, &s.Flaky, &dur, &s.ReportsCount); err != nil {
 		return groupStats{}, err
 	}
 	s.DurationMs = dur
@@ -551,11 +562,11 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 // Upload serves the legacy single-shot multipart bundle upload. The new flow is
-// stateless (begin/register/upload/complete) — this endpoint exists for
-// backward compatibility but returns 410 Gone until a bundle adapter is wired.
+// stateless (begin/register/upload) — this endpoint exists for backward
+// compatibility but returns 410 Gone until a bundle adapter is wired.
 func (h *Handlers) Upload(w http.ResponseWriter, _ *http.Request) {
 	api.WriteErrorCode(w, http.StatusGone, "ENDPOINT_RETIRED",
-		"use POST /reports/begin + /reports/register + /reports/upload/{id}/{uid}/json + /reports/complete")
+		"use POST /reports/begin + /reports/register + /reports/upload/{id}/{uid}/json")
 }
 
 // ---------- helpers ----------

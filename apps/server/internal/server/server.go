@@ -206,7 +206,6 @@ func Build(d Deps) chi.Router {
 			r.Post("/reports/register", reportsH.Register)
 			r.Post("/reports/upload/{rid}/{uid}/json", reportsH.UploadJSON)
 			r.Post("/reports/upload/{rid}/{uid}/screenshots", reportsH.UploadScreenshots)
-			r.Post("/reports/complete", reportsH.Complete)
 
 			// Legacy single-shot bundle upload (returns 410).
 			r.Post("/reports", reportsH.Upload)

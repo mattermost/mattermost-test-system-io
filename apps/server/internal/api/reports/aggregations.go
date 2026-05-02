@@ -92,20 +92,22 @@ type orchestrationSummary struct {
 }
 
 type reportSummary struct {
-	ID            string                `json:"id"`
-	ShortID       string                `json:"short_id"`
-	Name          string                `json:"name"`
-	Status        string                `json:"status"`
-	Framework     string                `json:"framework"`
-	TestStats     *testStats            `json:"test_stats,omitempty"`
-	Orchestration *orchestrationSummary `json:"orchestration,omitempty"`
-	Repository    string                `json:"repository"`
-	Branch        string                `json:"branch"`
-	Commit        string                `json:"commit"`
-	GHRunID       string                `json:"gh_run_id"`
-	GHPRNumber    *int                  `json:"gh_pr_number,omitempty"`
-	GHRunAttempt  string                `json:"gh_run_attempt"`
-	CreatedAt     string                `json:"created_at"`
+	ID                   string                `json:"id"`
+	ShortID              string                `json:"short_id"`
+	Name                 string                `json:"name"`
+	Status               string                `json:"status"`
+	Framework            string                `json:"framework"`
+	TestStats            *testStats            `json:"test_stats,omitempty"`
+	Orchestration        *orchestrationSummary `json:"orchestration,omitempty"`
+	Repository           string                `json:"repository"`
+	Branch               string                `json:"branch"`
+	Commit               string                `json:"commit"`
+	GHRunID              string                `json:"gh_run_id"`
+	GHPRNumber           *int                  `json:"gh_pr_number,omitempty"`
+	GHRunAttempt         string                `json:"gh_run_attempt"`
+	CreatedAt            string                `json:"created_at"`
+	LastUploadAt         string                `json:"last_upload_at,omitempty"`
+	TotalReportsExpected int                   `json:"total_reports_expected,omitempty"`
 }
 
 type reportEntry struct {
@@ -127,21 +129,24 @@ type reportDetail struct {
 }
 
 type runEntry struct {
-	ReportID      string                `json:"report_id"`
-	Framework     string                `json:"framework"`
-	Name          string                `json:"name"`
-	Status        string                `json:"status"`
-	Branch        string                `json:"branch"`
-	Commit        string                `json:"commit"`
-	ShortSHA      string                `json:"short_sha"`
-	RunNumber     string                `json:"run_number,omitempty"`
-	GHRunAttempt  string                `json:"gh_run_attempt"`
-	GHRunID       string                `json:"gh_run_id,omitempty"`
-	GHPRNumber    *int                  `json:"gh_pr_number,omitempty"`
-	TestStats     *testStats            `json:"test_stats,omitempty"`
-	Orchestration *orchestrationSummary `json:"orchestration,omitempty"`
-	CreatedAt     string                `json:"created_at"`
-	URLPath       string                `json:"url_path"`
+	ReportID             string                `json:"report_id"`
+	Framework            string                `json:"framework"`
+	Name                 string                `json:"name"`
+	Status               string                `json:"status"`
+	Branch               string                `json:"branch"`
+	Commit               string                `json:"commit"`
+	ShortSHA             string                `json:"short_sha"`
+	RunNumber            string                `json:"run_number,omitempty"`
+	GHRunAttempt         string                `json:"gh_run_attempt"`
+	GHRunID              string                `json:"gh_run_id,omitempty"`
+	GHPRNumber           *int                  `json:"gh_pr_number,omitempty"`
+	TestStats            *testStats            `json:"test_stats,omitempty"`
+	Orchestration        *orchestrationSummary `json:"orchestration,omitempty"`
+	CreatedAt            string                `json:"created_at"`
+	LastUploadAt         string                `json:"last_upload_at,omitempty"`
+	TotalReportsExpected int                   `json:"total_reports_expected,omitempty"`
+	ReportsCount         int                   `json:"reports_count,omitempty"`
+	URLPath              string                `json:"url_path"`
 }
 
 type repoGroup struct {
@@ -210,19 +215,21 @@ func statsFromAgg(s groupStats) *testStats {
 
 func toReportSummary(g groupDTO, s groupStats) reportSummary {
 	return reportSummary{
-		ID:           g.ID.String(),
-		ShortID:      shortID(g.ID.String()),
-		Name:         g.Name,
-		Status:       g.Status,
-		Framework:    g.Framework,
-		TestStats:    statsFromAgg(s),
-		Repository:   g.Repository,
-		Branch:       g.Branch,
-		Commit:       g.CommitSHA,
-		GHRunID:      g.GHRunID,
-		GHPRNumber:   g.GHPRNumber,
-		GHRunAttempt: g.GHRunAttempt,
-		CreatedAt:    fmtTime(g.CreatedAt),
+		ID:                   g.ID.String(),
+		ShortID:              shortID(g.ID.String()),
+		Name:                 g.Name,
+		Status:               g.Status,
+		Framework:            g.Framework,
+		TestStats:            statsFromAgg(s),
+		Repository:           g.Repository,
+		Branch:               g.Branch,
+		Commit:               g.CommitSHA,
+		GHRunID:              g.GHRunID,
+		GHPRNumber:           g.GHPRNumber,
+		GHRunAttempt:         g.GHRunAttempt,
+		CreatedAt:            fmtTime(g.CreatedAt),
+		LastUploadAt:         fmtTime(g.LastUploadAt),
+		TotalReportsExpected: derefIntOrZero(g.TotalReportsExpected),
 	}
 }
 
@@ -253,18 +260,21 @@ func toReportDetail(g groupDTO, entries []reportEntryDTO, s groupStats) reportDe
 func toRunEntry(g groupDTO, s groupStats) runEntry {
 	branch := stripRefPrefix(g.Branch)
 	return runEntry{
-		ReportID:     g.ID.String(),
-		Framework:    g.Framework,
-		Name:         g.Name,
-		Status:       g.Status,
-		Branch:       branch,
-		Commit:       g.CommitSHA,           // full 40-char SHA, used for filtering
-		ShortSHA:     shortSHA(g.CommitSHA), // 7-char prefix, display only
-		GHRunAttempt: g.GHRunAttempt,
-		GHRunID:      g.GHRunID,
-		GHPRNumber:   g.GHPRNumber,
-		TestStats:    statsFromAgg(s),
-		CreatedAt:    fmtTime(g.CreatedAt),
+		ReportID:             g.ID.String(),
+		Framework:            g.Framework,
+		Name:                 g.Name,
+		Status:               g.Status,
+		Branch:               branch,
+		Commit:               g.CommitSHA,           // full 40-char SHA, used for filtering
+		ShortSHA:             shortSHA(g.CommitSHA), // 7-char prefix, display only
+		GHRunAttempt:         g.GHRunAttempt,
+		GHRunID:              g.GHRunID,
+		GHPRNumber:           g.GHPRNumber,
+		TestStats:            statsFromAgg(s),
+		CreatedAt:            fmtTime(g.CreatedAt),
+		LastUploadAt:         fmtTime(g.LastUploadAt),
+		TotalReportsExpected: derefIntOrZero(g.TotalReportsExpected),
+		ReportsCount:         s.ReportsCount,
 		// Consolidated-view URL shape: {repo-slug}/{branch}/{short-sha}/{name}.
 		// Each segment is URL-encoded so names containing spaces or slashes
 		// stay as one path segment. Short SHA keeps the URL compact; any
@@ -1040,6 +1050,13 @@ func derefOr(p *string, dflt string) string {
 }
 
 func derefOrEmpty(p *string) string { return derefOr(p, "") }
+
+func derefIntOrZero(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
 
 func parseOffset(v string) int {
 	n := parseLimit(v, 0, 1_000_000)

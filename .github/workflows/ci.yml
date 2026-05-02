@@ -17,6 +17,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Secret scanning gate. The repo's `.gitleaks.toml` defines custom rules
+  # (postgres connection strings, generic db URLs) on top of the default
+  # ruleset; running gitleaks here catches secrets accidentally committed
+  # in PRs before merge. Free for public repos — no license needed.
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # gitleaks scans full history when run on push to main; on PR
+          # it scans only the PR diff via base-ref/head-ref. Both modes
+          # need depth > 1.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
   server-checks:
     runs-on: ubuntu-latest
     steps:

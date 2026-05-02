@@ -20,6 +20,16 @@ The calling workflow MUST grant `permissions: id-token: write`.
 | `framework` | yes | — | Label rendered in the summary header (e.g. `playwright`, `cypress`). |
 | `fail-on-test-failures` | no | `true` | When `true`, exit non-zero if any unit ended in `completed_fail` or the run did not reach `completed`. |
 
+## Pinning a version
+
+When using this action from another repository, prefer pinning to a full commit SHA over `@main`:
+
+```yaml
+uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-summary@<40-char-sha>  # vX.Y.Z
+```
+
+`@main` tracks whatever lands on this branch, so a refactor here can change behavior in your CI without warning. Pinning a SHA freezes the action's source until you choose to update; Dependabot's `package-ecosystem: github-actions` opens a PR when a newer version is available — the same flow you'd use for any third-party action.
+
 ## Usage
 
 ```yaml

@@ -27,6 +27,9 @@ export async function getBearer(audience: string): Promise<string> {
   }
   const token = await core.getIDToken(audience);
   if (!token) throw new Error("OIDC mint returned empty value");
+  // Mark the JWT for the runner's output filter so subsequent `core.info`,
+  // error messages, or stack traces involving it print as `***`.
+  core.setSecret(token);
   cachedToken = token;
   cachedTokenMintedAt = Date.now();
   return token;

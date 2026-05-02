@@ -24549,6 +24549,7 @@ async function getBearer(audience) {
   }
   const token = await getIDToken(audience);
   if (!token) throw new Error("OIDC mint returned empty value");
+  setSecret(token);
   cachedToken = token;
   cachedTokenMintedAt = Date.now();
   return token;
@@ -24739,6 +24740,7 @@ async function run() {
   const compositeIdentityRaw = getInput("composite-identity", { required: true });
   const framework = getInput("framework", { required: true });
   const githubToken = getInput("github-token", { required: true });
+  setSecret(githubToken);
   const ghJobName = getInput("gh-job-name", { required: true });
   const jsonPath = getInput("json-path", { required: true });
   const screenshotsDirRaw = getInput("screenshots-dir");

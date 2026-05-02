@@ -62,6 +62,9 @@ export async function run(): Promise<void> {
   core.info(`discovered ${dispatchUnits.length} spec file(s)`);
 
   const bearer = await core.getIDToken(audience);
+  // Mark the JWT for the runner's output filter so subsequent `core.info`,
+  // error messages, or stack traces involving it print as `***`.
+  core.setSecret(bearer);
 
   const beginBody = {
     ...compositeIdentity,

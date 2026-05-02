@@ -4,44 +4,90 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "github-actions"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: "gomod"
     directory: "/apps/server"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "go"
+    groups:
+      go-modules:
+        patterns:
+          - "*"
 
   - package-ecosystem: "npm"
     directory: "/apps/web"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "javascript"
+    groups:
+      web-npm:
+        patterns:
+          - "*"
 
   - package-ecosystem: "npm"
     directory: "/infra"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "javascript"
       - "infra"
+    groups:
+      infra-npm:
+        patterns:
+          - "*"
 
   - package-ecosystem: "docker"
     directory: "/apps/server"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "docker"
+    groups:
+      docker:
+        patterns:
+          - "*"
+
+  # Composite actions ship a committed `dist/index.js` bundle that GH Actions
+  # executes directly (see `actions-checks` matrix in ci.yml). The bundles
+  # embed @actions/core, @octokit/*, undici, etc.; without explicit npm
+  # tracking here, those embedded deps would never get CVE-driven updates.
+  # When dependabot opens a PR for one of these, the actions-checks
+  # `git diff --exit-code dist/` gate forces the bundle to be rebuilt.
+  #
+  # `directories:` (plural) folds the four composite actions into a single
+  # update entry; the group below then consolidates them all into one PR.
+  - package-ecosystem: "npm"
+    directories:
+      - "/.github/actions/test-system-io-dispatch-begin"
+      - "/.github/actions/test-system-io-dispatch-run"
+      - "/.github/actions/test-system-io-summary"
+      - "/.github/actions/test-system-io-report-upload"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      composite-actions-npm:
+        patterns:
+          - "*"

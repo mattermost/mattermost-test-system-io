@@ -35,6 +35,16 @@ Use `test-system-io-dispatch-run` when you want the orchestrator to **assign wor
 | `json-path` | yes | — | Path to the framework results JSON file produced by this shard. |
 | `screenshots-dir` | no | `""` | Directory walked recursively for `.png` / `.jpg` / `.jpeg` files. Omit to skip screenshot upload. |
 
+## Pinning a version
+
+The examples below use `@main` for readability. For ongoing use, prefer pinning to a full commit SHA:
+
+```yaml
+uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-report-upload@<40-char-sha>  # vX.Y.Z
+```
+
+`@main` tracks whatever lands on this branch, so a refactor here can change behavior in your CI without warning. Pinning a SHA freezes the action's source until you choose to update; Dependabot's `package-ecosystem: github-actions` opens a PR when a newer version is available — the same flow you'd use for any third-party action.
+
 ## Usage
 
 ```yaml

@@ -55,6 +55,9 @@ export async function run(): Promise<void> {
   }
 
   const bearer = await core.getIDToken(audience);
+  // Mark the JWT for the runner's output filter so subsequent `core.info`,
+  // error messages, or stack traces involving it print as `***`.
+  core.setSecret(bearer);
 
   const params = new URLSearchParams({
     repository: compositeIdentity.repository,
@@ -72,7 +75,17 @@ export async function run(): Promise<void> {
   } catch {
     status = null;
   }
-  if (status) core.info(JSON.stringify(status, null, 2));
+  // Whitelist only the fields we render — guards against accidental leakage
+  // if the API ever evolves to include sensitive fields (signed URLs, debug
+  // tokens, etc.) since this runs in consumer CI logs which are public.
+  if (status) {
+    const counts = status.counts || {};
+    core.info(
+      `orchestration status: status=${status.status ?? "unknown"} total=${status.total_units ?? "?"} ` +
+        `pass=${counts.completed_pass ?? 0} fail=${counts.completed_fail ?? 0} ` +
+        `skip=${counts.completed_skipped ?? 0} pending=${counts.pending ?? 0} leased=${counts.leased ?? 0}`,
+    );
+  }
 
   // Dashboard URLs use only the trailing segment of the repository slug
   // ("owner/repo" → "repo") to match the convention surfaced by the

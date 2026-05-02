@@ -55,6 +55,11 @@ jobs:
   build-and-tag:
     needs: [check-concurrent, ci]
     runs-on: ubuntu-latest
+    # Gate the Docker Hub push behind the `staging` environment so secret
+    # access (DOCKERHUB_DEV_*) is governed by the same review / branch-
+    # protection rules configured on that environment, matching the gate
+    # already applied to the deploy job below.
+    environment: staging
     outputs:
       beta_tag: ${{ steps.meta.outputs.beta_tag }}
     steps:
@@ -108,6 +113,20 @@ jobs:
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT_SHA=${{ github.sha }}
             BUILD_TIME=${{ steps.meta.outputs.build_time }}
+          # SLSA provenance + SBOM so consumers (and the production
+          # promote step) can verify the image came from this workflow
+          # run. The provenance attestation embeds the source repo,
+          # commit SHA, and the workflow ref.
+          provenance: mode=max
+          sbom: true
+          # Image labels are pulled by deploy_production.yml's provenance
+          # check to verify the promoted image's commit_sha matches the
+          # GH release's targetCommitish.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.beta_tag }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.build_time }}
           cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 
@@ -180,7 +199,7 @@ jobs:
 
       - name: Setup Node
         if: steps.infra-changed.outputs.should_deploy == 'true'
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
           cache: npm

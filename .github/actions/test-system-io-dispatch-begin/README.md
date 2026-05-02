@@ -32,6 +32,16 @@ Authentication is the calling workflow's GitHub Actions OIDC token. The workflow
 | `run-id` | Server-assigned `uuidv7` for the run. |
 | `total-units` | Number of dispatch units created. |
 
+## Pinning a version
+
+When using this action from another repository, prefer pinning to a full commit SHA over `@main`:
+
+```yaml
+uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@<40-char-sha>  # vX.Y.Z
+```
+
+`@main` tracks whatever lands on this branch, so a refactor here can change behavior in your CI without warning. Pinning a SHA freezes the action's source until you choose to update; Dependabot's `package-ecosystem: github-actions` opens a PR when a newer version is available — the same flow you'd use for any third-party action.
+
 ## Usage
 
 ```yaml

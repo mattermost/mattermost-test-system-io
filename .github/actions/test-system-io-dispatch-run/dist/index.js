@@ -24549,6 +24549,7 @@ async function getBearer(audience) {
   }
   const token = await getIDToken(audience);
   if (!token) throw new Error("OIDC mint returned empty value");
+  setSecret(token);
   cachedToken = token;
   cachedTokenMintedAt = Date.now();
   return token;
@@ -24878,6 +24879,7 @@ async function run() {
   const repoDir = getInput("repo-dir", { required: true });
   const artifactsRoot = getInput("artifacts-root", { required: true });
   const githubToken = getInput("github-token", { required: true });
+  setSecret(githubToken);
   const ghJobName = getInput("gh-job-name", { required: true });
   const playwrightRetries = intInput("playwright-retries", 1);
   const playwrightDirInput = getInput("playwright-dir") || "e2e-tests/playwright";

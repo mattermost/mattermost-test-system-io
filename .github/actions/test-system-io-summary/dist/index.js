@@ -19938,6 +19938,7 @@ async function run() {
     throw new Error(`composite-identity is not valid JSON: ${e.message}`);
   }
   const bearer = await getIDToken(audience);
+  setSecret(bearer);
   const params = new URLSearchParams({
     repository: compositeIdentity.repository,
     commit_sha: compositeIdentity.commit_sha,
@@ -19954,7 +19955,12 @@ async function run() {
   } catch {
     status = null;
   }
-  if (status) info(JSON.stringify(status, null, 2));
+  if (status) {
+    const counts = status.counts || {};
+    info(
+      `orchestration status: status=${status.status ?? "unknown"} total=${status.total_units ?? "?"} pass=${counts.completed_pass ?? 0} fail=${counts.completed_fail ?? 0} skip=${counts.completed_skipped ?? 0} pending=${counts.pending ?? 0} leased=${counts.leased ?? 0}`
+    );
+  }
   const repoSlug = compositeIdentity.repository || "";
   const repoTrailing = repoSlug.split("/").pop() || repoSlug;
   const repo = encodeURIComponent(repoTrailing);

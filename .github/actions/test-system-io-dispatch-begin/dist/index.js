@@ -19988,6 +19988,7 @@ async function run() {
   const dispatchUnits = specs.map((p) => ({ spec_path: p }));
   info(`discovered ${dispatchUnits.length} spec file(s)`);
   const bearer = await getIDToken(audience);
+  setSecret(bearer);
   const beginBody = {
     ...compositeIdentity,
     framework: "playwright",

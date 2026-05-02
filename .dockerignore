@@ -54,9 +54,6 @@ seed/
 infra/
 cdk.out/
 
-# Security config
-.gitleaks.toml
-
 # Claude/AI context files
 .claude/
 .specify/

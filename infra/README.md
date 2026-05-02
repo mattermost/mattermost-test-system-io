@@ -229,7 +229,7 @@ npx cdk diff          # Preview changes from CDK upgrade
 - No AWS access keys in GitHub secrets
 - No database passwords in code, config, or environment files
 - No database passwords in plaintext ECS task definitions — injected at runtime via Secrets Manager
-- No `.env` files committed (blocked by `.gitignore` + `.gitleaks.toml`)
+- No `.env` files committed (blocked by `.gitignore`)
 
 ### Rotating credentials
 
@@ -344,7 +344,6 @@ verification fails with 401, no orchestration access.
 ### Code & Repository
 
 - All infrastructure changes go through **pull requests** with CODEOWNERS review
-- `.gitleaks.toml` scans for accidental credential commits
 - `.gitignore` excludes `.env`, `*.pem`, `*.key`, `credentials.json`
 - `cdk.out/` is gitignored (contains synthesized templates with resolved values)
 - GitHub Actions SHA-pinned to prevent supply chain attacks

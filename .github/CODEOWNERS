@@ -13,6 +13,5 @@
 
 # Security configuration
 /.gitignore @saturninoabril
-/.gitleaks.toml @saturninoabril
 /.github/CODEOWNERS @saturninoabril
 /.github/dependabot.yml @saturninoabril

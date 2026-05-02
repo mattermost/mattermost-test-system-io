@@ -37,6 +37,16 @@ The calling workflow MUST grant `permissions: id-token: write`.
 
 `GITHUB_JOB` carries the workflow-file job key, not the matrix-rendered name. The orchestrator keys leases on the unique numeric `gh_job_id`, so the action resolves it by matching `gh-job-name` against `listJobsForWorkflowRunAttempt`.
 
+## Pinning a version
+
+When using this action from another repository, prefer pinning to a full commit SHA over `@main`:
+
+```yaml
+uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-run@<40-char-sha>  # vX.Y.Z
+```
+
+`@main` tracks whatever lands on this branch, so a refactor here can change behavior in your CI without warning. Pinning a SHA freezes the action's source until you choose to update; Dependabot's `package-ecosystem: github-actions` opens a PR when a newer version is available — the same flow you'd use for any third-party action.
+
 ## Usage
 
 ```yaml

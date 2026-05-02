@@ -50,6 +50,11 @@ jobs:
   # ---------------------------------------------------------------------------
   validate-and-retag:
     needs: check-concurrent
+    # Same `production` environment as the deploy job so DOCKERHUB_DEV_*
+    # secret access here goes through the same review gate. Without this,
+    # the retag-and-publish step would have a weaker review boundary than
+    # the ECS deploy step.
+    environment: production
     runs-on: ubuntu-latest
     outputs:
       release_version: ${{ steps.retag.outputs.release_version }}
@@ -57,6 +62,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Need full history to verify the beta's commit is an ancestor of main.
+          fetch-depth: 0
 
       - name: Validate beta tag exists as GitHub prerelease
         env:
@@ -77,6 +85,37 @@ jobs:
 
           echo "Beta tag '${BETA_TAG}' validated as a prerelease."
 
+      # The release's targetCommitish must be on main. The previous
+      # `isPrerelease` check confirms the release type but not its
+      # provenance — nothing stops a release object from pointing at
+      # an arbitrary commit. Combined with the image-label check below,
+      # this keeps prod aligned with what's been merged to main.
+      - name: Verify beta commit is an ancestor of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BETA_TAG: ${{ inputs.beta_tag }}
+        run: |
+          BETA_COMMIT=$(gh release view "$BETA_TAG" --json targetCommitish --jq '.targetCommitish')
+          if [ -z "$BETA_COMMIT" ] || [ "$BETA_COMMIT" = "null" ]; then
+            echo "::error::Could not read targetCommitish for ${BETA_TAG}"
+            exit 1
+          fi
+
+          # `targetCommitish` is sometimes a branch name and sometimes a
+          # SHA; resolve to a SHA either way.
+          BETA_SHA=$(git rev-parse "${BETA_COMMIT}^{commit}" 2>/dev/null || true)
+          if [ -z "$BETA_SHA" ]; then
+            echo "::error::Beta commit ${BETA_COMMIT} not in fetched history"
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$BETA_SHA" origin/main; then
+            echo "::error::Beta commit ${BETA_SHA} is not an ancestor of origin/main — refusing to promote off-trunk build to production."
+            exit 1
+          fi
+
+          echo "Beta commit ${BETA_SHA} confirmed on main."
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
@@ -86,11 +125,31 @@ jobs:
           username: ${{ secrets.DOCKERHUB_DEV_USERNAME }}
           password: ${{ secrets.DOCKERHUB_DEV_TOKEN }}
 
-      - name: Validate beta image exists
+      - name: Validate beta image exists and matches GH release commit
         env:
           BETA_TAG: ${{ inputs.beta_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           docker buildx imagetools inspect "${{ env.IMAGE }}:${BETA_TAG}"
+
+          # Cross-check the image's embedded commit_sha against the
+          # GH release's targetCommitish so a Docker tag rewritten out-
+          # of-band can't be promoted to production. Image labels are
+          # written by deploy_staging.yml's build-push step.
+          IMAGE_REVISION=$(docker buildx imagetools inspect "${{ env.IMAGE }}:${BETA_TAG}" \
+            --format '{{ json .Manifest }}' | \
+            jq -r '.annotations["org.opencontainers.image.revision"] // empty' 2>/dev/null || true)
+
+          BETA_COMMIT=$(gh release view "$BETA_TAG" --json targetCommitish --jq '.targetCommitish')
+
+          if [ -z "$IMAGE_REVISION" ]; then
+            echo "::warning::Image ${BETA_TAG} has no org.opencontainers.image.revision label. Older images built before label support were added are exempt; new builds MUST have it."
+          elif [ "$IMAGE_REVISION" != "$BETA_COMMIT" ]; then
+            echo "::error::Image revision ($IMAGE_REVISION) does not match GH release targetCommitish ($BETA_COMMIT). Image and release are out of sync — refusing to promote."
+            exit 1
+          else
+            echo "Image revision matches GH release commit: ${BETA_COMMIT}"
+          fi
 
       - name: Extract release version
         id: retag
@@ -199,7 +258,7 @@ jobs:
 
       - name: Setup Node
         if: steps.infra-changed.outputs.should_deploy == 'true'
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
           cache: npm

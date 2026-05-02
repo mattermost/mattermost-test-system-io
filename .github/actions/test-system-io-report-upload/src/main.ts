@@ -24,6 +24,10 @@ export async function run(): Promise<void> {
   const compositeIdentityRaw = core.getInput("composite-identity", { required: true });
   const framework = core.getInput("framework", { required: true });
   const githubToken = core.getInput("github-token", { required: true });
+  // Mark the input value for the runner's output filter so it prints as
+  // `***` even if a caller passed a non-GITHUB_TOKEN PAT (which the runner
+  // wouldn't auto-mask on its own).
+  core.setSecret(githubToken);
   const ghJobName = core.getInput("gh-job-name", { required: true });
   const jsonPath = core.getInput("json-path", { required: true });
   const screenshotsDirRaw = core.getInput("screenshots-dir");

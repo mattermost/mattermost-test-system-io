@@ -46,7 +46,10 @@ export function FilteredReportPage() {
   const gh_run_id_param = search_params.get('gh_run_id') || undefined;
   const gh_run_attempt_param = search_params.get('gh_run_attempt') || undefined;
 
-  // Step 1: Get consolidated results to find contributing report IDs
+  // Step 1: Get consolidated results to find contributing report IDs.
+  // gh_run_id is forwarded so two workflow runs that share the same
+  // (repo, branch, commit, name, run_attempt) tuple don't merge into
+  // one view — the URL's run_id wins.
   const { data, isLoading, error } = useConsolidatedResults(
     repo || '',
     branch || '',
@@ -54,6 +57,7 @@ export function FilteredReportPage() {
     name || '',
     run_attempt,
     gid,
+    gh_run_id_param,
   );
 
   // Step 2: Fetch all contributing reports details

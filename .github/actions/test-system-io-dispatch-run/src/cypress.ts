@@ -97,12 +97,19 @@ export function runUnit(
   // json/tests/[name].json by reporter-config.json convention. Aggregate
   // every leased spec independently so a missing-file case for one spec
   // doesn't poison the rest.
+  //
+  // Crucially, the next iteration WIPES results/mochawesome-report at its
+  // start — so the live `jsonPath` is short-lived. Archive each parsed
+  // file to iterDir IMMEDIATELY and track the archived path for the
+  // queue-empty `uploadShard` step. Storing the live path here would
+  // silently drop every shard's earlier specs by the time the worker
+  // finishes draining (uploadShard skips paths whose file no longer
+  // exists).
   const results: SpecResult[] = [];
-  let firstJsonPath: string | null = null;
+  let firstArchivedPath: string | null = null;
   for (const sp of specPaths) {
     const baseName = path.basename(sp).replace(/\.(ts|js)$/, "");
     const jsonPath = path.join(reportRoot, "json", "tests", `${baseName}.json`);
-    if (!firstJsonPath && fs.existsSync(jsonPath)) firstJsonPath = jsonPath;
 
     if (!fs.existsSync(jsonPath)) {
       core.warning(`mochawesome json missing for ${sp}: ${jsonPath}`);
@@ -130,10 +137,10 @@ export function runUnit(
     }
     results.push(aggregateSpec(parsed, sp));
 
-    // Archive a copy under the per-iteration dir so multiple workers'
-    // artifacts don't fight over the same path on disk.
+    // Persist a copy outside the soon-to-be-wiped live results tree.
     const archived = path.join(iterDir, `${baseName}.json`);
     fs.cpSync(jsonPath, archived);
+    if (!firstArchivedPath) firstArchivedPath = archived;
   }
 
   // Collect Cypress failure screenshots and stage them for both upload
@@ -161,11 +168,12 @@ export function runUnit(
     }
   }
 
-  // The InvocationRecord wants ONE json path; pick the first valid one,
-  // falling back to a synthetic path that will fail the existence check
-  // upstream and be skipped from the upload set (matching playwright's
-  // semantics when its results.json is missing).
-  const jsonForUpload = firstJsonPath ?? path.join(iterDir, "missing.json");
+  // The InvocationRecord wants ONE json path; pick the first archived
+  // file (so it survives subsequent iterations that wipe the live
+  // results dir), falling back to a synthetic path that will fail the
+  // existence check upstream and be skipped from the upload set
+  // (matching playwright's semantics when its results.json is missing).
+  const jsonForUpload = firstArchivedPath ?? path.join(iterDir, "missing.json");
   return {
     invocation: { specPath: specPaths[0]!, iterDir, playwrightJsonPath: jsonForUpload },
     results,

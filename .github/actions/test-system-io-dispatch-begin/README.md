@@ -30,6 +30,7 @@ Authentication is the calling workflow's GitHub Actions OIDC token. The workflow
 | `cypress-stage` | no | `@prod` | Comma-separated `// Stage:` tags. Spec kept only if its Stage line shares any tag. Empty disables. Cypress only. |
 | `cypress-include-group` | no | `""` | Comma-separated `// Group:` tags. Spec kept only if its Group line shares at least one tag. Empty disables. Cypress only. |
 | `cypress-exclude-group` | no | `""` | Comma-separated `// Group:` tags. Spec dropped if its Group line shares any tag. Applied after include. Cypress only. |
+| `cypress-skip-on` | no | `""` | Comma-separated active-environment tags (e.g. `@headless`). Spec dropped if its `// Skip:` line shares any tag. Cypress only. |
 | `cypress-sort-first` | no | `""` | Comma-separated `// Group:` tags. Surviving specs whose Group shares any tag dispatch first. A spec matching both sort-first and sort-last goes to sort-first. Cypress only. |
 | `cypress-sort-last` | no | `@known_issue` | Comma-separated `// Group:` tags. Surviving specs whose Group shares any tag dispatch last. Cypress only. |
 | `retest-on-fail` | no | `false` | Whether the orchestrator should re-dispatch failed units once. |

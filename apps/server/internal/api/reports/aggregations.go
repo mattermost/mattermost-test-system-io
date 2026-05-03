@@ -479,6 +479,16 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("gid"); v != "" {
 		pinnedGroup = &v
 	}
+	// gh_run_id narrows to a single Actions workflow run when present.
+	// Without it, two distinct runs sharing a (repo, branch, commit, name,
+	// run_attempt) tuple — e.g. a re-trigger of the same workflow against
+	// an unchanged commit — get merged into one consolidated view, and
+	// whichever finished /reports/upload first claims the badges. Optional
+	// to preserve the cross-run aggregate behavior callers may rely on.
+	var pinnedGHRunID *string
+	if v := q.Get("gh_run_id"); v != "" {
+		pinnedGHRunID = &v
+	}
 
 	// The URL carries the repository slug (e.g. "mattermost"); the DB stores
 	// the full "owner/repo". Match on suffix so "mattermost" hits
@@ -514,7 +524,8 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		  AND g.name = $4
 		  AND ($5::text IS NULL OR g.gh_run_attempt = $5::text)
 		  AND ($6::uuid IS NULL OR g.id = $6::uuid)
-	`, repository, branch, commit, name, pinnedAttempt, pinnedGroup)
+		  AND ($7::text IS NULL OR g.gh_run_id = $7::text)
+	`, repository, branch, commit, name, pinnedAttempt, pinnedGroup, pinnedGHRunID)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return

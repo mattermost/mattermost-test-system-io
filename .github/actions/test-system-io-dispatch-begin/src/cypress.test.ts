@@ -42,9 +42,12 @@ const noFilters: CypressFilters = {
   stage: [],
   includeGroup: [],
   excludeGroup: [],
+  skipOn: [],
   sortFirst: [],
   sortLast: [],
 };
+
+const emptyMeta = (): SpecMetadata => ({ stages: [], groups: [], skips: [] });
 
 // ── parseCypressMetadata ────────────────────────────────────────────────
 
@@ -53,7 +56,11 @@ test("parseCypressMetadata: stage and group on adjacent lines", () => {
     const f = path.join(dir, "spec.ts");
     fs.writeFileSync(f, "// Stage: @prod\n// Group: @channels @bot_accounts\n\ndescribe(...)");
     const meta = parseCypressMetadata(f);
-    assert.deepEqual(meta, { stages: ["@prod"], groups: ["@channels", "@bot_accounts"] });
+    assert.deepEqual(meta, {
+      stages: ["@prod"],
+      groups: ["@channels", "@bot_accounts"],
+      skips: [],
+    });
   });
 });
 
@@ -62,7 +69,7 @@ test("parseCypressMetadata: blank lines between header comments", () => {
     const f = path.join(dir, "spec.ts");
     fs.writeFileSync(f, "// Stage: @prod\n\n// Group: @channels\n\ndescribe(...)");
     const meta = parseCypressMetadata(f);
-    assert.deepEqual(meta, { stages: ["@prod"], groups: ["@channels"] });
+    assert.deepEqual(meta, { stages: ["@prod"], groups: ["@channels"], skips: [] });
   });
 });
 
@@ -74,6 +81,7 @@ test("parseCypressMetadata: multi-tag stage and group lines", () => {
     assert.deepEqual(meta, {
       stages: ["@prod", "@smoke"],
       groups: ["@channels", "@flaky", "@e2e"],
+      skips: [],
     });
   });
 });
@@ -81,21 +89,39 @@ test("parseCypressMetadata: multi-tag stage and group lines", () => {
 test("parseCypressMetadata: keyword case-insensitive", () => {
   withTmpDir((dir) => {
     const f = path.join(dir, "spec.ts");
-    fs.writeFileSync(f, "// stage: @prod\n// GROUP: @channels\n");
+    fs.writeFileSync(f, "// stage: @prod\n// GROUP: @channels\n// SKIP: @firefox\n");
     const meta = parseCypressMetadata(f);
-    assert.deepEqual(meta, { stages: ["@prod"], groups: ["@channels"] });
+    assert.deepEqual(meta, {
+      stages: ["@prod"],
+      groups: ["@channels"],
+      skips: ["@firefox"],
+    });
   });
 });
 
-test("parseCypressMetadata: stops at first non-comment line", () => {
+test("parseCypressMetadata: scans through imports between comment blocks", () => {
+  // Mattermost convention: copyright header, then imports, then the
+  // Stage/Group metadata, then the describe block.
   withTmpDir((dir) => {
     const f = path.join(dir, "spec.ts");
     fs.writeFileSync(
       f,
-      "// Stage: @prod\nimport foo from 'bar';\n// Group: @ignored\ndescribe(...)",
+      "// Copyright header\n\nimport foo from 'bar';\n\n// Stage: @prod\n// Group: @channels\n\ndescribe('x', () => {});",
     );
     const meta = parseCypressMetadata(f);
-    assert.deepEqual(meta, { stages: ["@prod"], groups: [] });
+    assert.deepEqual(meta, { stages: ["@prod"], groups: ["@channels"], skips: [] });
+  });
+});
+
+test("parseCypressMetadata: bails at describe/it so inline tags don't leak", () => {
+  withTmpDir((dir) => {
+    const f = path.join(dir, "spec.ts");
+    fs.writeFileSync(
+      f,
+      "// Stage: @prod\n// Group: @channels\ndescribe('x', () => {\n  // Group: @ignored_inline\n});",
+    );
+    const meta = parseCypressMetadata(f);
+    assert.deepEqual(meta, { stages: ["@prod"], groups: ["@channels"], skips: [] });
   });
 });
 
@@ -104,7 +130,7 @@ test("parseCypressMetadata: missing tags returns empty arrays", () => {
     const f = path.join(dir, "spec.ts");
     fs.writeFileSync(f, "// just a comment\ndescribe(...)");
     const meta = parseCypressMetadata(f);
-    assert.deepEqual(meta, { stages: [], groups: [] });
+    assert.deepEqual(meta, { stages: [], groups: [], skips: [] });
   });
 });
 
@@ -113,42 +139,85 @@ test("parseCypressMetadata: malformed group line keeps only @-tokens", () => {
     const f = path.join(dir, "spec.ts");
     fs.writeFileSync(f, "// Group: @channels stray-token @bot_accounts\n");
     const meta = parseCypressMetadata(f);
-    assert.deepEqual(meta, { stages: [], groups: ["@channels", "@bot_accounts"] });
+    assert.deepEqual(meta, {
+      stages: [],
+      groups: ["@channels", "@bot_accounts"],
+      skips: [],
+    });
+  });
+});
+
+test("parseCypressMetadata: Skip line captures multi-tag list", () => {
+  withTmpDir((dir) => {
+    const f = path.join(dir, "spec.ts");
+    fs.writeFileSync(f, "// Stage: @prod\n// Skip: @firefox @darwin\n");
+    const meta = parseCypressMetadata(f);
+    assert.deepEqual(meta, {
+      stages: ["@prod"],
+      groups: [],
+      skips: ["@firefox", "@darwin"],
+    });
   });
 });
 
 // ── passesFilters ───────────────────────────────────────────────────────
 
 test("passesFilters: empty filters admit everything", () => {
-  const meta: SpecMetadata = { stages: [], groups: [] };
+  const meta: SpecMetadata = { ...emptyMeta() };
   assert.equal(passesFilters(meta, noFilters), true);
 });
 
 test("passesFilters: stage filter requires overlap", () => {
-  const meta: SpecMetadata = { stages: ["@smoke"], groups: [] };
+  const meta: SpecMetadata = { ...emptyMeta(), stages: ["@smoke"] };
   assert.equal(passesFilters(meta, { ...noFilters, stage: ["@prod"] }), false);
   assert.equal(passesFilters(meta, { ...noFilters, stage: ["@prod", "@smoke"] }), true);
 });
 
 test("passesFilters: spec without stage drops when stage filter active", () => {
-  const meta: SpecMetadata = { stages: [], groups: ["@channels"] };
+  const meta: SpecMetadata = { ...emptyMeta(), groups: ["@channels"] };
   assert.equal(passesFilters(meta, { ...noFilters, stage: ["@prod"] }), false);
 });
 
 test("passesFilters: includeGroup requires overlap", () => {
-  const meta: SpecMetadata = { stages: ["@prod"], groups: ["@channels"] };
+  const meta: SpecMetadata = { ...emptyMeta(), stages: ["@prod"], groups: ["@channels"] };
   assert.equal(passesFilters(meta, { ...noFilters, includeGroup: ["@bot_accounts"] }), false);
   assert.equal(passesFilters(meta, { ...noFilters, includeGroup: ["@channels", "@e2e"] }), true);
 });
 
 test("passesFilters: excludeGroup drops on any overlap", () => {
-  const meta: SpecMetadata = { stages: ["@prod"], groups: ["@channels", "@flaky"] };
+  const meta: SpecMetadata = {
+    ...emptyMeta(),
+    stages: ["@prod"],
+    groups: ["@channels", "@flaky"],
+  };
   assert.equal(passesFilters(meta, { ...noFilters, excludeGroup: ["@flaky"] }), false);
   assert.equal(passesFilters(meta, { ...noFilters, excludeGroup: ["@deprecated"] }), true);
 });
 
+test("passesFilters: skipOn drops on any overlap with Skip line", () => {
+  const meta: SpecMetadata = {
+    ...emptyMeta(),
+    stages: ["@prod"],
+    groups: ["@channels"],
+    skips: ["@firefox", "@darwin"],
+  };
+  // Active env shares @firefox → drop.
+  assert.equal(passesFilters(meta, { ...noFilters, skipOn: ["@firefox", "@headless"] }), false);
+  // No overlap with active env → keep.
+  assert.equal(passesFilters(meta, { ...noFilters, skipOn: ["@chrome", "@headless"] }), true);
+});
+
+test("passesFilters: skipOn empty has no effect", () => {
+  const meta: SpecMetadata = { ...emptyMeta(), skips: ["@firefox"] };
+  assert.equal(passesFilters(meta, noFilters), true);
+});
+
 test("passesFilters: include + exclude evaluated in pipeline order", () => {
-  const meta: SpecMetadata = { stages: ["@prod"], groups: ["@channels", "@flaky"] };
+  const meta: SpecMetadata = {
+    ...emptyMeta(),
+    stages: ["@prod"],
+    groups: ["@channels", "@flaky"],
+  };
   // Included by @channels, excluded by @flaky → drop.
   assert.equal(
     passesFilters(meta, { ...noFilters, includeGroup: ["@channels"], excludeGroup: ["@flaky"] }),
@@ -160,10 +229,10 @@ test("passesFilters: include + exclude evaluated in pipeline order", () => {
 
 test("partitionBySort: sortFirst entries lead, sortLast entries trail", () => {
   const specs = [
-    { path: "a.ts", meta: { stages: [], groups: ["@channels"] } },
-    { path: "b.ts", meta: { stages: [], groups: ["@known_issue"] } },
-    { path: "c.ts", meta: { stages: [], groups: ["@flaky"] } },
-    { path: "d.ts", meta: { stages: [], groups: ["@channels"] } },
+    { path: "a.ts", meta: { ...emptyMeta(), groups: ["@channels"] } },
+    { path: "b.ts", meta: { ...emptyMeta(), groups: ["@known_issue"] } },
+    { path: "c.ts", meta: { ...emptyMeta(), groups: ["@flaky"] } },
+    { path: "d.ts", meta: { ...emptyMeta(), groups: ["@channels"] } },
   ];
   const ordered = partitionBySort(specs, {
     ...noFilters,
@@ -177,7 +246,7 @@ test("partitionBySort: sortFirst entries lead, sortLast entries trail", () => {
 });
 
 test("partitionBySort: sortFirst wins when a spec matches both lists", () => {
-  const specs = [{ path: "a.ts", meta: { stages: [], groups: ["@flaky", "@known_issue"] } }];
+  const specs = [{ path: "a.ts", meta: { ...emptyMeta(), groups: ["@flaky", "@known_issue"] } }];
   const ordered = partitionBySort(specs, {
     ...noFilters,
     sortFirst: ["@flaky"],
@@ -213,6 +282,7 @@ test("discoverCypressSpecs: applies filter pipeline + dedup", () => {
       stage: ["@prod"],
       includeGroup: [],
       excludeGroup: [],
+      skipOn: [],
       sortFirst: ["@flaky"],
       sortLast: ["@known_issue"],
     });
@@ -230,6 +300,46 @@ test("discoverCypressSpecs: applies filter pipeline + dedup", () => {
   });
 });
 
+test("discoverCypressSpecs: skipOn drops specs whose Skip line shares an active-env tag", () => {
+  withTmpDir((cypressDir) => {
+    writeMattermostCypressConfig(cypressDir);
+    const integ = path.join(cypressDir, "tests", "integration");
+    writeSpec(integ, "a_spec.ts", "// Stage: @prod\n// Group: @channels\n");
+    writeSpec(integ, "b_spec.ts", "// Stage: @prod\n// Group: @channels\n// Skip: @firefox\n");
+    writeSpec(integ, "c_spec.ts", "// Stage: @prod\n// Group: @channels\n// Skip: @darwin\n");
+
+    // Active env: linux + chrome + headless. b_spec keeps (@firefox not active),
+    // c_spec keeps (@darwin not active).
+    const onChrome = discoverCypressSpecs(cypressDir, {
+      stage: ["@prod"],
+      includeGroup: [],
+      excludeGroup: [],
+      skipOn: ["@linux", "@chrome", "@headless"],
+      sortFirst: [],
+      sortLast: [],
+    });
+    assert.deepEqual([...onChrome].sort(), [
+      "tests/integration/a_spec.ts",
+      "tests/integration/b_spec.ts",
+      "tests/integration/c_spec.ts",
+    ]);
+
+    // Same corpus but running on firefox: b_spec drops.
+    const onFirefox = discoverCypressSpecs(cypressDir, {
+      stage: ["@prod"],
+      includeGroup: [],
+      excludeGroup: [],
+      skipOn: ["@firefox", "@headless"],
+      sortFirst: [],
+      sortLast: [],
+    });
+    assert.deepEqual([...onFirefox].sort(), [
+      "tests/integration/a_spec.ts",
+      "tests/integration/c_spec.ts",
+    ]);
+  });
+});
+
 test("discoverCypressSpecs: includeGroup narrows the set", () => {
   withTmpDir((cypressDir) => {
     writeMattermostCypressConfig(cypressDir);
@@ -242,6 +352,7 @@ test("discoverCypressSpecs: includeGroup narrows the set", () => {
       stage: ["@prod"],
       includeGroup: ["@bot_accounts", "@system_console"],
       excludeGroup: [],
+      skipOn: [],
       sortFirst: [],
       sortLast: [],
     });

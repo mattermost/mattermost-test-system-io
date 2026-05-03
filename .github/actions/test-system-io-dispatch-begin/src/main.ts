@@ -66,6 +66,7 @@ export async function run(): Promise<void> {
       stage: parseTagList(core.getInput("cypress-stage")),
       includeGroup: parseTagList(core.getInput("cypress-include-group")),
       excludeGroup: parseTagList(core.getInput("cypress-exclude-group")),
+      skipOn: parseTagList(core.getInput("cypress-skip-on")),
       sortFirst: parseTagList(core.getInput("cypress-sort-first")),
       sortLast: parseTagList(core.getInput("cypress-sort-last")),
     };
@@ -75,7 +76,8 @@ export async function run(): Promise<void> {
         `no Cypress specs survived the filter under ${cypressDir} ` +
           `(stage=${filters.stage.join(",") || "*"}, ` +
           `include=${filters.includeGroup.join(",") || "*"}, ` +
-          `exclude=${filters.excludeGroup.join(",") || "none"})`,
+          `exclude=${filters.excludeGroup.join(",") || "none"}, ` +
+          `skip-on=${filters.skipOn.join(",") || "none"})`,
       );
     }
   } else {

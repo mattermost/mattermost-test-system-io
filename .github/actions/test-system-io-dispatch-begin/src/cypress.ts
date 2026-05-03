@@ -1,17 +1,18 @@
 /**
  * Cypress spec discovery + filter pipeline for dispatch-begin.
  *
- * Mattermost cypress specs annotate themselves with two header tags:
+ * Mattermost cypress specs annotate themselves with three header tags:
  *
  *   // Stage: @prod
  *   // Group: @channels @bot_accounts
+ *   // Skip:  @firefox @darwin
  *
  * `discoverCypressSpecs` reads the consumer's cypress.config to locate
  * spec files (specPattern + excludeSpecPattern under `e2e: { ... }`),
  * parses each file's metadata, then applies the caller-supplied
  * filters in a fixed order: stage drop → include-group drop →
- * exclude-group drop → sort-first/sort-last partition. The result is
- * a list of `spec_path` strings (relative to cypressDir,
+ * exclude-group drop → skip-on drop → sort-first/sort-last partition.
+ * The result is a list of `spec_path` strings (relative to cypressDir,
  * forward-slash) ready to feed `/api/v1/orchestration/begin`.
  */
 
@@ -25,6 +26,13 @@ export interface CypressFilters {
   includeGroup: string[];
   /** Specs dropped if their `// Group:` shares any tag. Empty array = no filter. */
   excludeGroup: string[];
+  /**
+   * Active-environment tags (e.g. `["@headless"]`).
+   * Specs whose `// Skip:` line shares any tag are dropped — mirrors the
+   * upstream Mattermost convention where a `@headless` skip tag means
+   * "skip on headless browser." Empty array = no skip filter.
+   */
+  skipOn: string[];
   /** Surviving specs whose `// Group:` shares any tag dispatch first. */
   sortFirst: string[];
   /** Mirror of sortFirst — dispatched last. A spec matching both goes to sortFirst. */
@@ -34,6 +42,7 @@ export interface CypressFilters {
 export interface SpecMetadata {
   stages: string[];
   groups: string[];
+  skips: string[];
 }
 
 interface AnnotatedSpec {
@@ -158,10 +167,20 @@ function extractStringOrArrayProp(block: string, key: string): string[] {
 }
 
 /**
- * Read the spec file header and extract `Stage:` / `Group:` tag lists.
- * Tolerant of: missing tags, malformed input, mixed-case keyword, blank
- * lines between header comments. Reads at most a 4 KB prefix — header
- * metadata always lives in the first few lines.
+ * Read the spec file preamble and extract `Stage:` / `Group:` / `Skip:`
+ * tag lists. Tolerant of: missing tags, malformed input, mixed-case
+ * keyword, blank lines, and intervening `import` statements between
+ * comment blocks (a common Mattermost pattern: copyright comment, then
+ * imports, then the metadata comments, then the describe block).
+ *
+ * Reads at most a 4 KB prefix, then truncates at the first
+ * `describe(`/`it(`/`context(`/`test(` so per-test inline tags
+ * (`it('@flaky should …', …)`) don't bleed into spec-level metadata.
+ *
+ * `matchAll` over the truncated preamble (one regex per tag type) is
+ * ~2× faster than line-by-line iteration on a 666-spec corpus and
+ * captures multiple Stage/Group lines (some specs declare both
+ * `// Stage: @prod` and `// Stage: @dev` on adjacent lines).
  */
 export function parseCypressMetadata(absPath: string): SpecMetadata {
   let raw: string;
@@ -172,32 +191,31 @@ export function parseCypressMetadata(absPath: string): SpecMetadata {
     fs.closeSync(fd);
     raw = buf.subarray(0, n).toString("utf8");
   } catch {
-    return { stages: [], groups: [] };
+    return { stages: [], groups: [], skips: [] };
   }
+
+  const opener = /^\s*(?:describe|it|context|test)\s*\.?\s*[(.]/m.exec(raw);
+  const preamble = opener ? raw.slice(0, opener.index) : raw;
 
   const stages: string[] = [];
-  const groups: string[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    // Walk leading comment block; bail at the first non-comment, non-blank line.
-    if (trimmed === "") continue;
-    if (!trimmed.startsWith("//")) break;
-
-    const stageMatch = /^\s*\/\/\s*stage:\s*(.+)$/i.exec(trimmed);
-    if (stageMatch) {
-      for (const tok of stageMatch[1]!.split(/\s+/)) {
-        if (/^@\S+$/.test(tok)) stages.push(tok);
-      }
-      continue;
-    }
-    const groupMatch = /^\s*\/\/\s*group:\s*(.+)$/i.exec(trimmed);
-    if (groupMatch) {
-      for (const tok of groupMatch[1]!.split(/\s+/)) {
-        if (/^@\S+$/.test(tok)) groups.push(tok);
-      }
+  for (const m of preamble.matchAll(/^\s*\/\/\s*stage:\s*(.+)$/gim)) {
+    for (const tok of m[1]!.split(/\s+/)) {
+      if (/^@\S+$/.test(tok)) stages.push(tok);
     }
   }
-  return { stages, groups };
+  const groups: string[] = [];
+  for (const m of preamble.matchAll(/^\s*\/\/\s*group:\s*(.+)$/gim)) {
+    for (const tok of m[1]!.split(/\s+/)) {
+      if (/^@\S+$/.test(tok)) groups.push(tok);
+    }
+  }
+  const skips: string[] = [];
+  for (const m of preamble.matchAll(/^\s*\/\/\s*skip:\s*(.+)$/gim)) {
+    for (const tok of m[1]!.split(/\s+/)) {
+      if (/^@\S+$/.test(tok)) skips.push(tok);
+    }
+  }
+  return { stages, groups, skips };
 }
 
 /**
@@ -208,6 +226,7 @@ export function passesFilters(meta: SpecMetadata, filters: CypressFilters): bool
   if (filters.stage.length > 0 && !shareAny(meta.stages, filters.stage)) return false;
   if (filters.includeGroup.length > 0 && !shareAny(meta.groups, filters.includeGroup)) return false;
   if (filters.excludeGroup.length > 0 && shareAny(meta.groups, filters.excludeGroup)) return false;
+  if (filters.skipOn.length > 0 && shareAny(meta.skips, filters.skipOn)) return false;
   return true;
 }
 

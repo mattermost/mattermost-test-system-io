@@ -70,6 +70,27 @@ const defaultFormatDate = (iso: string) =>
     minute: '2-digit',
   });
 
+/**
+ * Order shard chips by the trailing number on display_name (e.g.
+ * `dispatch-run-7` → 7), so a 40-worker matrix renders in worker-index
+ * order instead of report-creation order. The server returns shards
+ * sorted by created_at, which the orchestration queue + multi-spec
+ * leases scramble — `dispatch-run-31` is no slower than `dispatch-run-1`
+ * and a reader expects "1, 2, 3, …" not the upload race winner.
+ */
+function sortReportsBySlot<T extends { display_name: string }>(reports: T[]): T[] {
+  const slotOf = (name: string): number => {
+    const m = /-(\d+)$/.exec(name);
+    return m ? Number.parseInt(m[1]!, 10) : Number.MAX_SAFE_INTEGER;
+  };
+  return [...reports].sort((a, b) => {
+    const sa = slotOf(a.display_name);
+    const sb = slotOf(b.display_name);
+    if (sa !== sb) return sa - sb;
+    return a.display_name.localeCompare(b.display_name);
+  });
+}
+
 export function ContributingReportsList({
   reportsByRun,
   reportTestStatus,
@@ -109,7 +130,7 @@ export function ContributingReportsList({
                 </p>
               )}
               <div className="flex flex-wrap items-center gap-1.5">
-                {reports.map((entry) => {
+                {sortReportsBySlot(reports).map((entry) => {
                   const testResult = reportTestStatus.get(entry.id);
                   const isFailed = testResult === 'failed';
                   const isFlaky = testResult === 'flaky';

@@ -127,6 +127,16 @@ inputs:
       include filter. Cypress only.
     required: false
     default: ""
+  cypress-skip-on:
+    description: >
+      Comma-separated active-environment tag list — runtime traits the
+      worker exhibits that some specs declare incompatible with via
+      `// Skip:`. Typical entries: `@headless` (workers run headless by
+      default) and `@firefox` (when overriding the default browser).
+      Chromium-family browsers (chrome, electron, edge) are the default
+      test environment and don't need entries here. Cypress only.
+    required: false
+    default: ""
   cypress-sort-first:
     description: >
       Comma-separated `// Group:` tag list. Surviving specs whose Group

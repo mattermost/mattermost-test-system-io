@@ -101,9 +101,10 @@ export function useConsolidatedResults(
   name: string,
   runAttempt?: number,
   gid?: string,
+  ghRunId?: string,
 ) {
   return useQuery({
-    queryKey: ['reports-consolidated', repo, branch, commit, name, runAttempt, gid],
+    queryKey: ['reports-consolidated', repo, branch, commit, name, runAttempt, gid, ghRunId],
     queryFn: async () => {
       const params = new URLSearchParams({
         repository: repo,
@@ -116,6 +117,13 @@ export function useConsolidatedResults(
       }
       if (gid) {
         params.set('gid', gid);
+      }
+      // gh_run_id narrows to a single Actions run when the URL carries
+      // it. Without it, two separate workflow runs against the same
+      // (repo, branch, commit, name, run_attempt) tuple merge into one
+      // view — typically not what the link intends.
+      if (ghRunId) {
+        params.set('gh_run_id', ghRunId);
       }
       const response = await fetch(`${API_URL}/reports/consolidated?${params}`);
       return handleResponse<ConsolidatedResultsResponse>(response);

@@ -24759,11 +24759,10 @@ function runUnit2(cfg, iterationSeq, specPaths) {
   const durationMs = Date.now() - startedAt;
   info(`cypress exit ${child.status} in ${Math.round(durationMs / 1e3)}s`);
   const results = [];
-  let firstJsonPath = null;
+  let firstArchivedPath = null;
   for (const sp of specPaths) {
     const baseName = path2.basename(sp).replace(/\.(ts|js)$/, "");
     const jsonPath = path2.join(reportRoot, "json", "tests", `${baseName}.json`);
-    if (!firstJsonPath && fs3.existsSync(jsonPath)) firstJsonPath = jsonPath;
     if (!fs3.existsSync(jsonPath)) {
       warning(`mochawesome json missing for ${sp}: ${jsonPath}`);
       results.push({
@@ -24790,6 +24789,7 @@ function runUnit2(cfg, iterationSeq, specPaths) {
     results.push(aggregateSpec2(parsed, sp));
     const archived = path2.join(iterDir, `${baseName}.json`);
     fs3.cpSync(jsonPath, archived);
+    if (!firstArchivedPath) firstArchivedPath = archived;
   }
   const screenshotsBySpec = {};
   const outputRoot = path2.join(iterDir, "output");
@@ -24807,7 +24807,7 @@ function runUnit2(cfg, iterationSeq, specPaths) {
       fs3.cpSync(src, path2.join(dstDir, path2.basename(src)));
     }
   }
-  const jsonForUpload = firstJsonPath ?? path2.join(iterDir, "missing.json");
+  const jsonForUpload = firstArchivedPath ?? path2.join(iterDir, "missing.json");
   return {
     invocation: { specPath: specPaths[0], iterDir, playwrightJsonPath: jsonForUpload },
     results,

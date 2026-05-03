@@ -20037,34 +20037,35 @@ function parseCypressMetadata(absPath) {
     fs3.closeSync(fd);
     raw = buf.subarray(0, n).toString("utf8");
   } catch {
-    return { stages: [], groups: [] };
+    return { stages: [], groups: [], skips: [] };
   }
+  const opener = /^\s*(?:describe|it|context|test)\s*\.?\s*[(.]/m.exec(raw);
+  const preamble = opener ? raw.slice(0, opener.index) : raw;
   const stages = [];
-  const groups = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    if (!trimmed.startsWith("//")) break;
-    const stageMatch = /^\s*\/\/\s*stage:\s*(.+)$/i.exec(trimmed);
-    if (stageMatch) {
-      for (const tok of stageMatch[1].split(/\s+/)) {
-        if (/^@\S+$/.test(tok)) stages.push(tok);
-      }
-      continue;
-    }
-    const groupMatch = /^\s*\/\/\s*group:\s*(.+)$/i.exec(trimmed);
-    if (groupMatch) {
-      for (const tok of groupMatch[1].split(/\s+/)) {
-        if (/^@\S+$/.test(tok)) groups.push(tok);
-      }
+  for (const m of preamble.matchAll(/^\s*\/\/\s*stage:\s*(.+)$/gim)) {
+    for (const tok of m[1].split(/\s+/)) {
+      if (/^@\S+$/.test(tok)) stages.push(tok);
     }
   }
-  return { stages, groups };
+  const groups = [];
+  for (const m of preamble.matchAll(/^\s*\/\/\s*group:\s*(.+)$/gim)) {
+    for (const tok of m[1].split(/\s+/)) {
+      if (/^@\S+$/.test(tok)) groups.push(tok);
+    }
+  }
+  const skips = [];
+  for (const m of preamble.matchAll(/^\s*\/\/\s*skip:\s*(.+)$/gim)) {
+    for (const tok of m[1].split(/\s+/)) {
+      if (/^@\S+$/.test(tok)) skips.push(tok);
+    }
+  }
+  return { stages, groups, skips };
 }
 function passesFilters(meta, filters) {
   if (filters.stage.length > 0 && !shareAny(meta.stages, filters.stage)) return false;
   if (filters.includeGroup.length > 0 && !shareAny(meta.groups, filters.includeGroup)) return false;
   if (filters.excludeGroup.length > 0 && shareAny(meta.groups, filters.excludeGroup)) return false;
+  if (filters.skipOn.length > 0 && shareAny(meta.skips, filters.skipOn)) return false;
   return true;
 }
 function partitionBySort(specs, filters) {
@@ -20219,13 +20220,14 @@ async function run() {
       stage: parseTagList(getInput("cypress-stage")),
       includeGroup: parseTagList(getInput("cypress-include-group")),
       excludeGroup: parseTagList(getInput("cypress-exclude-group")),
+      skipOn: parseTagList(getInput("cypress-skip-on")),
       sortFirst: parseTagList(getInput("cypress-sort-first")),
       sortLast: parseTagList(getInput("cypress-sort-last"))
     };
     specs = discoverCypressSpecs(cypressDir, filters);
     if (specs.length === 0) {
       throw new Error(
-        `no Cypress specs survived the filter under ${cypressDir} (stage=${filters.stage.join(",") || "*"}, include=${filters.includeGroup.join(",") || "*"}, exclude=${filters.excludeGroup.join(",") || "none"})`
+        `no Cypress specs survived the filter under ${cypressDir} (stage=${filters.stage.join(",") || "*"}, include=${filters.includeGroup.join(",") || "*"}, exclude=${filters.excludeGroup.join(",") || "none"}, skip-on=${filters.skipOn.join(",") || "none"})`
       );
     }
   } else {

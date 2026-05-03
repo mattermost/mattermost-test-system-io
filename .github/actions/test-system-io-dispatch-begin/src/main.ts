@@ -5,9 +5,10 @@
  * report group exists when shards start uploading.
  */
 
-import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
+import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
+import { discoverPlaywrightSpecs } from "./playwright";
 
 interface CompositeIdentity {
   repository: string;
@@ -61,13 +62,31 @@ export async function run(): Promise<void> {
   let specs: string[];
   if (framework === "cypress") {
     const cypressDir = path.resolve(repoDir, cypressDirInput);
-    specs = discoverCypressSpecs(cypressDir);
+    const filters: CypressFilters = {
+      stage: parseTagList(core.getInput("cypress-stage")),
+      includeGroup: parseTagList(core.getInput("cypress-include-group")),
+      excludeGroup: parseTagList(core.getInput("cypress-exclude-group")),
+      sortFirst: parseTagList(core.getInput("cypress-sort-first")),
+      sortLast: parseTagList(core.getInput("cypress-sort-last")),
+    };
+    specs = discoverCypressSpecs(cypressDir, filters);
     if (specs.length === 0) {
-      throw new Error(`no Cypress specs found under ${cypressDir}`);
+      throw new Error(
+        `no Cypress specs survived the filter under ${cypressDir} ` +
+          `(stage=${filters.stage.join(",") || "*"}, ` +
+          `include=${filters.includeGroup.join(",") || "*"}, ` +
+          `exclude=${filters.excludeGroup.join(",") || "none"})`,
+      );
     }
   } else {
     const playwrightDir = path.resolve(repoDir, playwrightDirInput);
-    specs = discoverSpecs(playwrightDir);
+    // Mattermost convention: test_setup.ts runs as a `setup` project
+    // dependency (executed once at job start by ci/prepare-playwright),
+    // and specs/visual/** is run by a separate visual-regression
+    // workflow rather than the dispatch flow. Both excluded here so
+    // the consumer's playwright.config doesn't have to encode
+    // dispatch-runtime concerns.
+    specs = discoverPlaywrightSpecs(playwrightDir, ["test_setup.ts", "specs/visual/"]);
     if (specs.length === 0) {
       throw new Error(`no Playwright specs found under ${playwrightDir}`);
     }
@@ -128,69 +147,6 @@ export async function run(): Promise<void> {
   }
   const { report_id } = (await reportsRes.json()) as ReportsBeginResponse;
   core.info(`report group ready: ${report_id}`);
-}
-
-/**
- * Walk `<playwrightDir>/specs/` for `*.spec.ts`. Excludes:
- *   - `specs/visual/**`  — covered by the worker's `--grep-invert @visual`
- *   - `test_setup.ts`    — runs as a Playwright project dependency, not as a dispatched unit
- *
- * Skips `playwright test --list` so the controller doesn't have to install
- * the whole webapp workspace to compile playwright-lib.
- */
-export function discoverSpecs(playwrightDir: string): string[] {
-  const specsDir = path.join(playwrightDir, "specs");
-  const out: string[] = [];
-  function rec(dir: string): void {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const ent of entries) {
-      const full = path.join(dir, ent.name);
-      if (ent.isDirectory()) rec(full);
-      else if (ent.isFile() && ent.name.endsWith(".spec.ts")) out.push(full);
-    }
-  }
-  rec(specsDir);
-  return out
-    .map((abs) => path.relative(playwrightDir, abs).split(path.sep).join("/"))
-    .filter((p) => !p.endsWith("test_setup.ts"))
-    .filter((p) => !p.startsWith("specs/visual/"))
-    .sort();
-}
-
-/**
- * Walk `<cypressDir>/tests/integration/` (and any subdirectories) for
- * `*_spec.{ts,js}` — the Mattermost convention. Returns paths relative
- * to cypressDir, sorted, with directory separators normalized to `/`.
- * Mirrors discoverSpecs's interface so the dispatch flow stays uniform.
- *
- * Consumers using a different layout pass paths to begin run via their
- * own pre-discovery rather than relying on this default.
- */
-export function discoverCypressSpecs(cypressDir: string): string[] {
-  const integrationDir = path.join(cypressDir, "tests", "integration");
-  const out: string[] = [];
-  function rec(dir: string): void {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const ent of entries) {
-      const full = path.join(dir, ent.name);
-      if (ent.isDirectory()) rec(full);
-      else if (ent.isFile() && (ent.name.endsWith("_spec.ts") || ent.name.endsWith("_spec.js"))) {
-        out.push(full);
-      }
-    }
-  }
-  rec(integrationDir);
-  return out.map((abs) => path.relative(cypressDir, abs).split(path.sep).join("/")).sort();
 }
 
 function identityForReports(

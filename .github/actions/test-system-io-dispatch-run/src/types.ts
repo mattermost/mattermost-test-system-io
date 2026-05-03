@@ -25,6 +25,7 @@ export interface TestCaseResult {
   ordinal: number;
   error_message?: string;
   error_stack?: string;
+  attachments?: { screenshots: { key: string; relative_path?: string }[] };
 }
 
 export interface SpecResult {

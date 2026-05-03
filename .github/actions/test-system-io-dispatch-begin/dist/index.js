@@ -1066,14 +1066,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path2 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path4 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path2 && path2[0] !== "/") {
-          path2 = `/${path2}`;
+        if (path4 && path4[0] !== "/") {
+          path4 = `/${path4}`;
         }
-        return new URL(`${origin}${path2}`);
+        return new URL(`${origin}${path4}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -1524,39 +1524,39 @@ var require_diagnostics = __commonJS({
       });
       diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
         const {
-          request: { method, path: path2, origin }
+          request: { method, path: path4, origin }
         } = evt;
-        debuglog("sending request to %s %s/%s", method, origin, path2);
+        debuglog("sending request to %s %s/%s", method, origin, path4);
       });
       diagnosticsChannel.channel("undici:request:headers").subscribe((evt) => {
         const {
-          request: { method, path: path2, origin },
+          request: { method, path: path4, origin },
           response: { statusCode }
         } = evt;
         debuglog(
           "received response to %s %s/%s - HTTP %d",
           method,
           origin,
-          path2,
+          path4,
           statusCode
         );
       });
       diagnosticsChannel.channel("undici:request:trailers").subscribe((evt) => {
         const {
-          request: { method, path: path2, origin }
+          request: { method, path: path4, origin }
         } = evt;
-        debuglog("trailers received from %s %s/%s", method, origin, path2);
+        debuglog("trailers received from %s %s/%s", method, origin, path4);
       });
       diagnosticsChannel.channel("undici:request:error").subscribe((evt) => {
         const {
-          request: { method, path: path2, origin },
+          request: { method, path: path4, origin },
           error: error2
         } = evt;
         debuglog(
           "request to %s %s/%s errored - %s",
           method,
           origin,
-          path2,
+          path4,
           error2.message
         );
       });
@@ -1605,9 +1605,9 @@ var require_diagnostics = __commonJS({
         });
         diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
           const {
-            request: { method, path: path2, origin }
+            request: { method, path: path4, origin }
           } = evt;
-          debuglog("sending request to %s %s/%s", method, origin, path2);
+          debuglog("sending request to %s %s/%s", method, origin, path4);
         });
       }
       diagnosticsChannel.channel("undici:websocket:open").subscribe((evt) => {
@@ -1670,7 +1670,7 @@ var require_request = __commonJS({
     var kHandler = /* @__PURE__ */ Symbol("handler");
     var Request = class {
       constructor(origin, {
-        path: path2,
+        path: path4,
         method,
         body,
         headers,
@@ -1685,11 +1685,11 @@ var require_request = __commonJS({
         expectContinue,
         servername
       }, handler) {
-        if (typeof path2 !== "string") {
+        if (typeof path4 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path2[0] !== "/" && !(path2.startsWith("http://") || path2.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path4[0] !== "/" && !(path4.startsWith("http://") || path4.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path2)) {
+        } else if (invalidPathRegex.test(path4)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -1755,7 +1755,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? buildURL(path2, query) : path2;
+        this.path = query ? buildURL(path4, query) : path4;
         this.origin = origin;
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" : idempotent;
         this.blocking = blocking == null ? false : blocking;
@@ -2080,9 +2080,9 @@ var require_dispatcher_base = __commonJS({
       }
       close(callback) {
         if (callback === void 0) {
-          return new Promise((resolve2, reject) => {
+          return new Promise((resolve3, reject) => {
             this.close((err, data) => {
-              return err ? reject(err) : resolve2(data);
+              return err ? reject(err) : resolve3(data);
             });
           });
         }
@@ -2120,12 +2120,12 @@ var require_dispatcher_base = __commonJS({
           err = null;
         }
         if (callback === void 0) {
-          return new Promise((resolve2, reject) => {
+          return new Promise((resolve3, reject) => {
             this.destroy(err, (err2, data) => {
               return err2 ? (
                 /* istanbul ignore next: should never error */
                 reject(err2)
-              ) : resolve2(data);
+              ) : resolve3(data);
             });
           });
         }
@@ -4392,8 +4392,8 @@ var require_util2 = __commonJS({
     function createDeferredPromise() {
       let res;
       let rej;
-      const promise = new Promise((resolve2, reject) => {
-        res = resolve2;
+      const promise = new Promise((resolve3, reject) => {
+        res = resolve3;
         rej = reject;
       });
       return { promise, resolve: res, reject: rej };
@@ -6281,7 +6281,7 @@ var require_client_h1 = __commonJS({
       return method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && method !== "TRACE" && method !== "CONNECT";
     }
     function writeH1(client, request) {
-      const { method, path: path2, host, upgrade, blocking, reset } = request;
+      const { method, path: path4, host, upgrade, blocking, reset } = request;
       let { body, headers, contentLength } = request;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -6347,7 +6347,7 @@ var require_client_h1 = __commonJS({
       if (blocking) {
         socket[kBlocking] = true;
       }
-      let header = `${method} ${path2} HTTP/1.1\r
+      let header = `${method} ${path4} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -6534,12 +6534,12 @@ upgrade: ${upgrade}\r
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve2, reject) => {
+      const waitForDrain = () => new Promise((resolve3, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve2;
+          callback = resolve3;
         }
       });
       socket.on("close", onDrain).on("drain", onDrain);
@@ -6873,7 +6873,7 @@ var require_client_h2 = __commonJS({
     }
     function writeH2(client, request) {
       const session = client[kHTTP2Session];
-      const { method, path: path2, host, upgrade, expectContinue, signal, headers: reqHeaders } = request;
+      const { method, path: path4, host, upgrade, expectContinue, signal, headers: reqHeaders } = request;
       let { body } = request;
       if (upgrade) {
         util.errorRequest(client, request, new Error("Upgrade not supported for H2"));
@@ -6940,7 +6940,7 @@ var require_client_h2 = __commonJS({
         });
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path2;
+      headers[HTTP2_HEADER_PATH] = path4;
       headers[HTTP2_HEADER_SCHEME] = "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH";
       if (body && typeof body.read === "function") {
@@ -7176,12 +7176,12 @@ var require_client_h2 = __commonJS({
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve2, reject) => {
+      const waitForDrain = () => new Promise((resolve3, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve2;
+          callback = resolve3;
         }
       });
       h2stream.on("close", onDrain).on("drain", onDrain);
@@ -7293,9 +7293,9 @@ var require_redirect_handler = __commonJS({
           return this.handler.onHeaders(statusCode, headers, resume, statusText);
         }
         const { origin, pathname, search } = util.parseURL(new URL(this.location, this.opts.origin && new URL(this.opts.path, this.opts.origin)));
-        const path2 = search ? `${pathname}${search}` : pathname;
+        const path4 = search ? `${pathname}${search}` : pathname;
         this.opts.headers = cleanRequestHeaders(this.opts.headers, statusCode === 303, this.opts.origin !== origin);
-        this.opts.path = path2;
+        this.opts.path = path4;
         this.opts.origin = origin;
         this.opts.maxRedirections = 0;
         this.opts.query = null;
@@ -7659,16 +7659,16 @@ var require_client = __commonJS({
         return this[kNeedDrain] < 2;
       }
       async [kClose]() {
-        return new Promise((resolve2) => {
+        return new Promise((resolve3) => {
           if (this[kSize]) {
-            this[kClosedResolve] = resolve2;
+            this[kClosedResolve] = resolve3;
           } else {
-            resolve2(null);
+            resolve3(null);
           }
         });
       }
       async [kDestroy](err) {
-        return new Promise((resolve2) => {
+        return new Promise((resolve3) => {
           const requests = this[kQueue].splice(this[kPendingIdx]);
           for (let i = 0; i < requests.length; i++) {
             const request = requests[i];
@@ -7679,7 +7679,7 @@ var require_client = __commonJS({
               this[kClosedResolve]();
               this[kClosedResolve] = null;
             }
-            resolve2(null);
+            resolve3(null);
           };
           if (this[kHTTPContext]) {
             this[kHTTPContext].destroy(err, callback);
@@ -7730,7 +7730,7 @@ var require_client = __commonJS({
         });
       }
       try {
-        const socket = await new Promise((resolve2, reject) => {
+        const socket = await new Promise((resolve3, reject) => {
           client[kConnector]({
             host,
             hostname,
@@ -7742,7 +7742,7 @@ var require_client = __commonJS({
             if (err) {
               reject(err);
             } else {
-              resolve2(socket2);
+              resolve3(socket2);
             }
           });
         });
@@ -8079,8 +8079,8 @@ var require_pool_base = __commonJS({
         if (this[kQueue].isEmpty()) {
           await Promise.all(this[kClients].map((c) => c.close()));
         } else {
-          await new Promise((resolve2) => {
-            this[kClosedResolve] = resolve2;
+          await new Promise((resolve3) => {
+            this[kClosedResolve] = resolve3;
           });
         }
       }
@@ -8531,10 +8531,10 @@ var require_proxy_agent = __commonJS({
         };
         const {
           origin,
-          path: path2 = "/",
+          path: path4 = "/",
           headers = {}
         } = opts;
-        opts.path = origin + path2;
+        opts.path = origin + path4;
         if (!("host" in headers) && !("Host" in headers)) {
           const { host } = new URL2(origin);
           headers.host = host;
@@ -9295,7 +9295,7 @@ var require_readable = __commonJS({
         if (this._readableState.closeEmitted) {
           return null;
         }
-        return await new Promise((resolve2, reject) => {
+        return await new Promise((resolve3, reject) => {
           if (this[kContentLength] > limit) {
             this.destroy(new AbortError());
           }
@@ -9308,7 +9308,7 @@ var require_readable = __commonJS({
             if (signal?.aborted) {
               reject(signal.reason ?? new AbortError());
             } else {
-              resolve2(null);
+              resolve3(null);
             }
           }).on("error", noop).on("data", function(chunk) {
             limit -= chunk.length;
@@ -9327,7 +9327,7 @@ var require_readable = __commonJS({
     }
     async function consume(stream, type) {
       assert(!stream[kConsume]);
-      return new Promise((resolve2, reject) => {
+      return new Promise((resolve3, reject) => {
         if (isUnusable(stream)) {
           const rState = stream._readableState;
           if (rState.destroyed && rState.closeEmitted === false) {
@@ -9344,7 +9344,7 @@ var require_readable = __commonJS({
             stream[kConsume] = {
               type,
               stream,
-              resolve: resolve2,
+              resolve: resolve3,
               reject,
               length: 0,
               body: []
@@ -9414,18 +9414,18 @@ var require_readable = __commonJS({
       return buffer;
     }
     function consumeEnd(consume2) {
-      const { type, body, resolve: resolve2, stream, length } = consume2;
+      const { type, body, resolve: resolve3, stream, length } = consume2;
       try {
         if (type === "text") {
-          resolve2(chunksDecode(body, length));
+          resolve3(chunksDecode(body, length));
         } else if (type === "json") {
-          resolve2(JSON.parse(chunksDecode(body, length)));
+          resolve3(JSON.parse(chunksDecode(body, length)));
         } else if (type === "arrayBuffer") {
-          resolve2(chunksConcat(body, length).buffer);
+          resolve3(chunksConcat(body, length).buffer);
         } else if (type === "blob") {
-          resolve2(new Blob(body, { type: stream[kContentType] }));
+          resolve3(new Blob(body, { type: stream[kContentType] }));
         } else if (type === "bytes") {
-          resolve2(chunksConcat(body, length));
+          resolve3(chunksConcat(body, length));
         }
         consumeFinish(consume2);
       } catch (err) {
@@ -9683,9 +9683,9 @@ var require_api_request = __commonJS({
     };
     function request(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve3, reject) => {
           request.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve2(data);
+            return err ? reject(err) : resolve3(data);
           });
         });
       }
@@ -9909,9 +9909,9 @@ var require_api_stream = __commonJS({
     };
     function stream(opts, factory, callback) {
       if (callback === void 0) {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve3, reject) => {
           stream.call(this, opts, factory, (err, data) => {
-            return err ? reject(err) : resolve2(data);
+            return err ? reject(err) : resolve3(data);
           });
         });
       }
@@ -10196,9 +10196,9 @@ var require_api_upgrade = __commonJS({
     };
     function upgrade(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve3, reject) => {
           upgrade.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve2(data);
+            return err ? reject(err) : resolve3(data);
           });
         });
       }
@@ -10290,9 +10290,9 @@ var require_api_connect = __commonJS({
     };
     function connect(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve3, reject) => {
           connect.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve2(data);
+            return err ? reject(err) : resolve3(data);
           });
         });
       }
@@ -10457,20 +10457,20 @@ var require_mock_utils = __commonJS({
       }
       return true;
     }
-    function safeUrl(path2) {
-      if (typeof path2 !== "string") {
-        return path2;
+    function safeUrl(path4) {
+      if (typeof path4 !== "string") {
+        return path4;
       }
-      const pathSegments = path2.split("?");
+      const pathSegments = path4.split("?");
       if (pathSegments.length !== 2) {
-        return path2;
+        return path4;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path2, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path2);
+    function matchKey(mockDispatch2, { path: path4, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path4);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -10492,7 +10492,7 @@ var require_mock_utils = __commonJS({
     function getMockDispatch(mockDispatches, key) {
       const basePath = key.query ? buildURL(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path2 }) => matchValue(safeUrl(path2), resolvedPath));
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path4 }) => matchValue(safeUrl(path4), resolvedPath));
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
       }
@@ -10530,9 +10530,9 @@ var require_mock_utils = __commonJS({
       }
     }
     function buildKey(opts) {
-      const { path: path2, method, body, headers, query } = opts;
+      const { path: path4, method, body, headers, query } = opts;
       return {
-        path: path2,
+        path: path4,
         method,
         body,
         headers,
@@ -10995,10 +10995,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path2, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
+          ({ method, path: path4, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path2,
+            Path: path4,
             "Status code": statusCode,
             Persistent: persist ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -14154,7 +14154,7 @@ var require_fetch = __commonJS({
       function dispatch({ body }) {
         const url = requestCurrentURL(request);
         const agent = fetchParams.controller.dispatcher;
-        return new Promise((resolve2, reject) => agent.dispatch(
+        return new Promise((resolve3, reject) => agent.dispatch(
           {
             path: url.pathname + url.search,
             origin: url.origin,
@@ -14230,7 +14230,7 @@ var require_fetch = __commonJS({
                 }
               }
               const onError = this.onError.bind(this);
-              resolve2({
+              resolve3({
                 status,
                 statusText,
                 headersList,
@@ -14276,7 +14276,7 @@ var require_fetch = __commonJS({
               for (let i = 0; i < rawHeaders.length; i += 2) {
                 headersList.append(bufferToLowerCasedHeaderName(rawHeaders[i]), rawHeaders[i + 1].toString("latin1"), true);
               }
-              resolve2({
+              resolve3({
                 status,
                 statusText: STATUS_CODES[status],
                 headersList,
@@ -15879,9 +15879,9 @@ var require_util6 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path2) {
-      for (let i = 0; i < path2.length; ++i) {
-        const code = path2.charCodeAt(i);
+    function validateCookiePath(path4) {
+      for (let i = 0; i < path4.length; ++i) {
+        const code = path4.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code === 127 || // DEL
         code === 59) {
@@ -17952,8 +17952,8 @@ var require_util8 = __commonJS({
       return true;
     }
     function delay(ms) {
-      return new Promise((resolve2) => {
-        setTimeout(resolve2, ms).unref();
+      return new Promise((resolve3) => {
+        setTimeout(resolve3, ms).unref();
       });
     }
     module2.exports = {
@@ -18558,11 +18558,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path2 = opts.path;
+          let path4 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path2 = `/${path2}`;
+            path4 = `/${path4}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path2);
+          url = new URL(util.parseOrigin(url).origin + path4);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -18817,11 +18817,11 @@ var tunnel = __toESM(require_tunnel2(), 1);
 var import_undici = __toESM(require_undici(), 1);
 var __awaiter = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -18837,7 +18837,7 @@ var __awaiter = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -18910,26 +18910,26 @@ var HttpClientResponse = class {
   }
   readBody() {
     return __awaiter(this, void 0, void 0, function* () {
-      return new Promise((resolve2) => __awaiter(this, void 0, void 0, function* () {
+      return new Promise((resolve3) => __awaiter(this, void 0, void 0, function* () {
         let output = Buffer.alloc(0);
         this.message.on("data", (chunk) => {
           output = Buffer.concat([output, chunk]);
         });
         this.message.on("end", () => {
-          resolve2(output.toString());
+          resolve3(output.toString());
         });
       }));
     });
   }
   readBodyBuffer() {
     return __awaiter(this, void 0, void 0, function* () {
-      return new Promise((resolve2) => __awaiter(this, void 0, void 0, function* () {
+      return new Promise((resolve3) => __awaiter(this, void 0, void 0, function* () {
         const chunks = [];
         this.message.on("data", (chunk) => {
           chunks.push(chunk);
         });
         this.message.on("end", () => {
-          resolve2(Buffer.concat(chunks));
+          resolve3(Buffer.concat(chunks));
         });
       }));
     });
@@ -19132,14 +19132,14 @@ var HttpClient = class {
    */
   requestRaw(info2, data) {
     return __awaiter(this, void 0, void 0, function* () {
-      return new Promise((resolve2, reject) => {
+      return new Promise((resolve3, reject) => {
         function callbackForResult(err, res) {
           if (err) {
             reject(err);
           } else if (!res) {
             reject(new Error("Unknown error"));
           } else {
-            resolve2(res);
+            resolve3(res);
           }
         }
         this.requestRawWithCallback(info2, data, callbackForResult);
@@ -19383,12 +19383,12 @@ var HttpClient = class {
     return __awaiter(this, void 0, void 0, function* () {
       retryNumber = Math.min(ExponentialBackoffCeiling, retryNumber);
       const ms = ExponentialBackoffTimeSlice * Math.pow(2, retryNumber);
-      return new Promise((resolve2) => setTimeout(() => resolve2(), ms));
+      return new Promise((resolve3) => setTimeout(() => resolve3(), ms));
     });
   }
   _processResponse(res, options) {
     return __awaiter(this, void 0, void 0, function* () {
-      return new Promise((resolve2, reject) => __awaiter(this, void 0, void 0, function* () {
+      return new Promise((resolve3, reject) => __awaiter(this, void 0, void 0, function* () {
         const statusCode = res.message.statusCode || 0;
         const response = {
           statusCode,
@@ -19396,7 +19396,7 @@ var HttpClient = class {
           headers: {}
         };
         if (statusCode === HttpCodes.NotFound) {
-          resolve2(response);
+          resolve3(response);
         }
         function dateTimeDeserializer(key, value) {
           if (typeof value === "string") {
@@ -19435,7 +19435,7 @@ var HttpClient = class {
           err.result = response.result;
           reject(err);
         } else {
-          resolve2(response);
+          resolve3(response);
         }
       }));
     });
@@ -19446,11 +19446,11 @@ var lowercaseKeys = (obj) => Object.keys(obj).reduce((c, k) => (c[k.toLowerCase(
 // node_modules/@actions/http-client/lib/auth.js
 var __awaiter2 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -19466,7 +19466,7 @@ var __awaiter2 = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -19497,11 +19497,11 @@ var BearerCredentialHandler = class {
 // node_modules/@actions/core/lib/oidc-utils.js
 var __awaiter3 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -19517,7 +19517,7 @@ var __awaiter3 = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -19586,11 +19586,11 @@ var import_os = require("os");
 var import_fs = require("fs");
 var __awaiter4 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -19606,7 +19606,7 @@ var __awaiter4 = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -19884,11 +19884,11 @@ var arch = import_os2.default.arch();
 // node_modules/@actions/core/lib/core.js
 var __awaiter5 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -19904,7 +19904,7 @@ var __awaiter5 = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -19955,8 +19955,235 @@ function getIDToken(aud) {
 }
 
 // src/main.ts
+var path3 = __toESM(require("path"));
+
+// src/cypress.ts
 var fs3 = __toESM(require("fs"));
 var path = __toESM(require("path"));
+var CYPRESS_DEFAULT_SPEC_PATTERN = ["**/*.cy.{js,jsx,ts,tsx}"];
+function discoverCypressSpecs(cypressDir, filters) {
+  const specCfg = readCypressSpecConfig(cypressDir);
+  const seen = /* @__PURE__ */ new Set();
+  const annotated = [];
+  for (const pattern of specCfg.include) {
+    for (const match of fs3.globSync(pattern, { cwd: cypressDir, exclude: specCfg.exclude })) {
+      const rel = match.split(path.sep).join("/");
+      if (seen.has(rel)) continue;
+      const abs = path.join(cypressDir, rel);
+      try {
+        if (!fs3.statSync(abs).isFile()) continue;
+      } catch {
+        continue;
+      }
+      seen.add(rel);
+      annotated.push({ path: rel, meta: parseCypressMetadata(abs) });
+    }
+  }
+  const filtered = annotated.filter((s) => passesFilters(s.meta, filters));
+  return partitionBySort(filtered, filters).map((s) => s.path);
+}
+function readCypressSpecConfig(cypressDir) {
+  for (const name of [
+    "cypress.config.ts",
+    "cypress.config.js",
+    "cypress.config.mjs",
+    "cypress.config.cjs"
+  ]) {
+    const cfgPath = path.join(cypressDir, name);
+    if (!fs3.existsSync(cfgPath)) continue;
+    const text = fs3.readFileSync(cfgPath, "utf8");
+    const e2eBlock = extractObjectBlock(text, "e2e");
+    if (e2eBlock === null) continue;
+    const include = extractStringOrArrayProp(e2eBlock, "specPattern");
+    const exclude = extractStringOrArrayProp(e2eBlock, "excludeSpecPattern");
+    if (include.length > 0) return { include, exclude };
+  }
+  return { include: [...CYPRESS_DEFAULT_SPEC_PATTERN], exclude: [] };
+}
+function extractObjectBlock(text, key) {
+  const re = new RegExp(`\\b${key}\\s*:\\s*\\{`);
+  const m = re.exec(text);
+  if (!m) return null;
+  let depth = 1;
+  let i = m.index + m[0].length;
+  const start = i;
+  while (i < text.length && depth > 0) {
+    const ch = text[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") depth--;
+    if (depth === 0) return text.slice(start, i);
+    i++;
+  }
+  return null;
+}
+function extractStringOrArrayProp(block, key) {
+  const arrayRe = new RegExp(`\\b${key}\\s*:\\s*\\[([^\\]]*)\\]`);
+  const arr = arrayRe.exec(block);
+  if (arr) {
+    const inner = arr[1] ?? "";
+    return [...inner.matchAll(/['"`]([^'"`]+)['"`]/g)].map((m) => m[1]);
+  }
+  const stringRe = new RegExp(`\\b${key}\\s*:\\s*['"\`]([^'"\`]+)['"\`]`);
+  const str = stringRe.exec(block);
+  if (str) return [str[1]];
+  return [];
+}
+function parseCypressMetadata(absPath) {
+  let raw;
+  try {
+    const fd = fs3.openSync(absPath, "r");
+    const buf = Buffer.alloc(4096);
+    const n = fs3.readSync(fd, buf, 0, buf.length, 0);
+    fs3.closeSync(fd);
+    raw = buf.subarray(0, n).toString("utf8");
+  } catch {
+    return { stages: [], groups: [] };
+  }
+  const stages = [];
+  const groups = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    if (!trimmed.startsWith("//")) break;
+    const stageMatch = /^\s*\/\/\s*stage:\s*(.+)$/i.exec(trimmed);
+    if (stageMatch) {
+      for (const tok of stageMatch[1].split(/\s+/)) {
+        if (/^@\S+$/.test(tok)) stages.push(tok);
+      }
+      continue;
+    }
+    const groupMatch = /^\s*\/\/\s*group:\s*(.+)$/i.exec(trimmed);
+    if (groupMatch) {
+      for (const tok of groupMatch[1].split(/\s+/)) {
+        if (/^@\S+$/.test(tok)) groups.push(tok);
+      }
+    }
+  }
+  return { stages, groups };
+}
+function passesFilters(meta, filters) {
+  if (filters.stage.length > 0 && !shareAny(meta.stages, filters.stage)) return false;
+  if (filters.includeGroup.length > 0 && !shareAny(meta.groups, filters.includeGroup)) return false;
+  if (filters.excludeGroup.length > 0 && shareAny(meta.groups, filters.excludeGroup)) return false;
+  return true;
+}
+function partitionBySort(specs, filters) {
+  const first = [];
+  const middle = [];
+  const last = [];
+  for (const s of specs) {
+    if (filters.sortFirst.length > 0 && shareAny(s.meta.groups, filters.sortFirst)) {
+      first.push(s);
+    } else if (filters.sortLast.length > 0 && shareAny(s.meta.groups, filters.sortLast)) {
+      last.push(s);
+    } else {
+      middle.push(s);
+    }
+  }
+  return [...first, ...middle, ...last];
+}
+function shareAny(a, b) {
+  if (a.length === 0 || b.length === 0) return false;
+  const setB = new Set(b);
+  for (const x of a) if (setB.has(x)) return true;
+  return false;
+}
+function parseTagList(raw) {
+  if (!raw) return [];
+  return raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+// src/playwright.ts
+var fs4 = __toESM(require("fs"));
+var path2 = __toESM(require("path"));
+var PLAYWRIGHT_DEFAULT_TEST_MATCH = ["**/*.{spec,test}.{ts,tsx,js,jsx,mjs,cjs,mts,cts}"];
+var PLAYWRIGHT_DEFAULT_TEST_DIR = ".";
+function discoverPlaywrightSpecs(playwrightDir, excludePaths = []) {
+  const cfg = readPlaywrightSpecConfig(playwrightDir);
+  const seen = /* @__PURE__ */ new Set();
+  for (const pattern of cfg.testMatch) {
+    for (const match of fs4.globSync(pattern, { cwd: cfg.testDir })) {
+      const abs = path2.resolve(cfg.testDir, match);
+      try {
+        if (!fs4.statSync(abs).isFile()) continue;
+      } catch {
+        continue;
+      }
+      const rel = path2.relative(playwrightDir, abs).split(path2.sep).join("/");
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+    }
+  }
+  const isExcluded = (p) => excludePaths.some((ex) => p === ex || p.endsWith("/" + ex) || p.startsWith(ex));
+  return [...seen].filter((p) => !isExcluded(p)).sort();
+}
+function readPlaywrightSpecConfig(playwrightDir) {
+  let testDirRel = PLAYWRIGHT_DEFAULT_TEST_DIR;
+  let testMatch = [...PLAYWRIGHT_DEFAULT_TEST_MATCH];
+  for (const name of [
+    "playwright.config.ts",
+    "playwright.config.js",
+    "playwright.config.mjs",
+    "playwright.config.cjs"
+  ]) {
+    const cfgPath = path2.join(playwrightDir, name);
+    if (!fs4.existsSync(cfgPath)) continue;
+    const raw = fs4.readFileSync(cfgPath, "utf8");
+    const text = stripBlocks(raw, [
+      [/\bprojects\s*:\s*\[/, "[", "]"],
+      [/\buse\s*:\s*\{/, "{", "}"]
+    ]);
+    const dirVal = extractStringProp(text, "testDir");
+    if (dirVal) testDirRel = dirVal;
+    const matchVal = extractStringOrArrayProp2(text, "testMatch");
+    if (matchVal.length > 0) testMatch = matchVal;
+    break;
+  }
+  return {
+    testDir: path2.resolve(playwrightDir, testDirRel),
+    testMatch
+  };
+}
+function stripBlocks(text, rules) {
+  let out = text;
+  for (const [headerRe, opener, closer] of rules) {
+    while (true) {
+      const m = headerRe.exec(out);
+      if (!m) break;
+      const start = m.index + m[0].length - 1;
+      let depth = 1;
+      let i = start + 1;
+      while (i < out.length && depth > 0) {
+        const ch = out[i];
+        if (ch === opener) depth++;
+        else if (ch === closer) depth--;
+        i++;
+      }
+      if (depth !== 0) break;
+      out = out.slice(0, m.index) + " " + out.slice(i);
+    }
+  }
+  return out;
+}
+function extractStringProp(text, key) {
+  const re = new RegExp(`\\b${key}\\s*:\\s*['"\`]([^'"\`]+)['"\`]`);
+  const m = re.exec(text);
+  return m ? m[1] : null;
+}
+function extractStringOrArrayProp2(text, key) {
+  const arrayRe = new RegExp(`\\b${key}\\s*:\\s*\\[([^\\]]*)\\]`);
+  const arr = arrayRe.exec(text);
+  if (arr) {
+    const inner = arr[1] ?? "";
+    return [...inner.matchAll(/['"`]([^'"`]+)['"`]/g)].map((m) => m[1]);
+  }
+  const stringRe = new RegExp(`\\b${key}\\s*:\\s*['"\`]([^'"\`]+)['"\`]`);
+  const str = stringRe.exec(text);
+  if (str) return [str[1]];
+  return [];
+}
+
+// src/main.ts
 var PRODUCTION_URL = "https://test-io.test.mattermost.com";
 var STAGING_URL = "https://staging-test-io.test.mattermost.com";
 async function run() {
@@ -19987,14 +20214,23 @@ async function run() {
   }
   let specs;
   if (framework === "cypress") {
-    const cypressDir = path.resolve(repoDir, cypressDirInput);
-    specs = discoverCypressSpecs(cypressDir);
+    const cypressDir = path3.resolve(repoDir, cypressDirInput);
+    const filters = {
+      stage: parseTagList(getInput("cypress-stage")),
+      includeGroup: parseTagList(getInput("cypress-include-group")),
+      excludeGroup: parseTagList(getInput("cypress-exclude-group")),
+      sortFirst: parseTagList(getInput("cypress-sort-first")),
+      sortLast: parseTagList(getInput("cypress-sort-last"))
+    };
+    specs = discoverCypressSpecs(cypressDir, filters);
     if (specs.length === 0) {
-      throw new Error(`no Cypress specs found under ${cypressDir}`);
+      throw new Error(
+        `no Cypress specs survived the filter under ${cypressDir} (stage=${filters.stage.join(",") || "*"}, include=${filters.includeGroup.join(",") || "*"}, exclude=${filters.excludeGroup.join(",") || "none"})`
+      );
     }
   } else {
-    const playwrightDir = path.resolve(repoDir, playwrightDirInput);
-    specs = discoverSpecs(playwrightDir);
+    const playwrightDir = path3.resolve(repoDir, playwrightDirInput);
+    specs = discoverPlaywrightSpecs(playwrightDir, ["test_setup.ts", "specs/visual/"]);
     if (specs.length === 0) {
       throw new Error(`no Playwright specs found under ${playwrightDir}`);
     }
@@ -20045,46 +20281,6 @@ async function run() {
   }
   const { report_id } = await reportsRes.json();
   info(`report group ready: ${report_id}`);
-}
-function discoverSpecs(playwrightDir) {
-  const specsDir = path.join(playwrightDir, "specs");
-  const out = [];
-  function rec(dir) {
-    let entries;
-    try {
-      entries = fs3.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const ent of entries) {
-      const full = path.join(dir, ent.name);
-      if (ent.isDirectory()) rec(full);
-      else if (ent.isFile() && ent.name.endsWith(".spec.ts")) out.push(full);
-    }
-  }
-  rec(specsDir);
-  return out.map((abs) => path.relative(playwrightDir, abs).split(path.sep).join("/")).filter((p) => !p.endsWith("test_setup.ts")).filter((p) => !p.startsWith("specs/visual/")).sort();
-}
-function discoverCypressSpecs(cypressDir) {
-  const integrationDir = path.join(cypressDir, "tests", "integration");
-  const out = [];
-  function rec(dir) {
-    let entries;
-    try {
-      entries = fs3.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const ent of entries) {
-      const full = path.join(dir, ent.name);
-      if (ent.isDirectory()) rec(full);
-      else if (ent.isFile() && (ent.name.endsWith("_spec.ts") || ent.name.endsWith("_spec.js"))) {
-        out.push(full);
-      }
-    }
-  }
-  rec(integrationDir);
-  return out.map((abs) => path.relative(cypressDir, abs).split(path.sep).join("/")).sort();
 }
 function identityForReports(c, framework, totalReportsExpected) {
   const body = {

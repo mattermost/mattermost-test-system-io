@@ -37,11 +37,21 @@ export interface RunUnitConfig {
   workerArtifacts: string;
 }
 
+export interface CypressUnitResult {
+  invocation: InvocationRecord;
+  results: SpecResult[];
+  // Absolute paths of failure screenshots Cypress wrote, grouped by the
+  // spec_path they belong to. main.ts uploads these to
+  // /api/v1/orchestration/screenshots and attaches the returned keys to
+  // each spec's failing test_cases before POSTing /complete.
+  screenshotsBySpec: Record<string, string[]>;
+}
+
 export function runUnit(
   cfg: RunUnitConfig,
   iterationSeq: number,
   specPaths: string[],
-): { invocation: InvocationRecord; results: SpecResult[] } {
+): CypressUnitResult {
   const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs.mkdirSync(iterDir, { recursive: true });
 
@@ -49,6 +59,15 @@ export function runUnit(
   // files from a prior lease confusing the post-run lookup.
   const reportRoot = path.join(cfg.cypressDir, "results", "mochawesome-report");
   fs.rmSync(reportRoot, { recursive: true, force: true });
+
+  // Same idea for the per-spec screenshot dirs of the leased specs:
+  // wiping prevents a retest's failure screenshots from accumulating
+  // alongside the prior lease's `(failed) (attempt N).png` set.
+  const screenshotsRoot = path.join(cfg.cypressDir, "tests", "screenshots");
+  for (const sp of specPaths) {
+    const dir = path.join(screenshotsRoot, path.basename(sp));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 
   // The reporter is configured project-side via the consumer's
   // reporter-config.json; the dispatcher merely names the multi-reporter
@@ -117,6 +136,31 @@ export function runUnit(
     fs.cpSync(jsonPath, archived);
   }
 
+  // Collect Cypress failure screenshots and stage them for both upload
+  // pipelines:
+  //   - main.ts will upload these absolute paths to
+  //     /api/v1/orchestration/screenshots and attach the returned keys
+  //     to the matching test_cases (Dispatch tab rendering).
+  //   - copying them under <iterDir>/output/<spec-basename>/ lets
+  //     upload.ts pick them up at queue-empty for the
+  //     /reports/upload/.../screenshots multipart (Reports tab).
+  const screenshotsBySpec: Record<string, string[]> = {};
+  const outputRoot = path.join(iterDir, "output");
+  for (const sp of specPaths) {
+    const baseName = path.basename(sp);
+    const srcDir = path.join(screenshotsRoot, baseName);
+    if (!fs.existsSync(srcDir)) continue;
+    const absPaths: string[] = [];
+    walkPng(srcDir, absPaths);
+    if (absPaths.length === 0) continue;
+    screenshotsBySpec[sp] = absPaths;
+    const dstDir = path.join(outputRoot, baseName);
+    fs.mkdirSync(dstDir, { recursive: true });
+    for (const src of absPaths) {
+      fs.cpSync(src, path.join(dstDir, path.basename(src)));
+    }
+  }
+
   // The InvocationRecord wants ONE json path; pick the first valid one,
   // falling back to a synthetic path that will fail the existence check
   // upstream and be skipped from the upload set (matching playwright's
@@ -125,7 +169,16 @@ export function runUnit(
   return {
     invocation: { specPath: specPaths[0]!, iterDir, playwrightJsonPath: jsonForUpload },
     results,
+    screenshotsBySpec,
   };
+}
+
+function walkPng(dir: string, out: string[]): void {
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, ent.name);
+    if (ent.isDirectory()) walkPng(full, out);
+    else if (ent.isFile() && /\.(png|jpe?g)$/i.test(ent.name)) out.push(full);
+  }
 }
 
 interface MochawesomeJson {

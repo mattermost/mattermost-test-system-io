@@ -8,33 +8,10 @@ description: >
 author: Mattermost
 
 inputs:
-  use-staging:
-    description: >
-      When true, target the staging deployment
-      (https://staging-test-io.test.mattermost.com) instead of production
-      (https://test-io.test.mattermost.com).
-    required: false
-    default: "false"
-  oidc-audience:
-    description: OIDC audience claim that the orchestrator expects
-    required: false
-    default: mattermost-test-system-io
+  # ── Required (top-level) ─────────────────────────────────────────────
   composite-identity:
     description: Composite identity JSON (same payload the dispatch-begin action received)
     required: true
-  framework:
-    description: >
-      Test framework this worker drives. One of `playwright` or
-      `cypress`. Defaults to `playwright` for backward compatibility
-      with existing consumers. When `cypress`, the action invokes
-      `npx cypress run --reporter cypress-multi-reporters
-      --reporter-options configFile=reporter-config.json --spec <leased>`
-      from `<repo-dir>/<cypress-dir>` and reads each leased spec's
-      Mochawesome JSON from
-      `results/mochawesome-report/json/tests/[name].json` (the path
-      reporter-config.json prescribes via reportDir + reportFilename).
-    required: false
-    default: "playwright"
   repo-dir:
     description: >
       Path to the checked-out repo whose test suite this run covers
@@ -43,29 +20,6 @@ inputs:
       `<repo-dir>/<playwright-dir>` (or `cypress run` inside
       `<repo-dir>/<cypress-dir>` when `framework: cypress`).
     required: true
-  playwright-dir:
-    description: >
-      Path to the Playwright project, relative to `repo-dir`. Defaults to
-      `e2e-tests/playwright` (the layout used by mattermost/mattermost);
-      override for repos that put Playwright somewhere else. Ignored
-      when `framework: cypress`.
-    required: false
-    default: e2e-tests/playwright
-  results-dir:
-    description: >
-      Path to Playwright's results output, relative to `playwright-dir`.
-      Must match the `outputDir` configured in the consumer repo's
-      `playwright.config.ts`. Defaults to `results`. Ignored when
-      `framework: cypress`.
-    required: false
-    default: results
-  cypress-dir:
-    description: >
-      Path to the Cypress project, relative to `repo-dir`. Defaults to
-      `e2e-tests/cypress` (the layout used by mattermost/mattermost).
-      Only consulted when `framework: cypress`.
-    required: false
-    default: e2e-tests/cypress
   artifacts-root:
     description: Writable directory for per-iteration archived results
     required: true
@@ -79,6 +33,51 @@ inputs:
       orchestrator + uploader as gh_job_name. Caller MUST keep this in
       sync with the workers job's `name:` field.
     required: true
+
+  # ── Optional (top-level) ─────────────────────────────────────────────
+  use-staging:
+    description: >
+      When true, target the staging deployment
+      (https://staging-test-io.test.mattermost.com) instead of production
+      (https://test-io.test.mattermost.com).
+    required: false
+    default: "false"
+  oidc-audience:
+    description: OIDC audience claim that the orchestrator expects
+    required: false
+    default: mattermost-test-system-io
+  framework:
+    description: >
+      Test framework this worker drives. One of `playwright` or
+      `cypress`. Defaults to `playwright` for backward compatibility
+      with existing consumers. When `cypress`, the action invokes
+      `npx cypress run --reporter cypress-multi-reporters
+      --reporter-options configFile=reporter-config.json --spec <leased>`
+      from `<repo-dir>/<cypress-dir>` and reads each leased spec's
+      Mochawesome JSON from
+      `results/mochawesome-report/json/tests/[name].json` (the path
+      reporter-config.json prescribes via reportDir + reportFilename).
+    required: false
+    default: "playwright"
+
+  # ── Playwright-specific ──────────────────────────────────────────────
+  playwright-dir:
+    description: >
+      Path to the Playwright project, relative to `repo-dir`. Defaults to
+      `e2e-tests/playwright` (the layout used by mattermost/mattermost);
+      override for repos that put Playwright somewhere else. Ignored
+      when `framework: cypress`.
+    required: false
+    default: e2e-tests/playwright
+  playwright-project:
+    description: >
+      Playwright project name passed to each per-spec invocation as
+      `--project=`. Defaults to `chrome` (the canonical mattermost
+      project). Keep this in sync with the same input on
+      `test-system-io-dispatch-begin` so the run-level metadata and the
+      worker invocation match. Ignored when `framework: cypress`.
+    required: false
+    default: chrome
   playwright-retries:
     description: >
       Value passed to `npx playwright test --retries=N` so Playwright
@@ -86,6 +85,23 @@ inputs:
       Set to 0 to disable Playwright-internal retries.
     required: false
     default: "1"
+  results-dir:
+    description: >
+      Path to Playwright's results output, relative to `playwright-dir`.
+      Must match the `outputDir` configured in the consumer repo's
+      `playwright.config.ts`. Defaults to `results`. Ignored when
+      `framework: cypress`.
+    required: false
+    default: results
+
+  # ── Cypress-specific ─────────────────────────────────────────────────
+  cypress-dir:
+    description: >
+      Path to the Cypress project, relative to `repo-dir`. Defaults to
+      `e2e-tests/cypress` (the layout used by mattermost/mattermost).
+      Only consulted when `framework: cypress`.
+    required: false
+    default: e2e-tests/cypress
 
 runs:
   using: node24

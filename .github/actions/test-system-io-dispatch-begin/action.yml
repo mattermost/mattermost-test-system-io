@@ -9,33 +9,13 @@ description: >
 author: Mattermost
 
 inputs:
-  use-staging:
-    description: >
-      When true, target the staging deployment
-      (https://staging-test-io.test.mattermost.com) instead of production
-      (https://test-io.test.mattermost.com).
-    required: false
-    default: "false"
-  oidc-audience:
-    description: OIDC audience claim that the orchestrator expects
-    required: false
-    default: mattermost-test-system-io
+  # ── Required (top-level) ─────────────────────────────────────────────
   composite-identity:
     description: >
       Composite identity JSON with the keys repository, commit_sha,
       gh_run_id, gh_run_attempt, name, and (optional) branch / gh_pr_number.
       Same payload the worker action receives.
     required: true
-  framework:
-    description: >
-      Test framework this run dispatches. One of `playwright` or
-      `cypress`. Defaults to `playwright` for backward compatibility
-      with existing consumers. When `cypress`, the action enumerates
-      `*_spec.{ts,js}` files under `<repo-dir>/<cypress-dir>/tests/integration/`
-      and submits them as dispatch units; the orchestration_runs row is
-      created with `framework: "cypress"`.
-    required: false
-    default: "playwright"
   repo-dir:
     description: >
       Path to the checked-out repo whose test suite this run covers
@@ -49,29 +29,29 @@ inputs:
       matrix size). Frozen on first /reports/begin; the report group
       auto-finalizes once that many child reports reach `complete`.
     required: true
-  playwright-dir:
+
+  # ── Optional (top-level) ─────────────────────────────────────────────
+  use-staging:
     description: >
-      Path to the Playwright project, relative to `repo-dir`. Defaults
-      to `e2e-tests/playwright` (the layout used by mattermost/mattermost);
-      override for repos that put Playwright somewhere else. Ignored
-      when `framework: cypress`.
+      When true, target the staging deployment
+      (https://staging-test-io.test.mattermost.com) instead of production
+      (https://test-io.test.mattermost.com).
     required: false
-    default: e2e-tests/playwright
-  playwright-project:
+    default: "false"
+  oidc-audience:
+    description: OIDC audience claim that the orchestrator expects
+    required: false
+    default: mattermost-test-system-io
+  framework:
     description: >
-      Playwright project name passed through to workers as the
-      `--project=` arg. Defaults to `chrome`. Ignored when
-      `framework: cypress`.
+      Test framework this run dispatches. One of `playwright` or
+      `cypress`. Defaults to `playwright` for backward compatibility
+      with existing consumers. When `cypress`, the action enumerates
+      `*_spec.{ts,js}` files under `<repo-dir>/<cypress-dir>/tests/integration/`
+      and submits them as dispatch units; the orchestration_runs row is
+      created with `framework: "cypress"`.
     required: false
-    default: chrome
-  cypress-dir:
-    description: >
-      Path to the Cypress project, relative to `repo-dir`. Defaults to
-      `e2e-tests/cypress` (the layout used by mattermost/mattermost).
-      Spec discovery walks `<cypress-dir>/tests/integration/` for
-      `*_spec.{ts,js}` files. Only consulted when `framework: cypress`.
-    required: false
-    default: e2e-tests/cypress
+    default: "playwright"
   retest-on-fail:
     description: Whether the orchestrator should re-dispatch failed dispatch units once
     required: false
@@ -95,6 +75,73 @@ inputs:
       and re-dispatched.
     required: false
     default: "600000"
+
+  # ── Playwright-specific ──────────────────────────────────────────────
+  playwright-dir:
+    description: >
+      Path to the Playwright project, relative to `repo-dir`. Defaults
+      to `e2e-tests/playwright` (the layout used by mattermost/mattermost);
+      override for repos that put Playwright somewhere else. Ignored
+      when `framework: cypress`.
+    required: false
+    default: e2e-tests/playwright
+  playwright-project:
+    description: >
+      Playwright project name recorded on the run as metadata (sent to
+      `/orchestration/begin` as `playwright_project`). Does NOT drive
+      the worker invocation — the worker reads its own
+      `playwright-project` input. Keep both in sync so the dashboard
+      reflects what actually ran. Defaults to `chrome`. Ignored when
+      `framework: cypress`.
+    required: false
+    default: chrome
+
+  # ── Cypress-specific ─────────────────────────────────────────────────
+  cypress-dir:
+    description: >
+      Path to the Cypress project, relative to `repo-dir`. Defaults to
+      `e2e-tests/cypress` (the layout used by mattermost/mattermost).
+      Spec discovery walks `<cypress-dir>/tests/integration/` for
+      `*_spec.{ts,js}` files. Only consulted when `framework: cypress`.
+    required: false
+    default: e2e-tests/cypress
+  cypress-stage:
+    description: >
+      Comma-separated `// Stage:` tag list. A spec is kept only when its
+      Stage line shares at least one tag with this list. Empty disables
+      the filter. Default `@prod` matches the upstream automation
+      dashboard's stable cycle. Cypress only.
+    required: false
+    default: "@prod"
+  cypress-include-group:
+    description: >
+      Comma-separated `// Group:` tag list. A spec is kept only when its
+      Group line shares at least one tag with this list. Empty disables
+      the filter. Cypress only.
+    required: false
+    default: ""
+  cypress-exclude-group:
+    description: >
+      Comma-separated `// Group:` tag list. A spec is dropped when its
+      Group line shares any tag with this list. Applied after the
+      include filter. Cypress only.
+    required: false
+    default: ""
+  cypress-sort-first:
+    description: >
+      Comma-separated `// Group:` tag list. Surviving specs whose Group
+      shares any tag dispatch first, surfacing flagged tests early.
+      A spec matching both sort-first and sort-last goes to sort-first.
+      Cypress only.
+    required: false
+    default: ""
+  cypress-sort-last:
+    description: >
+      Comma-separated `// Group:` tag list. Surviving specs whose Group
+      shares any tag dispatch last, keeping known-broken tests at the
+      back of the queue. Cypress only.
+    required: false
+    default: "@known_issue"
 
 outputs:
   run-id:

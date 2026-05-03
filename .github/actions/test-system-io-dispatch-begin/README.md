@@ -5,7 +5,7 @@ GitHub composite-bundled JavaScript action that creates the orchestration queue 
 Supports Playwright (default) and Cypress via the `framework` input. Walks the consumer repo's spec directory:
 
 - `framework: playwright` — `<repo-dir>/<playwright-dir>/specs` (default `e2e-tests/playwright/specs`); collects every `*.spec.ts` (excluding `specs/visual/**` and `test_setup.ts`).
-- `framework: cypress` — `<repo-dir>/<cypress-dir>/tests/integration` (default `e2e-tests/cypress/tests/integration`); collects every `*_spec.{ts,js}`.
+- `framework: cypress` — `<repo-dir>/<cypress-dir>/tests/integration` (default `e2e-tests/cypress/tests/integration`); collects every `*_spec.{ts,js}`. Each spec's `// Stage:` and `// Group:` header tags drive optional include / exclude / sort-first / sort-last filtering — see the cypress-* inputs below.
 
 Then posts the dispatch units to:
 
@@ -27,6 +27,11 @@ Authentication is the calling workflow's GitHub Actions OIDC token. The workflow
 | `playwright-dir` | no | `e2e-tests/playwright` | Path to the Playwright project, relative to `repo-dir`. Ignored when `framework: cypress`. |
 | `playwright-project` | no | `chrome` | Playwright project name passed through to workers. Ignored when `framework: cypress`. |
 | `cypress-dir` | no | `e2e-tests/cypress` | Path to the Cypress project, relative to `repo-dir`. Spec discovery walks `<cypress-dir>/tests/integration/`. Only consulted when `framework: cypress`. |
+| `cypress-stage` | no | `@prod` | Comma-separated `// Stage:` tags. Spec kept only if its Stage line shares any tag. Empty disables. Cypress only. |
+| `cypress-include-group` | no | `""` | Comma-separated `// Group:` tags. Spec kept only if its Group line shares at least one tag. Empty disables. Cypress only. |
+| `cypress-exclude-group` | no | `""` | Comma-separated `// Group:` tags. Spec dropped if its Group line shares any tag. Applied after include. Cypress only. |
+| `cypress-sort-first` | no | `""` | Comma-separated `// Group:` tags. Surviving specs whose Group shares any tag dispatch first. A spec matching both sort-first and sort-last goes to sort-first. Cypress only. |
+| `cypress-sort-last` | no | `@known_issue` | Comma-separated `// Group:` tags. Surviving specs whose Group shares any tag dispatch last. Cypress only. |
 | `retest-on-fail` | no | `false` | Whether the orchestrator should re-dispatch failed units once. |
 | `retest-budget` | no | `1` | Max number of retest passes when `retest-on-fail` is true. |
 | `idle-timeout-ms` | no | `600000` | Inactivity window before the orchestrator transitions an idle run to `timed_out`. Bumped on every checkout/complete. |

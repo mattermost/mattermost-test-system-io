@@ -25,6 +25,7 @@ export interface RunUnitConfig {
   resultsDir: string;
   workerArtifacts: string;
   playwrightRetries: number;
+  playwrightProject: string;
 }
 
 export function runUnit(
@@ -37,12 +38,14 @@ export function runUnit(
 
   // ci/prepare-playwright runs `npm ci` + `npm run build` once per worker
   // job; the per-spec loop just dispatches Playwright directly.
-  // --no-deps skips the `setup` project that `chrome` declares as a
-  // dependency. ci/prepare-playwright already ran setup once at job start,
-  // and its side effects (plugins loaded, server deployed) persist on the
-  // long-running mattermost server, so every spec's worth of setup re-runs
-  // is wasted time.
-  const args = ["playwright", "test", "--project=chrome", "--grep-invert", "@visual", "--no-deps"];
+  // --no-deps skips the `setup` project that the active project declares
+  // as a dependency. ci/prepare-playwright already ran setup once at job
+  // start, and its side effects (plugins loaded, server deployed) persist
+  // on the long-running mattermost server, so every spec's worth of setup
+  // re-runs is wasted time. Visual specs are filtered out at dispatch-begin
+  // time via the testIgnore-style excludePaths, so no runtime --grep-invert
+  // is needed.
+  const args = ["playwright", "test", `--project=${cfg.playwrightProject}`, "--no-deps"];
   if (cfg.playwrightRetries > 0) args.push(`--retries=${cfg.playwrightRetries}`);
   args.push(...specPaths);
 

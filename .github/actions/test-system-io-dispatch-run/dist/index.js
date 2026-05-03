@@ -24595,7 +24595,7 @@ var import_node_child_process = require("child_process");
 function runUnit(cfg, iterationSeq, specPaths) {
   const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs2.mkdirSync(iterDir, { recursive: true });
-  const args = ["playwright", "test", "--project=chrome", "--grep-invert", "@visual", "--no-deps"];
+  const args = ["playwright", "test", `--project=${cfg.playwrightProject}`, "--no-deps"];
   if (cfg.playwrightRetries > 0) args.push(`--retries=${cfg.playwrightRetries}`);
   args.push(...specPaths);
   const startedAt = Date.now();
@@ -24735,6 +24735,11 @@ function runUnit2(cfg, iterationSeq, specPaths) {
   fs3.mkdirSync(iterDir, { recursive: true });
   const reportRoot = path2.join(cfg.cypressDir, "results", "mochawesome-report");
   fs3.rmSync(reportRoot, { recursive: true, force: true });
+  const screenshotsRoot = path2.join(cfg.cypressDir, "tests", "screenshots");
+  for (const sp of specPaths) {
+    const dir = path2.join(screenshotsRoot, path2.basename(sp));
+    fs3.rmSync(dir, { recursive: true, force: true });
+  }
   const args = [
     "cypress",
     "run",
@@ -24786,11 +24791,35 @@ function runUnit2(cfg, iterationSeq, specPaths) {
     const archived = path2.join(iterDir, `${baseName}.json`);
     fs3.cpSync(jsonPath, archived);
   }
+  const screenshotsBySpec = {};
+  const outputRoot = path2.join(iterDir, "output");
+  for (const sp of specPaths) {
+    const baseName = path2.basename(sp);
+    const srcDir = path2.join(screenshotsRoot, baseName);
+    if (!fs3.existsSync(srcDir)) continue;
+    const absPaths = [];
+    walkPng(srcDir, absPaths);
+    if (absPaths.length === 0) continue;
+    screenshotsBySpec[sp] = absPaths;
+    const dstDir = path2.join(outputRoot, baseName);
+    fs3.mkdirSync(dstDir, { recursive: true });
+    for (const src of absPaths) {
+      fs3.cpSync(src, path2.join(dstDir, path2.basename(src)));
+    }
+  }
   const jsonForUpload = firstJsonPath ?? path2.join(iterDir, "missing.json");
   return {
     invocation: { specPath: specPaths[0], iterDir, playwrightJsonPath: jsonForUpload },
-    results
+    results,
+    screenshotsBySpec
   };
+}
+function walkPng(dir, out) {
+  for (const ent of fs3.readdirSync(dir, { withFileTypes: true })) {
+    const full = path2.join(dir, ent.name);
+    if (ent.isDirectory()) walkPng(full, out);
+    else if (ent.isFile() && /\.(png|jpe?g)$/i.test(ent.name)) out.push(full);
+  }
 }
 var RANKS2 = {
   skipped: 0,
@@ -25012,6 +25041,7 @@ async function run() {
     throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
   }
   const playwrightRetries = intInput("playwright-retries", 1);
+  const playwrightProject = getInput("playwright-project") || "chrome";
   const playwrightDirInput = getInput("playwright-dir") || "e2e-tests/playwright";
   const resultsDirInput = getInput("results-dir") || "results";
   const cypressDirInput = getInput("cypress-dir") || "e2e-tests/cypress";
@@ -25044,6 +25074,7 @@ async function run() {
       cypressDir,
       workerArtifacts,
       playwrightRetries,
+      playwrightProject,
       invocations,
       nextIterationSeq: () => iterationSeq++
     });
@@ -25107,26 +25138,34 @@ async function drain(cfg) {
     info(`leased (${isRetest ? "retest" : "fresh"}): ${specPaths.join(", ")}`);
     let results;
     try {
-      const out = cfg.framework === "cypress" ? runUnit2(
-        {
-          cypressDir: cfg.cypressDir,
-          resultsDir: cfg.resultsDir,
-          workerArtifacts: cfg.workerArtifacts
-        },
-        cfg.nextIterationSeq(),
-        specPaths
-      ) : runUnit(
-        {
-          playwrightDir: cfg.playwrightDir,
-          resultsDir: cfg.resultsDir,
-          workerArtifacts: cfg.workerArtifacts,
-          playwrightRetries: cfg.playwrightRetries
-        },
-        cfg.nextIterationSeq(),
-        specPaths
-      );
-      cfg.invocations.push(out.invocation);
-      results = out.results;
+      if (cfg.framework === "cypress") {
+        const out = runUnit2(
+          {
+            cypressDir: cfg.cypressDir,
+            resultsDir: cfg.resultsDir,
+            workerArtifacts: cfg.workerArtifacts
+          },
+          cfg.nextIterationSeq(),
+          specPaths
+        );
+        cfg.invocations.push(out.invocation);
+        results = out.results;
+        await attachCypressScreenshots(cfg, results, out.screenshotsBySpec);
+      } else {
+        const out = runUnit(
+          {
+            playwrightDir: cfg.playwrightDir,
+            resultsDir: cfg.resultsDir,
+            workerArtifacts: cfg.workerArtifacts,
+            playwrightRetries: cfg.playwrightRetries,
+            playwrightProject: cfg.playwrightProject
+          },
+          cfg.nextIterationSeq(),
+          specPaths
+        );
+        cfg.invocations.push(out.invocation);
+        results = out.results;
+      }
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
       error(`dispatch error: ${e.message}`);
@@ -25197,6 +25236,71 @@ async function postJSON2(cfg, urlPath, body) {
 }
 function sleep2(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+async function attachCypressScreenshots(cfg, results, screenshotsBySpec) {
+  for (const spec of results) {
+    const files = screenshotsBySpec[spec.spec_path];
+    if (!files || files.length === 0) continue;
+    const candidates = spec.test_cases.filter(
+      (tc) => tc.status === "failed" || tc.status === "timedOut" || tc.status === "interrupted"
+    ).slice().sort((a, b) => b.title.length - a.title.length);
+    if (candidates.length === 0) continue;
+    for (const absPath of files) {
+      const base = path4.basename(absPath);
+      const tc = candidates.find((c) => c.title && base.includes(c.title));
+      if (!tc) {
+        warning(`no test_case match for screenshot ${base}; skipping`);
+        continue;
+      }
+      const uploaded = await uploadOrchScreenshot(cfg, spec.spec_path, absPath);
+      if (!uploaded) continue;
+      tc.attachments ??= { screenshots: [] };
+      tc.attachments.screenshots.push(uploaded);
+    }
+  }
+}
+async function uploadOrchScreenshot(cfg, specPath, absPath) {
+  let buf;
+  try {
+    buf = fs5.readFileSync(absPath);
+  } catch (err) {
+    warning(`read screenshot ${absPath} failed: ${err.message}`);
+    return null;
+  }
+  const relPath = path4.basename(absPath);
+  const form = new FormData();
+  for (const [k, v] of Object.entries(cfg.compositeIdentity)) {
+    if (v !== void 0 && v !== null) form.append(k, String(v));
+  }
+  form.append("gh_job_id", cfg.ghJobId);
+  form.append("spec_path", specPath);
+  form.append("relative_path", relPath);
+  form.append("file", new Blob([new Uint8Array(buf)], { type: "image/png" }), relPath);
+  let res;
+  try {
+    res = await fetchWithAuthRetry(async () => {
+      const bearer = await getBearer(cfg.audience);
+      return fetch(`${cfg.baseURL}/api/v1/orchestration/screenshots`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${bearer}` },
+        body: form
+      });
+    });
+  } catch (err) {
+    warning(`screenshot upload error (${relPath}): ${err.message}`);
+    return null;
+  }
+  if (res.status !== 200) {
+    const text = await res.text().catch(() => "");
+    warning(`screenshot upload ${relPath} failed: ${res.status} ${text}`);
+    return null;
+  }
+  const body = await res.json().catch(() => null);
+  if (!body?.key) {
+    warning(`screenshot upload ${relPath} returned no key`);
+    return null;
+  }
+  return { key: body.key, relative_path: relPath };
 }
 function resolveBaseURL() {
   const useStaging = getInput("use-staging").trim().toLowerCase() === "true";

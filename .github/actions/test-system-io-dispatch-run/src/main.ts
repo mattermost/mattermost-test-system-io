@@ -45,6 +45,7 @@ export async function run(): Promise<void> {
     throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
   }
   const playwrightRetries = intInput("playwright-retries", 1);
+  const playwrightProject = core.getInput("playwright-project") || "chrome";
   const playwrightDirInput = core.getInput("playwright-dir") || "e2e-tests/playwright";
   const resultsDirInput = core.getInput("results-dir") || "results";
   const cypressDirInput = core.getInput("cypress-dir") || "e2e-tests/cypress";
@@ -85,6 +86,7 @@ export async function run(): Promise<void> {
       cypressDir,
       workerArtifacts,
       playwrightRetries,
+      playwrightProject,
       invocations,
       nextIterationSeq: () => iterationSeq++,
     });
@@ -125,6 +127,7 @@ interface DrainConfig {
   cypressDir: string;
   workerArtifacts: string;
   playwrightRetries: number;
+  playwrightProject: string;
   invocations: InvocationRecord[];
   nextIterationSeq: () => number;
 }
@@ -178,29 +181,38 @@ async function drain(cfg: DrainConfig): Promise<void> {
 
     let results: SpecResult[];
     try {
-      const out =
-        cfg.framework === "cypress"
-          ? runCypressUnit(
-              {
-                cypressDir: cfg.cypressDir,
-                resultsDir: cfg.resultsDir,
-                workerArtifacts: cfg.workerArtifacts,
-              },
-              cfg.nextIterationSeq(),
-              specPaths,
-            )
-          : runPlaywrightUnit(
-              {
-                playwrightDir: cfg.playwrightDir,
-                resultsDir: cfg.resultsDir,
-                workerArtifacts: cfg.workerArtifacts,
-                playwrightRetries: cfg.playwrightRetries,
-              },
-              cfg.nextIterationSeq(),
-              specPaths,
-            );
-      cfg.invocations.push(out.invocation);
-      results = out.results;
+      if (cfg.framework === "cypress") {
+        const out = runCypressUnit(
+          {
+            cypressDir: cfg.cypressDir,
+            resultsDir: cfg.resultsDir,
+            workerArtifacts: cfg.workerArtifacts,
+          },
+          cfg.nextIterationSeq(),
+          specPaths,
+        );
+        cfg.invocations.push(out.invocation);
+        results = out.results;
+        // Cypress's Mochawesome JSON doesn't carry attachment paths the way
+        // Playwright's reporter does, so failure screenshots have to be
+        // uploaded out-of-band and stitched onto the matching test_cases
+        // before /complete sees them.
+        await attachCypressScreenshots(cfg, results, out.screenshotsBySpec);
+      } else {
+        const out = runPlaywrightUnit(
+          {
+            playwrightDir: cfg.playwrightDir,
+            resultsDir: cfg.resultsDir,
+            workerArtifacts: cfg.workerArtifacts,
+            playwrightRetries: cfg.playwrightRetries,
+            playwrightProject: cfg.playwrightProject,
+          },
+          cfg.nextIterationSeq(),
+          specPaths,
+        );
+        cfg.invocations.push(out.invocation);
+        results = out.results;
+      }
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
       core.error(`dispatch error: ${e.message}`);
@@ -297,6 +309,106 @@ async function postJSON<T>(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Upload each spec's Cypress failure screenshots to /api/v1/orchestration/
+ * screenshots and attach the returned keys to the matching test_cases.
+ *
+ * Filename → test_case match: Cypress writes
+ * `<Suite chain joined by " -- "> -- <test title> (failed)[ (attempt N)].png`,
+ * so a screenshot whose basename includes `tc.title` belongs to that
+ * test. When multiple tests in a spec share a title prefix, the longest
+ * matching title wins (so "MM-T4417_1 ..." doesn't accidentally claim a
+ * "MM-T4417_10 ..." shot).
+ *
+ * Best-effort: a screenshot upload error logs a warning and drops the
+ * single file. The /complete payload still goes out — better to lose a
+ * screenshot than to fail the orchestration step.
+ */
+async function attachCypressScreenshots(
+  cfg: { baseURL: string; audience: string; compositeIdentity: CompositeIdentity; ghJobId: string },
+  results: SpecResult[],
+  screenshotsBySpec: Record<string, string[]>,
+): Promise<void> {
+  for (const spec of results) {
+    const files = screenshotsBySpec[spec.spec_path];
+    if (!files || files.length === 0) continue;
+
+    // Sort failing-eligible test_cases by descending title length so longer
+    // titles match before shorter prefixes of theirs.
+    const candidates = spec.test_cases
+      .filter(
+        (tc) => tc.status === "failed" || tc.status === "timedOut" || tc.status === "interrupted",
+      )
+      .slice()
+      .sort((a, b) => b.title.length - a.title.length);
+    if (candidates.length === 0) continue;
+
+    for (const absPath of files) {
+      const base = path.basename(absPath);
+      const tc = candidates.find((c) => c.title && base.includes(c.title));
+      if (!tc) {
+        core.warning(`no test_case match for screenshot ${base}; skipping`);
+        continue;
+      }
+      const uploaded = await uploadOrchScreenshot(cfg, spec.spec_path, absPath);
+      if (!uploaded) continue;
+      tc.attachments ??= { screenshots: [] };
+      tc.attachments.screenshots.push(uploaded);
+    }
+  }
+}
+
+async function uploadOrchScreenshot(
+  cfg: { baseURL: string; audience: string; compositeIdentity: CompositeIdentity; ghJobId: string },
+  specPath: string,
+  absPath: string,
+): Promise<{ key: string; relative_path: string } | null> {
+  let buf: Buffer;
+  try {
+    buf = fs.readFileSync(absPath);
+  } catch (err) {
+    core.warning(`read screenshot ${absPath} failed: ${(err as Error).message}`);
+    return null;
+  }
+  const relPath = path.basename(absPath);
+  const form = new FormData();
+  for (const [k, v] of Object.entries(cfg.compositeIdentity)) {
+    if (v !== undefined && v !== null) form.append(k, String(v));
+  }
+  form.append("gh_job_id", cfg.ghJobId);
+  form.append("spec_path", specPath);
+  form.append("relative_path", relPath);
+  // Wrap Node's Buffer in Uint8Array — same trick upload.ts uses to bridge
+  // node:buffer to DOM Blob's BlobPart type.
+  form.append("file", new Blob([new Uint8Array(buf)], { type: "image/png" }), relPath);
+
+  let res: Response;
+  try {
+    res = await fetchWithAuthRetry(async () => {
+      const bearer = await getBearer(cfg.audience);
+      return fetch(`${cfg.baseURL}/api/v1/orchestration/screenshots`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${bearer}` },
+        body: form,
+      });
+    });
+  } catch (err) {
+    core.warning(`screenshot upload error (${relPath}): ${(err as Error).message}`);
+    return null;
+  }
+  if (res.status !== 200) {
+    const text = await res.text().catch(() => "");
+    core.warning(`screenshot upload ${relPath} failed: ${res.status} ${text}`);
+    return null;
+  }
+  const body = (await res.json().catch(() => null)) as { key?: string } | null;
+  if (!body?.key) {
+    core.warning(`screenshot upload ${relPath} returned no key`);
+    return null;
+  }
+  return { key: body.key, relative_path: relPath };
 }
 
 function resolveBaseURL(): string {

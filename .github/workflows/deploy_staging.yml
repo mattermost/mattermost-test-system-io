@@ -218,6 +218,11 @@ jobs:
       - name: Deploy StagingAppStack
         if: steps.infra-changed.outputs.should_deploy == 'true'
         working-directory: infra
+        # Required by infra/lib/config.ts; synth fails fast if unset.
+        # Locally these come from infra/.env (gitignored).
+        env:
+          ROUTE53_ZONE_ID: ${{ secrets.ROUTE53_ZONE_ID }}
+          CERTIFICATE_ARN: ${{ secrets.CERTIFICATE_ARN }}
         run: |
           npx cdk deploy StagingAppStack \
             --require-approval never \

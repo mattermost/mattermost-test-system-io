@@ -12,8 +12,8 @@ export interface NetworkingProps {
   readonly projectName: string;
   readonly vpcCidr?: string;
   readonly domainName: string;
-  readonly subdomainNames: string[];
   readonly route53ZoneId: string;
+  readonly certificateArn: string;
   readonly appPort?: number;
 }
 
@@ -21,7 +21,7 @@ export class Networking extends Construct {
   public readonly vpc: ec2.Vpc;
   public readonly alb: elbv2.ApplicationLoadBalancer;
   public readonly httpsListener: elbv2.ApplicationListener;
-  public readonly certificate: acm.Certificate;
+  public readonly certificate: acm.ICertificate;
   public readonly appSecurityGroup: ec2.SecurityGroup;
   public readonly hostedZone: route53.IHostedZone;
 
@@ -70,13 +70,14 @@ export class Networking extends Construct {
       zoneName: props.domainName,
     });
 
-    // ACM certificate with DNS validation via Route 53
-    const subjectAlternativeNames = props.subdomainNames.map((sub) => `${sub}.${props.domainName}`);
-    this.certificate = new acm.Certificate(this, "Certificate", {
-      domainName: `*.${props.domainName}`,
-      subjectAlternativeNames,
-      validation: acm.CertificateValidation.fromDns(this.hostedZone),
-    });
+    // Imported, not created in-stack: a CDK version bump can otherwise
+    // drift a property default and trigger a Certificate replacement
+    // that stalls in PENDING_VALIDATION.
+    this.certificate = acm.Certificate.fromCertificateArn(
+      this,
+      "Certificate",
+      props.certificateArn,
+    );
 
     // ALB security group — allow HTTPS/HTTP from anywhere (IPv4 + IPv6)
     const albSecurityGroup = new ec2.SecurityGroup(this, "AlbSecurityGroup", {

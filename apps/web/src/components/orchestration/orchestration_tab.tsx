@@ -347,11 +347,27 @@ function statusIconForRow(
 function deriveSuiteTitleFromRow(row: SpecRow): string {
   const tc = row.latest?.test_cases?.[0];
   if (!tc || !tc.full_title) return '';
-  const parts = tc.full_title.split(' > ');
-  if (parts.length < 2) return '';
+  // Strip the leaf test title from the end. Playwright joins describe/it
+  // segments with " > "; Cypress's Mochawesome reporter joins them with a
+  // single space. Falling back to the older split-only path keeps the
+  // function defensive when title is empty.
+  let suite = tc.full_title;
+  if (tc.title) {
+    const playwrightSuffix = ' > ' + tc.title;
+    if (suite.endsWith(playwrightSuffix)) {
+      suite = suite.slice(0, -playwrightSuffix.length);
+    } else if (suite === tc.title) {
+      return '';
+    } else if (suite.endsWith(' ' + tc.title)) {
+      suite = suite.slice(0, -(tc.title.length + 1));
+    }
+  }
+  const parts = suite.split(' > ');
   const fileIdx = parts.findIndex((p) => /\.spec\.[tj]sx?$/.test(p));
-  const start = fileIdx >= 0 ? fileIdx + 1 : 0;
-  return parts.slice(start, -1).join(' > ');
+  if (fileIdx >= 0) {
+    return parts.slice(fileIdx + 1).join(' > ');
+  }
+  return suite;
 }
 
 interface SpecListRowProps {

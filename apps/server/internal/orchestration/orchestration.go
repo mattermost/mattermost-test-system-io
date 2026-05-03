@@ -18,8 +18,35 @@ import (
 	"github.com/google/uuid"
 )
 
-// Framework is the only test framework supported by this feature.
-const Framework = "playwright"
+// Framework label constants. Membership of a value in supportedFrameworks
+// below implies the rest of the orchestration stack (queue, leases,
+// retest, screenshot upload) is exercised against it; the
+// orchestration_runs.framework CHECK constraint in the database mirrors
+// this set and MUST be kept in sync when a new framework is added.
+const (
+	FrameworkPlaywright = "playwright"
+	FrameworkCypress    = "cypress"
+
+	// DefaultFramework is the value used when a request omits framework.
+	// Kept at playwright for backward compatibility with consumers that
+	// pre-date Cypress support.
+	DefaultFramework = FrameworkPlaywright
+)
+
+// supportedFrameworks is the closed set of accepted framework labels.
+// Lookup is membership-only; callers do not need to know the order.
+var supportedFrameworks = map[string]struct{}{
+	FrameworkPlaywright: {},
+	FrameworkCypress:    {},
+}
+
+// IsSupportedFramework reports whether s is one of the orchestration-
+// supported framework labels. Empty input returns false — callers apply
+// DefaultFramework before consulting this.
+func IsSupportedFramework(s string) bool {
+	_, ok := supportedFrameworks[s]
+	return ok
+}
 
 // Run status enum values.
 const (
@@ -251,8 +278,8 @@ func (ci CompositeIdentity) Validate() error {
 	if ci.GHRunAttempt == "" {
 		return errors.New("composite identity: gh_run_attempt is required")
 	}
-	if ci.Framework != Framework {
-		return fmt.Errorf("composite identity: framework must be %q, got %q", Framework, ci.Framework)
+	if !IsSupportedFramework(ci.Framework) {
+		return fmt.Errorf("composite identity: framework %q is not supported (must be one of: playwright, cypress)", ci.Framework)
 	}
 	return nil
 }

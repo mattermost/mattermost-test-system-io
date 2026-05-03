@@ -19,8 +19,8 @@ export interface CompositeIdentity {
   name: string;
   /** Defaults to "1" on the server when omitted. */
   gh_run_attempt?: string;
-  /** Pinned to "playwright" for this feature. */
-  framework?: 'playwright';
+  /** Test framework label. Server accepts "playwright" or "cypress". */
+  framework?: 'playwright' | 'cypress';
   branch?: string;
   gh_pr_number?: number;
 }

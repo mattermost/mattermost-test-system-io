@@ -19968,8 +19968,13 @@ async function run() {
   const retestBudget = intInput("retest-budget", 1);
   const idleTimeoutMs = intInput("idle-timeout-ms", 6e5);
   const leaseTimeoutMs = intInput("lease-timeout-ms", 6e5);
+  const framework = (getInput("framework") || "playwright").trim().toLowerCase();
+  if (framework !== "playwright" && framework !== "cypress") {
+    throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
+  }
   const playwrightProject = getInput("playwright-project") || "chrome";
   const playwrightDirInput = getInput("playwright-dir") || "e2e-tests/playwright";
+  const cypressDirInput = getInput("cypress-dir") || "e2e-tests/cypress";
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
     throw new Error("total-reports-expected is required and must be > 0");
@@ -19980,19 +19985,27 @@ async function run() {
   } catch (e) {
     throw new Error(`composite-identity is not valid JSON: ${e.message}`);
   }
-  const playwrightDir = path.resolve(repoDir, playwrightDirInput);
-  const specs = discoverSpecs(playwrightDir);
-  if (specs.length === 0) {
-    throw new Error(`no specs found under ${playwrightDir}`);
+  let specs;
+  if (framework === "cypress") {
+    const cypressDir = path.resolve(repoDir, cypressDirInput);
+    specs = discoverCypressSpecs(cypressDir);
+    if (specs.length === 0) {
+      throw new Error(`no Cypress specs found under ${cypressDir}`);
+    }
+  } else {
+    const playwrightDir = path.resolve(repoDir, playwrightDirInput);
+    specs = discoverSpecs(playwrightDir);
+    if (specs.length === 0) {
+      throw new Error(`no Playwright specs found under ${playwrightDir}`);
+    }
   }
   const dispatchUnits = specs.map((p) => ({ spec_path: p }));
-  info(`discovered ${dispatchUnits.length} spec file(s)`);
+  info(`discovered ${dispatchUnits.length} ${framework} spec file(s)`);
   const bearer = await getIDToken(audience);
   setSecret(bearer);
   const beginBody = {
     ...compositeIdentity,
-    framework: "playwright",
-    playwright_project: playwrightProject,
+    framework,
     lease_timeout_ms: leaseTimeoutMs,
     idle_timeout_ms: idleTimeoutMs,
     retest_on_fail: retestOnFail,
@@ -20000,6 +20013,9 @@ async function run() {
     total_reports_expected: totalReportsExpected,
     dispatch_units: dispatchUnits
   };
+  if (framework === "playwright") {
+    beginBody.playwright_project = playwrightProject;
+  }
   const beginRes = await fetch(`${baseURL}/api/v1/orchestration/begin`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
@@ -20021,7 +20037,7 @@ async function run() {
   const reportsRes = await fetch(`${baseURL}/api/v1/reports/begin`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
-    body: JSON.stringify(identityForReports(compositeIdentity, totalReportsExpected))
+    body: JSON.stringify(identityForReports(compositeIdentity, framework, totalReportsExpected))
   });
   if (reportsRes.status !== 200) {
     const t = await reportsRes.text().catch(() => "");
@@ -20049,13 +20065,34 @@ function discoverSpecs(playwrightDir) {
   rec(specsDir);
   return out.map((abs) => path.relative(playwrightDir, abs).split(path.sep).join("/")).filter((p) => !p.endsWith("test_setup.ts")).filter((p) => !p.startsWith("specs/visual/")).sort();
 }
-function identityForReports(c, totalReportsExpected) {
+function discoverCypressSpecs(cypressDir) {
+  const integrationDir = path.join(cypressDir, "tests", "integration");
+  const out = [];
+  function rec(dir) {
+    let entries;
+    try {
+      entries = fs3.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) rec(full);
+      else if (ent.isFile() && (ent.name.endsWith("_spec.ts") || ent.name.endsWith("_spec.js"))) {
+        out.push(full);
+      }
+    }
+  }
+  rec(integrationDir);
+  return out.map((abs) => path.relative(cypressDir, abs).split(path.sep).join("/")).sort();
+}
+function identityForReports(c, framework, totalReportsExpected) {
   const body = {
     repository: c.repository,
     commit: c.commit_sha,
     gh_run_id: c.gh_run_id,
     gh_run_attempt: c.gh_run_attempt,
-    framework: "playwright",
+    framework,
     name: c.name,
     branch: c.branch,
     total_reports_expected: totalReportsExpected

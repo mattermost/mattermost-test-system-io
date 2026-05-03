@@ -81,7 +81,11 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
   let hasIncomplete = false;
 
   for (const run of runs) {
-    const effective = resolveEffectiveReportStatus(run.status, run.last_upload_at);
+    const effective = resolveEffectiveReportStatus(
+      run.status,
+      run.last_upload_at,
+      run.orchestration,
+    );
     if (effective === 'in_progress') {
       hasActiveInProgress = true;
     } else if (effective === 'incomplete' || run.status === 'incomplete') {

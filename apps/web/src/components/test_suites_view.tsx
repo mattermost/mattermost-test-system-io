@@ -1317,7 +1317,14 @@ const SpecRow = memo(function SpecRow({
                 <div className="flex items-center gap-2 text-xs">
                   <AttemptIcon className={`h-3 w-3 flex-shrink-0 ${attemptColor}`} />
                   <span className="font-medium text-gray-700 dark:text-gray-300">
-                    Attempt {result.retry + 1}
+                    {/* Position-index, not result.retry+1: orchestration
+                        retests produce a fresh Playwright process whose
+                        internal retry counter resets to 0, so two retest
+                        survivors would otherwise both render as
+                        "Attempt 1". The list-position index is monotonic
+                        across leases AND retries, matching the Dispatch
+                        tab's labeling. */}
+                    Attempt {idx + 1}
                   </span>
                   <span className={`text-xs ${attemptColor}`}>({statusLabel})</span>
                   <span className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-500">

@@ -1066,14 +1066,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path4 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path5 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path4 && path4[0] !== "/") {
-          path4 = `/${path4}`;
+        if (path5 && path5[0] !== "/") {
+          path5 = `/${path5}`;
         }
-        return new URL(`${origin}${path4}`);
+        return new URL(`${origin}${path5}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -1524,39 +1524,39 @@ var require_diagnostics = __commonJS({
       });
       diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
         const {
-          request: { method, path: path4, origin }
+          request: { method, path: path5, origin }
         } = evt;
-        debuglog("sending request to %s %s/%s", method, origin, path4);
+        debuglog("sending request to %s %s/%s", method, origin, path5);
       });
       diagnosticsChannel.channel("undici:request:headers").subscribe((evt) => {
         const {
-          request: { method, path: path4, origin },
+          request: { method, path: path5, origin },
           response: { statusCode }
         } = evt;
         debuglog(
           "received response to %s %s/%s - HTTP %d",
           method,
           origin,
-          path4,
+          path5,
           statusCode
         );
       });
       diagnosticsChannel.channel("undici:request:trailers").subscribe((evt) => {
         const {
-          request: { method, path: path4, origin }
+          request: { method, path: path5, origin }
         } = evt;
-        debuglog("trailers received from %s %s/%s", method, origin, path4);
+        debuglog("trailers received from %s %s/%s", method, origin, path5);
       });
       diagnosticsChannel.channel("undici:request:error").subscribe((evt) => {
         const {
-          request: { method, path: path4, origin },
+          request: { method, path: path5, origin },
           error: error2
         } = evt;
         debuglog(
           "request to %s %s/%s errored - %s",
           method,
           origin,
-          path4,
+          path5,
           error2.message
         );
       });
@@ -1605,9 +1605,9 @@ var require_diagnostics = __commonJS({
         });
         diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
           const {
-            request: { method, path: path4, origin }
+            request: { method, path: path5, origin }
           } = evt;
-          debuglog("sending request to %s %s/%s", method, origin, path4);
+          debuglog("sending request to %s %s/%s", method, origin, path5);
         });
       }
       diagnosticsChannel.channel("undici:websocket:open").subscribe((evt) => {
@@ -1670,7 +1670,7 @@ var require_request = __commonJS({
     var kHandler = /* @__PURE__ */ Symbol("handler");
     var Request = class {
       constructor(origin, {
-        path: path4,
+        path: path5,
         method,
         body,
         headers,
@@ -1685,11 +1685,11 @@ var require_request = __commonJS({
         expectContinue,
         servername
       }, handler2) {
-        if (typeof path4 !== "string") {
+        if (typeof path5 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path4[0] !== "/" && !(path4.startsWith("http://") || path4.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path5[0] !== "/" && !(path5.startsWith("http://") || path5.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path4)) {
+        } else if (invalidPathRegex.test(path5)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -1755,7 +1755,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? buildURL(path4, query) : path4;
+        this.path = query ? buildURL(path5, query) : path5;
         this.origin = origin;
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" : idempotent;
         this.blocking = blocking == null ? false : blocking;
@@ -6281,7 +6281,7 @@ var require_client_h1 = __commonJS({
       return method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && method !== "TRACE" && method !== "CONNECT";
     }
     function writeH1(client, request2) {
-      const { method, path: path4, host, upgrade, blocking, reset } = request2;
+      const { method, path: path5, host, upgrade, blocking, reset } = request2;
       let { body, headers, contentLength } = request2;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -6347,7 +6347,7 @@ var require_client_h1 = __commonJS({
       if (blocking) {
         socket[kBlocking] = true;
       }
-      let header = `${method} ${path4} HTTP/1.1\r
+      let header = `${method} ${path5} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -6873,7 +6873,7 @@ var require_client_h2 = __commonJS({
     }
     function writeH2(client, request2) {
       const session = client[kHTTP2Session];
-      const { method, path: path4, host, upgrade, expectContinue, signal, headers: reqHeaders } = request2;
+      const { method, path: path5, host, upgrade, expectContinue, signal, headers: reqHeaders } = request2;
       let { body } = request2;
       if (upgrade) {
         util.errorRequest(client, request2, new Error("Upgrade not supported for H2"));
@@ -6940,7 +6940,7 @@ var require_client_h2 = __commonJS({
         });
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path4;
+      headers[HTTP2_HEADER_PATH] = path5;
       headers[HTTP2_HEADER_SCHEME] = "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH";
       if (body && typeof body.read === "function") {
@@ -7293,9 +7293,9 @@ var require_redirect_handler = __commonJS({
           return this.handler.onHeaders(statusCode, headers, resume, statusText);
         }
         const { origin, pathname, search } = util.parseURL(new URL(this.location, this.opts.origin && new URL(this.opts.path, this.opts.origin)));
-        const path4 = search ? `${pathname}${search}` : pathname;
+        const path5 = search ? `${pathname}${search}` : pathname;
         this.opts.headers = cleanRequestHeaders(this.opts.headers, statusCode === 303, this.opts.origin !== origin);
-        this.opts.path = path4;
+        this.opts.path = path5;
         this.opts.origin = origin;
         this.opts.maxRedirections = 0;
         this.opts.query = null;
@@ -8531,10 +8531,10 @@ var require_proxy_agent = __commonJS({
         };
         const {
           origin,
-          path: path4 = "/",
+          path: path5 = "/",
           headers = {}
         } = opts;
-        opts.path = origin + path4;
+        opts.path = origin + path5;
         if (!("host" in headers) && !("Host" in headers)) {
           const { host } = new URL2(origin);
           headers.host = host;
@@ -10457,20 +10457,20 @@ var require_mock_utils = __commonJS({
       }
       return true;
     }
-    function safeUrl(path4) {
-      if (typeof path4 !== "string") {
-        return path4;
+    function safeUrl(path5) {
+      if (typeof path5 !== "string") {
+        return path5;
       }
-      const pathSegments = path4.split("?");
+      const pathSegments = path5.split("?");
       if (pathSegments.length !== 2) {
-        return path4;
+        return path5;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path4, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path4);
+    function matchKey(mockDispatch2, { path: path5, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path5);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -10492,7 +10492,7 @@ var require_mock_utils = __commonJS({
     function getMockDispatch(mockDispatches, key) {
       const basePath = key.query ? buildURL(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path4 }) => matchValue(safeUrl(path4), resolvedPath));
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path5 }) => matchValue(safeUrl(path5), resolvedPath));
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
       }
@@ -10530,9 +10530,9 @@ var require_mock_utils = __commonJS({
       }
     }
     function buildKey(opts) {
-      const { path: path4, method, body, headers, query } = opts;
+      const { path: path5, method, body, headers, query } = opts;
       return {
-        path: path4,
+        path: path5,
         method,
         body,
         headers,
@@ -10995,10 +10995,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path4, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
+          ({ method, path: path5, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path4,
+            Path: path5,
             "Status code": statusCode,
             Persistent: persist ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -15879,9 +15879,9 @@ var require_util6 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path4) {
-      for (let i = 0; i < path4.length; ++i) {
-        const code = path4.charCodeAt(i);
+    function validateCookiePath(path5) {
+      for (let i = 0; i < path5.length; ++i) {
+        const code = path5.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code === 127 || // DEL
         code === 59) {
@@ -18558,11 +18558,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path4 = opts.path;
+          let path5 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path4 = `/${path4}`;
+            path5 = `/${path5}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path4);
+          url = new URL(util.parseOrigin(url).origin + path5);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -20777,6 +20777,9 @@ function debug(message) {
 function error(message, properties = {}) {
   issueCommand("error", toCommandProperties(properties), message instanceof Error ? message.toString() : message);
 }
+function warning(message, properties = {}) {
+  issueCommand("warning", toCommandProperties(properties), message instanceof Error ? message.toString() : message);
+}
 function info(message) {
   process.stdout.write(message + os3.EOL);
 }
@@ -20787,8 +20790,8 @@ function getIDToken(aud) {
 }
 
 // src/main.ts
-var fs4 = __toESM(require("fs"));
-var path3 = __toESM(require("path"));
+var fs5 = __toESM(require("fs"));
+var path4 = __toESM(require("path"));
 
 // node_modules/@actions/github/lib/context.js
 var import_fs2 = require("fs");
@@ -20804,8 +20807,8 @@ var Context = class {
       if ((0, import_fs2.existsSync)(process.env.GITHUB_EVENT_PATH)) {
         this.payload = JSON.parse((0, import_fs2.readFileSync)(process.env.GITHUB_EVENT_PATH, { encoding: "utf8" }));
       } else {
-        const path4 = process.env.GITHUB_EVENT_PATH;
-        process.stdout.write(`GITHUB_EVENT_PATH ${path4} does not exist${import_os3.EOL}`);
+        const path5 = process.env.GITHUB_EVENT_PATH;
+        process.stdout.write(`GITHUB_EVENT_PATH ${path5} does not exist${import_os3.EOL}`);
       }
     }
     this.eventName = process.env.GITHUB_EVENT_NAME;
@@ -24723,9 +24726,132 @@ function mapStatus(s) {
   }
 }
 
-// src/upload.ts
+// src/cypress.ts
 var fs3 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
+var import_node_child_process2 = require("child_process");
+function runUnit2(cfg, iterationSeq, specPaths) {
+  const iterDir = path2.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
+  fs3.mkdirSync(iterDir, { recursive: true });
+  const reportRoot = path2.join(cfg.cypressDir, "results", "mochawesome-report");
+  fs3.rmSync(reportRoot, { recursive: true, force: true });
+  const args = [
+    "cypress",
+    "run",
+    "--reporter",
+    "cypress-multi-reporters",
+    "--reporter-options",
+    "configFile=reporter-config.json",
+    "--spec",
+    specPaths.join(",")
+  ];
+  const startedAt = Date.now();
+  const child = (0, import_node_child_process2.spawnSync)("npx", args, {
+    cwd: cfg.cypressDir,
+    env: { ...process.env, FORCE_COLOR: "0" },
+    stdio: "inherit"
+  });
+  const durationMs = Date.now() - startedAt;
+  info(`cypress exit ${child.status} in ${Math.round(durationMs / 1e3)}s`);
+  const results = [];
+  let firstJsonPath = null;
+  for (const sp of specPaths) {
+    const baseName = path2.basename(sp).replace(/\.(ts|js)$/, "");
+    const jsonPath = path2.join(reportRoot, "json", "tests", `${baseName}.json`);
+    if (!firstJsonPath && fs3.existsSync(jsonPath)) firstJsonPath = jsonPath;
+    if (!fs3.existsSync(jsonPath)) {
+      warning(`mochawesome json missing for ${sp}: ${jsonPath}`);
+      results.push({
+        spec_path: sp,
+        status: "interrupted",
+        actual_duration_ms: 0,
+        test_cases: []
+      });
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(fs3.readFileSync(jsonPath, "utf8"));
+    } catch (e) {
+      warning(`mochawesome json parse failure for ${sp}: ${e.message}`);
+      results.push({
+        spec_path: sp,
+        status: "interrupted",
+        actual_duration_ms: 0,
+        test_cases: []
+      });
+      continue;
+    }
+    results.push(aggregateSpec2(parsed, sp));
+    const archived = path2.join(iterDir, `${baseName}.json`);
+    fs3.cpSync(jsonPath, archived);
+  }
+  const jsonForUpload = firstJsonPath ?? path2.join(iterDir, "missing.json");
+  return {
+    invocation: { specPath: specPaths[0], iterDir, playwrightJsonPath: jsonForUpload },
+    results
+  };
+}
+var RANKS2 = {
+  skipped: 0,
+  passed: 1,
+  flaky: 2,
+  interrupted: 3,
+  timedOut: 4,
+  failed: 5
+};
+function aggregateSpec2(json, specPath) {
+  const cases = [];
+  let totalMs = 0;
+  let worst = "skipped";
+  let ordinal = 0;
+  function visit(suite) {
+    for (const t of suite.tests || []) {
+      const attempts = Array.isArray(t.attempts) ? t.attempts.length : 0;
+      let status;
+      if (t.pending === true) status = "skipped";
+      else if (t.state === "failed") status = "failed";
+      else if (t.state === "passed" && attempts > 1) status = "flaky";
+      else if (t.state === "passed") status = "passed";
+      else status = "interrupted";
+      const tc = {
+        title: t.title || "",
+        full_title: t.fullTitle || t.title || "",
+        status,
+        retry_count: Math.max(0, attempts - 1),
+        duration_ms: typeof t.duration === "number" ? t.duration : 0,
+        ordinal: ordinal++
+      };
+      if (t.err?.message) tc.error_message = t.err.message;
+      const stack = t.err?.estack ?? t.err?.stack;
+      if (stack) tc.error_stack = stack;
+      cases.push(tc);
+      totalMs += tc.duration_ms;
+      if (RANKS2[status] > RANKS2[worst]) worst = status;
+    }
+    for (const inner of suite.suites || []) visit(inner);
+  }
+  for (const top of json.results || []) visit(top);
+  if (cases.length === 0) {
+    return { spec_path: specPath, status: "skipped", actual_duration_ms: 0, test_cases: [] };
+  }
+  const out = {
+    spec_path: specPath,
+    status: worst,
+    actual_duration_ms: totalMs,
+    test_cases: cases
+  };
+  const firstFail = cases.find(
+    (c) => c.status === "failed" || c.status === "timedOut" || c.status === "interrupted"
+  );
+  if (firstFail?.error_message) out.error_message = firstFail.error_message;
+  if (firstFail?.error_stack) out.error_stack = firstFail.error_stack;
+  return out;
+}
+
+// src/upload.ts
+var fs4 = __toESM(require("fs"));
+var path3 = __toESM(require("path"));
 async function uploadShard(cfg, invocations) {
   if (invocations.length === 0) {
     info("no invocations; nothing to upload");
@@ -24735,13 +24861,13 @@ async function uploadShard(cfg, invocations) {
   const screenshotParts = [];
   for (let i = 0; i < invocations.length; i++) {
     const inv = invocations[i];
-    if (fs3.existsSync(inv.playwrightJsonPath)) {
-      const stat2 = fs3.statSync(inv.playwrightJsonPath);
+    if (fs4.existsSync(inv.playwrightJsonPath)) {
+      const stat2 = fs4.statSync(inv.playwrightJsonPath);
       const rel = invocations.length > 1 ? `playwright-results-${i}.json` : "playwright-results.json";
       jsonParts.push({ absPath: inv.playwrightJsonPath, relPath: rel, size: stat2.size });
     }
-    const outputRoot = path2.join(inv.iterDir, "output");
-    if (fs3.existsSync(outputRoot)) {
+    const outputRoot = path3.join(inv.iterDir, "output");
+    if (fs4.existsSync(outputRoot)) {
       for (const img of listImages(outputRoot)) {
         const prefixed = invocations.length > 1 ? `iter-${i}/${img.relPath}` : img.relPath;
         screenshotParts.push({ ...img, relPath: prefixed });
@@ -24790,7 +24916,7 @@ async function uploadMultipart(cfg, urlPath, parts, defaultType) {
   const res = await fetchWithAuthRetry(async () => {
     const form = new FormData();
     for (const p of parts) {
-      const buf = fs3.readFileSync(p.absPath);
+      const buf = fs4.readFileSync(p.absPath);
       const type = p.contentType || defaultType || "application/octet-stream";
       form.append("files", new Blob([new Uint8Array(buf)], { type }), p.relPath);
     }
@@ -24810,26 +24936,26 @@ function listImages(root) {
   const out = [];
   let entries;
   try {
-    entries = fs3.readdirSync(root, { recursive: true, withFileTypes: true });
+    entries = fs4.readdirSync(root, { recursive: true, withFileTypes: true });
   } catch {
     return out;
   }
   for (const ent of entries) {
     if (!ent.isFile()) continue;
     const dir = ent.parentPath || ent.path || root;
-    const abs = path2.join(dir, ent.name);
-    const ext = path2.extname(abs).toLowerCase();
+    const abs = path3.join(dir, ent.name);
+    const ext = path3.extname(abs).toLowerCase();
     const ct = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : null;
     if (!ct) continue;
     let stat2;
     try {
-      stat2 = fs3.statSync(abs);
+      stat2 = fs4.statSync(abs);
     } catch {
       continue;
     }
     out.push({
       absPath: abs,
-      relPath: path2.relative(root, abs).split(path2.sep).join("/"),
+      relPath: path3.relative(root, abs).split(path3.sep).join("/"),
       size: stat2.size,
       contentType: ct
     });
@@ -24881,9 +25007,14 @@ async function run() {
   const githubToken = getInput("github-token", { required: true });
   setSecret(githubToken);
   const ghJobName = getInput("gh-job-name", { required: true });
+  const framework = (getInput("framework") || "playwright").trim().toLowerCase();
+  if (framework !== "playwright" && framework !== "cypress") {
+    throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
+  }
   const playwrightRetries = intInput("playwright-retries", 1);
   const playwrightDirInput = getInput("playwright-dir") || "e2e-tests/playwright";
   const resultsDirInput = getInput("results-dir") || "results";
+  const cypressDirInput = getInput("cypress-dir") || "e2e-tests/cypress";
   let compositeIdentity;
   try {
     compositeIdentity = JSON.parse(compositeIdentityRaw);
@@ -24892,10 +25023,11 @@ async function run() {
   }
   const ghJobId = await resolveJobId(githubToken, ghJobName);
   info(`resolved gh_job_id=${ghJobId} for gh_job_name=${ghJobName}`);
-  const playwrightDir = path3.resolve(repoDir, playwrightDirInput);
-  const resultsDir = path3.resolve(playwrightDir, resultsDirInput);
-  const workerArtifacts = path3.join(artifactsRoot, ghJobId);
-  fs4.mkdirSync(workerArtifacts, { recursive: true });
+  const playwrightDir = path4.resolve(repoDir, playwrightDirInput);
+  const resultsDir = path4.resolve(playwrightDir, resultsDirInput);
+  const cypressDir = path4.resolve(repoDir, cypressDirInput);
+  const workerArtifacts = path4.join(artifactsRoot, ghJobId);
+  fs5.mkdirSync(workerArtifacts, { recursive: true });
   const invocations = [];
   let iterationSeq = 0;
   let drainErr;
@@ -24906,8 +25038,10 @@ async function run() {
       compositeIdentity,
       ghJobId,
       ghJobName,
+      framework,
       playwrightDir,
       resultsDir,
+      cypressDir,
       workerArtifacts,
       playwrightRetries,
       invocations,
@@ -24973,7 +25107,15 @@ async function drain(cfg) {
     info(`leased (${isRetest ? "retest" : "fresh"}): ${specPaths.join(", ")}`);
     let results;
     try {
-      const out = runUnit(
+      const out = cfg.framework === "cypress" ? runUnit2(
+        {
+          cypressDir: cfg.cypressDir,
+          resultsDir: cfg.resultsDir,
+          workerArtifacts: cfg.workerArtifacts
+        },
+        cfg.nextIterationSeq(),
+        specPaths
+      ) : runUnit(
         {
           playwrightDir: cfg.playwrightDir,
           resultsDir: cfg.resultsDir,

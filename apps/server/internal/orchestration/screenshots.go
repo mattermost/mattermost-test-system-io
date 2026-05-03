@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -104,30 +103,34 @@ func (s *Store) specPathInLeaseUnits(ctx context.Context, leaseID uuid.UUID, spe
 }
 
 // composeScreenshotKey builds the object-store key for an orchestration
-// screenshot. URL-encodes spec_path and relative_path's path segments so
-// every key is well-formed even when the worker's payload contains unusual
-// characters.
+// screenshot. Path segments are kept verbatim — object stores accept
+// spaces and parens in keys, and `aws-sdk-go-v2`'s presigner handles URL
+// encoding when it generates the presigned URL. URL-encoding the key at
+// storage time previously caused the read path's chi-decoded lookup to
+// miss the object (stored at `page%20%28failed%29.png`, looked up at
+// `page (failed).png`).
 func composeScreenshotKey(runUUID, leaseUUID, specPath, relativePath string) string {
 	return strings.Join([]string{
 		"orchestration",
 		runUUID,
 		leaseUUID,
 		"screenshots",
-		encodePathSegments(specPath),
-		encodePathSegments(relativePath),
+		joinNonEmpty(specPath),
+		joinNonEmpty(relativePath),
 	}, "/")
 }
 
-// encodePathSegments URL-encodes each `/`-delimited segment of p without
-// flattening the separators. Empty segments are skipped.
-func encodePathSegments(p string) string {
+// joinNonEmpty rejoins p's `/`-delimited segments after skipping empty
+// ones, so leading/trailing slashes and `//` runs collapse to a single
+// `/`. Preserves all other characters (spaces, parens, etc.) verbatim.
+func joinNonEmpty(p string) string {
 	parts := strings.Split(p, "/")
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if part == "" {
 			continue
 		}
-		out = append(out, url.PathEscape(part))
+		out = append(out, part)
 	}
 	return strings.Join(out, "/")
 }

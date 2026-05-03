@@ -678,6 +678,27 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		})
 		winner := cases[0]
 		winAttempt := atoiDefault(winner.RunAttempt, 1)
+		// Promote to "flaky" when the title has at least one passed and
+		// one failed/timed_out attempt across the cases set — same rule
+		// countStatuses applies inside a single suite, lifted here to the
+		// cross-report rollup so retest survivors don't get
+		// double-counted as failed. The winner-based tiebreak above is
+		// unstable when retest rows share a created_at (one shard, two
+		// ingestions), so we check the full set rather than relying on
+		// which row sorted first.
+		rollupStatus := winner.Status
+		var hasPassed, hasFailed bool
+		for _, c := range cases {
+			switch c.Status {
+			case statusPassed, statusFlaky:
+				hasPassed = true
+			case statusFailed, statusTimedOut:
+				hasFailed = true
+			}
+		}
+		if hasPassed && hasFailed {
+			rollupStatus = statusFlaky
+		}
 		history := make([]historyEntry, 0, len(cases))
 		for _, c := range cases {
 			history = append(history, historyEntry{
@@ -695,7 +716,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		}
 		specs = append(specs, consolidatedSpec{
 			FullTitle:        title,
-			Status:           winner.Status,
+			Status:           rollupStatus,
 			SourceCommitSHA:  winner.CommitSHA,
 			SourceRunAttempt: winAttempt,
 			IsFromLatest:     winner.CommitSHA == latestCommit && winAttempt == latestAttempt,
@@ -704,7 +725,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			History:          history,
 		})
 		durationSum += winner.DurationMs
-		switch winner.Status {
+		switch rollupStatus {
 		case statusPassed:
 			passed++
 		case statusFailed, statusTimedOut:

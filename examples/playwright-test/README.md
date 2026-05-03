@@ -93,7 +93,7 @@ demo with `PLAYWRIGHT_PROJECT=firefox` etc.)
 ### 4. Drive the demo
 
 ```bash
-node scripts/orchestration-demo.js
+node scripts/orchestration-demo-playwright.js
 ```
 
 The script:
@@ -182,21 +182,21 @@ You'll see:
 ```bash
 # Run with multiple parallel workers (each one runs Playwright in its own
 # subprocess against its own leased units).
-NUM_WORKERS=3 node scripts/orchestration-demo.js
+NUM_WORKERS=3 node scripts/orchestration-demo-playwright.js
 
 # Real Playwright runs can flake against the live https://playwright.dev/
 # pages, and random.spec.ts fails roughly half the time. Turn on
 # retest-on-fail to see failing units get re-leased.
-RETEST=1 RETEST_BUDGET=2 node scripts/orchestration-demo.js
+RETEST=1 RETEST_BUDGET=2 node scripts/orchestration-demo-playwright.js
 
 # Use a different Playwright project (firefox or webkit) — install the
 # matching browser first via `npx playwright install <name>`.
-PLAYWRIGHT_PROJECT=firefox node scripts/orchestration-demo.js
+PLAYWRIGHT_PROJECT=firefox node scripts/orchestration-demo-playwright.js
 
 # Hit a non-default server or use a custom API key.
 API_BASE=http://localhost:9090 \
 TSIO_API_KEY=my-rotated-key \
-  node scripts/orchestration-demo.js
+  node scripts/orchestration-demo-playwright.js
 ```
 
 Note: the seed specs hit `https://playwright.dev/` and assert against its

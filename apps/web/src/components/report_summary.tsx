@@ -40,14 +40,24 @@ type TestStatus = 'passed' | 'failed' | 'timed_out';
 type ProgressStatus = 'in_progress' | 'completed' | 'timed_out' | 'incomplete';
 
 /**
- * Promote an in_progress report group to `incomplete` when the last upload
- * is older than REPORT_INCOMPLETE_THRESHOLD_MS. Other states (completed,
- * incomplete already, orchestration's timed_out) pass through.
+ * Effective progress status for a report group row.
+ *
+ * When an orchestration run is associated, its lifecycle drives the badge —
+ * dispatch-mode shards upload at queue-empty, so the upload side can be
+ * idle for long stretches while the run is still healthy.
+ *
+ * Without orchestration, the upload-side `in_progress` is promoted to
+ * `incomplete` after a 10-minute gap past `last_upload_at` so a stuck
+ * shard surfaces before the server-side reaper transitions it.
  */
 export function resolveEffectiveReportStatus(
   status: ProgressStatus,
   lastUploadAt?: string,
+  orchestration?: { status: 'in_progress' | 'completed' | 'timed_out' } | null,
 ): ProgressStatus {
+  if (orchestration) {
+    return orchestration.status;
+  }
   if (status === 'in_progress' && lastUploadAt) {
     const idleMs = Date.now() - new Date(lastUploadAt).getTime();
     if (Number.isFinite(idleMs) && idleMs > REPORT_INCOMPLETE_THRESHOLD_MS) {

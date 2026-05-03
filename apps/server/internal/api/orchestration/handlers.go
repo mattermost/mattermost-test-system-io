@@ -677,16 +677,18 @@ func (h *Handlers) Screenshots(w http.ResponseWriter, r *http.Request) {
 // ---------- helpers ----------
 
 // identityFromFields validates required identity fields and applies the
-// project's defaults: framework defaults to "playwright", gh_run_attempt to
-// "1".
+// project's defaults: framework defaults to "playwright", gh_run_attempt
+// to "1". An unknown framework value is rejected here in addition to the
+// OpenAPI-middleware enum check, so direct callers (tests, internal code)
+// stay honest.
 func identityFromFields(f identityFields) (orchestration.CompositeIdentity, error) {
 	framework := f.Framework
 	if framework == "" {
-		framework = orchestration.Framework
+		framework = orchestration.DefaultFramework
 	}
-	if framework != orchestration.Framework {
+	if !orchestration.IsSupportedFramework(framework) {
 		return orchestration.CompositeIdentity{},
-			fmt.Errorf("framework must be %q", orchestration.Framework)
+			fmt.Errorf("framework %q is not supported (must be one of: playwright, cypress)", framework)
 	}
 	attempt := f.GHRunAttempt
 	if attempt == "" {

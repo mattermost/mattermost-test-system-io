@@ -36,22 +36,22 @@
  *   # or
  *   eval "$(make seed | grep '^TSIO_API_KEY=')"
  *
- *   node scripts/orchestration-demo.js
+ *   node scripts/orchestration-demo-playwright.js
  *
  * Usage:
  *
- *   node scripts/orchestration-demo.js                   # default 1 worker
- *   NUM_WORKERS=3 node scripts/orchestration-demo.js     # 3 parallel workers
- *   RETEST=1 RETEST_BUDGET=2 node scripts/orchestration-demo.js
+ *   node scripts/orchestration-demo-playwright.js                   # default 1 worker
+ *   NUM_WORKERS=3 node scripts/orchestration-demo-playwright.js     # 3 parallel workers
+ *   RETEST=1 RETEST_BUDGET=2 node scripts/orchestration-demo-playwright.js
  *                                                       # turn on retest-on-fail
  *
  *   API_BASE=http://localhost:8080 \
- *     node scripts/orchestration-demo.js                 # custom server
+ *     node scripts/orchestration-demo-playwright.js                 # custom server
  *
- *   PLAYWRIGHT_PROJECT=firefox node scripts/orchestration-demo.js
+ *   PLAYWRIGHT_PROJECT=firefox node scripts/orchestration-demo-playwright.js
  *                                                       # alternate browser
  *
- *   PR=4321 node scripts/orchestration-demo.js          # simulate a PR run:
+ *   PR=4321 node scripts/orchestration-demo-playwright.js          # simulate a PR run:
  *                                                       # branch becomes
  *                                                       # `pr-4321` and
  *                                                       # gh_pr_number is
@@ -96,7 +96,7 @@ if (!API_KEY) {
   console.error('  # or, in one step:');
   console.error('  eval "$(make seed | grep \'^TSIO_API_KEY=\')"');
   console.error('');
-  console.error('  node scripts/orchestration-demo.js');
+  console.error('  node scripts/orchestration-demo-playwright.js');
   console.error('');
   console.error('Note: TSIO_ADMIN_KEY is a SEPARATE credential (X-Admin-Key)');
   console.error('used only by privileged setup endpoints. It is not accepted');
@@ -189,7 +189,7 @@ const IDENTITY = {
   repository: 'orchestration-demo',
   commit_sha: COMMIT_SHA,
   gh_run_id: `demo-${NOW_MS}`,
-  name: 'orchestration-demo',
+  name: 'orchestration-demo-playwright',
   gh_run_attempt: '1',
   framework: 'playwright',
   branch: PR_NUMBER ? `pr-${PR_NUMBER}` : 'main',

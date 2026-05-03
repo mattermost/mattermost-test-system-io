@@ -18,7 +18,7 @@ func validIdentity() CompositeIdentity {
 		GHRunID:      "1234567890",
 		Name:         "playwright-shard-1",
 		GHRunAttempt: "1",
-		Framework:    Framework,
+		Framework:    FrameworkPlaywright,
 	}
 }
 

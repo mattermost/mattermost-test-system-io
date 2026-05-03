@@ -22,27 +22,50 @@ inputs:
   composite-identity:
     description: Composite identity JSON (same payload the dispatch-begin action received)
     required: true
+  framework:
+    description: >
+      Test framework this worker drives. One of `playwright` or
+      `cypress`. Defaults to `playwright` for backward compatibility
+      with existing consumers. When `cypress`, the action invokes
+      `npx cypress run --reporter cypress-multi-reporters
+      --reporter-options configFile=reporter-config.json --spec <leased>`
+      from `<repo-dir>/<cypress-dir>` and reads each leased spec's
+      Mochawesome JSON from
+      `results/mochawesome-report/json/tests/[name].json` (the path
+      reporter-config.json prescribes via reportDir + reportFilename).
+    required: false
+    default: "playwright"
   repo-dir:
     description: >
-      Path to the checked-out repo whose Playwright suite this run covers
+      Path to the checked-out repo whose test suite this run covers
       (e.g. mattermost/mattermost). The e2e stack must already be up;
       the worker dispatches `npx playwright test` inside
-      `<repo-dir>/<playwright-dir>`.
+      `<repo-dir>/<playwright-dir>` (or `cypress run` inside
+      `<repo-dir>/<cypress-dir>` when `framework: cypress`).
     required: true
   playwright-dir:
     description: >
       Path to the Playwright project, relative to `repo-dir`. Defaults to
       `e2e-tests/playwright` (the layout used by mattermost/mattermost);
-      override for repos that put Playwright somewhere else.
+      override for repos that put Playwright somewhere else. Ignored
+      when `framework: cypress`.
     required: false
     default: e2e-tests/playwright
   results-dir:
     description: >
       Path to Playwright's results output, relative to `playwright-dir`.
       Must match the `outputDir` configured in the consumer repo's
-      `playwright.config.ts`. Defaults to `results`.
+      `playwright.config.ts`. Defaults to `results`. Ignored when
+      `framework: cypress`.
     required: false
     default: results
+  cypress-dir:
+    description: >
+      Path to the Cypress project, relative to `repo-dir`. Defaults to
+      `e2e-tests/cypress` (the layout used by mattermost/mattermost).
+      Only consulted when `framework: cypress`.
+    required: false
+    default: e2e-tests/cypress
   artifacts-root:
     description: Writable directory for per-iteration archived results
     required: true

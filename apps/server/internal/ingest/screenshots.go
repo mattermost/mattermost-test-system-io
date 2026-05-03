@@ -109,23 +109,52 @@ func LinkScreenshots(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 		return linked, err
 	}
 	for _, s := range remaining {
-		normalized := strings.ReplaceAll(s.testName, "/", " > ")
+		candidates := candidateTestNames(s.testName)
+		matched := false
 		for _, c := range cases {
-			if c.fullTitle == s.testName ||
-				c.fullTitle == normalized ||
-				strings.HasPrefix(c.fullTitle, s.testName+" [") ||
-				strings.HasPrefix(c.fullTitle, normalized+" [") {
-				if _, err := pool.Exec(ctx,
-					`UPDATE report_screenshots SET case_id = $1 WHERE id = $2 AND case_id IS NULL`,
-					c.id, s.id); err != nil {
-					return linked, fmt.Errorf("link screenshot %s: %w", s.id, err)
+			for _, cand := range candidates {
+				if c.fullTitle == cand || strings.HasPrefix(c.fullTitle, cand+" [") {
+					if _, err := pool.Exec(ctx,
+						`UPDATE report_screenshots SET case_id = $1 WHERE id = $2 AND case_id IS NULL`,
+						c.id, s.id); err != nil {
+						return linked, fmt.Errorf("link screenshot %s: %w", s.id, err)
+					}
+					linked++
+					matched = true
+					break
 				}
-				linked++
+			}
+			if matched {
 				break
 			}
 		}
 	}
 	return linked, nil
+}
+
+// candidateTestNames produces the alternate forms the screenshot's derived
+// test_name may take in test_cases.full_title. Covers:
+//   - exact match (Playwright "Suite > Test")
+//   - "/" → " > " normalization (older Cypress folder-style paths)
+//   - Cypress Mochawesome format: strip leading spec-file segment(s) and
+//     replace " -- " separators with spaces. Cypress writes screenshots as
+//     "<spec-file>/<Suite> -- <Test> (failed).png"; Mochawesome's fullTitle
+//     concatenates describe/it titles with a single space, so the two only
+//     align after both transforms.
+func candidateTestNames(testName string) []string {
+	out := []string{testName, strings.ReplaceAll(testName, "/", " > ")}
+	if i := strings.LastIndex(testName, "/"); i >= 0 {
+		tail := testName[i+1:]
+		if tail != "" {
+			out = append(out, tail)
+			if strings.Contains(tail, " -- ") {
+				out = append(out, strings.ReplaceAll(tail, " -- ", " "))
+			}
+		}
+	} else if strings.Contains(testName, " -- ") {
+		out = append(out, strings.ReplaceAll(testName, " -- ", " "))
+	}
+	return out
 }
 
 type stagedShot struct {

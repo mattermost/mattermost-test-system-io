@@ -1,6 +1,6 @@
 # Test System IO
 
-Go API + React frontend for viewing Playwright test reports.
+Go API + React frontend for viewing Playwright, Cypress, and Detox test reports, and for orchestrating Playwright and Cypress test-shard execution on GitHub Actions.
 
 ## Quick Start
 ```bash

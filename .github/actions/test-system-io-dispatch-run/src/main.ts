@@ -14,7 +14,8 @@ import * as path from "node:path";
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { fetchWithAuthRetry, getBearer } from "./auth";
-import { runUnit } from "./playwright";
+import { runUnit as runPlaywrightUnit } from "./playwright";
+import { runUnit as runCypressUnit } from "./cypress";
 import { uploadShard, type UploadConfig } from "./upload";
 import type {
   CheckoutResponseBody,
@@ -39,9 +40,14 @@ export async function run(): Promise<void> {
   // wouldn't auto-mask on its own).
   core.setSecret(githubToken);
   const ghJobName = core.getInput("gh-job-name", { required: true });
+  const framework = (core.getInput("framework") || "playwright").trim().toLowerCase();
+  if (framework !== "playwright" && framework !== "cypress") {
+    throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
+  }
   const playwrightRetries = intInput("playwright-retries", 1);
   const playwrightDirInput = core.getInput("playwright-dir") || "e2e-tests/playwright";
   const resultsDirInput = core.getInput("results-dir") || "results";
+  const cypressDirInput = core.getInput("cypress-dir") || "e2e-tests/cypress";
 
   let compositeIdentity: CompositeIdentity;
   try {
@@ -55,6 +61,7 @@ export async function run(): Promise<void> {
 
   const playwrightDir = path.resolve(repoDir, playwrightDirInput);
   const resultsDir = path.resolve(playwrightDir, resultsDirInput);
+  const cypressDir = path.resolve(repoDir, cypressDirInput);
   const workerArtifacts = path.join(artifactsRoot, ghJobId);
   fs.mkdirSync(workerArtifacts, { recursive: true });
 
@@ -72,8 +79,10 @@ export async function run(): Promise<void> {
       compositeIdentity,
       ghJobId,
       ghJobName,
+      framework,
       playwrightDir,
       resultsDir,
+      cypressDir,
       workerArtifacts,
       playwrightRetries,
       invocations,
@@ -110,8 +119,10 @@ interface DrainConfig {
   compositeIdentity: CompositeIdentity;
   ghJobId: string;
   ghJobName: string;
+  framework: string;
   playwrightDir: string;
   resultsDir: string;
+  cypressDir: string;
   workerArtifacts: string;
   playwrightRetries: number;
   invocations: InvocationRecord[];
@@ -167,16 +178,27 @@ async function drain(cfg: DrainConfig): Promise<void> {
 
     let results: SpecResult[];
     try {
-      const out = runUnit(
-        {
-          playwrightDir: cfg.playwrightDir,
-          resultsDir: cfg.resultsDir,
-          workerArtifacts: cfg.workerArtifacts,
-          playwrightRetries: cfg.playwrightRetries,
-        },
-        cfg.nextIterationSeq(),
-        specPaths,
-      );
+      const out =
+        cfg.framework === "cypress"
+          ? runCypressUnit(
+              {
+                cypressDir: cfg.cypressDir,
+                resultsDir: cfg.resultsDir,
+                workerArtifacts: cfg.workerArtifacts,
+              },
+              cfg.nextIterationSeq(),
+              specPaths,
+            )
+          : runPlaywrightUnit(
+              {
+                playwrightDir: cfg.playwrightDir,
+                resultsDir: cfg.resultsDir,
+                workerArtifacts: cfg.workerArtifacts,
+                playwrightRetries: cfg.playwrightRetries,
+              },
+              cfg.nextIterationSeq(),
+              specPaths,
+            );
       cfg.invocations.push(out.invocation);
       results = out.results;
     } catch (err) {

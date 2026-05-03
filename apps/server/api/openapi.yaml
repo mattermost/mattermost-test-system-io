@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Test System IO API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     HTTP API for uploading and viewing Playwright, Cypress, and Detox test
     reports. This spec is hand-authored and is the source of truth for the
@@ -1595,7 +1595,7 @@ components:
           type: integer
         framework:
           type: string
-          enum: [playwright]
+          enum: [playwright, cypress]
           default: playwright
 
     WorkerIdentity:

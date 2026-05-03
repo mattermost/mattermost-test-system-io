@@ -3,7 +3,8 @@
 API server and web dashboard for collecting, storing, and viewing Test
 Automation reports — and for orchestrating test-shard execution across an
 arbitrary number of CI workers. Currently supports Playwright, Cypress, and
-Detox for report ingestion; orchestration targets Playwright on GitHub Actions.
+Detox for report ingestion; orchestration targets Playwright and Cypress on
+GitHub Actions.
 
 ## Stack
 

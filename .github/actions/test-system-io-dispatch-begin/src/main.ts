@@ -39,8 +39,13 @@ export async function run(): Promise<void> {
   const retestBudget = intInput("retest-budget", 1);
   const idleTimeoutMs = intInput("idle-timeout-ms", 600_000);
   const leaseTimeoutMs = intInput("lease-timeout-ms", 600_000);
+  const framework = (core.getInput("framework") || "playwright").trim().toLowerCase();
+  if (framework !== "playwright" && framework !== "cypress") {
+    throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
+  }
   const playwrightProject = core.getInput("playwright-project") || "chrome";
   const playwrightDirInput = core.getInput("playwright-dir") || "e2e-tests/playwright";
+  const cypressDirInput = core.getInput("cypress-dir") || "e2e-tests/cypress";
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
     throw new Error("total-reports-expected is required and must be > 0");
@@ -53,23 +58,31 @@ export async function run(): Promise<void> {
     throw new Error(`composite-identity is not valid JSON: ${(e as Error).message}`);
   }
 
-  const playwrightDir = path.resolve(repoDir, playwrightDirInput);
-  const specs = discoverSpecs(playwrightDir);
-  if (specs.length === 0) {
-    throw new Error(`no specs found under ${playwrightDir}`);
+  let specs: string[];
+  if (framework === "cypress") {
+    const cypressDir = path.resolve(repoDir, cypressDirInput);
+    specs = discoverCypressSpecs(cypressDir);
+    if (specs.length === 0) {
+      throw new Error(`no Cypress specs found under ${cypressDir}`);
+    }
+  } else {
+    const playwrightDir = path.resolve(repoDir, playwrightDirInput);
+    specs = discoverSpecs(playwrightDir);
+    if (specs.length === 0) {
+      throw new Error(`no Playwright specs found under ${playwrightDir}`);
+    }
   }
   const dispatchUnits: DispatchUnit[] = specs.map((p) => ({ spec_path: p }));
-  core.info(`discovered ${dispatchUnits.length} spec file(s)`);
+  core.info(`discovered ${dispatchUnits.length} ${framework} spec file(s)`);
 
   const bearer = await core.getIDToken(audience);
   // Mark the JWT for the runner's output filter so subsequent `core.info`,
   // error messages, or stack traces involving it print as `***`.
   core.setSecret(bearer);
 
-  const beginBody = {
+  const beginBody: Record<string, unknown> = {
     ...compositeIdentity,
-    framework: "playwright",
-    playwright_project: playwrightProject,
+    framework,
     lease_timeout_ms: leaseTimeoutMs,
     idle_timeout_ms: idleTimeoutMs,
     retest_on_fail: retestOnFail,
@@ -77,6 +90,12 @@ export async function run(): Promise<void> {
     total_reports_expected: totalReportsExpected,
     dispatch_units: dispatchUnits,
   };
+  // playwright_project is a Playwright-only field; Cypress runs do not
+  // carry it. Including it for cypress would be harmless on the wire
+  // (server ignores unknown fields) but is misleading in the logs.
+  if (framework === "playwright") {
+    beginBody.playwright_project = playwrightProject;
+  }
 
   const beginRes = await fetch(`${baseURL}/api/v1/orchestration/begin`, {
     method: "POST",
@@ -101,7 +120,7 @@ export async function run(): Promise<void> {
   const reportsRes = await fetch(`${baseURL}/api/v1/reports/begin`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
-    body: JSON.stringify(identityForReports(compositeIdentity, totalReportsExpected)),
+    body: JSON.stringify(identityForReports(compositeIdentity, framework, totalReportsExpected)),
   });
   if (reportsRes.status !== 200) {
     const t = await reportsRes.text().catch(() => "");
@@ -143,8 +162,40 @@ export function discoverSpecs(playwrightDir: string): string[] {
     .sort();
 }
 
+/**
+ * Walk `<cypressDir>/tests/integration/` (and any subdirectories) for
+ * `*_spec.{ts,js}` — the Mattermost convention. Returns paths relative
+ * to cypressDir, sorted, with directory separators normalized to `/`.
+ * Mirrors discoverSpecs's interface so the dispatch flow stays uniform.
+ *
+ * Consumers using a different layout pass paths to begin run via their
+ * own pre-discovery rather than relying on this default.
+ */
+export function discoverCypressSpecs(cypressDir: string): string[] {
+  const integrationDir = path.join(cypressDir, "tests", "integration");
+  const out: string[] = [];
+  function rec(dir: string): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) rec(full);
+      else if (ent.isFile() && (ent.name.endsWith("_spec.ts") || ent.name.endsWith("_spec.js"))) {
+        out.push(full);
+      }
+    }
+  }
+  rec(integrationDir);
+  return out.map((abs) => path.relative(cypressDir, abs).split(path.sep).join("/")).sort();
+}
+
 function identityForReports(
   c: CompositeIdentity,
+  framework: string,
   totalReportsExpected: number,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
@@ -152,7 +203,7 @@ function identityForReports(
     commit: c.commit_sha,
     gh_run_id: c.gh_run_id,
     gh_run_attempt: c.gh_run_attempt,
-    framework: "playwright",
+    framework,
     name: c.name,
     branch: c.branch,
     total_reports_expected: totalReportsExpected,

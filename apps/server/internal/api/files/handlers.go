@@ -6,6 +6,7 @@ package files
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -41,6 +42,15 @@ func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 	if raw == "" {
 		api.WriteError(w, r, api.ErrNotFound)
 		return
+	}
+	// chi's wildcard returns the path partially decoded — `%28` becomes
+	// `(` but `%20` may pass through verbatim depending on the request
+	// shape. The object-store key is the canonical decoded form, so
+	// run one explicit decode pass here. Without this, a presigned URL
+	// for a key containing spaces double-encodes (`%20` → `%2520`) and
+	// MinIO/S3 returns 404.
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		raw = decoded
 	}
 	key := strings.TrimLeft(raw, "/")
 	if !hasAllowedPrefix(key) {

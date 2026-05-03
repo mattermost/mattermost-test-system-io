@@ -21,7 +21,11 @@ import { OrchestrationInlineSummary } from '@/components/orchestration_inline_su
 import { resolveEffectiveReportStatus } from '@/components/report_summary';
 
 function status_icon(entry: RunEntry) {
-  const effective = resolveEffectiveReportStatus(entry.status, entry.last_upload_at);
+  const effective = resolveEffectiveReportStatus(
+    entry.status,
+    entry.last_upload_at,
+    entry.orchestration,
+  );
 
   // Still in progress (recent upload activity).
   if (effective === 'in_progress') {

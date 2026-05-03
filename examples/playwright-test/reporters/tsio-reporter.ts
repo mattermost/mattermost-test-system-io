@@ -11,7 +11,7 @@
  * Output file path: `process.env.TSIO_REPORTER_OUTPUT` (defaults to
  * `tsio-results.json` under the runner's cwd if unset).
  *
- * The shape this writes is consumed by `scripts/orchestration-demo.js`.
+ * The shape this writes is consumed by `scripts/orchestration-demo-playwright.js`.
  *
  *   {
  *     "duration_ms": number,

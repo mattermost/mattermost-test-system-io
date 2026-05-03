@@ -9,7 +9,7 @@
 //
 // Override the failure probability via the env var, e.g.
 //   RANDOM_PASS_PROB=0.2 NUM_WORKERS=2 RETEST=1 \
-//     node scripts/orchestration-demo.js
+//     node scripts/orchestration-demo-playwright.js
 // to bias toward failures.
 
 import { test, expect } from '@playwright/test';

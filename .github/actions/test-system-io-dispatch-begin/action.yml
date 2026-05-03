@@ -1,9 +1,11 @@
 name: Test System IO — dispatch begin
 description: >
-  Walk the Playwright spec directory and POST /api/v1/orchestration/begin
-  to create the dispatch queue for this composite identity. Authenticates
-  to Test System IO via the calling workflow's GitHub Actions OIDC token,
-  so the workflow MUST grant `permissions: id-token: write`.
+  Walk the test-suite spec directory and POST /api/v1/orchestration/begin
+  to create the dispatch queue for this composite identity. Supports
+  Playwright (default) and Cypress via the `framework` input.
+  Authenticates to Test System IO via the calling workflow's GitHub
+  Actions OIDC token, so the workflow MUST grant
+  `permissions: id-token: write`.
 author: Mattermost
 
 inputs:
@@ -24,11 +26,22 @@ inputs:
       gh_run_id, gh_run_attempt, name, and (optional) branch / gh_pr_number.
       Same payload the worker action receives.
     required: true
+  framework:
+    description: >
+      Test framework this run dispatches. One of `playwright` or
+      `cypress`. Defaults to `playwright` for backward compatibility
+      with existing consumers. When `cypress`, the action enumerates
+      `*_spec.{ts,js}` files under `<repo-dir>/<cypress-dir>/tests/integration/`
+      and submits them as dispatch units; the orchestration_runs row is
+      created with `framework: "cypress"`.
+    required: false
+    default: "playwright"
   repo-dir:
     description: >
-      Path to the checked-out repo whose Playwright suite this run covers
-      (e.g. mattermost/mattermost). The action enumerates spec files under
-      `<repo-dir>/<playwright-dir>/specs`.
+      Path to the checked-out repo whose test suite this run covers
+      (e.g. mattermost/mattermost). The action enumerates spec files
+      under `<repo-dir>/<playwright-dir>/specs` (Playwright) or
+      `<repo-dir>/<cypress-dir>/tests/integration` (Cypress).
     required: true
   total-reports-expected:
     description: >
@@ -38,17 +51,27 @@ inputs:
     required: true
   playwright-dir:
     description: >
-      Path to the Playwright project, relative to `repo-dir`. Defaults to
-      `e2e-tests/playwright` (the layout used by mattermost/mattermost);
-      override for repos that put Playwright somewhere else.
+      Path to the Playwright project, relative to `repo-dir`. Defaults
+      to `e2e-tests/playwright` (the layout used by mattermost/mattermost);
+      override for repos that put Playwright somewhere else. Ignored
+      when `framework: cypress`.
     required: false
     default: e2e-tests/playwright
   playwright-project:
     description: >
       Playwright project name passed through to workers as the
-      `--project=` arg. Defaults to `chrome`.
+      `--project=` arg. Defaults to `chrome`. Ignored when
+      `framework: cypress`.
     required: false
     default: chrome
+  cypress-dir:
+    description: >
+      Path to the Cypress project, relative to `repo-dir`. Defaults to
+      `e2e-tests/cypress` (the layout used by mattermost/mattermost).
+      Spec discovery walks `<cypress-dir>/tests/integration/` for
+      `*_spec.{ts,js}` files. Only consulted when `framework: cypress`.
+    required: false
+    default: e2e-tests/cypress
   retest-on-fail:
     description: Whether the orchestrator should re-dispatch failed dispatch units once
     required: false

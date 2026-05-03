@@ -2,11 +2,13 @@
 
 GitHub composite-bundled JavaScript action that drains a single matrix entry's slice of the orchestration dispatch queue.
 
-For each lease, the action:
+Supports Playwright (default) and Cypress via the `framework` input. For each lease, the action:
 
 1. `POST /api/v1/orchestration/checkout` to lease a spec (or sleep on a non-empty retest pool).
-2. Shells out to `npx playwright test --project=<playwright-project> --grep-invert @visual --no-deps <specs>` inside `<repo-dir>/<playwright-dir>` (default `e2e-tests/playwright`), and reads results from `<playwright-dir>/<results-dir>` (default `results`).
-3. Archives the per-iteration `results/` dir and parses the Playwright reporter JSON, applying flaky-aware aggregation (a test that passes after a `--retries` recovery is `flaky`, not `failed`).
+2. Shells out to the framework's runner:
+    - `framework: playwright` — `npx playwright test --project=<playwright-project> --grep-invert @visual --no-deps <specs>` inside `<repo-dir>/<playwright-dir>` (default `e2e-tests/playwright`), reading results from `<playwright-dir>/<results-dir>` (default `results`).
+    - `framework: cypress` — `npx cypress run --reporter cypress-multi-reporters --reporter-options configFile=reporter-config.json --spec <specs>` inside `<repo-dir>/<cypress-dir>` (default `e2e-tests/cypress`), reading per-spec Mochawesome JSON from `results/mochawesome-report/json/tests/[name].json`.
+3. Parses the reporter JSON, applying flaky-aware aggregation (a test that passes after a retry is `flaky`, not `failed`).
 4. `POST /api/v1/orchestration/complete` with the per-spec outcome.
 
 At queue-empty, the accumulated invocations are uploaded as one shard:
@@ -25,13 +27,15 @@ The calling workflow MUST grant `permissions: id-token: write`.
 | `use-staging` | no | `false` | When `true`, target staging (`https://staging-test-io.test.mattermost.com`) instead of production (`https://test-io.test.mattermost.com`). |
 | `oidc-audience` | no | `mattermost-test-system-io` | OIDC audience claim. |
 | `composite-identity` | yes | — | Same JSON the dispatch-begin action received. |
-| `repo-dir` | yes | — | Path to the checked-out repo whose Playwright suite this run covers (e.g. `mattermost/mattermost`), with the e2e stack already up. |
-| `playwright-dir` | no | `e2e-tests/playwright` | Path to the Playwright project, relative to `repo-dir`. Override for repos that don't use the mattermost/mattermost layout. |
-| `results-dir` | no | `results` | Path to Playwright's results output, relative to `playwright-dir`. Must match the `outputDir` configured in the consumer repo's `playwright.config.ts`. |
+| `framework` | no | `playwright` | Test framework this worker drives. `playwright` or `cypress`. |
+| `repo-dir` | yes | — | Path to the checked-out repo whose test suite this run covers (e.g. `mattermost/mattermost`), with the e2e stack already up. |
+| `playwright-dir` | no | `e2e-tests/playwright` | Path to the Playwright project, relative to `repo-dir`. Ignored when `framework: cypress`. |
+| `results-dir` | no | `results` | Path to Playwright's results output, relative to `playwright-dir`. Ignored when `framework: cypress`. |
+| `cypress-dir` | no | `e2e-tests/cypress` | Path to the Cypress project, relative to `repo-dir`. Only consulted when `framework: cypress`. |
 | `artifacts-root` | yes | — | Writable directory for per-iteration archived results. |
 | `github-token` | yes | — | Token with `actions:read` — used to look up `gh_job_id` from the rendered job name. |
 | `gh-job-name` | yes | — | Rendered matrix job name (e.g. `orch-worker-3`). MUST match the calling job's `name:` field. |
-| `playwright-retries` | no | `1` | Value passed to `npx playwright test --retries=N`. Set to `0` to disable Playwright-internal retries. |
+| `playwright-retries` | no | `1` | Value passed to `npx playwright test --retries=N`. Set to `0` to disable Playwright-internal retries. Ignored when `framework: cypress` (Cypress retries are configured project-side via `cypress.config.ts`'s `retries` field). |
 
 ## Why `gh-job-name`
 

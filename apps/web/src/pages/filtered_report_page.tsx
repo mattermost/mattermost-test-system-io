@@ -370,18 +370,11 @@ export function FilteredReportPage() {
           framework={report.framework}
           reportCount={reportCountSplit.numbered}
           retestReportCount={reportCountSplit.retest}
-          progressStatus={(() => {
-            // When an active orchestration is present, its lifecycle is
-            // the source of truth — the consolidated report record can
-            // appear `completed` early when an older run at this commit
-            // already finished, even though the new run is still pending.
-            // For the report-side path, defer to the eager 10-min heuristic
-            // so a stuck shard surfaces as `incomplete` before the server
-            // reaps it.
-            if (orchestrationRun?.status === 'timed_out') return 'timed_out';
-            if (orchestrationRun?.status === 'in_progress') return 'in_progress';
-            return resolveEffectiveReportStatus(report.status, report.last_upload_at);
-          })()}
+          progressStatus={resolveEffectiveReportStatus(
+            report.status,
+            report.last_upload_at,
+            orchestrationRun,
+          )}
           repository={report.repository}
           branch={report.branch}
           commit={report.commit}
@@ -418,10 +411,10 @@ export function FilteredReportPage() {
   // either standalone (default, no tabs) or inside the Combine tab.
   const renderCombineBody = () =>
     orchestrationIdentityIsResolvable && orchestrationHasData ? (
-      <>
+      <div className="space-y-6">
         <OrchestrationTab identity={orchestrationIdentity} />
         {contributingReportsNode}
-      </>
+      </div>
     ) : reportGroupHasData ? (
       renderReportsBody()
     ) : (
@@ -519,10 +512,10 @@ export function FilteredReportPage() {
 
           <TabsContent value="dispatch">
             {orchestrationIdentityIsResolvable ? (
-              <>
+              <div className="space-y-6">
                 <OrchestrationTab identity={orchestrationIdentity} />
                 {contributingReportsNode}
-              </>
+              </div>
             ) : (
               <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
                 <Inbox className="h-12 w-12 mb-3" />

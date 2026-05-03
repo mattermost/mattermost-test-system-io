@@ -27,7 +27,7 @@ export interface AppConfig {
   readonly projectName: string;
   readonly domainName: string;
   readonly route53ZoneId: string;
-  readonly allSubdomains: string[];
+  readonly certificateArn: string;
   readonly staging: StagingEnvConfig;
   readonly production: ProductionEnvConfig;
 }
@@ -36,7 +36,13 @@ export const APP_CONFIG: AppConfig = {
   projectName: "mattermost-test-system-io",
   domainName: "test.mattermost.com",
   route53ZoneId: process.env.ROUTE53_ZONE_ID ?? "",
-  allSubdomains: ["staging-test-io", "test-io"],
+  // Pre-issued ACM cert and the per-env subdomain SANs.
+  // Pinned by ARN (rather than created in-stack) so a
+  // CDK version bump can't change a property default and force a
+  // PENDING_VALIDATION replacement that hangs deploys. Sourced from the
+  // CERTIFICATE_ARN env var; same ARN for staging and production since
+  // the cert's SAN list covers both subdomains.
+  certificateArn: process.env.CERTIFICATE_ARN ?? "",
 
   staging: {
     subdomain: "staging-test-io",

@@ -218,6 +218,12 @@ jobs:
       - name: Deploy StagingAppStack
         if: steps.infra-changed.outputs.should_deploy == 'true'
         working-directory: infra
+        env:
+          # Pinned ACM cert ARN — read by infra/lib/config.ts so the
+          # NetworkingStack imports an existing cert via fromCertificateArn
+          # instead of creating one in-stack. See infra/lib/constructs/
+          # networking.ts for the full rationale.
+          CERTIFICATE_ARN: ${{ secrets.CERTIFICATE_ARN }}
         run: |
           npx cdk deploy StagingAppStack \
             --require-approval never \

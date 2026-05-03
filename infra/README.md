@@ -121,6 +121,11 @@ CDK_DEFAULT_REGION=us-east-1
 
 # Route 53 hosted zone ID for the domain
 ROUTE53_ZONE_ID=<your-zone-id>
+
+# Pre-issued ACM cert ARN (wildcard + per-env subdomain SANs).
+# NetworkingStack imports this rather than creating one in-stack so a
+# CDK version bump can't drift cert properties and force a replacement.
+CERTIFICATE_ARN=<your-cert-arn>
 ```
 
 | Variable | Required | Description |
@@ -128,6 +133,7 @@ ROUTE53_ZONE_ID=<your-zone-id>
 | `CDK_DEFAULT_ACCOUNT` | Yes | AWS account ID where stacks are deployed |
 | `CDK_DEFAULT_REGION` | Yes | AWS region (e.g., `us-east-1`) |
 | `ROUTE53_ZONE_ID` | Yes | Route 53 hosted zone ID for the domain |
+| `CERTIFICATE_ARN` | Yes | Pre-issued ACM cert ARN to import in NetworkingStack |
 
 These are loaded automatically via `dotenv` when CDK runs. Do **not** put AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) in this file — use `aws configure` or AWS SSO instead.
 

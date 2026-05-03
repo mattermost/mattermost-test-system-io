@@ -35,6 +35,7 @@ RESET  := \033[0m
 ROOT_DIR    := $(shell pwd)
 SERVER_DIR  := $(ROOT_DIR)/apps/server
 WEB_DIR     := $(ROOT_DIR)/apps/web
+INFRA_DIR   := $(ROOT_DIR)/infra
 SERVER_PORT := 8080
 WEB_PORT    := 3000
 # macOS default open-file limit (256) breaks testcontainers; bump for test targets.
@@ -147,7 +148,7 @@ build-web: ## Build web production bundle
 
 ##@ Test
 
-test: test-server test-web ## Run unit tests for server + web
+test: test-server test-web test-infra ## Run unit tests for server + web + infra
 
 test-server: ## Run Go unit tests (race)
 	@echo "$(CYAN)Running Go tests with -race...$(RESET)"
@@ -160,9 +161,12 @@ test-server-e2e: ensure-docker ## Run every -tags=e2e package (admin_cli, oidc, 
 test-web: ## Run web tests (vitest)
 	cd $(WEB_DIR) && npm run test
 
+test-infra: ## Run CDK infra tests (vitest)
+	cd $(INFRA_DIR) && npm run test
+
 ##@ Lint, Vet, Format
 
-lint: lint-server lint-web ## Run all linters
+lint: lint-server lint-web lint-infra ## Run all linters
 
 lint-server: ## golangci-lint on the Go module
 	@echo "$(CYAN)Linting Go (golangci-lint $(GOLANGCI_LINT_VERSION))...$(RESET)"
@@ -171,19 +175,22 @@ lint-server: ## golangci-lint on the Go module
 lint-web: ## Lint the web client
 	cd $(WEB_DIR) && npm run lint
 
+lint-infra: ## Lint the CDK infra (oxlint)
+	cd $(INFRA_DIR) && npm run lint
+
 vet: vet-server ## Run `go vet` (fast baseline static analyzers)
 
 vet-server: ## go vet ./... on the Go module
 	@echo "$(CYAN)Running go vet...$(RESET)"
 	cd $(SERVER_DIR) && $(GO) vet ./...
 
-fmt: fmt-server fmt-web ## Format server (gofmt+goimports) and web (prettier/oxfmt)
+fmt: fmt-server fmt-web fmt-infra ## Format server (gofmt+goimports), web (oxfmt), and infra (oxfmt)
 
 fmt-server: ## Format Go code (writes)
 	@echo "$(CYAN)Formatting Go code...$(RESET)"
 	cd $(SERVER_DIR) && $(GOFMT) -s -w . && $(GOIMPORTS_CMD) -w .
 
-fmt-check: fmt-check-server fmt-check-web ## Verify formatting on Go + web (matches GitHub `web-checks` / `server-checks` jobs)
+fmt-check: fmt-check-server fmt-check-web fmt-check-infra ## Verify formatting on Go + web + infra (matches GitHub `web-checks` / `server-checks` / `infra-checks` jobs)
 
 fmt-check-server: ## Verify Go is gofmt-clean (CI-friendly; exit 1 on drift)
 	@cd $(SERVER_DIR) && out=$$($(GOFMT) -s -l .); \
@@ -199,10 +206,19 @@ fmt-web: ## Format web client (writes)
 fmt-check-web: ## Verify web client is oxfmt-clean
 	cd $(WEB_DIR) && npm run format:check
 
-typecheck: typecheck-web ## Type-check (web only; Go type-checks in `vet`/`build`)
+fmt-infra: ## Format CDK infra (writes)
+	cd $(INFRA_DIR) && npm run format
+
+fmt-check-infra: ## Verify CDK infra is oxfmt-clean
+	cd $(INFRA_DIR) && npm run format:check
+
+typecheck: typecheck-web typecheck-infra ## Type-check (web + infra; Go type-checks in `vet`/`build`)
 
 typecheck-web: ## Type-check TypeScript (tsc --noEmit)
 	cd $(WEB_DIR) && npm run typecheck
+
+typecheck-infra: ## Type-check CDK infra TypeScript (tsc --noEmit)
+	cd $(INFRA_DIR) && npm run typecheck
 
 ##@ CI
 

@@ -16,7 +16,7 @@ export class NetworkingStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
   public readonly alb: elbv2.ApplicationLoadBalancer;
   public readonly httpsListener: elbv2.ApplicationListener;
-  public readonly certificate: acm.Certificate;
+  public readonly certificate: acm.ICertificate;
   public readonly appSecurityGroup: ec2.SecurityGroup;
   public readonly hostedZone: route53.IHostedZone;
 
@@ -25,12 +25,18 @@ export class NetworkingStack extends cdk.Stack {
 
     const { config } = props;
 
+    if (!config.certificateArn) {
+      throw new Error(
+        "CERTIFICATE_ARN env var is required (pinned ACM cert ARN — see infra/lib/config.ts)",
+      );
+    }
+
     const networking = new Networking(this, "Networking", {
       environment: "shared",
       projectName: config.projectName,
       domainName: config.domainName,
-      subdomainNames: config.allSubdomains,
       route53ZoneId: config.route53ZoneId,
+      certificateArn: config.certificateArn,
     });
 
     this.vpc = networking.vpc;

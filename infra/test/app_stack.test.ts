@@ -10,6 +10,8 @@ import { APP_CONFIG, AppConfig } from "../lib/config";
 const testConfig: AppConfig = {
   ...APP_CONFIG,
   route53ZoneId: "Z1234567890",
+  certificateArn:
+    "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000",
 };
 
 const testEnv = { account: "123456789012", region: "us-east-1" };
@@ -80,9 +82,15 @@ describe("Infrastructure", () => {
       templates.networking.resourceCountIs("AWS::ElasticLoadBalancingV2::LoadBalancer", 1);
     });
 
-    test("creates ACM certificate with DNS validation", () => {
-      templates.networking.hasResourceProperties("AWS::CertificateManager::Certificate", {
-        ValidationMethod: "DNS",
+    test("imports ACM certificate by ARN (no in-stack cert resource)", () => {
+      // Pinned cert: NetworkingStack pulls the ARN from config and
+      // attaches it to the HTTPS listener instead of synthesizing an
+      // AWS::CertificateManager::Certificate resource. Guards against
+      // a regression that would re-introduce the in-stack cert and
+      // re-expose us to CDK-version-drift forced replacements.
+      templates.networking.resourceCountIs("AWS::CertificateManager::Certificate", 0);
+      templates.networking.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", {
+        Certificates: [{ CertificateArn: testConfig.certificateArn }],
       });
     });
   });

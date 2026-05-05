@@ -1,6 +1,8 @@
 import {
+  Folder,
   GitBranch,
   GitCommit,
+  GitPullRequest,
   CheckCircle,
   XCircle,
   Clock,
@@ -89,45 +91,65 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
       to={entry.url_path}
       className="flex cursor-pointer items-center px-3 py-2 text-sm"
     >
-      {/* Left: status, repo, branch, commit, name */}
-      <div className="flex items-center gap-2 min-w-0 flex-shrink-0">
+      {/* Left: status icon + two-row identity (name/run on top, repo
+          context below). The icon centers vertically against the full
+          two-row block (items-center on the wrapper). Nothing here is
+          truncated — long repo names like `mattermost-test-system-io`
+          would otherwise lose characters and force the user to hover
+          for context. */}
+      <div className="flex items-center gap-2 flex-shrink-0">
         {status_icon(entry)}
-        {repoName && (
-          <span className="truncate max-w-[100px] text-xs font-medium text-gray-500 dark:text-gray-400">
-            {repoName}
-          </span>
-        )}
-        <span className="inline-flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 flex-shrink-0">
-          <GitBranch className="h-3 w-3" />
-          <span className="max-w-[100px] truncate">{branch}</span>
-        </span>
-        <span className="inline-flex items-center gap-1 font-mono text-xs text-gray-500 dark:text-gray-500 flex-shrink-0">
-          <GitCommit className="h-3 w-3" />
-          {entry.short_sha}
-        </span>
-        <span className="truncate text-xs text-gray-700 dark:text-gray-300">{entry.name}</span>
-        {entry.gh_run_id && (
-          <span
-            className="inline-flex items-center gap-1 font-mono text-xs text-gray-500 dark:text-gray-500 flex-shrink-0"
-            title={`GitHub Actions run ${entry.gh_run_id}`}
-          >
-            <Play className="h-3 w-3" />
-            {entry.gh_run_id}
-          </span>
-        )}
-        {entry.gh_run_attempt && entry.gh_run_attempt !== '1' && (
-          <span
-            className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-500 flex-shrink-0"
-            title={`GitHub Actions run attempt ${entry.gh_run_attempt}`}
-          >
-            <RotateCcw className="h-3 w-3" />
-            attempt {entry.gh_run_attempt}
-          </span>
-        )}
+        <div className="flex flex-col gap-0.5">
+          {/* Row 1: name + gh_run_id (+ optional non-1 attempt) */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-700 dark:text-gray-300">{entry.name}</span>
+            {entry.gh_run_id && (
+              <span
+                className="inline-flex items-center gap-1 font-mono text-sm text-gray-500 dark:text-gray-500"
+                title={`GitHub Actions run ${entry.gh_run_id}`}
+              >
+                <Play className="h-3.5 w-3.5" />
+                {entry.gh_run_id}
+              </span>
+            )}
+            {entry.gh_run_attempt && entry.gh_run_attempt !== '1' && (
+              <span
+                className="inline-flex items-center gap-1 text-sm text-gray-500 dark:text-gray-500"
+                title={`GitHub Actions run attempt ${entry.gh_run_attempt}`}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                attempt {entry.gh_run_attempt}
+              </span>
+            )}
+          </div>
+          {/* Row 2: repo + (PR # | branch) + commit */}
+          <div className="flex items-center gap-2">
+            {repoName && (
+              <span className="inline-flex items-center gap-1 text-sm font-medium text-gray-500 dark:text-gray-400">
+                <Folder className="h-3.5 w-3.5" />
+                {repoName}
+              </span>
+            )}
+            {entry.gh_pr_number != null ? (
+              <span className="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400">
+                <GitPullRequest className="h-3.5 w-3.5" />#{entry.gh_pr_number}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400">
+                <GitBranch className="h-3.5 w-3.5" />
+                {branch}
+              </span>
+            )}
+            <span className="inline-flex items-center gap-1 font-mono text-sm text-gray-500 dark:text-gray-500">
+              <GitCommit className="h-3.5 w-3.5" />
+              {entry.short_sha}
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Middle: test summary, pass rate (flex-1 pushes right group to edge) */}
-      <div className="flex-1 flex items-center justify-end gap-2 text-xs mx-2">
+      <div className="flex-1 flex items-center justify-end gap-2 text-sm mx-2">
         {hasStats && stats && (
           <span
             className="text-gray-500 dark:text-gray-400"
@@ -156,7 +178,7 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
         )}
         {hasStats && stats && rate !== null && (
           <span
-            className={`rounded px-1.5 py-0.5 text-xs font-medium w-12 text-center ${rateColorClass}`}
+            className={`rounded px-1.5 py-0.5 text-sm font-medium w-12 text-center ${rateColorClass}`}
             title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total ${unit}`}
           >
             {rate}%
@@ -165,7 +187,7 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
       </div>
 
       {/* Right: wall clock (numbered batch + optional retest) + relative time */}
-      <div className="flex items-center gap-2 text-xs flex-shrink-0">
+      <div className="flex items-center gap-2 text-sm flex-shrink-0">
         <span
           className="inline-flex items-center justify-end gap-1 text-gray-400 dark:text-gray-500"
           title={
@@ -176,7 +198,7 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
         >
           {hasStats && stats?.wall_clock_ms != null && stats.wall_clock_ms > 0 && (
             <>
-              <Clock className="h-3 w-3" />
+              <Clock className="h-3.5 w-3.5" />
               {formatDuration(stats.wall_clock_ms)}
             </>
           )}

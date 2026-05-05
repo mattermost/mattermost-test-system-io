@@ -842,6 +842,7 @@ type SpecListFilter =
   | 'spec_passed'
   | 'spec_failed'
   | 'spec_in_progress'
+  | 'spec_retest_in_progress'
   | 'spec_skipped'
   | 'test_passed'
   | 'test_failed'
@@ -911,12 +912,16 @@ function SpecList({ run }: { run: RunSnapshot }) {
         // "In progress" means a worker has the unit checked out right
         // now (`leased`) — distinct from `pending` (queued, awaiting
         // checkout) and `abandoned` (lease expired, awaiting re-dispatch).
-        const inProgress = row.effectiveState === 'leased';
+        // First-pass leases (`lease_count <= 1`) and retests (>1) get
+        // separate filter chips.
+        const firstPassInFlight = row.effectiveState === 'leased' && row.unit.lease_count <= 1;
+        const retestInFlight = row.effectiveState === 'leased' && row.unit.lease_count > 1;
         const matches =
           // Spec-file-level: the suite's overall outcome equals the chip
           (statusFilter === 'spec_passed' && row.effectiveState === 'completed_pass') ||
           (statusFilter === 'spec_failed' && row.effectiveState === 'completed_fail') ||
-          (statusFilter === 'spec_in_progress' && inProgress) ||
+          (statusFilter === 'spec_in_progress' && firstPassInFlight) ||
+          (statusFilter === 'spec_retest_in_progress' && retestInFlight) ||
           (statusFilter === 'spec_skipped' && row.effectiveState === 'completed_skipped') ||
           // Test-case-level: any test in the suite has the chosen status
           (statusFilter === 'test_passed' && row.testCounts.passed > 0) ||
@@ -976,9 +981,17 @@ function SpecList({ run }: { run: RunSnapshot }) {
   const specPassed = allRows.filter((r) => r.effectiveState === 'completed_pass').length;
   const specFailed = allRows.filter((r) => r.effectiveState === 'completed_fail').length;
   // Truly running suites only — a worker has them checked out (`leased`).
-  // `pending` and `abandoned` rows render with their own visual cues
-  // (gray clock and amber warning) and do not roll into this count.
-  const specInProgress = allRows.filter((r) => r.effectiveState === 'leased').length;
+  // Split first-pass leases (lease_count == 1) from retests (> 1) so the
+  // user can tell at a glance whether the in-flight count is fresh work
+  // or a retest pass cleaning up earlier failures. `pending` and
+  // `abandoned` rows render with their own visual cues (gray clock and
+  // amber warning) and do not roll into either count.
+  const specInProgress = allRows.filter(
+    (r) => r.effectiveState === 'leased' && r.unit.lease_count <= 1,
+  ).length;
+  const specRetestInProgress = allRows.filter(
+    (r) => r.effectiveState === 'leased' && r.unit.lease_count > 1,
+  ).length;
   const specSkipped = allRows.filter((r) => r.effectiveState === 'completed_skipped').length;
 
   return (
@@ -1036,13 +1049,32 @@ function SpecList({ run }: { run: RunSnapshot }) {
               onClick={() =>
                 setStatusFilter(statusFilter === 'spec_in_progress' ? 'all' : 'spec_in_progress')
               }
-              title="Filter running suites"
+              title="Filter running suites (first-pass leases)"
               className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20 ${
                 statusFilter === 'spec_in_progress' ? 'bg-blue-100 dark:bg-blue-900/40' : ''
               }`}
             >
               <Loader2 className="h-3 w-3 animate-spin" />
               {specInProgress}
+            </button>
+          )}
+          {specRetestInProgress > 0 && (
+            <button
+              type="button"
+              onClick={() =>
+                setStatusFilter(
+                  statusFilter === 'spec_retest_in_progress' ? 'all' : 'spec_retest_in_progress',
+                )
+              }
+              title="Filter retests in flight (lease_count > 1)"
+              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-orange-600 transition-colors hover:bg-orange-50 dark:text-orange-400 dark:hover:bg-orange-900/20 ${
+                statusFilter === 'spec_retest_in_progress'
+                  ? 'bg-orange-100 dark:bg-orange-900/40'
+                  : ''
+              }`}
+            >
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {specRetestInProgress}
             </button>
           )}
           {specSkipped > 0 && (
@@ -1343,6 +1375,16 @@ export function OrchestrationTab({ identity }: OrchestrationTabProps) {
         createdAt={run.started_at}
         framework={run.framework}
         progressStatus={progressStatus}
+        // Spec-count chip: terminal units / total. The Combine and
+        // Dispatch tabs use this in place of the Completed/Incomplete
+        // badge — mirrors the Reports tab's report-count chip pattern.
+        specsCount={
+          (run.counts.completed_pass ?? 0) +
+          (run.counts.completed_fail ?? 0) +
+          (run.counts.completed_skipped ?? 0) +
+          (run.counts.abandoned ?? 0)
+        }
+        totalSpecs={run.total_units}
         repository={run.repository}
         branch={run.branch}
         commit={run.commit_sha}

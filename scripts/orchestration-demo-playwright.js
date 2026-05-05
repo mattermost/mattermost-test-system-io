@@ -186,7 +186,7 @@ const PR_NUMBER = (() => {
 })();
 
 const IDENTITY = {
-  repository: 'orchestration-demo',
+  repository: 'repo-name',
   commit_sha: COMMIT_SHA,
   gh_run_id: `demo-${NOW_MS}`,
   name: 'orchestration-demo-playwright',

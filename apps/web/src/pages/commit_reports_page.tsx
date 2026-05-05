@@ -59,7 +59,12 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
     );
     if (effective === 'in_progress') {
       hasActiveInProgress = true;
-    } else if (effective === 'incomplete' || run.status === 'incomplete') {
+    } else if (effective === 'incomplete') {
+      // `resolveEffectiveReportStatus` already collapses an orchestration-
+      // backed run's `incomplete` upload state to the orchestration's
+      // own status — so a dispatch run that finished cleanly but with
+      // some empty matrix workers (no leases, no shard upload) doesn't
+      // poison this commit-level summary.
       hasIncomplete = true;
     }
 

@@ -374,11 +374,15 @@ export function FilteredReportPage() {
           framework={report.framework}
           reportCount={reportCountSplit.numbered}
           retestReportCount={reportCountSplit.retest}
-          progressStatus={resolveEffectiveReportStatus(
-            report.status,
-            report.last_upload_at,
-            orchestrationRun,
-          )}
+          totalReportsExpected={report.total_reports_expected}
+          // Suppress the standalone Completed/Incomplete badge here —
+          // the report-count chip itself carries the shard-completeness
+          // signal (warning + `M/N reports` when a dispatch matrix
+          // wider than the queue leaves some workers with zero leases,
+          // otherwise check + `N reports`). The higher-level summary
+          // (icon, pass-rate) continues to defer to orchestration.
+          hideProgressBadge
+          progressStatus={resolveEffectiveReportStatus(report.status, report.last_upload_at, null)}
           repository={report.repository}
           branch={report.branch}
           commit={report.commit}

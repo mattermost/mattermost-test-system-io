@@ -106,7 +106,7 @@ const PR_NUMBER = (() => {
 })();
 
 const IDENTITY = {
-  repository: 'orchestration-demo-cypress',
+  repository: 'repo-name',
   commit_sha: COMMIT_SHA,
   gh_run_id: `demo-${NOW_MS}`,
   name: 'orchestration-demo-cypress',

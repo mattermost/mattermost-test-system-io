@@ -111,6 +111,24 @@ export interface ReportSummaryProps {
   progressStatus?: ProgressStatus;
   /** Number of shards declared at /reports/begin. Renders as (N/M) on the incomplete badge. */
   totalReportsExpected?: number;
+  /**
+   * Dispatch units that have reached a terminal state (completed_pass /
+   * completed_fail / completed_skipped / abandoned). Used by the Combine
+   * and Dispatch tabs alongside `totalSpecs` to render an inline
+   * `[check] N specs` (when all done) or `[!] M/N specs` (when some
+   * are still pending or leased).
+   */
+  specsCount?: number;
+  /** Total dispatch units declared at /orchestration/begin (run.total_units). */
+  totalSpecs?: number;
+  /**
+   * Suppress the standalone Completed/Incomplete badge. Used on the
+   * Reports tab where the report-count chip itself carries the
+   * shard-completeness signal (warning icon + `M/N reports` when
+   * uploaded < expected, otherwise check + `N reports`), making the
+   * separate badge redundant.
+   */
+  hideProgressBadge?: boolean;
 
   // Row 4: git context badges
   repository?: string;
@@ -216,6 +234,9 @@ export function ReportSummary(props: ReportSummaryProps) {
     retestReportCount,
     totalReportsExpected,
     progressStatus,
+    hideProgressBadge,
+    specsCount,
+    totalSpecs,
     repository,
     branch,
     commit,
@@ -228,7 +249,8 @@ export function ReportSummary(props: ReportSummaryProps) {
   const passRateColorClass = getPassRateColorClass(passRate);
   const statsTitle = `${passed} passed${failed > 0 ? `, ${failed} failed` : ''}${flaky > 0 ? `, ${flaky} flaky` : ''}${skipped > 0 ? `, ${skipped} skipped` : ''} — ${total} total`;
 
-  const hasMetadata = createdAt || framework || reportCount != null || progressStatus;
+  const hasMetadata =
+    createdAt || framework || reportCount != null || totalSpecs != null || progressStatus;
   const hasGitContext = repository;
 
   return (
@@ -370,22 +392,74 @@ export function ReportSummary(props: ReportSummaryProps) {
               {framework.charAt(0).toUpperCase() + framework.slice(1)}
             </span>
           )}
-          {reportCount != null && reportCount + (retestReportCount ?? 0) > 0 && (
-            <span
-              className="inline-flex items-center gap-1"
-              title={
-                retestReportCount && retestReportCount > 0
-                  ? `${reportCount} numbered shard${reportCount === 1 ? '' : 's'}, ${retestReportCount} retest`
-                  : undefined
-              }
-            >
-              <CheckCircle className="h-3.5 w-3.5" />
-              {reportCount}
-              {retestReportCount != null && retestReportCount > 0 && <>+{retestReportCount}</>}{' '}
-              {reportCount + (retestReportCount ?? 0) === 1 ? 'report' : 'reports'}
-            </span>
-          )}
-          {progressStatus && (
+          {totalSpecs != null &&
+            totalSpecs > 0 &&
+            (() => {
+              // Orchestration-driven view (Combine / Dispatch tabs):
+              // mirror the report-count chip's shape so the user can
+              // see at a glance how many specs are still in flight.
+              // Blue while the run is mid-flight (the gap is expected),
+              // orange after it has reached a terminal state with
+              // unfinished units (the gap is a problem).
+              const done = specsCount ?? 0;
+              const hasMismatch = done < totalSpecs;
+              const inProgress = progressStatus === 'in_progress';
+              const Icon = hasMismatch ? AlertCircle : CheckCircle;
+              const cls = hasMismatch
+                ? inProgress
+                  ? 'inline-flex items-center gap-1 text-blue-600 dark:text-blue-400'
+                  : 'inline-flex items-center gap-1 text-orange-600 dark:text-orange-400'
+                : 'inline-flex items-center gap-1';
+              const label = hasMismatch ? `${done}/${totalSpecs}` : `${totalSpecs}`;
+              return (
+                <span
+                  className={cls}
+                  title={
+                    hasMismatch
+                      ? `${done} of ${totalSpecs} dispatch units have reached a terminal state`
+                      : `${totalSpecs} dispatch units complete`
+                  }
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {label} {totalSpecs === 1 ? 'spec' : 'specs'}
+                </span>
+              );
+            })()}
+          {reportCount != null &&
+            reportCount + (retestReportCount ?? 0) > 0 &&
+            (() => {
+              // Numbered shards drive the "expected" check — retest shards
+              // are best-effort extras outside the begin-time count.
+              const hasShardMismatch =
+                totalReportsExpected != null && reportCount < totalReportsExpected;
+              const Icon = hasShardMismatch ? AlertCircle : CheckCircle;
+              const cls = hasShardMismatch
+                ? 'inline-flex items-center gap-1 text-orange-600 dark:text-orange-400'
+                : 'inline-flex items-center gap-1';
+              const label = hasShardMismatch
+                ? `${reportCount}/${totalReportsExpected}`
+                : `${reportCount}`;
+              return (
+                <span
+                  className={cls}
+                  title={
+                    hasShardMismatch
+                      ? `${reportCount} of ${totalReportsExpected} expected shards uploaded${retestReportCount ? `; ${retestReportCount} retest` : ''}`
+                      : retestReportCount && retestReportCount > 0
+                        ? `${reportCount} numbered shard${reportCount === 1 ? '' : 's'}, ${retestReportCount} retest`
+                        : undefined
+                  }
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {label}
+                  {retestReportCount != null && retestReportCount > 0 && (
+                    <>+{retestReportCount}</>
+                  )}{' '}
+                  {reportCount + (retestReportCount ?? 0) === 1 ? 'report' : 'reports'}
+                </span>
+              );
+            })()}
+          {progressStatus && !hideProgressBadge && (
             <ProgressBadge
               status={progressStatus}
               reportsCount={reportCount}

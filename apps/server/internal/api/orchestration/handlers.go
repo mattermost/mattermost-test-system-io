@@ -6,6 +6,7 @@
 package orchestration
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -503,7 +504,155 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 
 	out := runSnapshotPayload(snap.Run)
 	out["units"] = unitsPayload(snap.Units)
+
+	// Best-effort enrichment with the test-case rollup. CI consumers
+	// (test-system-io-summary action → commit-status description) want
+	// test-level counts (e.g. "457/472"), not unit-level counts. Returns
+	// nil when no attempts have reported test_cases yet — the response
+	// just omits the field in that case, matching the listing endpoints'
+	// `tests` shape. A failure here doesn't fail the request: status is
+	// the load-bearing field and was already produced above.
+	if t, terr := aggregateTestCounts(r.Context(), h.Pool, snap.Run.ID); terr == nil && t != nil {
+		out["tests"] = t
+	} else if terr != nil {
+		h.Logger.Warn("status: aggregateTestCounts failed",
+			slog.String("run_id", snap.Run.ID.String()),
+			slog.Any("err", terr))
+	}
+
+	// First-pass / retest wall-clock split. Used by the summary action
+	// to render `first-pass + retest` durations in the commit-status
+	// description. Best-effort: surface 0 / null when computation fails
+	// rather than failing the request.
+	if d, derr := aggregateDurations(r.Context(), h.Pool, snap.Run.ID, snap.Run.StartedAt); derr == nil && d != nil {
+		out["durations"] = d
+	} else if derr != nil {
+		h.Logger.Warn("status: aggregateDurations failed",
+			slog.String("run_id", snap.Run.ID.String()),
+			slog.Any("err", derr))
+	}
+
 	writeJSON(w, http.StatusOK, out)
+}
+
+// testCounts is the test-case-level rollup the /status endpoint exposes
+// alongside the unit-level counts. Mirrors orchestrationTestCounts in the
+// reports package — kept duplicated here to avoid a cross-package import
+// cycle for a 6-field DTO.
+type testCounts struct {
+	Passed  int `json:"passed"`
+	Failed  int `json:"failed"`
+	Flaky   int `json:"flaky"`
+	Skipped int `json:"skipped"`
+	Total   int `json:"total"`
+}
+
+// runDurations is the first-pass vs retest wall-clock split exposed on
+// /status for CI consumers. All fields are nullable: first_pass_ms is
+// nil while no first attempt has reported yet; retest_ms and
+// retest_unit_count are nil/zero when no unit has been re-leased.
+type runDurations struct {
+	FirstPassMs     *int64 `json:"first_pass_ms,omitempty"`
+	RetestMs        *int64 `json:"retest_ms,omitempty"`
+	RetestUnitCount int    `json:"retest_unit_count"`
+}
+
+// aggregateDurations splits the run's wall-clock into a first-pass and a
+// retest portion using the attempts table. "First attempt per unit" is
+// MIN(created_at) for each dispatch_unit_id; everything later on the same
+// unit is a retest. Also counts how many distinct units were re-leased so
+// the consumer can render `:repeat: re-run N spec(s)`. Returns (nil, nil)
+// when no attempts have reported yet.
+func aggregateDurations(
+	ctx context.Context, pool *pgxpool.Pool, runID uuid.UUID, runStartedAt time.Time,
+) (*runDurations, error) {
+	var (
+		firstPassEnd    *time.Time
+		retestStart     *time.Time
+		retestEnd       *time.Time
+		retestUnitCount int
+	)
+	err := pool.QueryRow(ctx, `
+		WITH first_per_unit AS (
+			SELECT DISTINCT ON (dispatch_unit_id)
+				dispatch_unit_id, created_at, reported_at
+			  FROM attempts
+			 WHERE run_id = $1
+			 ORDER BY dispatch_unit_id, created_at ASC
+		),
+		retests AS (
+			SELECT a.dispatch_unit_id, a.created_at, a.reported_at
+			  FROM attempts a
+			  JOIN first_per_unit f ON a.dispatch_unit_id = f.dispatch_unit_id
+			 WHERE a.run_id = $1
+			   AND a.created_at > f.created_at
+		)
+		SELECT
+			(SELECT MAX(reported_at) FROM first_per_unit WHERE reported_at IS NOT NULL) AS first_pass_end,
+			(SELECT MIN(created_at)  FROM retests)                                       AS retest_start,
+			(SELECT MAX(reported_at) FROM retests WHERE reported_at IS NOT NULL)         AS retest_end,
+			(SELECT COUNT(DISTINCT dispatch_unit_id) FROM retests)                       AS retest_unit_count
+	`, runID).Scan(&firstPassEnd, &retestStart, &retestEnd, &retestUnitCount)
+	if err != nil {
+		return nil, err
+	}
+	if firstPassEnd == nil && retestStart == nil {
+		return nil, nil
+	}
+	out := &runDurations{RetestUnitCount: retestUnitCount}
+	if firstPassEnd != nil {
+		ms := firstPassEnd.Sub(runStartedAt).Milliseconds()
+		if ms < 0 {
+			ms = 0
+		}
+		out.FirstPassMs = &ms
+	}
+	if retestStart != nil && retestEnd != nil {
+		ms := retestEnd.Sub(*retestStart).Milliseconds()
+		if ms < 0 {
+			ms = 0
+		}
+		out.RetestMs = &ms
+	}
+	return out, nil
+}
+
+// aggregateTestCounts walks every reported test_case across all attempts of
+// every dispatch_unit on the run and rolls them up to per-test-case
+// statuses, applying the same any-passed-AND-any-failed → flaky rule the
+// listing rollup uses (see reports.aggregateOrchestrationTestCounts).
+// Returns (nil, nil) when no attempts have yet reported test_cases.
+func aggregateTestCounts(ctx context.Context, pool *pgxpool.Pool, runID uuid.UUID) (*testCounts, error) {
+	var t testCounts
+	err := pool.QueryRow(ctx, `
+		WITH per_test AS (
+			SELECT
+				a.dispatch_unit_id,
+				tc->>'full_title' AS full_title,
+				BOOL_OR(tc->>'status' IN ('passed', 'flaky')) AS ever_passed,
+				BOOL_OR(tc->>'status' IN ('failed', 'timedOut', 'interrupted')) AS ever_failed,
+				BOOL_OR(tc->>'status' = 'skipped') AS ever_skipped
+			  FROM attempts a
+			 CROSS JOIN LATERAL jsonb_array_elements(a.test_cases) AS tc
+			 WHERE a.run_id = $1
+			   AND a.test_cases IS NOT NULL
+			 GROUP BY a.dispatch_unit_id, tc->>'full_title'
+		)
+		SELECT
+			COUNT(*) FILTER (WHERE ever_passed AND NOT ever_failed) AS passed,
+			COUNT(*) FILTER (WHERE ever_failed AND NOT ever_passed) AS failed,
+			COUNT(*) FILTER (WHERE ever_passed AND ever_failed) AS flaky,
+			COUNT(*) FILTER (WHERE ever_skipped AND NOT ever_passed AND NOT ever_failed) AS skipped,
+			COUNT(*) AS total
+		  FROM per_test
+	`, runID).Scan(&t.Passed, &t.Failed, &t.Flaky, &t.Skipped, &t.Total)
+	if err != nil {
+		return nil, err
+	}
+	if t.Total == 0 {
+		return nil, nil
+	}
+	return &t, nil
 }
 
 // ListRuns serves GET /api/v1/orchestration/runs. Returns every run matching

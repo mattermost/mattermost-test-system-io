@@ -1,11 +1,14 @@
 name: Test System IO — run summary
 description: >
-  Read /api/v1/orchestration/status and write a Markdown job summary to
-  $GITHUB_STEP_SUMMARY linking to the per-group dashboard page. Exits
-  non-zero when any unit ended in completed_fail or the run did not reach
-  `completed`. Framework-agnostic. Authenticates via the calling
-  workflow's GitHub Actions OIDC token, so the workflow MUST grant
-  `permissions: id-token: write`.
+  Read /api/v1/orchestration/status and produce all formatted CI artifacts
+  the consumer needs:
+    * a Markdown job summary written to $GITHUB_STEP_SUMMARY,
+    * `commit_status_description` ready to feed update-commit-status'
+      `description` input verbatim,
+    * `webhook_payload` ready to POST as-is to a Mattermost-style webhook.
+  Exits non-zero when any unit ended in completed_fail or the run did not
+  reach `completed`. Authenticates via the calling workflow's GitHub Actions
+  OIDC token, so the workflow MUST grant `permissions: id-token: write`.
 author: Mattermost
 
 inputs:
@@ -25,13 +28,106 @@ inputs:
     required: true
   framework:
     description: >
-      Test framework label rendered in the job-summary header
+      Test framework label rendered in headers and webhook titles
       (e.g. `playwright`, `cypress`).
     required: true
   fail-on-test-failures:
     description: When true (default), exit non-zero if any unit ended in completed_fail
     required: false
     default: "true"
+
+  # Formatting inputs — feed the commit_status_description and
+  # webhook_payload outputs. All optional; omitted segments degrade
+  # gracefully (e.g. no `image_tag:X` if image-tag is not provided).
+  test-type:
+    description: >
+      Test type label folded into the webhook title
+      (e.g. `full` → "Cypress Full Tests"). Empty omits the segment.
+    required: false
+    default: ""
+  report-type:
+    description: >
+      One of `PR` (default), `MASTER`, `RELEASE`, `RELEASE_CUT`. Drives
+      the webhook source-line shape (PR icon + PR link vs. commit icon +
+      branch link).
+    required: false
+    default: "PR"
+  image-tag:
+    description: Server image tag rendered in the commit-status description (e.g. `master`, `9e955bf_3521709`).
+    required: false
+    default: ""
+  image-aliases:
+    description: Optional comma-separated alias suffix appended to image_tag (e.g. `release-11.4, release-11`).
+    required: false
+    default: ""
+  server-image:
+    description: >
+      Full Docker image string surfaced in the webhook attachment
+      (e.g. `mattermostdevelopment/mattermost-enterprise-edition:abc123`).
+      Falls back to image-tag when omitted.
+    required: false
+    default: ""
+  pr-number:
+    description: PR number used in webhook source line (overrides composite-identity.gh_pr_number when set).
+    required: false
+    default: ""
+  ref-branch:
+    description: Source branch name used in webhook source line for non-PR runs (e.g. `master`, `release-11.4`).
+    required: false
+    default: ""
+  webhook-username:
+    description: Username surfaced on the webhook post.
+    required: false
+    default: "E2E Test"
+  webhook-icon-url:
+    description: Avatar URL surfaced on the webhook post.
+    required: false
+    default: "https://mattermost.com/wp-content/uploads/2022/02/icon_WS.png"
+
+outputs:
+  passed:
+    description: >
+      Number of test cases that passed. Counts flaky-but-eventually-passed
+      tests as passed, matching the dashboard's listing rollup. Falls back
+      to dispatch-unit pass count when the per-test rollup is unavailable
+      (e.g. no shard reports uploaded yet).
+  failed:
+    description: Number of test cases that ended in failed/timed_out/interrupted.
+  flaky:
+    description: Number of test cases that ever-passed AND ever-failed across attempts.
+  skipped:
+    description: Number of test cases that ended in skipped (no pass/fail attempt).
+  total_specs:
+    description: Total number of dispatch units (one per spec) the run covered.
+  pass_rate:
+    description: Pass percentage as a string (e.g. `100%`, `99.5%`); excludes skipped from denominator.
+  first_pass_duration_ms:
+    description: Wall-clock milliseconds spent on the first-pass dispatch. Empty until a first attempt reports.
+  retest_duration_ms:
+    description: Wall-clock milliseconds spent on retest dispatches. Empty when no unit was re-leased.
+  retest_unit_count:
+    description: Distinct dispatch units that had at least one retest attempt.
+  duration_display:
+    description: >
+      Pre-formatted duration. `15m 23s` when no retests ran;
+      `15m 23s + 2m 5s retest` when first-pass and retest are both present.
+  webhook_color:
+    description: Hex color matching v1's pass-rate bands (`#43A047`/`#FFEB3B`/`#FF9800`/`#F44336`).
+  commit_status_message:
+    description: >
+      Short v1-compatible summary. Examples:
+      `100% passed (1345), 446 specs`,
+      `96.8% passed (457/472), 117 specs, 15 failed`.
+  commit_status_description:
+    description: >
+      Fully-formatted description ready to plug into the commit-status
+      `description` input — message + duration + image-tag, no further
+      wrangling needed on the consumer side. Example:
+      `96.8% passed (457/472), 117 specs, 15 failed, 17m 9s + 2m 5s retest, image_tag:9e955bf_3521709 (release-11.4, release-11)`.
+  webhook_payload:
+    description: >
+      Mattermost-style webhook JSON ready to POST as-is. Mirrors v1's
+      e2e-tests-cypress-template.yml ci/publish-report attachment shape.
 
 runs:
   using: node24

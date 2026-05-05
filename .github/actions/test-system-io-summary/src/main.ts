@@ -35,6 +35,27 @@ interface OrchestrationStatus {
     pending?: number;
     leased?: number;
   };
+  // Per-test-case rollup, present once any attempt has reported
+  // test_cases. Counts use the same any-passed-AND-any-failed → flaky
+  // rule the dashboard's listing rows use, so this matches what the UI
+  // shows for a finished run.
+  tests?: {
+    passed?: number;
+    failed?: number;
+    flaky?: number;
+    skipped?: number;
+    total?: number;
+  };
+  // Wall-clock split between the first-pass dispatch and any retest
+  // dispatches. Both ms fields are optional: first_pass_ms is absent
+  // until any first attempt reports; retest_ms is absent unless a unit
+  // was re-leased after a fail. retest_unit_count is the distinct count
+  // of dispatch units that had at least one retest.
+  durations?: {
+    first_pass_ms?: number;
+    retest_ms?: number;
+    retest_unit_count?: number;
+  };
 }
 
 const PRODUCTION_URL = "https://test-io.test.mattermost.com";
@@ -124,12 +145,120 @@ export async function run(): Promise<void> {
     fs.appendFileSync(summaryPath, lines.join("\n"));
   }
 
+  // Mirror calculate-cypress-results' commit_status_message format so v2
+  // commit statuses read the same as v1's: `100% passed (1345), 446 specs`
+  // when all green, `96.8% passed (457/472), 117 specs, 15 failed`
+  // otherwise. The (passed/total) part uses test-case counts when the
+  // per-test rollup is available — that's the headline number a reader
+  // expects on a commit status — and the trailing "N specs" suffix uses
+  // the dispatch-unit count (one unit == one spec) so the message answers
+  // both "how many tests" and "how many specs ran" at a glance.
+  const unitPass = status?.counts?.completed_pass ?? 0;
+  const unitFail = status?.counts?.completed_fail ?? 0;
+  const unitSkip = status?.counts?.completed_skipped ?? 0;
+  const totalSpecs = unitPass + unitFail + unitSkip;
+
+  const t = status?.tests;
+  const haveTestRollup = !!t && (t.total ?? 0) > 0;
+  // Flaky tests counted alongside passed for the message — same convention
+  // calculate-cypress-results uses (a flaky-but-eventually-passed test is
+  // not a "failed" test from the commit-status perspective).
+  const passed = haveTestRollup ? (t!.passed ?? 0) + (t!.flaky ?? 0) : unitPass;
+  const failed = haveTestRollup ? (t!.failed ?? 0) : unitFail;
+  const skipped = haveTestRollup ? (t!.skipped ?? 0) : unitSkip;
+  const flaky = haveTestRollup ? (t!.flaky ?? 0) : 0;
+  const rateDenom = passed + failed;
+  const rate = rateDenom > 0 ? (passed * 100) / rateDenom : 0;
+  const rateStr = rate === 100 ? "100%" : `${rate.toFixed(1)}%`;
+  const specSuffix = totalSpecs > 0 ? `, ${totalSpecs} specs` : "";
+  const commitStatusMessage =
+    rate === 100
+      ? `${rateStr} passed (${passed})${specSuffix}`
+      : `${rateStr} passed (${passed}/${rateDenom})${specSuffix}, ${failed} failed`;
+
+  // First-pass / retest wall-clock split. Rendered in the commit-status
+  // description as `first-pass + retest` (e.g. `15m 23s + 2m 5s retest`)
+  // so a reader can tell at a glance how much of the elapsed time was
+  // spent re-running flakes/failures.
+  const firstPassMs = status?.durations?.first_pass_ms ?? null;
+  const retestMs = status?.durations?.retest_ms ?? null;
+  const retestUnitCount = status?.durations?.retest_unit_count ?? 0;
+  const durationDisplay = formatDurationDisplay(firstPassMs, retestMs);
+
+  // Inputs that drive the commit-status description and webhook payload.
+  // All optional; missing segments degrade gracefully.
+  const imageTag = core.getInput("image-tag");
+  const imageAliases = core.getInput("image-aliases");
+  const serverImage = core.getInput("server-image") || imageTag;
+  const reportType = (core.getInput("report-type") || "PR").toUpperCase();
+  const testType = core.getInput("test-type");
+  const inputPRNumber = core.getInput("pr-number");
+  const inputRefBranch = core.getInput("ref-branch");
+  const webhookUsername = core.getInput("webhook-username") || "E2E Test";
+  const webhookIconURL =
+    core.getInput("webhook-icon-url") ||
+    "https://mattermost.com/wp-content/uploads/2022/02/icon_WS.png";
+
+  // Effective branch / PR number: explicit input wins, fall back to the
+  // composite-identity values so the webhook source line still renders
+  // correctly when callers only set composite-identity.
+  const effectiveBranch = inputRefBranch || compositeIdentity.branch || "";
+  const effectivePRNumber =
+    inputPRNumber ||
+    (compositeIdentity.gh_pr_number != null ? String(compositeIdentity.gh_pr_number) : "");
+
+  // Final commit-status description: message + duration + image_tag.
+  // Mirrors v1's e2e-tests-cypress-template.yml update-success-status's
+  // shape verbatim, so consumers can drop the v2 output straight into
+  // mattermost/actions/delivery/update-commit-status' `description:`.
+  const aliasesSuffix = imageAliases ? ` (${imageAliases})` : "";
+  const imageTagSegment = imageTag ? `, image_tag:${imageTag}${aliasesSuffix}` : "";
+  const durationSegment = durationDisplay ? `, ${durationDisplay}` : "";
+  const commitStatusDescription = `${commitStatusMessage}${durationSegment}${imageTagSegment}`;
+
+  // Webhook payload: mirrors v1's ci/publish-report attachment shape so
+  // existing receivers render it identically.
+  const webhookColor = colorForRate(rate);
+  const retestDisplay =
+    retestUnitCount > 0 ? `:repeat: re-run ${retestUnitCount} spec(s)` : "";
+  const webhookPayload = renderWebhookPayload({
+    username: webhookUsername,
+    iconURL: webhookIconURL,
+    color: webhookColor,
+    framework,
+    testType,
+    reportType,
+    repository: compositeIdentity.repository,
+    commitSHA: compositeIdentity.commit_sha,
+    refBranch: effectiveBranch,
+    prNumber: effectivePRNumber,
+    serverImage,
+    commitStatusMessage,
+    retestDisplay,
+    durationDisplay,
+    reportURL,
+  });
+
+  core.setOutput("passed", passed);
+  core.setOutput("failed", failed);
+  core.setOutput("flaky", flaky);
+  core.setOutput("skipped", skipped);
+  core.setOutput("total_specs", totalSpecs);
+  core.setOutput("pass_rate", rateStr);
+  core.setOutput("first_pass_duration_ms", firstPassMs ?? "");
+  core.setOutput("retest_duration_ms", retestMs ?? "");
+  core.setOutput("retest_unit_count", retestUnitCount);
+  core.setOutput("duration_display", durationDisplay);
+  core.setOutput("webhook_color", webhookColor);
+  core.setOutput("commit_status_message", commitStatusMessage);
+  core.setOutput("commit_status_description", commitStatusDescription);
+  core.setOutput("webhook_payload", webhookPayload);
+
   if (status?.status !== "completed") {
     const msg = `run did not complete cleanly: ${status?.status}`;
     if (failOnTestFailures) throw new Error(msg);
     core.warning(msg);
   }
-  const failed = status?.counts?.completed_fail ?? 0;
   if (failed > 0) {
     const msg = `${failed} unit(s) failed`;
     if (failOnTestFailures) throw new Error(msg);
@@ -140,4 +269,98 @@ export async function run(): Promise<void> {
 function resolveBaseURL(): string {
   const useStaging = core.getInput("use-staging").trim().toLowerCase() === "true";
   return useStaging ? STAGING_URL : PRODUCTION_URL;
+}
+
+// formatDuration renders a millisecond count as "Xm Ys". Sub-minute
+// values still render as "0m Ns" for visual consistency with the v1
+// commit-status format (cf. e2e-tests-cypress-template.yml's
+// ci/compute-duration step).
+function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}m ${s}s`;
+}
+
+// formatDurationDisplay renders the first-pass / retest wall-clock split.
+// `15m 23s` when no retests ran; `15m 23s + 2m 5s retest` when both are
+// present (the trailing "retest" label disambiguates the two segments at
+// a glance in the commit-status description). Returns an empty string
+// when no first attempt has reported yet — the v2 template's commit-
+// status description folds that into a graceful empty-duration display.
+function formatDurationDisplay(firstPassMs: number | null, retestMs: number | null): string {
+  if (firstPassMs == null) return "";
+  const first = formatDuration(firstPassMs);
+  if (retestMs == null || retestMs <= 0) return first;
+  return `${first} + ${formatDuration(retestMs)} retest`;
+}
+
+// Webhook attachment color bands. Mirrors getColor() in
+// mattermost/.github/actions/calculate-cypress-results/src/merge.ts so v2
+// posts the same hue v1 receivers already render against.
+function colorForRate(rate: number): string {
+  if (rate === 100) return "#43A047";
+  if (rate >= 99) return "#FFEB3B";
+  if (rate >= 98) return "#FF9800";
+  return "#F44336";
+}
+
+function capitalize(s: string): string {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+interface WebhookFields {
+  username: string;
+  iconURL: string;
+  color: string;
+  framework: string;
+  testType: string;
+  reportType: string;
+  repository: string;
+  commitSHA: string;
+  refBranch: string;
+  prNumber: string;
+  serverImage: string;
+  commitStatusMessage: string;
+  retestDisplay: string;
+  durationDisplay: string;
+  reportURL: string;
+}
+
+// renderWebhookPayload builds the Mattermost-style webhook JSON body.
+// Mirrors v1's ci/publish-report attachment shape exactly so receivers
+// render identically; the consumer just `curl -d` this output.
+function renderWebhookPayload(f: WebhookFields): string {
+  const frameworkCap = capitalize(f.framework);
+  const testTypeCap = f.testType ? ` ${capitalize(f.testType)}` : "";
+  const title = `**Results - ${frameworkCap}${testTypeCap} Tests**`;
+
+  // Source line: PR runs link the PR; everything else (MASTER, RELEASE,
+  // RELEASE_CUT) links the commit + branch. RELEASE_CUT uses the
+  // github_round icon to signal a tagged cut, MASTER/RELEASE use the
+  // git_merge icon for an integration build.
+  const commitShort = f.commitSHA ? f.commitSHA.slice(0, 7) : "";
+  const commitURL = `https://github.com/${f.repository}/commit/${f.commitSHA}`;
+  let sourceLine: string;
+  if (f.reportType === "RELEASE_CUT") {
+    sourceLine = `:github_round: [${commitShort}](${commitURL}) on \`${f.refBranch}\``;
+  } else if (f.reportType === "MASTER" || f.reportType === "RELEASE") {
+    sourceLine = `:git_merge: [${commitShort}](${commitURL}) on \`${f.refBranch}\``;
+  } else {
+    const repoTrailing = f.repository.split("/").pop() || f.repository;
+    sourceLine = `:open-pull-request: [${repoTrailing}-pr-${f.prNumber}](https://github.com/${f.repository}/pull/${f.prNumber})`;
+  }
+
+  const retestPart = f.retestDisplay ? ` | ${f.retestDisplay}` : "";
+  const dockerLine = f.serverImage ? `\n:docker: \`${f.serverImage}\`` : "";
+  const durationLine = f.durationDisplay ? `\n${f.durationDisplay}` : "";
+  const text =
+    `${title}\n\n${sourceLine}${dockerLine}\n${f.commitStatusMessage}${retestPart} | [full report](${f.reportURL})${durationLine}`;
+
+  return JSON.stringify({
+    username: f.username,
+    icon_url: f.iconURL,
+    attachments: [{ color: f.color, text }],
+  });
 }

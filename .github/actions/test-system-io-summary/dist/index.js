@@ -4007,11 +4007,11 @@ var require_util2 = __commonJS({
     var { isUint8Array } = require("util/types");
     var { webidl } = require_webidl();
     var supportedHashes = [];
-    var crypto;
+    var crypto2;
     try {
-      crypto = require("crypto");
+      crypto2 = require("crypto");
       const possibleRelevantHashes = ["sha256", "sha384", "sha512"];
-      supportedHashes = crypto.getHashes().filter((hash) => possibleRelevantHashes.includes(hash));
+      supportedHashes = crypto2.getHashes().filter((hash) => possibleRelevantHashes.includes(hash));
     } catch {
     }
     function responseURL(response) {
@@ -4284,7 +4284,7 @@ var require_util2 = __commonJS({
       }
     }
     function bytesMatch(bytes, metadataList) {
-      if (crypto === void 0) {
+      if (crypto2 === void 0) {
         return true;
       }
       const parsedMetadata = parseMetadata(metadataList);
@@ -4299,7 +4299,7 @@ var require_util2 = __commonJS({
       for (const item of metadata) {
         const algorithm = item.algo;
         const expectedValue = item.hash;
-        let actualValue = crypto.createHash(algorithm).update(bytes).digest("base64");
+        let actualValue = crypto2.createHash(algorithm).update(bytes).digest("base64");
         if (actualValue[actualValue.length - 1] === "=") {
           if (actualValue[actualValue.length - 2] === "=") {
             actualValue = actualValue.slice(0, -2);
@@ -5363,8 +5363,8 @@ var require_body = __commonJS({
     var { multipartFormDataParser } = require_formdata_parser();
     var random;
     try {
-      const crypto = require("crypto");
-      random = (max) => crypto.randomInt(0, max);
+      const crypto2 = require("crypto");
+      random = (max) => crypto2.randomInt(0, max);
     } catch {
       random = (max) => Math.floor(Math.random(max));
     }
@@ -16776,13 +16776,13 @@ var require_frame = __commonJS({
     "use strict";
     var { maxUnsigned16Bit } = require_constants5();
     var BUFFER_SIZE = 16386;
-    var crypto;
+    var crypto2;
     var buffer = null;
     var bufIdx = BUFFER_SIZE;
     try {
-      crypto = require("crypto");
+      crypto2 = require("crypto");
     } catch {
-      crypto = {
+      crypto2 = {
         // not full compatibility, but minimum.
         randomFillSync: function randomFillSync(buffer2, _offset, _size) {
           for (let i = 0; i < buffer2.length; ++i) {
@@ -16795,7 +16795,7 @@ var require_frame = __commonJS({
     function generateMask() {
       if (bufIdx === BUFFER_SIZE) {
         bufIdx = 0;
-        crypto.randomFillSync(buffer ??= Buffer.allocUnsafe(BUFFER_SIZE), 0, BUFFER_SIZE);
+        crypto2.randomFillSync(buffer ??= Buffer.allocUnsafe(BUFFER_SIZE), 0, BUFFER_SIZE);
       }
       return [buffer[bufIdx++], buffer[bufIdx++], buffer[bufIdx++], buffer[bufIdx++]];
     }
@@ -16867,9 +16867,9 @@ var require_connection = __commonJS({
     var { Headers: Headers2, getHeadersList } = require_headers();
     var { getDecodeSplit } = require_util2();
     var { WebsocketFrameSend } = require_frame();
-    var crypto;
+    var crypto2;
     try {
-      crypto = require("crypto");
+      crypto2 = require("crypto");
     } catch {
     }
     function establishWebSocketConnection(url, protocols, client, ws, onEstablish, options) {
@@ -16889,7 +16889,7 @@ var require_connection = __commonJS({
         const headersList = getHeadersList(new Headers2(options.headers));
         request.headersList = headersList;
       }
-      const keyValue = crypto.randomBytes(16).toString("base64");
+      const keyValue = crypto2.randomBytes(16).toString("base64");
       request.headersList.append("sec-websocket-key", keyValue);
       request.headersList.append("sec-websocket-version", "13");
       for (const protocol of protocols) {
@@ -16919,7 +16919,7 @@ var require_connection = __commonJS({
             return;
           }
           const secWSAccept = response.headersList.get("Sec-WebSocket-Accept");
-          const digest = crypto.createHash("sha1").update(keyValue + uid).digest("base64");
+          const digest = crypto2.createHash("sha1").update(keyValue + uid).digest("base64");
           if (secWSAccept !== digest) {
             failWebsocketConnection(ws, "Incorrect hash received in Sec-WebSocket-Accept header.");
             return;
@@ -18704,8 +18704,36 @@ function escapeProperty(s) {
   return toCommandValue(s).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A").replace(/:/g, "%3A").replace(/,/g, "%2C");
 }
 
+// node_modules/@actions/core/lib/file-command.js
+var crypto = __toESM(require("crypto"), 1);
+var fs = __toESM(require("fs"), 1);
+var os2 = __toESM(require("os"), 1);
+function issueFileCommand(command, message) {
+  const filePath = process.env[`GITHUB_${command}`];
+  if (!filePath) {
+    throw new Error(`Unable to find environment variable for file command ${command}`);
+  }
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Missing file at path: ${filePath}`);
+  }
+  fs.appendFileSync(filePath, `${toCommandValue(message)}${os2.EOL}`, {
+    encoding: "utf8"
+  });
+}
+function prepareKeyValueMessage(key, value) {
+  const delimiter = `ghadelimiter_${crypto.randomUUID()}`;
+  const convertedValue = toCommandValue(value);
+  if (key.includes(delimiter)) {
+    throw new Error(`Unexpected input: name should not contain the delimiter "${delimiter}"`);
+  }
+  if (convertedValue.includes(delimiter)) {
+    throw new Error(`Unexpected input: value should not contain the delimiter "${delimiter}"`);
+  }
+  return `${key}<<${delimiter}${os2.EOL}${convertedValue}${os2.EOL}${delimiter}`;
+}
+
 // node_modules/@actions/core/lib/core.js
-var os3 = __toESM(require("os"), 1);
+var os4 = __toESM(require("os"), 1);
 
 // node_modules/@actions/http-client/lib/index.js
 var http = __toESM(require("http"), 1);
@@ -19841,10 +19869,10 @@ var _summary = new Summary();
 var import_os2 = __toESM(require("os"), 1);
 
 // node_modules/@actions/io/lib/io-util.js
-var fs = __toESM(require("fs"), 1);
-var { chmod, copyFile, lstat, mkdir, open, readdir, rename, rm, rmdir, stat, symlink, unlink } = fs.promises;
+var fs2 = __toESM(require("fs"), 1);
+var { chmod, copyFile, lstat, mkdir, open, readdir, rename, rm, rmdir, stat, symlink, unlink } = fs2.promises;
 var IS_WINDOWS = process.platform === "win32";
-var READONLY = fs.constants.O_RDONLY;
+var READONLY = fs2.constants.O_RDONLY;
 
 // node_modules/@actions/exec/lib/toolrunner.js
 var IS_WINDOWS2 = process.platform === "win32";
@@ -19899,6 +19927,14 @@ function getInput(name, options) {
   }
   return val.trim();
 }
+function setOutput(name, value) {
+  const filePath = process.env["GITHUB_OUTPUT"] || "";
+  if (filePath) {
+    return issueFileCommand("OUTPUT", prepareKeyValueMessage(name, value));
+  }
+  process.stdout.write(os4.EOL);
+  issueCommand("set-output", { name }, toCommandValue(value));
+}
 function setFailed(message) {
   process.exitCode = ExitCode.Failure;
   error(message);
@@ -19913,7 +19949,7 @@ function warning(message, properties = {}) {
   issueCommand("warning", toCommandProperties(properties), message instanceof Error ? message.toString() : message);
 }
 function info(message) {
-  process.stdout.write(message + os3.EOL);
+  process.stdout.write(message + os4.EOL);
 }
 function getIDToken(aud) {
   return __awaiter5(this, void 0, void 0, function* () {
@@ -19922,7 +19958,7 @@ function getIDToken(aud) {
 }
 
 // src/main.ts
-var fs2 = __toESM(require("fs"));
+var fs3 = __toESM(require("fs"));
 var PRODUCTION_URL = "https://test-io.test.mattermost.com";
 var STAGING_URL = "https://staging-test-io.test.mattermost.com";
 async function run() {
@@ -19989,14 +20025,80 @@ async function run() {
       `[Open Report Group](${reportURL})`,
       ""
     ];
-    fs2.appendFileSync(summaryPath, lines.join("\n"));
+    fs3.appendFileSync(summaryPath, lines.join("\n"));
   }
+  const unitPass = status?.counts?.completed_pass ?? 0;
+  const unitFail = status?.counts?.completed_fail ?? 0;
+  const unitSkip = status?.counts?.completed_skipped ?? 0;
+  const totalSpecs = unitPass + unitFail + unitSkip;
+  const t = status?.tests;
+  const haveTestRollup = !!t && (t.total ?? 0) > 0;
+  const passed = haveTestRollup ? (t.passed ?? 0) + (t.flaky ?? 0) : unitPass;
+  const failed = haveTestRollup ? t.failed ?? 0 : unitFail;
+  const skipped = haveTestRollup ? t.skipped ?? 0 : unitSkip;
+  const flaky = haveTestRollup ? t.flaky ?? 0 : 0;
+  const rateDenom = passed + failed;
+  const rate = rateDenom > 0 ? passed * 100 / rateDenom : 0;
+  const rateStr = rate === 100 ? "100%" : `${rate.toFixed(1)}%`;
+  const specSuffix = totalSpecs > 0 ? `, ${totalSpecs} specs` : "";
+  const commitStatusMessage = rate === 100 ? `${rateStr} passed (${passed})${specSuffix}` : `${rateStr} passed (${passed}/${rateDenom})${specSuffix}, ${failed} failed`;
+  const firstPassMs = status?.durations?.first_pass_ms ?? null;
+  const retestMs = status?.durations?.retest_ms ?? null;
+  const retestUnitCount = status?.durations?.retest_unit_count ?? 0;
+  const durationDisplay = formatDurationDisplay(firstPassMs, retestMs);
+  const imageTag = getInput("image-tag");
+  const imageAliases = getInput("image-aliases");
+  const serverImage = getInput("server-image") || imageTag;
+  const reportType = (getInput("report-type") || "PR").toUpperCase();
+  const testType = getInput("test-type");
+  const inputPRNumber = getInput("pr-number");
+  const inputRefBranch = getInput("ref-branch");
+  const webhookUsername = getInput("webhook-username") || "E2E Test";
+  const webhookIconURL = getInput("webhook-icon-url") || "https://mattermost.com/wp-content/uploads/2022/02/icon_WS.png";
+  const effectiveBranch = inputRefBranch || compositeIdentity.branch || "";
+  const effectivePRNumber = inputPRNumber || (compositeIdentity.gh_pr_number != null ? String(compositeIdentity.gh_pr_number) : "");
+  const aliasesSuffix = imageAliases ? ` (${imageAliases})` : "";
+  const imageTagSegment = imageTag ? `, image_tag:${imageTag}${aliasesSuffix}` : "";
+  const durationSegment = durationDisplay ? `, ${durationDisplay}` : "";
+  const commitStatusDescription = `${commitStatusMessage}${durationSegment}${imageTagSegment}`;
+  const webhookColor = colorForRate(rate);
+  const retestDisplay = retestUnitCount > 0 ? `:repeat: re-run ${retestUnitCount} spec(s)` : "";
+  const webhookPayload = renderWebhookPayload({
+    username: webhookUsername,
+    iconURL: webhookIconURL,
+    color: webhookColor,
+    framework,
+    testType,
+    reportType,
+    repository: compositeIdentity.repository,
+    commitSHA: compositeIdentity.commit_sha,
+    refBranch: effectiveBranch,
+    prNumber: effectivePRNumber,
+    serverImage,
+    commitStatusMessage,
+    retestDisplay,
+    durationDisplay,
+    reportURL
+  });
+  setOutput("passed", passed);
+  setOutput("failed", failed);
+  setOutput("flaky", flaky);
+  setOutput("skipped", skipped);
+  setOutput("total_specs", totalSpecs);
+  setOutput("pass_rate", rateStr);
+  setOutput("first_pass_duration_ms", firstPassMs ?? "");
+  setOutput("retest_duration_ms", retestMs ?? "");
+  setOutput("retest_unit_count", retestUnitCount);
+  setOutput("duration_display", durationDisplay);
+  setOutput("webhook_color", webhookColor);
+  setOutput("commit_status_message", commitStatusMessage);
+  setOutput("commit_status_description", commitStatusDescription);
+  setOutput("webhook_payload", webhookPayload);
   if (status?.status !== "completed") {
     const msg = `run did not complete cleanly: ${status?.status}`;
     if (failOnTestFailures) throw new Error(msg);
     warning(msg);
   }
-  const failed = status?.counts?.completed_fail ?? 0;
   if (failed > 0) {
     const msg = `${failed} unit(s) failed`;
     if (failOnTestFailures) throw new Error(msg);
@@ -20006,6 +20108,58 @@ async function run() {
 function resolveBaseURL() {
   const useStaging = getInput("use-staging").trim().toLowerCase() === "true";
   return useStaging ? STAGING_URL : PRODUCTION_URL;
+}
+function formatDuration(ms) {
+  const total = Math.max(0, Math.floor(ms / 1e3));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}m ${s}s`;
+}
+function formatDurationDisplay(firstPassMs, retestMs) {
+  if (firstPassMs == null) return "";
+  const first = formatDuration(firstPassMs);
+  if (retestMs == null || retestMs <= 0) return first;
+  return `${first} + ${formatDuration(retestMs)} retest`;
+}
+function colorForRate(rate) {
+  if (rate === 100) return "#43A047";
+  if (rate >= 99) return "#FFEB3B";
+  if (rate >= 98) return "#FF9800";
+  return "#F44336";
+}
+function capitalize(s) {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function renderWebhookPayload(f) {
+  const frameworkCap = capitalize(f.framework);
+  const testTypeCap = f.testType ? ` ${capitalize(f.testType)}` : "";
+  const title = `**Results - ${frameworkCap}${testTypeCap} Tests**`;
+  const commitShort = f.commitSHA ? f.commitSHA.slice(0, 7) : "";
+  const commitURL = `https://github.com/${f.repository}/commit/${f.commitSHA}`;
+  let sourceLine;
+  if (f.reportType === "RELEASE_CUT") {
+    sourceLine = `:github_round: [${commitShort}](${commitURL}) on \`${f.refBranch}\``;
+  } else if (f.reportType === "MASTER" || f.reportType === "RELEASE") {
+    sourceLine = `:git_merge: [${commitShort}](${commitURL}) on \`${f.refBranch}\``;
+  } else {
+    const repoTrailing = f.repository.split("/").pop() || f.repository;
+    sourceLine = `:open-pull-request: [${repoTrailing}-pr-${f.prNumber}](https://github.com/${f.repository}/pull/${f.prNumber})`;
+  }
+  const retestPart = f.retestDisplay ? ` | ${f.retestDisplay}` : "";
+  const dockerLine = f.serverImage ? `
+:docker: \`${f.serverImage}\`` : "";
+  const durationLine = f.durationDisplay ? `
+${f.durationDisplay}` : "";
+  const text = `${title}
+
+${sourceLine}${dockerLine}
+${f.commitStatusMessage}${retestPart} | [full report](${f.reportURL})${durationLine}`;
+  return JSON.stringify({
+    username: f.username,
+    icon_url: f.iconURL,
+    attachments: [{ color: f.color, text }]
+  });
 }
 
 // src/index.ts

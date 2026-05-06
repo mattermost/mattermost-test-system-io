@@ -19945,6 +19945,9 @@ function debug(message) {
 function error(message, properties = {}) {
   issueCommand("error", toCommandProperties(properties), message instanceof Error ? message.toString() : message);
 }
+function warning(message, properties = {}) {
+  issueCommand("warning", toCommandProperties(properties), message instanceof Error ? message.toString() : message);
+}
 function info(message) {
   process.stdout.write(message + os4.EOL);
 }
@@ -20184,6 +20187,102 @@ function extractStringOrArrayProp2(text, key) {
   return [];
 }
 
+// src/pr-comment.ts
+var GITHUB_API = "https://api.github.com";
+async function postOrUpdatePRComment(args) {
+  const { token, owner, repo, prNumber, marker, body, singlePage } = args;
+  if (!token) {
+    warning("post-pr-comment: github-token not provided; skipping comment.");
+    return;
+  }
+  setSecret(token);
+  if (!body.includes(marker)) {
+    warning(
+      "post-pr-comment: body does not contain marker; skipping to avoid orphaned comments."
+    );
+    return;
+  }
+  try {
+    const existingId = await findCommentByMarker(
+      token,
+      owner,
+      repo,
+      prNumber,
+      marker,
+      !!singlePage
+    );
+    if (existingId != null) {
+      await patchComment(token, owner, repo, existingId, body);
+      info(`post-pr-comment: updated comment ${existingId}`);
+    } else {
+      const createdId = await postComment(token, owner, repo, prNumber, body);
+      info(`post-pr-comment: created comment ${createdId}`);
+    }
+  } catch (e) {
+    warning(`post-pr-comment: ${e.message}`);
+  }
+}
+async function findCommentByMarker(token, owner, repo, prNumber, marker, singlePage) {
+  let url = `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`;
+  while (url) {
+    const res = await fetch(url, { headers: ghHeaders(token) });
+    if (!res.ok) {
+      throw new Error(`list comments failed: ${res.status} ${await safeText(res)}`);
+    }
+    const list = await res.json();
+    for (const c of list) {
+      if (c.body && c.body.includes(marker)) return c.id;
+    }
+    if (singlePage) break;
+    url = nextPageURL(res.headers.get("link"));
+  }
+  return null;
+}
+async function patchComment(token, owner, repo, commentId, body) {
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`, {
+    method: "PATCH",
+    headers: { ...ghHeaders(token), "content-type": "application/json" },
+    body: JSON.stringify({ body })
+  });
+  if (!res.ok) {
+    throw new Error(`patch comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
+  }
+}
+async function postComment(token, owner, repo, prNumber, body) {
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments`, {
+    method: "POST",
+    headers: { ...ghHeaders(token), "content-type": "application/json" },
+    body: JSON.stringify({ body })
+  });
+  if (!res.ok) {
+    throw new Error(`create comment failed: ${res.status} ${await safeText(res)}`);
+  }
+  const created = await res.json();
+  return created.id;
+}
+function ghHeaders(token) {
+  return {
+    accept: "application/vnd.github+json",
+    authorization: `Bearer ${token}`,
+    "x-github-api-version": "2022-11-28"
+  };
+}
+function nextPageURL(link) {
+  if (!link) return null;
+  for (const part of link.split(",")) {
+    const m = part.match(/<([^>]+)>;\s*rel="next"/);
+    if (m) return m[1] ?? null;
+  }
+  return null;
+}
+async function safeText(res) {
+  try {
+    return (await res.text()).slice(0, 200);
+  } catch {
+    return "<unreadable body>";
+  }
+}
+
 // src/main.ts
 var PRODUCTION_URL = "https://test-io.test.mattermost.com";
 var STAGING_URL = "https://staging-test-io.test.mattermost.com";
@@ -20283,6 +20382,50 @@ async function run() {
   }
   const { report_id } = await reportsRes.json();
   info(`report group ready: ${report_id}`);
+  if (getInput("post-pr-comment") === "true") {
+    await postBeginComment(compositeIdentity, framework, baseURL);
+  }
+}
+async function postBeginComment(c, framework, baseURL) {
+  if (c.gh_pr_number == null || c.gh_pr_number === "") return;
+  const prNumber = Number.parseInt(String(c.gh_pr_number), 10);
+  if (!Number.isFinite(prNumber)) return;
+  const token = getInput("github-token");
+  const testType = getInput("test-type");
+  const serverEdition = getInput("server-edition");
+  const [owner, repo] = (c.repository || "").split("/");
+  if (!owner || !repo) return;
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const reportURL = buildReportURL(baseURL, c);
+  const heading = formatHeading(framework, testType, serverEdition, shortSha, "started", reportURL);
+  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
+  const body = [
+    heading,
+    "",
+    "Tests dispatched. Will be updated when the run finishes.",
+    "",
+    marker,
+    ""
+  ].join("\n");
+  await postOrUpdatePRComment({ token, owner, repo, prNumber, marker, body });
+}
+function buildReportURL(baseURL, c) {
+  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
+  const repo = encodeURIComponent(repoTrailing);
+  const branch = encodeURIComponent(c.branch || "main");
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const name = encodeURIComponent(c.name);
+  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
+}
+function formatHeading(framework, testType, edition, shortSha, linkText, url) {
+  const fwCap = capitalize(framework);
+  const ttCap = testType ? ` ${capitalize(testType)}` : "";
+  const edPart = edition ? ` (${edition})` : "";
+  return `**E2E \u2014 ${fwCap}${ttCap}${edPart} - \`${shortSha}\`, [${linkText}](${url})**`;
+}
+function capitalize(s) {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 function identityForReports(c, framework, totalReportsExpected) {
   const body = {

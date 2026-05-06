@@ -76,6 +76,30 @@ inputs:
     required: false
     default: "600000"
 
+  # ── PR comment (optional) ───────────────────────────────────────────
+  post-pr-comment:
+    description: >
+      When `"true"` and the composite identity carries a `gh_pr_number`,
+      post a "started" status comment on the PR keyed by the marker
+      `<!-- test-system-io:<name>@<short_sha> -->`. A re-run on the same
+      commit replaces the existing comment. No-op for non-PR runs.
+    required: false
+    default: "false"
+  github-token:
+    description: >
+      GitHub token with `pull-requests: write` scope. Required only
+      when `post-pr-comment` is `"true"`.
+    required: false
+    default: ""
+  test-type:
+    description: Test-type label folded into the comment heading (e.g. `full`).
+    required: false
+    default: ""
+  server-edition:
+    description: Server edition folded into the comment heading (e.g. `enterprise`, `fips`).
+    required: false
+    default: ""
+
   # ── Playwright-specific ──────────────────────────────────────────────
   playwright-dir:
     description: >

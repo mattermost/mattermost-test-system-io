@@ -9,6 +9,7 @@ import * as path from "node:path";
 import * as core from "@actions/core";
 import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
 import { discoverPlaywrightSpecs } from "./playwright";
+import { postOrUpdatePRComment } from "./pr-comment";
 
 interface CompositeIdentity {
   repository: string;
@@ -149,6 +150,70 @@ export async function run(): Promise<void> {
   }
   const { report_id } = (await reportsRes.json()) as ReportsBeginResponse;
   core.info(`report group ready: ${report_id}`);
+
+  // PR comment — best-effort, opt-in. Skips silently for non-PR runs.
+  if (core.getInput("post-pr-comment") === "true") {
+    await postBeginComment(compositeIdentity, framework, baseURL);
+  }
+}
+
+async function postBeginComment(
+  c: CompositeIdentity,
+  framework: string,
+  baseURL: string,
+): Promise<void> {
+  if (c.gh_pr_number == null || c.gh_pr_number === "") return;
+  const prNumber = Number.parseInt(String(c.gh_pr_number), 10);
+  if (!Number.isFinite(prNumber)) return;
+
+  const token = core.getInput("github-token");
+  const testType = core.getInput("test-type");
+  const serverEdition = core.getInput("server-edition");
+  const [owner, repo] = (c.repository || "").split("/");
+  if (!owner || !repo) return;
+
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const reportURL = buildReportURL(baseURL, c);
+  const heading = formatHeading(framework, testType, serverEdition, shortSha, "started", reportURL);
+  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
+  const body = [
+    heading,
+    "",
+    "Tests dispatched. Will be updated when the run finishes.",
+    "",
+    marker,
+    "",
+  ].join("\n");
+
+  await postOrUpdatePRComment({ token, owner, repo, prNumber, marker, body });
+}
+
+function buildReportURL(baseURL: string, c: CompositeIdentity): string {
+  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
+  const repo = encodeURIComponent(repoTrailing);
+  const branch = encodeURIComponent(c.branch || "main");
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const name = encodeURIComponent(c.name);
+  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
+}
+
+function formatHeading(
+  framework: string,
+  testType: string,
+  edition: string,
+  shortSha: string,
+  linkText: string,
+  url: string,
+): string {
+  const fwCap = capitalize(framework);
+  const ttCap = testType ? ` ${capitalize(testType)}` : "";
+  const edPart = edition ? ` (${edition})` : "";
+  return `**E2E — ${fwCap}${ttCap}${edPart} - \`${shortSha}\`, [${linkText}](${url})**`;
+}
+
+function capitalize(s: string): string {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function identityForReports(

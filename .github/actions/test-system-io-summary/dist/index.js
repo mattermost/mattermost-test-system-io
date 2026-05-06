@@ -19959,6 +19959,104 @@ function getIDToken(aud) {
 
 // src/main.ts
 var fs3 = __toESM(require("fs"));
+
+// src/pr-comment.ts
+var GITHUB_API = "https://api.github.com";
+async function postOrUpdatePRComment(args) {
+  const { token, owner, repo, prNumber, marker, body, singlePage } = args;
+  if (!token) {
+    warning("post-pr-comment: github-token not provided; skipping comment.");
+    return;
+  }
+  setSecret(token);
+  if (!body.includes(marker)) {
+    warning(
+      "post-pr-comment: body does not contain marker; skipping to avoid orphaned comments."
+    );
+    return;
+  }
+  try {
+    const existingId = await findCommentByMarker(
+      token,
+      owner,
+      repo,
+      prNumber,
+      marker,
+      !!singlePage
+    );
+    if (existingId != null) {
+      await patchComment(token, owner, repo, existingId, body);
+      info(`post-pr-comment: updated comment ${existingId}`);
+    } else {
+      const createdId = await postComment(token, owner, repo, prNumber, body);
+      info(`post-pr-comment: created comment ${createdId}`);
+    }
+  } catch (e) {
+    warning(`post-pr-comment: ${e.message}`);
+  }
+}
+async function findCommentByMarker(token, owner, repo, prNumber, marker, singlePage) {
+  let url = `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`;
+  while (url) {
+    const res = await fetch(url, { headers: ghHeaders(token) });
+    if (!res.ok) {
+      throw new Error(`list comments failed: ${res.status} ${await safeText(res)}`);
+    }
+    const list = await res.json();
+    for (const c of list) {
+      if (c.body && c.body.includes(marker)) return c.id;
+    }
+    if (singlePage) break;
+    url = nextPageURL(res.headers.get("link"));
+  }
+  return null;
+}
+async function patchComment(token, owner, repo, commentId, body) {
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`, {
+    method: "PATCH",
+    headers: { ...ghHeaders(token), "content-type": "application/json" },
+    body: JSON.stringify({ body })
+  });
+  if (!res.ok) {
+    throw new Error(`patch comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
+  }
+}
+async function postComment(token, owner, repo, prNumber, body) {
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments`, {
+    method: "POST",
+    headers: { ...ghHeaders(token), "content-type": "application/json" },
+    body: JSON.stringify({ body })
+  });
+  if (!res.ok) {
+    throw new Error(`create comment failed: ${res.status} ${await safeText(res)}`);
+  }
+  const created = await res.json();
+  return created.id;
+}
+function ghHeaders(token) {
+  return {
+    accept: "application/vnd.github+json",
+    authorization: `Bearer ${token}`,
+    "x-github-api-version": "2022-11-28"
+  };
+}
+function nextPageURL(link) {
+  if (!link) return null;
+  for (const part of link.split(",")) {
+    const m = part.match(/<([^>]+)>;\s*rel="next"/);
+    if (m) return m[1] ?? null;
+  }
+  return null;
+}
+async function safeText(res) {
+  try {
+    return (await res.text()).slice(0, 200);
+  } catch {
+    return "<unreadable body>";
+  }
+}
+
+// src/main.ts
 var PRODUCTION_URL = "https://test-io.test.mattermost.com";
 var STAGING_URL = "https://staging-test-io.test.mattermost.com";
 async function run() {
@@ -20094,6 +20192,20 @@ async function run() {
   setOutput("commit_status_message", commitStatusMessage);
   setOutput("commit_status_description", commitStatusDescription);
   setOutput("webhook_payload", webhookPayload);
+  if (getInput("post-pr-comment") === "true") {
+    await postSummaryComment({
+      compositeIdentity,
+      framework,
+      testType,
+      serverEdition: getInput("server-edition"),
+      runStatus: status?.status ?? "unknown",
+      commitStatusMessage,
+      durationDisplay,
+      reportURL,
+      units: status?.units ?? [],
+      failedUnitCount: failed
+    });
+  }
   if (status?.status !== "completed") {
     const msg = `run did not complete cleanly: ${status?.status}`;
     if (failOnTestFailures) throw new Error(msg);
@@ -20130,6 +20242,76 @@ function colorForRate(rate) {
 function capitalize(s) {
   if (!s) return s;
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function escapeForCodeSpan(s) {
+  if (!s) return "<unknown>";
+  return s.replace(/[`\r\n]/g, "");
+}
+var FAILED_SPECS_PREVIEW = 5;
+async function postSummaryComment(a) {
+  const c = a.compositeIdentity;
+  if (c.gh_pr_number == null || c.gh_pr_number === "") return;
+  const prNumber = Number.parseInt(String(c.gh_pr_number), 10);
+  if (!Number.isFinite(prNumber)) return;
+  const token = getInput("github-token");
+  const [owner, repo] = (c.repository || "").split("/");
+  if (!owner || !repo) return;
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const linkText = a.runStatus === "completed" ? "completed" : "ended";
+  const heading = formatCommentHeading(
+    a.framework,
+    a.testType,
+    a.serverEdition,
+    shortSha,
+    linkText,
+    a.reportURL
+  );
+  const lines = [heading, ""];
+  if (a.runStatus === "completed") {
+    lines.push(a.commitStatusMessage);
+  } else {
+    lines.push(`Run did not finish cleanly: ${a.runStatus}. ${a.commitStatusMessage}`);
+  }
+  if (a.durationDisplay) lines.push("", `Duration: ${a.durationDisplay}`);
+  const failed = a.units.filter((u) => u.state === "failed");
+  if (failed.length > 0) {
+    failed.sort((u, v) => (u.dispatch_seq ?? 0) - (v.dispatch_seq ?? 0));
+    const preview = failed.slice(0, FAILED_SPECS_PREVIEW);
+    const remaining = failed.length - preview.length;
+    lines.push(
+      "",
+      `<details>`,
+      `<summary>Showing ${preview.length} of ${failed.length} failed specs</summary>`,
+      ""
+    );
+    for (const u of preview) {
+      lines.push(`- \`${escapeForCodeSpan(u.spec_path)}\``);
+    }
+    if (remaining > 0) {
+      lines.push(`- _\u2026and ${remaining} more \u2014 see the full report._`);
+    }
+    lines.push("", `</details>`);
+  }
+  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
+  lines.push("", marker, "");
+  await postOrUpdatePRComment({
+    token,
+    owner,
+    repo,
+    prNumber,
+    marker,
+    body: lines.join("\n"),
+    // Cap the lookup at the first page (100 comments). On a busy PR
+    // the begin comment may be past page 1; in that rare case the
+    // summary is posted as a new comment instead of paginating.
+    singlePage: true
+  });
+}
+function formatCommentHeading(framework, testType, edition, shortSha, linkText, url) {
+  const fwCap = capitalize(framework);
+  const ttCap = testType ? ` ${capitalize(testType)}` : "";
+  const edPart = edition ? ` (${edition})` : "";
+  return `**E2E \u2014 ${fwCap}${ttCap}${edPart} - \`${shortSha}\`, [${linkText}](${url})**`;
 }
 function renderWebhookPayload(f) {
   const frameworkCap = capitalize(f.framework);

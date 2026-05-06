@@ -83,6 +83,26 @@ inputs:
     description: Avatar URL surfaced on the webhook post.
     required: false
     default: "https://mattermost.com/wp-content/uploads/2022/02/icon_WS.png"
+  post-pr-comment:
+    description: >
+      When `"true"` and the composite identity carries a `gh_pr_number`,
+      replace (or create) a PR comment keyed by the marker
+      `<!-- test-system-io:<name>@<short_sha> -->` with the run summary.
+      Heading link reads `[completed]` for finished runs (passed or
+      failed) and `[ended]` for timed_out / incomplete runs. No-op for
+      non-PR runs.
+    required: false
+    default: "false"
+  github-token:
+    description: >
+      GitHub token with `pull-requests: write` scope. Required only
+      when `post-pr-comment` is `"true"`.
+    required: false
+    default: ""
+  server-edition:
+    description: Server edition folded into the comment heading (e.g. `enterprise`, `fips`).
+    required: false
+    default: ""
 
 outputs:
   passed:

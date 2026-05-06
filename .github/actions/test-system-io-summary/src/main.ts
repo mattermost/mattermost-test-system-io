@@ -14,6 +14,7 @@
 
 import * as fs from "node:fs";
 import * as core from "@actions/core";
+import { postOrUpdatePRComment } from "./pr-comment";
 
 interface CompositeIdentity {
   repository: string;
@@ -56,6 +57,13 @@ interface OrchestrationStatus {
     retest_ms?: number;
     retest_unit_count?: number;
   };
+  // Per-unit detail returned alongside the run snapshot. Used here to
+  // surface the failed-spec list in the PR comment.
+  units?: Array<{
+    spec_path?: string;
+    state?: string;
+    dispatch_seq?: number;
+  }>;
 }
 
 const PRODUCTION_URL = "https://test-io.test.mattermost.com";
@@ -219,8 +227,7 @@ export async function run(): Promise<void> {
   // Webhook payload: mirrors v1's ci/publish-report attachment shape so
   // existing receivers render it identically.
   const webhookColor = colorForRate(rate);
-  const retestDisplay =
-    retestUnitCount > 0 ? `:repeat: re-run ${retestUnitCount} spec(s)` : "";
+  const retestDisplay = retestUnitCount > 0 ? `:repeat: re-run ${retestUnitCount} spec(s)` : "";
   const webhookPayload = renderWebhookPayload({
     username: webhookUsername,
     iconURL: webhookIconURL,
@@ -253,6 +260,22 @@ export async function run(): Promise<void> {
   core.setOutput("commit_status_message", commitStatusMessage);
   core.setOutput("commit_status_description", commitStatusDescription);
   core.setOutput("webhook_payload", webhookPayload);
+
+  // PR comment — best-effort, opt-in. Skips silently for non-PR runs.
+  if (core.getInput("post-pr-comment") === "true") {
+    await postSummaryComment({
+      compositeIdentity,
+      framework,
+      testType,
+      serverEdition: core.getInput("server-edition"),
+      runStatus: status?.status ?? "unknown",
+      commitStatusMessage,
+      durationDisplay,
+      reportURL,
+      units: status?.units ?? [],
+      failedUnitCount: failed,
+    });
+  }
 
   if (status?.status !== "completed") {
     const msg = `run did not complete cleanly: ${status?.status}`;
@@ -310,6 +333,15 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+// escapeForCodeSpan strips characters that would break out of a Markdown
+// inline code span. Spec paths come from filesystem discovery on the
+// consumer's repo; defensive sanitization avoids visual breakage (and
+// minor format-injection vectors) on rendered comment bodies.
+function escapeForCodeSpan(s: string | undefined): string {
+  if (!s) return "<unknown>";
+  return s.replace(/[`\r\n]/g, "");
+}
+
 interface WebhookFields {
   username: string;
   iconURL: string;
@@ -326,6 +358,106 @@ interface WebhookFields {
   retestDisplay: string;
   durationDisplay: string;
   reportURL: string;
+}
+
+interface SummaryCommentArgs {
+  compositeIdentity: CompositeIdentity;
+  framework: string;
+  testType: string;
+  serverEdition: string;
+  runStatus: string;
+  commitStatusMessage: string;
+  durationDisplay: string;
+  reportURL: string;
+  units: NonNullable<OrchestrationStatus["units"]>;
+  failedUnitCount: number;
+}
+
+const FAILED_SPECS_PREVIEW = 5;
+
+// postSummaryComment renders the summary-phase comment body and
+// replaces (or creates) the PR comment keyed by the test-system-io
+// marker. Heading link reads `[completed]` for runs that reached the
+// `completed` state and `[ended]` for everything else (timed_out,
+// incomplete, unknown).
+async function postSummaryComment(a: SummaryCommentArgs): Promise<void> {
+  const c = a.compositeIdentity;
+  if (c.gh_pr_number == null || c.gh_pr_number === "") return;
+  const prNumber = Number.parseInt(String(c.gh_pr_number), 10);
+  if (!Number.isFinite(prNumber)) return;
+
+  const token = core.getInput("github-token");
+  const [owner, repo] = (c.repository || "").split("/");
+  if (!owner || !repo) return;
+
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const linkText = a.runStatus === "completed" ? "completed" : "ended";
+  const heading = formatCommentHeading(
+    a.framework,
+    a.testType,
+    a.serverEdition,
+    shortSha,
+    linkText,
+    a.reportURL,
+  );
+
+  const lines: string[] = [heading, ""];
+  if (a.runStatus === "completed") {
+    lines.push(a.commitStatusMessage);
+  } else {
+    lines.push(`Run did not finish cleanly: ${a.runStatus}. ${a.commitStatusMessage}`);
+  }
+  if (a.durationDisplay) lines.push("", `Duration: ${a.durationDisplay}`);
+
+  const failed = a.units.filter((u) => u.state === "failed");
+  if (failed.length > 0) {
+    failed.sort((u, v) => (u.dispatch_seq ?? 0) - (v.dispatch_seq ?? 0));
+    const preview = failed.slice(0, FAILED_SPECS_PREVIEW);
+    const remaining = failed.length - preview.length;
+    lines.push(
+      "",
+      `<details>`,
+      `<summary>Showing ${preview.length} of ${failed.length} failed specs</summary>`,
+      "",
+    );
+    for (const u of preview) {
+      lines.push(`- \`${escapeForCodeSpan(u.spec_path)}\``);
+    }
+    if (remaining > 0) {
+      lines.push(`- _…and ${remaining} more — see the full report._`);
+    }
+    lines.push("", `</details>`);
+  }
+
+  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
+  lines.push("", marker, "");
+
+  await postOrUpdatePRComment({
+    token,
+    owner,
+    repo,
+    prNumber,
+    marker,
+    body: lines.join("\n"),
+    // Cap the lookup at the first page (100 comments). On a busy PR
+    // the begin comment may be past page 1; in that rare case the
+    // summary is posted as a new comment instead of paginating.
+    singlePage: true,
+  });
+}
+
+function formatCommentHeading(
+  framework: string,
+  testType: string,
+  edition: string,
+  shortSha: string,
+  linkText: string,
+  url: string,
+): string {
+  const fwCap = capitalize(framework);
+  const ttCap = testType ? ` ${capitalize(testType)}` : "";
+  const edPart = edition ? ` (${edition})` : "";
+  return `**E2E — ${fwCap}${ttCap}${edPart} - \`${shortSha}\`, [${linkText}](${url})**`;
 }
 
 // renderWebhookPayload builds the Mattermost-style webhook JSON body.
@@ -355,8 +487,7 @@ function renderWebhookPayload(f: WebhookFields): string {
   const retestPart = f.retestDisplay ? ` | ${f.retestDisplay}` : "";
   const dockerLine = f.serverImage ? `\n:docker: \`${f.serverImage}\`` : "";
   const durationLine = f.durationDisplay ? `\n${f.durationDisplay}` : "";
-  const text =
-    `${title}\n\n${sourceLine}${dockerLine}\n${f.commitStatusMessage}${retestPart} | [full report](${f.reportURL})${durationLine}`;
+  const text = `${title}\n\n${sourceLine}${dockerLine}\n${f.commitStatusMessage}${retestPart} | [full report](${f.reportURL})${durationLine}`;
 
   return JSON.stringify({
     username: f.username,

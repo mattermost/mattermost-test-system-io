@@ -110,6 +110,20 @@ export interface OrchestrationSummary {
     skipped: number;
     total: number;
   };
+  /**
+   * First-pass / retest wall-clock split plus the four reference moments
+   * the dashboard renders as a timeline (begin → first test → first
+   * retest → last test). Omitted while no first attempt has reported.
+   */
+  durations?: {
+    first_pass_ms?: number;
+    retest_ms?: number;
+    retest_unit_count: number;
+    begin_at: string;
+    first_test_at?: string;
+    first_retest_at?: string;
+    last_test_at?: string;
+  };
 }
 
 // Report summary (current API)

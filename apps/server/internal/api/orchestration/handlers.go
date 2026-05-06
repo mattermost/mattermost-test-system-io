@@ -548,29 +548,37 @@ type testCounts struct {
 }
 
 // runDurations is the first-pass vs retest wall-clock split exposed on
-// /status for CI consumers. All fields are nullable: first_pass_ms is
-// nil while no first attempt has reported yet; retest_ms and
-// retest_unit_count are nil/zero when no unit has been re-leased.
+// /status for CI consumers, plus the absolute timestamps the dashboard
+// renders as a timeline (begin → first test → first retest → last test).
+// All ms fields are nullable; timestamp fields are nullable too except
+// `BeginAt`, which is always the run's started_at.
 type runDurations struct {
-	FirstPassMs     *int64 `json:"first_pass_ms,omitempty"`
-	RetestMs        *int64 `json:"retest_ms,omitempty"`
-	RetestUnitCount int    `json:"retest_unit_count"`
+	FirstPassMs     *int64     `json:"first_pass_ms,omitempty"`
+	RetestMs        *int64     `json:"retest_ms,omitempty"`
+	RetestUnitCount int        `json:"retest_unit_count"`
+	BeginAt         time.Time  `json:"begin_at"`
+	FirstTestAt     *time.Time `json:"first_test_at,omitempty"`
+	FirstRetestAt   *time.Time `json:"first_retest_at,omitempty"`
+	LastTestAt      *time.Time `json:"last_test_at,omitempty"`
 }
 
 // aggregateDurations splits the run's wall-clock into a first-pass and a
 // retest portion using the attempts table. "First attempt per unit" is
 // MIN(created_at) for each dispatch_unit_id; everything later on the same
 // unit is a retest. Also counts how many distinct units were re-leased so
-// the consumer can render `:repeat: re-run N spec(s)`. Returns (nil, nil)
-// when no attempts have reported yet.
+// the consumer can render `:repeat: re-run N spec(s)`, and surfaces the
+// absolute timestamps behind the durations so the dashboard's timeline
+// row can show begin → first test → first retest → last test. Returns
+// (nil, nil) when no attempts have reported yet.
 func aggregateDurations(
 	ctx context.Context, pool *pgxpool.Pool, runID uuid.UUID, runStartedAt time.Time,
 ) (*runDurations, error) {
 	var (
-		firstPassEnd    *time.Time
-		retestStart     *time.Time
-		retestEnd       *time.Time
-		retestUnitCount int
+		firstAttemptStart *time.Time
+		firstPassEnd      *time.Time
+		retestStart       *time.Time
+		retestEnd         *time.Time
+		retestUnitCount   int
 	)
 	err := pool.QueryRow(ctx, `
 		WITH first_per_unit AS (
@@ -588,18 +596,25 @@ func aggregateDurations(
 			   AND a.created_at > f.created_at
 		)
 		SELECT
-			(SELECT MAX(reported_at) FROM first_per_unit WHERE reported_at IS NOT NULL) AS first_pass_end,
+			(SELECT MIN(created_at)  FROM first_per_unit)                                AS first_attempt_start,
+			(SELECT MAX(reported_at) FROM first_per_unit WHERE reported_at IS NOT NULL)  AS first_pass_end,
 			(SELECT MIN(created_at)  FROM retests)                                       AS retest_start,
 			(SELECT MAX(reported_at) FROM retests WHERE reported_at IS NOT NULL)         AS retest_end,
 			(SELECT COUNT(DISTINCT dispatch_unit_id) FROM retests)                       AS retest_unit_count
-	`, runID).Scan(&firstPassEnd, &retestStart, &retestEnd, &retestUnitCount)
+	`, runID).Scan(&firstAttemptStart, &firstPassEnd, &retestStart, &retestEnd, &retestUnitCount)
 	if err != nil {
 		return nil, err
 	}
-	if firstPassEnd == nil && retestStart == nil {
+	if firstAttemptStart == nil && firstPassEnd == nil && retestStart == nil {
 		return nil, nil
 	}
-	out := &runDurations{RetestUnitCount: retestUnitCount}
+	out := &runDurations{
+		RetestUnitCount: retestUnitCount,
+		BeginAt:         runStartedAt.UTC(),
+		FirstTestAt:     utcOrNil(firstAttemptStart),
+		FirstRetestAt:   utcOrNil(retestStart),
+		LastTestAt:      utcOrNil(latestNonNil(firstPassEnd, retestEnd)),
+	}
 	if firstPassEnd != nil {
 		ms := firstPassEnd.Sub(runStartedAt).Milliseconds()
 		if ms < 0 {
@@ -615,6 +630,27 @@ func aggregateDurations(
 		out.RetestMs = &ms
 	}
 	return out, nil
+}
+
+func utcOrNil(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
+func latestNonNil(a, b *time.Time) *time.Time {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	case b.After(*a):
+		return b
+	default:
+		return a
+	}
 }
 
 // aggregateTestCounts walks every reported test_case across all attempts of

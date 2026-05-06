@@ -17,6 +17,7 @@ import {
   formatDuration,
   calculatePassRate,
   getPassRateColorClass,
+  formatTimeline,
 } from '@/components/report_card_parts';
 
 // Idle window past which an in-flight report group is rendered as
@@ -101,6 +102,18 @@ export interface ReportSummaryProps {
   durationMs?: number | null;
   /** Wall-clock span of retest shards alone. Renders after `durationMs` with a `+` separator. */
   retestDurationMs?: number | null;
+
+  /**
+   * Orchestration timeline anchors. When provided, a "begin → first test
+   * → first retest → last test" row renders directly under the duration
+   * pill. Same-day moments collapse to a single date headline + time
+   * segments; cross-day timelines drop the headline and prefix each
+   * segment with date + time.
+   */
+  beginAt?: string | null;
+  firstTestAt?: string | null;
+  firstRetestAt?: string | null;
+  lastTestAt?: string | null;
 
   // Row 3: metadata
   createdAt?: string;
@@ -228,6 +241,10 @@ export function ReportSummary(props: ReportSummaryProps) {
     setupDurationMs,
     durationMs,
     retestDurationMs,
+    beginAt,
+    firstTestAt,
+    firstRetestAt,
+    lastTestAt,
     createdAt,
     framework,
     reportCount,
@@ -376,6 +393,41 @@ export function ReportSummary(props: ReportSummaryProps) {
             })()}
         </div>
       )}
+
+      {/* Row 2b: orchestration timeline (begin → first test → first
+          retest → last test). Same-day collapses to a single date
+          headline + time segments; cross-day timelines drop the
+          headline and prefix each segment with date+time. */}
+      {(() => {
+        const timeline = formatTimeline({
+          beginAt,
+          firstTestAt,
+          firstRetestAt,
+          lastTestAt,
+        });
+        if (!timeline.hasContent) return null;
+        return (
+          <div className="flex items-center gap-1.5 mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+            <Calendar className="h-3 w-3" aria-hidden="true" />
+            {timeline.headline && (
+              <span className="font-medium text-gray-600 dark:text-gray-300">
+                {timeline.headline}
+              </span>
+            )}
+            {timeline.segments.map((seg, i) => (
+              <span key={seg.kind} className="inline-flex items-center gap-1">
+                {(timeline.headline || i > 0) && (
+                  <span aria-hidden="true" className="text-gray-300 dark:text-gray-600">
+                    →
+                  </span>
+                )}
+                <span className="text-gray-500 dark:text-gray-500">{seg.label}</span>
+                <span className="text-gray-700 dark:text-gray-300">{seg.text}</span>
+              </span>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Row 3: Metadata (date, framework, report count, progress status) */}
       {hasMetadata && (

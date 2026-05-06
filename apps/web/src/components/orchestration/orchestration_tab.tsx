@@ -166,6 +166,12 @@ function computeTestDurations(
   setupDurationMs: number;
   durationMs: number;
   retestDurationMs: number;
+  /** First-attempt earliest start, ISO. Drives the timeline's "First test" segment. */
+  firstTestAt: string | null;
+  /** First retest-attempt earliest start, ISO. Null when no retest happened. */
+  firstRetestAt: string | null;
+  /** Latest reported_at across all attempts, ISO. Drives the timeline's "Last test" segment. */
+  lastTestAt: string | null;
 } {
   let firstStart = Number.POSITIVE_INFINITY;
   let firstEnd = 0;
@@ -196,7 +202,18 @@ function computeTestDurations(
     Number.isFinite(firstStart) && firstEnd > 0 ? Math.max(0, firstEnd - firstStart) : 0;
   const retestDurationMs =
     Number.isFinite(retestStart) && retestEnd > 0 ? Math.max(0, retestEnd - retestStart) : 0;
-  return { setupDurationMs, durationMs, retestDurationMs };
+  const firstTestAt = Number.isFinite(firstStart) ? new Date(firstStart).toISOString() : null;
+  const firstRetestAt = Number.isFinite(retestStart) ? new Date(retestStart).toISOString() : null;
+  const lastEndMs = Math.max(firstEnd, retestEnd);
+  const lastTestAt = lastEndMs > 0 ? new Date(lastEndMs).toISOString() : null;
+  return {
+    setupDurationMs,
+    durationMs,
+    retestDurationMs,
+    firstTestAt,
+    firstRetestAt,
+    lastTestAt,
+  };
 }
 
 interface SpecRow {
@@ -433,7 +450,7 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
         type="button"
         onClick={() => canExpand && setExpanded((v) => !v)}
         disabled={!canExpand}
-        className={`w-full py-2.5 text-left transition-colors ${
+        className={`w-full py-2.5 pr-3 text-left transition-colors ${
           canExpand
             ? expanded
               ? 'cursor-pointer hover:bg-blue-100/50 dark:hover:bg-blue-900/30'
@@ -527,19 +544,37 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
                   if (d != null) retestMs += d;
                 }
                 if (firstMs == null && retestMs === 0) return null;
+                // Threshold against first-pass + retest so a flaky spec
+                // that burned both windows surfaces on the slow-spec
+                // band even when each individual lease is under the
+                // threshold. 2–3 min orange, 3 min+ red.
+                const totalMs = (firstMs ?? 0) + retestMs;
+                const cls =
+                  totalMs >= 180_000
+                    ? 'text-red-600 dark:text-red-400'
+                    : totalMs >= 120_000
+                      ? 'text-orange-600 dark:text-orange-400'
+                      : 'text-gray-500 dark:text-gray-400';
+                const slowSuffix =
+                  totalMs >= 180_000
+                    ? ' — long-running spec (>3m)'
+                    : totalMs >= 120_000
+                      ? ' — slow spec (2–3m)'
+                      : '';
                 return (
                   <span
-                    className="inline-flex items-center gap-1 text-gray-500 dark:text-gray-400"
+                    className={`inline-flex items-center gap-1 ${cls}`}
                     title={
-                      retestMs > 0
+                      (retestMs > 0
                         ? 'First-pass lease + orchestration retest lease(s) (each lease wall-clock includes its own Playwright --retries reruns)'
-                        : 'First-pass lease wall-clock (includes any Playwright --retries reruns within the lease)'
+                        : 'First-pass lease wall-clock (includes any Playwright --retries reruns within the lease)') +
+                      slowSuffix
                     }
                   >
                     <Clock className="h-3 w-3" />
                     {firstMs != null ? formatDuration(firstMs) : '—'}
                     {retestMs > 0 && (
-                      <span className="text-gray-400 dark:text-gray-500">
+                      <span className="opacity-70">
                         {' + '}
                         {formatDuration(retestMs)}
                       </span>
@@ -1333,10 +1368,8 @@ export function OrchestrationTab({ identity }: OrchestrationTabProps) {
   // records as separate per-result rows. Pending/leased units contribute
   // nothing (no test_cases yet); total grows as each unit completes.
   const tc = computeTestCaseCounts(run.units ?? []);
-  const { setupDurationMs, durationMs, retestDurationMs } = computeTestDurations(
-    run.units ?? [],
-    run.started_at,
-  );
+  const { setupDurationMs, durationMs, retestDurationMs, firstTestAt, firstRetestAt, lastTestAt } =
+    computeTestDurations(run.units ?? [], run.started_at);
   // Overall verdict is Passed / Failed / Timed Out / nothing (still in
   // flight). Flaky is per-test-case detail, not a run-level outcome — a
   // run with flaky-but-eventually-passed tests rolls up as Passed.
@@ -1372,6 +1405,10 @@ export function OrchestrationTab({ identity }: OrchestrationTabProps) {
         setupDurationMs={setupDurationMs > 0 ? setupDurationMs : null}
         durationMs={durationMs > 0 ? durationMs : null}
         retestDurationMs={retestDurationMs > 0 ? retestDurationMs : null}
+        beginAt={run.started_at}
+        firstTestAt={firstTestAt}
+        firstRetestAt={firstRetestAt}
+        lastTestAt={lastTestAt}
         createdAt={run.started_at}
         framework={run.framework}
         progressStatus={progressStatus}

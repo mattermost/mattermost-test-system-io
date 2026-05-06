@@ -370,6 +370,10 @@ export function FilteredReportPage() {
           total={data?.total_specs ?? 0}
           durationMs={data?.wall_clock_ms ?? data?.duration_ms ?? null}
           retestDurationMs={data?.retest_wall_clock_ms}
+          beginAt={report.orchestration?.durations?.begin_at}
+          firstTestAt={report.orchestration?.durations?.first_test_at}
+          firstRetestAt={report.orchestration?.durations?.first_retest_at}
+          lastTestAt={report.orchestration?.durations?.last_test_at}
           createdAt={report.created_at}
           framework={report.framework}
           reportCount={reportCountSplit.numbered}

@@ -146,6 +146,10 @@ export function ReportDetailPage() {
         skipped={testStats.skipped}
         total={testStats.total}
         durationMs={testStats.durationMs > 0 ? testStats.durationMs : undefined}
+        beginAt={report.orchestration?.durations?.begin_at}
+        firstTestAt={report.orchestration?.durations?.first_test_at}
+        firstRetestAt={report.orchestration?.durations?.first_retest_at}
+        lastTestAt={report.orchestration?.durations?.last_test_at}
         createdAt={individualReport?.created_at || report.created_at}
         framework={report.framework}
         reportCount={isIndividualReport ? undefined : reportCountSplit.numbered}

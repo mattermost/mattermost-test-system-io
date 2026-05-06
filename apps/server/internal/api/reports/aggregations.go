@@ -89,6 +89,25 @@ type orchestrationSummary struct {
 	// rolling test-case rollup so listing rows can quote test-level
 	// numbers during in-flight runs.
 	Tests *orchestrationTestCounts `json:"tests,omitempty"`
+	// Durations carries the first-pass / retest split plus the four
+	// reference timestamps (begin / first test / first retest / last test)
+	// the dashboard renders as a timeline. Omitted while no first attempt
+	// has reported yet.
+	Durations *orchestrationDurations `json:"durations,omitempty"`
+}
+
+// orchestrationDurations mirrors the /orchestration/status `durations`
+// payload but is shaped for the listing endpoints' JSON. Kept duplicated
+// across the orchestration and reports packages to avoid a cross-package
+// import cycle for a small DTO.
+type orchestrationDurations struct {
+	FirstPassMs     *int64     `json:"first_pass_ms,omitempty"`
+	RetestMs        *int64     `json:"retest_ms,omitempty"`
+	RetestUnitCount int        `json:"retest_unit_count"`
+	BeginAt         time.Time  `json:"begin_at"`
+	FirstTestAt     *time.Time `json:"first_test_at,omitempty"`
+	FirstRetestAt   *time.Time `json:"first_retest_at,omitempty"`
+	LastTestAt      *time.Time `json:"last_test_at,omitempty"`
 }
 
 type reportSummary struct {
@@ -1121,17 +1140,19 @@ func aggregateOrchestrationSummary(
 	repository, commitSHA, ghRunID, name, ghRunAttempt string,
 ) (*orchestrationSummary, error) {
 	var (
-		runID  uuid.UUID
-		status string
-		total  int
-		c      orchestrationCounts
+		runID     uuid.UUID
+		status    string
+		total     int
+		c         orchestrationCounts
+		startedAt time.Time
 	)
 	err := pool.QueryRow(ctx, `
 		SELECT id, status, total_units,
 		       pending_count, leased_count,
 		       completed_pass_count, completed_fail_count,
 		       completed_skipped_count, abandoned_count,
-		       retest_eligible_count
+		       retest_eligible_count,
+		       started_at
 		  FROM orchestration_runs
 		 WHERE repository = $1
 		   AND commit_sha = $2
@@ -1145,6 +1166,7 @@ func aggregateOrchestrationSummary(
 		&c.CompletedPass, &c.CompletedFail,
 		&c.CompletedSkipped, &c.Abandoned,
 		&c.RetestEligible,
+		&startedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1156,12 +1178,104 @@ func aggregateOrchestrationSummary(
 	if err != nil {
 		return nil, err
 	}
+	durations, err := aggregateOrchestrationDurations(ctx, pool, runID, startedAt)
+	if err != nil {
+		return nil, err
+	}
 	return &orchestrationSummary{
 		Status:     status,
 		TotalUnits: total,
 		Counts:     c,
 		Tests:      tests,
+		Durations:  durations,
 	}, nil
+}
+
+// aggregateOrchestrationDurations mirrors the orchestration package's
+// aggregateDurations: derives first-pass / retest wall-clock split plus
+// the four reference timestamps the dashboard renders as a timeline.
+// Returns (nil, nil) when no attempts have reported yet.
+func aggregateOrchestrationDurations(
+	ctx context.Context, pool *pgxpool.Pool, runID uuid.UUID, runStartedAt time.Time,
+) (*orchestrationDurations, error) {
+	var (
+		firstAttemptStart *time.Time
+		firstPassEnd      *time.Time
+		retestStart       *time.Time
+		retestEnd         *time.Time
+		retestUnitCount   int
+	)
+	err := pool.QueryRow(ctx, `
+		WITH first_per_unit AS (
+			SELECT DISTINCT ON (dispatch_unit_id)
+				dispatch_unit_id, created_at, reported_at
+			  FROM attempts
+			 WHERE run_id = $1
+			 ORDER BY dispatch_unit_id, created_at ASC
+		),
+		retests AS (
+			SELECT a.dispatch_unit_id, a.created_at, a.reported_at
+			  FROM attempts a
+			  JOIN first_per_unit f ON a.dispatch_unit_id = f.dispatch_unit_id
+			 WHERE a.run_id = $1
+			   AND a.created_at > f.created_at
+		)
+		SELECT
+			(SELECT MIN(created_at)  FROM first_per_unit)                                AS first_attempt_start,
+			(SELECT MAX(reported_at) FROM first_per_unit WHERE reported_at IS NOT NULL)  AS first_pass_end,
+			(SELECT MIN(created_at)  FROM retests)                                       AS retest_start,
+			(SELECT MAX(reported_at) FROM retests WHERE reported_at IS NOT NULL)         AS retest_end,
+			(SELECT COUNT(DISTINCT dispatch_unit_id) FROM retests)                       AS retest_unit_count
+	`, runID).Scan(&firstAttemptStart, &firstPassEnd, &retestStart, &retestEnd, &retestUnitCount)
+	if err != nil {
+		return nil, err
+	}
+	if firstAttemptStart == nil && firstPassEnd == nil && retestStart == nil {
+		return nil, nil
+	}
+	out := &orchestrationDurations{
+		RetestUnitCount: retestUnitCount,
+		BeginAt:         runStartedAt.UTC(),
+		FirstTestAt:     utcOrNilTime(firstAttemptStart),
+		FirstRetestAt:   utcOrNilTime(retestStart),
+		LastTestAt:      utcOrNilTime(latestNonNilTime(firstPassEnd, retestEnd)),
+	}
+	if firstPassEnd != nil {
+		ms := firstPassEnd.Sub(runStartedAt).Milliseconds()
+		if ms < 0 {
+			ms = 0
+		}
+		out.FirstPassMs = &ms
+	}
+	if retestStart != nil && retestEnd != nil {
+		ms := retestEnd.Sub(*retestStart).Milliseconds()
+		if ms < 0 {
+			ms = 0
+		}
+		out.RetestMs = &ms
+	}
+	return out, nil
+}
+
+func utcOrNilTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
+func latestNonNilTime(a, b *time.Time) *time.Time {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	case b.After(*a):
+		return b
+	default:
+		return a
+	}
 }
 
 // aggregateOrchestrationTestCounts walks every reported test_case across

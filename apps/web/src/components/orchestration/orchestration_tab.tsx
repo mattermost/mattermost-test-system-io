@@ -460,7 +460,7 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
       >
         <div className="flex items-center justify-between">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="w-6 flex-shrink-0 text-right text-xs text-gray-400 dark:text-gray-500">
+            <span className="w-6 flex-shrink-0 text-right text-sm text-gray-400 dark:text-gray-500">
               {rowNumber}
             </span>
             {canExpand ? (
@@ -511,13 +511,13 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
                 )}
               </p>
               {suiteTitle && (
-                <p className="truncate text-xs text-gray-500 dark:text-gray-400">
+                <p className="truncate text-sm text-gray-500 dark:text-gray-400">
                   <HighlightText text={suiteTitle} search={searchQuery} />
                 </p>
               )}
             </div>
           </div>
-          <div className="flex flex-shrink-0 items-center gap-3 text-xs">
+          <div className="flex flex-shrink-0 items-center gap-3 text-sm">
             {liveElapsedMs != null ? (
               <span
                 className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400"
@@ -1055,7 +1055,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
                 setStatusFilter(statusFilter === 'spec_passed' ? 'all' : 'spec_passed')
               }
               title="Filter passed suites"
-              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-green-600 transition-colors hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20 ${
+              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-green-600 transition-colors hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20 ${
                 statusFilter === 'spec_passed' ? 'bg-green-100 dark:bg-green-900/40' : ''
               }`}
             >
@@ -1070,7 +1070,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
                 setStatusFilter(statusFilter === 'spec_failed' ? 'all' : 'spec_failed')
               }
               title="Filter failed suites"
-              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 ${
+              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 ${
                 statusFilter === 'spec_failed' ? 'bg-red-100 dark:bg-red-900/40' : ''
               }`}
             >
@@ -1085,7 +1085,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
                 setStatusFilter(statusFilter === 'spec_in_progress' ? 'all' : 'spec_in_progress')
               }
               title="Filter running suites (first-pass leases)"
-              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20 ${
+              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20 ${
                 statusFilter === 'spec_in_progress' ? 'bg-blue-100 dark:bg-blue-900/40' : ''
               }`}
             >
@@ -1102,7 +1102,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
                 )
               }
               title="Filter retests in flight (lease_count > 1)"
-              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-orange-600 transition-colors hover:bg-orange-50 dark:text-orange-400 dark:hover:bg-orange-900/20 ${
+              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-orange-600 transition-colors hover:bg-orange-50 dark:text-orange-400 dark:hover:bg-orange-900/20 ${
                 statusFilter === 'spec_retest_in_progress'
                   ? 'bg-orange-100 dark:bg-orange-900/40'
                   : ''
@@ -1119,7 +1119,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
                 setStatusFilter(statusFilter === 'spec_skipped' ? 'all' : 'spec_skipped')
               }
               title="Filter skipped suites"
-              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700 ${
+              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700 ${
                 statusFilter === 'spec_skipped' ? 'bg-gray-200 dark:bg-gray-600' : ''
               }`}
             >
@@ -1135,7 +1135,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
               <button
                 type="button"
                 onClick={() => setStatusFilter('all')}
-                className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                className={`cursor-pointer rounded px-2 py-0.5 text-sm font-medium transition-colors ${
                   statusFilter === 'all'
                     ? 'bg-gray-200 text-gray-900 dark:bg-gray-600 dark:text-white'
                     : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
@@ -1146,7 +1146,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
               <button
                 type="button"
                 onClick={() => setStatusFilter('test_passed')}
-                className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
                   statusFilter === 'test_passed'
                     ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
                     : 'text-green-600 hover:bg-green-50 dark:text-green-500 dark:hover:bg-green-900/20'
@@ -1161,7 +1161,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
                 <button
                   type="button"
                   onClick={() => setStatusFilter('test_failed')}
-                  className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
                     statusFilter === 'test_failed'
                       ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
                       : 'text-red-600 hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-900/20'
@@ -1177,7 +1177,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
                 <button
                   type="button"
                   onClick={() => setStatusFilter('test_flaky')}
-                  className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
                     statusFilter === 'test_flaky'
                       ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
                       : 'text-yellow-600 hover:bg-yellow-50 dark:text-yellow-500 dark:hover:bg-yellow-900/20'
@@ -1193,7 +1193,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
                 <button
                   type="button"
                   onClick={() => setStatusFilter('test_skipped')}
-                  className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
                     statusFilter === 'test_skipped'
                       ? 'bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200'
                       : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
@@ -1221,7 +1221,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
           placeholder="Search tests..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="h-7 w-full rounded border border-gray-200 bg-white pl-7 pr-7 text-xs text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-500 dark:focus:border-blue-400 dark:focus:ring-blue-400"
+          className="h-8 w-full rounded border border-gray-200 bg-white pl-7 pr-7 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white dark:placeholder-gray-500 dark:focus:border-blue-400 dark:focus:ring-blue-400"
         />
         {searchQuery && (
           <button

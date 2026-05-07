@@ -538,7 +538,7 @@ export function TestSuitesView({
               <button
                 type="button"
                 onClick={() => setStatusFilter('all')}
-                className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                className={`cursor-pointer rounded px-2 py-0.5 text-sm font-medium transition-colors ${
                   statusFilter === 'all'
                     ? 'bg-gray-200 text-gray-900 dark:bg-gray-600 dark:text-white'
                     : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
@@ -549,7 +549,7 @@ export function TestSuitesView({
               <button
                 type="button"
                 onClick={() => setStatusFilter('test_passed')}
-                className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
                   statusFilter === 'test_passed'
                     ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
                     : 'text-green-600 hover:bg-green-50 dark:text-green-500 dark:hover:bg-green-900/20'
@@ -564,7 +564,7 @@ export function TestSuitesView({
                 <button
                   type="button"
                   onClick={() => setStatusFilter('test_failed')}
-                  className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
                     statusFilter === 'test_failed'
                       ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
                       : 'text-red-600 hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-900/20'
@@ -580,7 +580,7 @@ export function TestSuitesView({
                 <button
                   type="button"
                   onClick={() => setStatusFilter('test_flaky')}
-                  className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
                     statusFilter === 'test_flaky'
                       ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
                       : 'text-yellow-600 hover:bg-yellow-50 dark:text-yellow-500 dark:hover:bg-yellow-900/20'
@@ -596,7 +596,7 @@ export function TestSuitesView({
                 <button
                   type="button"
                   onClick={() => setStatusFilter('test_skipped')}
-                  className={`cursor-pointer rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
                     statusFilter === 'test_skipped'
                       ? 'bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-300'
                       : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'

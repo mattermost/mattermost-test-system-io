@@ -43,7 +43,21 @@ function status_icon(entry: RunEntry) {
   const stats = resolveDisplayStats(entry);
   if (stats && stats.total > 0) {
     if (stats.failed > 0) return <XCircle className="h-4 w-4 text-red-500" />;
-    if ((stats.flaky ?? 0) > 0) return <AlertCircle className="h-4 w-4 text-yellow-500" />;
+    if ((stats.flaky ?? 0) > 0) {
+      // Passed overall, but at least one test recovered after a retry.
+      // Reuse the alert shape (so the row stands out at a glance) but in
+      // green (so it doesn't read as a failure). Tooltip explains the
+      // distinction so the icon is self-documenting on hover.
+      const flaky = stats.flaky ?? 0;
+      return (
+        <span
+          className="inline-flex"
+          title={`Passed — ${flaky} flaky test${flaky === 1 ? '' : 's'} recovered after retry; worth a look.`}
+        >
+          <AlertCircle className="h-4 w-4 text-green-500" />
+        </span>
+      );
+    }
     return <CheckCircle className="h-4 w-4 text-green-500" />;
   }
 
@@ -69,7 +83,15 @@ function format_time(date_string: string): string {
   return date.toLocaleDateString();
 }
 
-function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string }) {
+function run_entry_row({
+  entry,
+  repoName,
+  rowNumber,
+}: {
+  entry: RunEntry;
+  repoName?: string;
+  rowNumber?: number;
+}) {
   const branch = short_branch(entry.branch);
   // Prefer the orchestration counts over the framework's `test_stats`
   // when both exist, so the row reflects the orchestrator's view of the
@@ -98,6 +120,11 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
           would otherwise lose characters and force the user to hover
           for context. */}
       <div className="flex items-center gap-2 flex-shrink-0">
+        {rowNumber != null && (
+          <span className="w-6 flex-shrink-0 text-right text-xs text-gray-400 dark:text-gray-500">
+            {rowNumber}
+          </span>
+        )}
         {status_icon(entry)}
         <div className="flex flex-col gap-0.5">
           {/* Row 1: name + gh_run_id (+ optional non-1 attempt) */}
@@ -148,13 +175,46 @@ function run_entry_row({ entry, repoName }: { entry: RunEntry; repoName?: string
         </div>
       </div>
 
-      {/* Middle: test summary, pass rate (flex-1 pushes right group to edge) */}
+      {/* Middle: spec/test counts, breakdown, pass rate (flex-1 pushes right group to edge) */}
       <div className="flex-1 flex items-center justify-end gap-2 text-sm mx-2">
+        {entry.orchestration &&
+          entry.orchestration.total_units > 0 &&
+          (() => {
+            const c = entry.orchestration.counts;
+            const done =
+              (c.completed_pass ?? 0) +
+              (c.completed_fail ?? 0) +
+              (c.completed_skipped ?? 0) +
+              (c.abandoned ?? 0);
+            const total = entry.orchestration.total_units;
+            // Icon + color follow the report-summary header convention:
+            // alert + blue while in flight, alert + orange after the
+            // run terminates with unfinished units, check + neutral
+            // once everything is terminal.
+            const hasMismatch = done < total;
+            const inProgress = entry.orchestration.status === 'in_progress';
+            const Icon = hasMismatch ? AlertCircle : CheckCircle;
+            const cls = hasMismatch
+              ? inProgress
+                ? 'inline-flex items-center gap-1 text-blue-600 dark:text-blue-400'
+                : 'inline-flex items-center gap-1 text-orange-600 dark:text-orange-400'
+              : 'inline-flex items-center gap-1 text-gray-500 dark:text-gray-400';
+            return (
+              <span
+                className={cls}
+                title={`${done} of ${total} dispatch units have reached a terminal state`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {done}/{total} specs
+              </span>
+            );
+          })()}
         {hasStats && stats && (
           <span
             className="text-gray-500 dark:text-gray-400"
             title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total ${unit}`}
           >
+            {stats.total} tests {' / '}
             <span className="text-green-700 dark:text-green-400">{stats.passed}</span>
             {stats.failed > 0 && (
               <>
@@ -228,8 +288,11 @@ function orchestration_strip(entry: RunEntry) {
   // actually running. Once it terminates the row's main test_stats line
   // already conveys the outcome, so the strip becomes redundant noise.
   if (!entry.orchestration || entry.orchestration.status !== 'in_progress') return null;
+  // Left padding aligns the strip's text with the run-name column above:
+  // link px-3 (12) + row-number w-6 (24) + gap-2 (8) + status-icon h-4 w-4 (16)
+  // + gap-2 (8) = 68px. Right side keeps px-3 for symmetry.
   return (
-    <div className="px-3 pb-2 -mt-1">
+    <div className="pl-[68px] pr-3 pb-2 -mt-1">
       <OrchestrationInlineSummary orchestration={entry.orchestration} />
     </div>
   );
@@ -258,7 +321,7 @@ export function RepoGroupCard({ group }: RepoGroupCardProps) {
   return (
     <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800/50">
       <div className="divide-y divide-gray-50 dark:divide-gray-700/50">
-        {group.runs.map((entry) => {
+        {group.runs.map((entry, idx) => {
           const isLatest = entry.created_at === latestByKey.get(entry.url_path);
           // Latest entry keeps the bare URL; older entries with the same
           // (repo, branch, commit, name) get a `gh_run_id` disambiguator.
@@ -285,6 +348,7 @@ export function RepoGroupCard({ group }: RepoGroupCardProps) {
               {run_entry_row({
                 entry: decoratedEntry,
                 repoName: group.repository_name || entry.url_path.split('/')[2] || '',
+                rowNumber: idx + 1,
               })}
               {orchestration_strip(decoratedEntry)}
             </div>

@@ -11,7 +11,6 @@
  * blocks render side-by-side; the dashboard never reconciles them here.
  */
 
-import { Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import type { OrchestrationSummary } from '@/types';
 
 interface OrchestrationInlineSummaryProps {
@@ -35,17 +34,6 @@ function statusPalette(status: OrchestrationSummary['status']): string {
   }
 }
 
-function statusIcon(status: OrchestrationSummary['status']) {
-  switch (status) {
-    case 'in_progress':
-      return <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />;
-    case 'completed':
-      return <CheckCircle2 className="h-3 w-3" aria-hidden="true" />;
-    case 'timed_out':
-      return <AlertTriangle className="h-3 w-3" aria-hidden="true" />;
-  }
-}
-
 export function OrchestrationInlineSummary({ orchestration }: OrchestrationInlineSummaryProps) {
   const { status, total_units, counts } = orchestration;
   return (
@@ -54,12 +42,11 @@ export function OrchestrationInlineSummary({ orchestration }: OrchestrationInlin
       data-testid="orchestration-inline-summary"
     >
       <span
-        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${statusPalette(
+        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${statusPalette(
           status,
         )}`}
-        title={`Orchestration ${STATUS_LABEL[status]}`}
+        title={`Orchestration is ${STATUS_LABEL[status].toLowerCase()}`}
       >
-        {status !== 'in_progress' && statusIcon(status)}
         Live · {STATUS_LABEL[status]}
       </span>
       <span className="tabular-nums">

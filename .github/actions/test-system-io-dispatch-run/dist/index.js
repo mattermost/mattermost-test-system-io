@@ -25051,6 +25051,7 @@ async function run() {
   } catch (e) {
     throw new Error(`composite-identity is not valid JSON: ${e.message}`);
   }
+  normalizeCompositeIdentity(compositeIdentity);
   const resolved = await resolveJobId(githubToken, ghJobName);
   const ghJobId = resolved.id;
   const resolvedJobName = resolved.name;
@@ -25332,6 +25333,16 @@ function intInput(name, fallback) {
     throw new Error(`input ${name}=${raw} is not a non-negative integer`);
   }
   return n;
+}
+function normalizeCompositeIdentity(c) {
+  if (typeof c.gh_pr_number === "string") {
+    const n = Number.parseInt(c.gh_pr_number, 10);
+    if (Number.isFinite(n)) {
+      c.gh_pr_number = n;
+    } else {
+      delete c.gh_pr_number;
+    }
+  }
 }
 
 // src/index.ts

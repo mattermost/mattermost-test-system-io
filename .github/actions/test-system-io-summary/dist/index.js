@@ -20071,6 +20071,7 @@ async function run() {
   } catch (e) {
     throw new Error(`composite-identity is not valid JSON: ${e.message}`);
   }
+  normalizeCompositeIdentity(compositeIdentity);
   const bearer = await getIDToken(audience);
   setSecret(bearer);
   const params = new URLSearchParams({
@@ -20342,6 +20343,16 @@ ${f.commitStatusMessage}${retestPart} | [full report](${f.reportURL})${durationL
     icon_url: f.iconURL,
     attachments: [{ color: f.color, text }]
   });
+}
+function normalizeCompositeIdentity(c) {
+  if (typeof c.gh_pr_number === "string") {
+    const n = Number.parseInt(c.gh_pr_number, 10);
+    if (Number.isFinite(n)) {
+      c.gh_pr_number = n;
+    } else {
+      delete c.gh_pr_number;
+    }
+  }
 }
 
 // src/index.ts

@@ -24755,6 +24755,7 @@ async function run() {
   } catch (e) {
     throw new Error(`composite-identity is not valid JSON: ${e.message}`);
   }
+  normalizeCompositeIdentity(compositeIdentity);
   const ghJobId = await resolveJobId(githubToken, ghJobName);
   info(`resolved gh_job_id=${ghJobId} for gh_job_name=${ghJobName}`);
   const cfg = {
@@ -24773,6 +24774,7 @@ async function resolveJobId(token, ghJobName) {
   const { owner, repo } = context2.repo;
   const runId = context2.runId;
   const attempt = Number(process.env.GITHUB_RUN_ATTEMPT || "1");
+  const runnerName = process.env.RUNNER_NAME ?? "";
   const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
     owner,
     repo,
@@ -24780,12 +24782,26 @@ async function resolveJobId(token, ghJobName) {
     attempt_number: attempt,
     per_page: 100
   });
-  const match = jobs.find((j) => j.name === ghJobName);
-  if (!match) {
+  let matches = jobs.filter((j) => j.name === ghJobName);
+  if (matches.length === 0) {
+    matches = jobs.filter((j) => {
+      const parts = j.name.split(" / ");
+      return parts[parts.length - 1] === ghJobName;
+    });
+  }
+  if (matches.length > 1 && runnerName) {
+    const narrowed = matches.filter((j) => j.runner_name === runnerName);
+    if (narrowed.length > 0) matches = narrowed;
+  }
+  if (matches.length === 0) {
     const names = jobs.map((j) => j.name).join(", ");
     throw new Error(`no job matched gh-job-name=${ghJobName}; available: ${names}`);
   }
-  return String(match.id);
+  if (matches.length > 1) {
+    const names = matches.map((j) => j.name).join(", ");
+    throw new Error(`gh-job-name=${ghJobName} matched multiple jobs: ${names}`);
+  }
+  return String(matches[0].id);
 }
 function resolveBaseURL() {
   const useStaging = getInput("use-staging").trim().toLowerCase() === "true";
@@ -24799,6 +24815,16 @@ function intInput(name, fallback) {
     throw new Error(`input ${name}=${raw} is not a non-negative integer`);
   }
   return n;
+}
+function normalizeCompositeIdentity(c) {
+  if (typeof c.gh_pr_number === "string") {
+    const n = Number.parseInt(c.gh_pr_number, 10);
+    if (Number.isFinite(n)) {
+      c.gh_pr_number = n;
+    } else {
+      delete c.gh_pr_number;
+    }
+  }
 }
 
 // src/index.ts

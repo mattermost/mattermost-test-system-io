@@ -43,6 +43,7 @@ export async function run(): Promise<void> {
   } catch (e) {
     throw new Error(`composite-identity is not valid JSON: ${(e as Error).message}`);
   }
+  normalizeCompositeIdentity(compositeIdentity);
 
   const ghJobId = await resolveJobId(githubToken, ghJobName);
   core.info(`resolved gh_job_id=${ghJobId} for gh_job_name=${ghJobName}`);
@@ -73,6 +74,7 @@ async function resolveJobId(token: string, ghJobName: string): Promise<string> {
   const { owner, repo } = github.context.repo;
   const runId = github.context.runId;
   const attempt = Number(process.env.GITHUB_RUN_ATTEMPT || "1");
+  const runnerName = process.env.RUNNER_NAME ?? "";
 
   const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
     owner,
@@ -81,12 +83,35 @@ async function resolveJobId(token: string, ghJobName: string): Promise<string> {
     attempt_number: attempt,
     per_page: 100,
   });
-  const match = jobs.find((j) => j.name === ghJobName);
-  if (!match) {
+
+  // Exact match first — flat workflow case where the caller's
+  // gh-job-name equals the runtime job name.
+  let matches = jobs.filter((j) => j.name === ghJobName);
+  if (matches.length === 0) {
+    // Nested workflow_call composes the displayed name as
+    // `<parent> / <intermediate> / ... / <child>`; fall back to the
+    // trailing segment so callers can pass the bare child name.
+    matches = jobs.filter((j) => {
+      const parts = j.name.split(" / ");
+      return parts[parts.length - 1] === ghJobName;
+    });
+  }
+  // Disambiguate identically-named children across parallel chains by
+  // RUNNER_NAME (unique per GH-hosted job, equal to the calling job's).
+  if (matches.length > 1 && runnerName) {
+    const narrowed = matches.filter((j) => j.runner_name === runnerName);
+    if (narrowed.length > 0) matches = narrowed;
+  }
+
+  if (matches.length === 0) {
     const names = jobs.map((j) => j.name).join(", ");
     throw new Error(`no job matched gh-job-name=${ghJobName}; available: ${names}`);
   }
-  return String(match.id);
+  if (matches.length > 1) {
+    const names = matches.map((j) => j.name).join(", ");
+    throw new Error(`gh-job-name=${ghJobName} matched multiple jobs: ${names}`);
+  }
+  return String(matches[0]!.id);
 }
 
 function resolveBaseURL(): string {
@@ -102,4 +127,20 @@ function intInput(name: string, fallback: number): number {
     throw new Error(`input ${name}=${raw} is not a non-negative integer`);
   }
   return n;
+}
+
+// normalizeCompositeIdentity coerces gh_pr_number to a number when it
+// arrived as a string. Shell-built composite-identity payloads (jq
+// `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
+// identityFields.GHPRNumber is *int and json.Decode rejects the string
+// form. Normalizing once here keeps every downstream payload accepted.
+function normalizeCompositeIdentity(c: CompositeIdentity): void {
+  if (typeof c.gh_pr_number === "string") {
+    const n = Number.parseInt(c.gh_pr_number, 10);
+    if (Number.isFinite(n)) {
+      c.gh_pr_number = n;
+    } else {
+      delete c.gh_pr_number;
+    }
+  }
 }

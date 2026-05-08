@@ -56,6 +56,7 @@ export async function run(): Promise<void> {
   } catch (e) {
     throw new Error(`composite-identity is not valid JSON: ${(e as Error).message}`);
   }
+  normalizeCompositeIdentity(compositeIdentity);
 
   // The action input is the bare child name (e.g. `dispatch-run-1`),
   // but for nested workflow_call chains the GitHub Jobs API reports the
@@ -467,4 +468,22 @@ function intInput(name: string, fallback: number): number {
     throw new Error(`input ${name}=${raw} is not a non-negative integer`);
   }
   return n;
+}
+
+// normalizeCompositeIdentity coerces gh_pr_number to a number when it
+// arrived as a string. Shell-built composite-identity payloads (jq
+// `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
+// identityFields.GHPRNumber is *int and json.Decode rejects the string
+// form, surfacing as a 400 BAD_REQUEST "invalid JSON body" on every
+// orchestration endpoint. Normalizing once here keeps the rest of the
+// action body-agnostic.
+function normalizeCompositeIdentity(c: CompositeIdentity): void {
+  if (typeof c.gh_pr_number === "string") {
+    const n = Number.parseInt(c.gh_pr_number, 10);
+    if (Number.isFinite(n)) {
+      c.gh_pr_number = n;
+    } else {
+      delete c.gh_pr_number;
+    }
+  }
 }

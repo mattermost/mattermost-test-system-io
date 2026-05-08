@@ -82,6 +82,7 @@ export async function run(): Promise<void> {
   } catch (e) {
     throw new Error(`composite-identity is not valid JSON: ${(e as Error).message}`);
   }
+  normalizeCompositeIdentity(compositeIdentity);
 
   const bearer = await core.getIDToken(audience);
   // Mark the JWT for the runner's output filter so subsequent `core.info`,
@@ -494,4 +495,20 @@ function renderWebhookPayload(f: WebhookFields): string {
     icon_url: f.iconURL,
     attachments: [{ color: f.color, text }],
   });
+}
+
+// normalizeCompositeIdentity coerces gh_pr_number to a number when it
+// arrived as a string. Shell-built composite-identity payloads (jq
+// `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
+// identityFields.GHPRNumber is *int and json.Decode rejects the string
+// form. Normalizing once here keeps every downstream payload accepted.
+function normalizeCompositeIdentity(c: CompositeIdentity): void {
+  if (typeof c.gh_pr_number === "string") {
+    const n = Number.parseInt(c.gh_pr_number, 10);
+    if (Number.isFinite(n)) {
+      c.gh_pr_number = n;
+    } else {
+      delete c.gh_pr_number;
+    }
+  }
 }

@@ -20350,6 +20350,14 @@ async function run() {
     total_reports_expected: totalReportsExpected,
     dispatch_units: dispatchUnits
   };
+  if (typeof beginBody.gh_pr_number === "string") {
+    const n = Number.parseInt(beginBody.gh_pr_number, 10);
+    if (Number.isFinite(n)) {
+      beginBody.gh_pr_number = n;
+    } else {
+      delete beginBody.gh_pr_number;
+    }
+  }
   if (framework === "playwright") {
     beginBody.playwright_project = playwrightProject;
   }
@@ -20438,7 +20446,14 @@ function identityForReports(c, framework, totalReportsExpected) {
     branch: c.branch,
     total_reports_expected: totalReportsExpected
   };
-  if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;
+  if (c.gh_pr_number != null) {
+    if (typeof c.gh_pr_number === "string") {
+      const n = Number.parseInt(c.gh_pr_number, 10);
+      if (Number.isFinite(n)) body.gh_pr_number = n;
+    } else {
+      body.gh_pr_number = c.gh_pr_number;
+    }
+  }
   return body;
 }
 function resolveBaseURL() {

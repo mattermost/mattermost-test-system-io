@@ -112,6 +112,18 @@ export async function run(): Promise<void> {
     total_reports_expected: totalReportsExpected,
     dispatch_units: dispatchUnits,
   };
+  // The server contract types gh_pr_number as integer, but jq's --arg in
+  // shell-built composite-identity payloads emits it as a string. Coerce
+  // at the action boundary so a string-of-digits survives the round-trip
+  // without forcing every caller to switch to --argjson immediately.
+  if (typeof beginBody.gh_pr_number === "string") {
+    const n = Number.parseInt(beginBody.gh_pr_number, 10);
+    if (Number.isFinite(n)) {
+      beginBody.gh_pr_number = n;
+    } else {
+      delete beginBody.gh_pr_number;
+    }
+  }
   // playwright_project is a Playwright-only field; Cypress runs do not
   // carry it. Including it for cypress would be harmless on the wire
   // (server ignores unknown fields) but is misleading in the logs.
@@ -231,7 +243,16 @@ function identityForReports(
     branch: c.branch,
     total_reports_expected: totalReportsExpected,
   };
-  if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;
+  if (c.gh_pr_number != null) {
+    // The server contract types gh_pr_number as integer; coerce
+    // string-shaped values from shell-built composite-identity payloads.
+    if (typeof c.gh_pr_number === "string") {
+      const n = Number.parseInt(c.gh_pr_number, 10);
+      if (Number.isFinite(n)) body.gh_pr_number = n;
+    } else {
+      body.gh_pr_number = c.gh_pr_number;
+    }
+  }
   return body;
 }
 

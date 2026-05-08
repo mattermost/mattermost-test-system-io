@@ -57,8 +57,17 @@ export async function run(): Promise<void> {
     throw new Error(`composite-identity is not valid JSON: ${(e as Error).message}`);
   }
 
-  const ghJobId = await resolveJobId(githubToken, ghJobName);
-  core.info(`resolved gh_job_id=${ghJobId} for gh_job_name=${ghJobName}`);
+  // The action input is the bare child name (e.g. `dispatch-run-1`),
+  // but for nested workflow_call chains the GitHub Jobs API reports the
+  // composed display name (e.g. `e2e-cypress / cypress-full-v2 /
+  // dispatch-run-1`). Persist the composed name on the server so the
+  // dashboard / orchestration data carry the framework + intermediate
+  // chain that produced the worker. The flat-workflow case (where the
+  // composed name equals the input) is unchanged.
+  const resolved = await resolveJobId(githubToken, ghJobName);
+  const ghJobId = resolved.id;
+  const resolvedJobName = resolved.name;
+  core.info(`resolved gh_job_id=${ghJobId} gh_job_name=${resolvedJobName} (input=${ghJobName})`);
 
   const playwrightDir = path.resolve(repoDir, playwrightDirInput);
   const resultsDir = path.resolve(playwrightDir, resultsDirInput);
@@ -79,7 +88,7 @@ export async function run(): Promise<void> {
       audience,
       compositeIdentity,
       ghJobId,
-      ghJobName,
+      ghJobName: resolvedJobName,
       framework,
       playwrightDir,
       resultsDir,
@@ -100,7 +109,7 @@ export async function run(): Promise<void> {
       baseURL,
       audience,
       ghJobId,
-      ghJobName,
+      ghJobName: resolvedJobName,
       compositeIdentity,
     };
     try {
@@ -256,11 +265,15 @@ async function drain(cfg: DrainConfig): Promise<void> {
  * the gh-job-name input against the runtime job names returned by
  * `listJobsForWorkflowRunAttempt`.
  */
-async function resolveJobId(token: string, ghJobName: string): Promise<string> {
+async function resolveJobId(
+  token: string,
+  ghJobName: string,
+): Promise<{ id: string; name: string }> {
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
   const runId = github.context.runId;
   const attempt = Number(process.env.GITHUB_RUN_ATTEMPT || "1");
+  const runnerName = process.env.RUNNER_NAME ?? "";
 
   const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
     owner,
@@ -269,12 +282,42 @@ async function resolveJobId(token: string, ghJobName: string): Promise<string> {
     attempt_number: attempt,
     per_page: 100,
   });
-  const match = jobs.find((j) => j.name === ghJobName);
-  if (!match) {
+
+  // Exact match first — the flat-workflow case where the caller's
+  // gh-job-name is identical to the runtime job name.
+  let matches = jobs.filter((j) => j.name === ghJobName);
+  if (matches.length === 0) {
+    // Nested workflow_call composes the displayed job name as
+    // `<parent> / <intermediate> / ... / <child>` with ` / ` (space-
+    // slash-space) as the separator. Fall back to matching the trailing
+    // segment so callers can pass the bare child name without having
+    // to know the parent chain.
+    matches = jobs.filter((j) => {
+      const parts = j.name.split(" / ");
+      return parts[parts.length - 1] === ghJobName;
+    });
+  }
+
+  // Two parallel chains can produce identically-named children
+  // (e.g. cypress matrix and playwright matrix each have `dispatch-run-1`).
+  // Narrow by RUNNER_NAME — GH-hosted runners assign a unique name per
+  // job, and our action runs from inside the calling job, so the
+  // matching job's `runner_name` equals our `process.env.RUNNER_NAME`.
+  if (matches.length > 1 && runnerName) {
+    const narrowed = matches.filter((j) => j.runner_name === runnerName);
+    if (narrowed.length > 0) matches = narrowed;
+  }
+
+  if (matches.length === 0) {
     const names = jobs.map((j) => j.name).join(", ");
     throw new Error(`no job matched gh-job-name=${ghJobName}; available: ${names}`);
   }
-  return String(match.id);
+  if (matches.length > 1) {
+    const names = matches.map((j) => j.name).join(", ");
+    throw new Error(`gh-job-name=${ghJobName} matched multiple jobs: ${names}`);
+  }
+  const m = matches[0]!;
+  return { id: String(m.id), name: m.name };
 }
 
 interface PostResponse<T> {

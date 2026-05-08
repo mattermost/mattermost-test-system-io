@@ -25051,8 +25051,10 @@ async function run() {
   } catch (e) {
     throw new Error(`composite-identity is not valid JSON: ${e.message}`);
   }
-  const ghJobId = await resolveJobId(githubToken, ghJobName);
-  info(`resolved gh_job_id=${ghJobId} for gh_job_name=${ghJobName}`);
+  const resolved = await resolveJobId(githubToken, ghJobName);
+  const ghJobId = resolved.id;
+  const resolvedJobName = resolved.name;
+  info(`resolved gh_job_id=${ghJobId} gh_job_name=${resolvedJobName} (input=${ghJobName})`);
   const playwrightDir = path4.resolve(repoDir, playwrightDirInput);
   const resultsDir = path4.resolve(playwrightDir, resultsDirInput);
   const cypressDir = path4.resolve(repoDir, cypressDirInput);
@@ -25067,7 +25069,7 @@ async function run() {
       audience,
       compositeIdentity,
       ghJobId,
-      ghJobName,
+      ghJobName: resolvedJobName,
       framework,
       playwrightDir,
       resultsDir,
@@ -25087,7 +25089,7 @@ async function run() {
       baseURL,
       audience,
       ghJobId,
-      ghJobName,
+      ghJobName: resolvedJobName,
       compositeIdentity
     };
     try {
@@ -25201,6 +25203,7 @@ async function resolveJobId(token, ghJobName) {
   const { owner, repo } = context2.repo;
   const runId = context2.runId;
   const attempt = Number(process.env.GITHUB_RUN_ATTEMPT || "1");
+  const runnerName = process.env.RUNNER_NAME ?? "";
   const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
     owner,
     repo,
@@ -25208,12 +25211,27 @@ async function resolveJobId(token, ghJobName) {
     attempt_number: attempt,
     per_page: 100
   });
-  const match = jobs.find((j) => j.name === ghJobName);
-  if (!match) {
+  let matches = jobs.filter((j) => j.name === ghJobName);
+  if (matches.length === 0) {
+    matches = jobs.filter((j) => {
+      const parts = j.name.split(" / ");
+      return parts[parts.length - 1] === ghJobName;
+    });
+  }
+  if (matches.length > 1 && runnerName) {
+    const narrowed = matches.filter((j) => j.runner_name === runnerName);
+    if (narrowed.length > 0) matches = narrowed;
+  }
+  if (matches.length === 0) {
     const names = jobs.map((j) => j.name).join(", ");
     throw new Error(`no job matched gh-job-name=${ghJobName}; available: ${names}`);
   }
-  return String(match.id);
+  if (matches.length > 1) {
+    const names = matches.map((j) => j.name).join(", ");
+    throw new Error(`gh-job-name=${ghJobName} matched multiple jobs: ${names}`);
+  }
+  const m = matches[0];
+  return { id: String(m.id), name: m.name };
 }
 async function postJSON2(cfg, urlPath, body) {
   const res = await fetchWithAuthRetry(async () => {

@@ -76,13 +76,18 @@ async function resolveJobId(token: string, ghJobName: string): Promise<string> {
   const attempt = Number(process.env.GITHUB_RUN_ATTEMPT || "1");
   const runnerName = process.env.RUNNER_NAME ?? "";
 
-  const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
-    owner,
-    repo,
-    run_id: runId,
-    attempt_number: attempt,
-    per_page: 100,
-  });
+  // Retry transient failures (5xx, 429, network errors); gh_job_id is
+  // load-bearing for the upload payload, so we'd rather wait a few
+  // seconds than fail on a flaky API moment.
+  const jobs = await retryGitHubCall(() =>
+    octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
+      owner,
+      repo,
+      run_id: runId,
+      attempt_number: attempt,
+      per_page: 100,
+    }),
+  );
 
   // Exact match first — flat workflow case where the caller's
   // gh-job-name equals the runtime job name.
@@ -143,4 +148,36 @@ function normalizeCompositeIdentity(c: CompositeIdentity): void {
       delete c.gh_pr_number;
     }
   }
+}
+
+// retryGitHubCall wraps an Octokit/REST API call with bounded retries on
+// transient failures (5xx, 429, network/abort errors). Permanent 4xx
+// errors fall through immediately so the action surfaces a clear failure
+// instead of pointlessly retrying.
+async function retryGitHubCall<T>(fn: () => Promise<T>): Promise<T> {
+  const delays = [500, 1500, 4000];
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableGitHubError(err) || attempt === delays.length) break;
+      const ms = delays[attempt]! + Math.floor(Math.random() * 250);
+      core.warning(
+        `GitHub API call failed (attempt ${attempt + 1}/${delays.length + 1}): ` +
+          `${(err as Error).message}; retrying in ${ms}ms`,
+      );
+      await new Promise<void>((r) => setTimeout(r, ms));
+    }
+  }
+  throw lastErr;
+}
+
+function isRetryableGitHubError(err: unknown): boolean {
+  const e = err as { status?: number; name?: string; message?: string };
+  if (e.status == null) return true;
+  if (e.status === 408 || e.status === 429) return true;
+  if (e.status >= 500 && e.status < 600) return true;
+  return false;
 }

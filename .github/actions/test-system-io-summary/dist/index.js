@@ -19995,10 +19995,45 @@ async function postOrUpdatePRComment(args) {
     warning(`post-pr-comment: ${e.message}`);
   }
 }
+async function deletePRCommentByMarker(args) {
+  const { token, owner, repo, prNumber, marker, singlePage } = args;
+  if (!token) {
+    warning("delete-pr-comment: github-token not provided; skipping.");
+    return;
+  }
+  setSecret(token);
+  try {
+    const existingId = await findCommentByMarker(
+      token,
+      owner,
+      repo,
+      prNumber,
+      marker,
+      !!singlePage
+    );
+    if (existingId == null) {
+      info("delete-pr-comment: no comment matched marker; nothing to delete.");
+      return;
+    }
+    await deleteComment(token, owner, repo, existingId);
+    info(`delete-pr-comment: deleted comment ${existingId}`);
+  } catch (e) {
+    warning(`delete-pr-comment: ${e.message}`);
+  }
+}
+async function deleteComment(token, owner, repo, commentId) {
+  const res = await retryFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`, {
+    method: "DELETE",
+    headers: ghHeaders(token)
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`delete comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
+  }
+}
 async function findCommentByMarker(token, owner, repo, prNumber, marker, singlePage) {
   let url = `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`;
   while (url) {
-    const res = await fetch(url, { headers: ghHeaders(token) });
+    const res = await retryFetch(url, { headers: ghHeaders(token) });
     if (!res.ok) {
       throw new Error(`list comments failed: ${res.status} ${await safeText(res)}`);
     }
@@ -20012,7 +20047,7 @@ async function findCommentByMarker(token, owner, repo, prNumber, marker, singleP
   return null;
 }
 async function patchComment(token, owner, repo, commentId, body) {
-  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`, {
+  const res = await retryFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`, {
     method: "PATCH",
     headers: { ...ghHeaders(token), "content-type": "application/json" },
     body: JSON.stringify({ body })
@@ -20022,7 +20057,7 @@ async function patchComment(token, owner, repo, commentId, body) {
   }
 }
 async function postComment(token, owner, repo, prNumber, body) {
-  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments`, {
+  const res = await retryFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments`, {
     method: "POST",
     headers: { ...ghHeaders(token), "content-type": "application/json" },
     body: JSON.stringify({ body })
@@ -20054,6 +20089,29 @@ async function safeText(res) {
   } catch {
     return "<unreadable body>";
   }
+}
+async function retryFetch(input, init) {
+  const delays = [400, 1200, 3e3];
+  let lastErr;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const res = await fetch(input, init);
+      if (res.ok || !isRetryableStatus(res.status)) return res;
+      lastErr = new Error(`HTTP ${res.status} ${await safeText(res)}`);
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt === delays.length) break;
+    const ms = delays[attempt] + Math.floor(Math.random() * 200);
+    warning(
+      `pr-comment: GitHub API call failed (attempt ${attempt + 1}/${delays.length + 1}): ${lastErr.message}; retrying in ${ms}ms`
+    );
+    await new Promise((r) => setTimeout(r, ms));
+  }
+  throw lastErr;
+}
+function isRetryableStatus(status) {
+  return status === 408 || status === 429 || status >= 500 && status < 600;
 }
 
 // src/main.ts
@@ -20258,6 +20316,20 @@ async function postSummaryComment(a) {
   const [owner, repo] = (c.repository || "").split("/");
   if (!owner || !repo) return;
   const shortSha = (c.commit_sha || "").slice(0, 7);
+  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
+  const cleanPass = a.runStatus === "completed" && a.failedUnitCount === 0;
+  if (cleanPass) {
+    await deletePRCommentByMarker({
+      token,
+      owner,
+      repo,
+      prNumber,
+      marker,
+      // Match the lookup window the post path uses.
+      singlePage: true
+    });
+    return;
+  }
   const linkText = a.runStatus === "completed" ? "completed" : "ended";
   const heading = formatCommentHeading(
     a.framework,
@@ -20293,7 +20365,6 @@ async function postSummaryComment(a) {
     }
     lines.push("", `</details>`);
   }
-  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
   lines.push("", marker, "");
   await postOrUpdatePRComment({
     token,

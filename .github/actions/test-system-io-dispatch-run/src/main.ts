@@ -276,13 +276,18 @@ async function resolveJobId(
   const attempt = Number(process.env.GITHUB_RUN_ATTEMPT || "1");
   const runnerName = process.env.RUNNER_NAME ?? "";
 
-  const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
-    owner,
-    repo,
-    run_id: runId,
-    attempt_number: attempt,
-    per_page: 100,
-  });
+  // Retry transient failures (5xx, 429, network errors). gh_job_id is
+  // load-bearing for orchestration leases, so we'd rather wait a few
+  // seconds than fail the whole worker on a flaky API moment.
+  const jobs = await retryGitHubCall(() =>
+    octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
+      owner,
+      repo,
+      run_id: runId,
+      attempt_number: attempt,
+      per_page: 100,
+    }),
+  );
 
   // Exact match first — the flat-workflow case where the caller's
   // gh-job-name is identical to the runtime job name.
@@ -486,4 +491,39 @@ function normalizeCompositeIdentity(c: CompositeIdentity): void {
       delete c.gh_pr_number;
     }
   }
+}
+
+// retryGitHubCall wraps an Octokit/REST API call with bounded retries on
+// transient failures (5xx, 429, network/abort errors). 4xx errors that
+// indicate a permanent problem — bad token, missing permissions, no
+// such job — fall through immediately so the action surfaces a clear
+// failure instead of pointlessly retrying.
+async function retryGitHubCall<T>(fn: () => Promise<T>): Promise<T> {
+  const delays = [500, 1500, 4000]; // ms; 3 attempts after the first
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableGitHubError(err) || attempt === delays.length) break;
+      const ms = delays[attempt]! + Math.floor(Math.random() * 250);
+      core.warning(
+        `GitHub API call failed (attempt ${attempt + 1}/${delays.length + 1}): ` +
+          `${(err as Error).message}; retrying in ${ms}ms`,
+      );
+      await sleep(ms);
+    }
+  }
+  throw lastErr;
+}
+
+function isRetryableGitHubError(err: unknown): boolean {
+  // Octokit RequestError exposes `.status`; native fetch / network
+  // errors tend to lack it.
+  const e = err as { status?: number; name?: string; message?: string };
+  if (e.status == null) return true; // network / DNS / abort
+  if (e.status === 408 || e.status === 429) return true;
+  if (e.status >= 500 && e.status < 600) return true;
+  return false;
 }

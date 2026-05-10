@@ -14,7 +14,7 @@
 
 import * as fs from "node:fs";
 import * as core from "@actions/core";
-import { postOrUpdatePRComment } from "./pr-comment";
+import { deletePRCommentByMarker, postOrUpdatePRComment } from "./pr-comment";
 
 interface CompositeIdentity {
   repository: string;
@@ -376,11 +376,17 @@ interface SummaryCommentArgs {
 
 const FAILED_SPECS_PREVIEW = 5;
 
-// postSummaryComment renders the summary-phase comment body and
-// replaces (or creates) the PR comment keyed by the test-system-io
-// marker. Heading link reads `[completed]` for runs that reached the
-// `completed` state and `[ended]` for everything else (timed_out,
-// incomplete, unknown).
+// postSummaryComment finalizes the PR comment keyed by the test-system-io
+// marker:
+//
+//   * Clean pass (run reached `completed` AND no failed units) — DELETE
+//     the related comment so the PR conversation stays uncluttered.
+//     The "started" comment from dispatch-begin is removed once it's no
+//     longer load-bearing.
+//   * Anything else (failed units, timed_out, incomplete) — UPDATE the
+//     comment with the summary so a reviewer sees the failed-spec list
+//     and where to look. Heading link reads `[completed]` for terminal
+//     runs and `[ended]` for non-completed states.
 async function postSummaryComment(a: SummaryCommentArgs): Promise<void> {
   const c = a.compositeIdentity;
   if (c.gh_pr_number == null || c.gh_pr_number === "") return;
@@ -392,6 +398,22 @@ async function postSummaryComment(a: SummaryCommentArgs): Promise<void> {
   if (!owner || !repo) return;
 
   const shortSha = (c.commit_sha || "").slice(0, 7);
+  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
+
+  const cleanPass = a.runStatus === "completed" && a.failedUnitCount === 0;
+  if (cleanPass) {
+    await deletePRCommentByMarker({
+      token,
+      owner,
+      repo,
+      prNumber,
+      marker,
+      // Match the lookup window the post path uses.
+      singlePage: true,
+    });
+    return;
+  }
+
   const linkText = a.runStatus === "completed" ? "completed" : "ended";
   const heading = formatCommentHeading(
     a.framework,
@@ -430,7 +452,6 @@ async function postSummaryComment(a: SummaryCommentArgs): Promise<void> {
     lines.push("", `</details>`);
   }
 
-  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
   lines.push("", marker, "");
 
   await postOrUpdatePRComment({

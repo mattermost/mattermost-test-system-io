@@ -86,11 +86,17 @@ inputs:
   post-pr-comment:
     description: >
       When `"true"` and the composite identity carries a `gh_pr_number`,
-      replace (or create) a PR comment keyed by the marker
-      `<!-- test-system-io:<name>@<short_sha> -->` with the run summary.
-      Heading link reads `[completed]` for finished runs (passed or
-      failed) and `[ended]` for timed_out / incomplete runs. No-op for
-      non-PR runs.
+      finalize the PR comment keyed by the marker
+      `<!-- test-system-io:<name>@<short_sha> -->`:
+
+        * Clean pass (run reached `completed` AND no failed units):
+          DELETE the related comment so the PR conversation stays
+          uncluttered after a successful run.
+        * Anything else (failed units, timed_out, incomplete): UPDATE
+          the comment with the summary. Heading link reads `[completed]`
+          for finished runs and `[ended]` for non-completed states.
+
+      No-op for non-PR runs. Requires `pull-requests: write`.
     required: false
     default: "false"
   github-token:

@@ -25205,13 +25205,15 @@ async function resolveJobId(token, ghJobName) {
   const runId = context2.runId;
   const attempt = Number(process.env.GITHUB_RUN_ATTEMPT || "1");
   const runnerName = process.env.RUNNER_NAME ?? "";
-  const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
-    owner,
-    repo,
-    run_id: runId,
-    attempt_number: attempt,
-    per_page: 100
-  });
+  const jobs = await retryGitHubCall(
+    () => octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
+      owner,
+      repo,
+      run_id: runId,
+      attempt_number: attempt,
+      per_page: 100
+    })
+  );
   let matches = jobs.filter((j) => j.name === ghJobName);
   if (matches.length === 0) {
     matches = jobs.filter((j) => {
@@ -25343,6 +25345,31 @@ function normalizeCompositeIdentity(c) {
       delete c.gh_pr_number;
     }
   }
+}
+async function retryGitHubCall(fn) {
+  const delays = [500, 1500, 4e3];
+  let lastErr;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableGitHubError(err) || attempt === delays.length) break;
+      const ms = delays[attempt] + Math.floor(Math.random() * 250);
+      warning(
+        `GitHub API call failed (attempt ${attempt + 1}/${delays.length + 1}): ${err.message}; retrying in ${ms}ms`
+      );
+      await sleep2(ms);
+    }
+  }
+  throw lastErr;
+}
+function isRetryableGitHubError(err) {
+  const e = err;
+  if (e.status == null) return true;
+  if (e.status === 408 || e.status === 429) return true;
+  if (e.status >= 500 && e.status < 600) return true;
+  return false;
 }
 
 // src/index.ts

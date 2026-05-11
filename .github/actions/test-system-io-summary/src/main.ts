@@ -51,11 +51,16 @@ interface OrchestrationStatus {
   // dispatches. Both ms fields are optional: first_pass_ms is absent
   // until any first attempt reports; retest_ms is absent unless a unit
   // was re-leased after a fail. retest_unit_count is the distinct count
-  // of dispatch units that had at least one retest.
+  // of dispatch units that had at least one retest. begin_at /
+  // first_test_at are the absolute timestamps used to derive the setup
+  // segment (begin → first checkout); first_test_at is absent until any
+  // attempt is dispatched.
   durations?: {
     first_pass_ms?: number;
     retest_ms?: number;
     retest_unit_count?: number;
+    begin_at?: string;
+    first_test_at?: string;
   };
   // Per-unit detail returned alongside the run snapshot. Used here to
   // surface the failed-spec list in the PR comment.
@@ -193,6 +198,11 @@ export async function run(): Promise<void> {
   const retestMs = status?.durations?.retest_ms ?? null;
   const retestUnitCount = status?.durations?.retest_unit_count ?? 0;
   const durationDisplay = formatDurationDisplay(firstPassMs, retestMs);
+  // Setup segment (begin → first checkout) reuses the same derivation the
+  // dashboard's report-summary header shows: first_test_at - begin_at.
+  // Only rendered in the PR comment; webhook + commit-status outputs keep
+  // the v1-compatible `first-pass + retest` shape.
+  const setupMs = computeSetupMs(status?.durations?.begin_at, status?.durations?.first_test_at);
 
   // Inputs that drive the commit-status description and webhook payload.
   // All optional; missing segments degrade gracefully.
@@ -200,7 +210,6 @@ export async function run(): Promise<void> {
   const imageAliases = core.getInput("image-aliases");
   const serverImage = core.getInput("server-image") || imageTag;
   const reportType = (core.getInput("report-type") || "PR").toUpperCase();
-  const testType = core.getInput("test-type");
   const inputPRNumber = core.getInput("pr-number");
   const inputRefBranch = core.getInput("ref-branch");
   const webhookUsername = core.getInput("webhook-username") || "E2E Test";
@@ -233,8 +242,8 @@ export async function run(): Promise<void> {
     username: webhookUsername,
     iconURL: webhookIconURL,
     color: webhookColor,
+    contextName: core.getInput("context-name"),
     framework,
-    testType,
     reportType,
     repository: compositeIdentity.repository,
     commitSHA: compositeIdentity.commit_sha,
@@ -243,7 +252,9 @@ export async function run(): Promise<void> {
     serverImage,
     commitStatusMessage,
     retestDisplay,
-    durationDisplay,
+    setupMs,
+    firstPassMs,
+    retestMs,
     reportURL,
   });
 
@@ -266,12 +277,13 @@ export async function run(): Promise<void> {
   if (core.getInput("post-pr-comment") === "true") {
     await postSummaryComment({
       compositeIdentity,
-      framework,
-      testType,
-      serverEdition: core.getInput("server-edition"),
+      contextName: core.getInput("context-name"),
+      serverImage,
       runStatus: status?.status ?? "unknown",
       commitStatusMessage,
-      durationDisplay,
+      setupMs,
+      firstPassMs,
+      retestMs,
       reportURL,
       units: status?.units ?? [],
       failedUnitCount: failed,
@@ -319,6 +331,35 @@ function formatDurationDisplay(firstPassMs: number | null, retestMs: number | nu
   return `${first} + ${formatDuration(retestMs)} retest`;
 }
 
+// computeSetupMs derives the begin → first-checkout segment from the
+// absolute timestamps the /status endpoint surfaces. Returns null when
+// either timestamp is missing or unparseable so the caller can suppress
+// the setup chip.
+function computeSetupMs(beginAt?: string, firstTestAt?: string): number | null {
+  if (!beginAt || !firstTestAt) return null;
+  const begin = Date.parse(beginAt);
+  const first = Date.parse(firstTestAt);
+  if (!Number.isFinite(begin) || !Number.isFinite(first)) return null;
+  return Math.max(0, first - begin);
+}
+
+// formatCommentDuration renders the duration chip shown in the PR
+// comment stats line: `(5m setup) + 14m 1s + 2m 15s (retest)`. Segments
+// are dropped when the underlying ms is null/zero, so a fresh run with
+// no first attempt yet returns an empty string and the caller omits
+// the `, duration: ...` suffix entirely.
+function formatCommentDuration(
+  setupMs: number | null,
+  firstPassMs: number | null,
+  retestMs: number | null,
+): string {
+  const parts: string[] = [];
+  if (setupMs != null && setupMs > 0) parts.push(`(${formatDuration(setupMs)} setup)`);
+  if (firstPassMs != null) parts.push(formatDuration(firstPassMs));
+  if (retestMs != null && retestMs > 0) parts.push(`${formatDuration(retestMs)} (retest)`);
+  return parts.join(" + ");
+}
+
 // Webhook attachment color bands. Mirrors getColor() in
 // mattermost/.github/actions/calculate-cypress-results/src/merge.ts so v2
 // posts the same hue v1 receivers already render against.
@@ -347,8 +388,8 @@ interface WebhookFields {
   username: string;
   iconURL: string;
   color: string;
+  contextName: string;
   framework: string;
-  testType: string;
   reportType: string;
   repository: string;
   commitSHA: string;
@@ -357,18 +398,21 @@ interface WebhookFields {
   serverImage: string;
   commitStatusMessage: string;
   retestDisplay: string;
-  durationDisplay: string;
+  setupMs: number | null;
+  firstPassMs: number | null;
+  retestMs: number | null;
   reportURL: string;
 }
 
 interface SummaryCommentArgs {
   compositeIdentity: CompositeIdentity;
-  framework: string;
-  testType: string;
-  serverEdition: string;
+  contextName: string;
+  serverImage: string;
   runStatus: string;
   commitStatusMessage: string;
-  durationDisplay: string;
+  setupMs: number | null;
+  firstPassMs: number | null;
+  retestMs: number | null;
   reportURL: string;
   units: NonNullable<OrchestrationStatus["units"]>;
   failedUnitCount: number;
@@ -393,12 +437,17 @@ async function postSummaryComment(a: SummaryCommentArgs): Promise<void> {
   const prNumber = Number.parseInt(String(c.gh_pr_number), 10);
   if (!Number.isFinite(prNumber)) return;
 
+  if (!a.contextName) {
+    core.warning("post-pr-comment is true but context-name is empty; skipping PR comment.");
+    return;
+  }
+
   const token = core.getInput("github-token");
   const [owner, repo] = (c.repository || "").split("/");
   if (!owner || !repo) return;
 
   const shortSha = (c.commit_sha || "").slice(0, 7);
-  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
+  const marker = `<!-- test-system-io:${a.contextName}@${shortSha} -->`;
 
   const cleanPass = a.runStatus === "completed" && a.failedUnitCount === 0;
   if (cleanPass) {
@@ -414,42 +463,38 @@ async function postSummaryComment(a: SummaryCommentArgs): Promise<void> {
     return;
   }
 
-  const linkText = a.runStatus === "completed" ? "completed" : "ended";
+  const statusLabel =
+    a.runStatus === "completed" ? (a.failedUnitCount > 0 ? "failed" : "completed") : "ended";
+  const imageLabel = a.serverImage || shortSha;
   const heading = formatCommentHeading(
-    a.framework,
-    a.testType,
-    a.serverEdition,
-    shortSha,
-    linkText,
+    a.contextName,
+    imageLabel,
+    statusLabel,
+    c.repository || "",
+    c.gh_run_id || "",
     a.reportURL,
   );
 
-  const lines: string[] = [heading, ""];
-  if (a.runStatus === "completed") {
-    lines.push(a.commitStatusMessage);
-  } else {
-    lines.push(`Run did not finish cleanly: ${a.runStatus}. ${a.commitStatusMessage}`);
-  }
-  if (a.durationDisplay) lines.push("", `Duration: ${a.durationDisplay}`);
+  const durationSegment = formatCommentDuration(a.setupMs, a.firstPassMs, a.retestMs);
+  const durationSuffix = durationSegment ? `, duration: ${durationSegment}` : "";
+  const statsLine =
+    a.runStatus === "completed"
+      ? `${a.commitStatusMessage}${durationSuffix}`
+      : `Run did not finish cleanly: ${a.runStatus}. ${a.commitStatusMessage}${durationSuffix}`;
+  const lines: string[] = [heading, "", statsLine];
 
-  const failed = a.units.filter((u) => u.state === "failed");
+  const failed = a.units.filter((u) => u.state === "completed_fail");
   if (failed.length > 0) {
     failed.sort((u, v) => (u.dispatch_seq ?? 0) - (v.dispatch_seq ?? 0));
     const preview = failed.slice(0, FAILED_SPECS_PREVIEW);
     const remaining = failed.length - preview.length;
-    lines.push(
-      "",
-      `<details>`,
-      `<summary>Showing ${preview.length} of ${failed.length} failed specs</summary>`,
-      "",
-    );
+    lines.push("", "Failed specs:");
     for (const u of preview) {
       lines.push(`- \`${escapeForCodeSpan(u.spec_path)}\``);
     }
     if (remaining > 0) {
-      lines.push(`- _…and ${remaining} more — see the full report._`);
+      lines.push(`- _…and ${remaining} more — see the [full report](${a.reportURL})._`);
     }
-    lines.push("", `</details>`);
   }
 
   lines.push("", marker, "");
@@ -469,26 +514,38 @@ async function postSummaryComment(a: SummaryCommentArgs): Promise<void> {
 }
 
 function formatCommentHeading(
-  framework: string,
-  testType: string,
-  edition: string,
-  shortSha: string,
-  linkText: string,
-  url: string,
+  contextName: string,
+  imageLabel: string,
+  statusLabel: string,
+  repository: string,
+  ghRunId: string,
+  reportURL: string,
 ): string {
-  const fwCap = capitalize(framework);
-  const ttCap = testType ? ` ${capitalize(testType)}` : "";
-  const edPart = edition ? ` (${edition})` : "";
-  return `**E2E — ${fwCap}${ttCap}${edPart} - \`${shortSha}\`, [${linkText}](${url})**`;
+  const pipelineURL = buildPipelineURL(repository, ghRunId);
+  return `[${contextName}](${pipelineURL}) for \`${imageLabel}\` [${statusLabel}](${reportURL})`;
 }
 
+function buildPipelineURL(repository: string, ghRunId: string): string {
+  const serverURL = process.env.GITHUB_SERVER_URL || "https://github.com";
+  return `${serverURL}/${repository}/actions/runs/${ghRunId}`;
+}
+
+// LONG_RUN_THRESHOLD_MS — total wall-clock at which the webhook prefixes
+// the duration line with :warning: so a reader can spot a slow run
+// without scanning the numbers.
+const LONG_RUN_THRESHOLD_MS = 15 * 60 * 1000;
+
 // renderWebhookPayload builds the Mattermost-style webhook JSON body.
-// Mirrors v1's ci/publish-report attachment shape exactly so receivers
-// render identically; the consumer just `curl -d` this output.
+// Same attachment shape v1 produced (so existing receivers render it);
+// title is the caller-supplied context-name and the duration line uses
+// the `(setup) + first + (retest)` shape that matches the PR comment.
 function renderWebhookPayload(f: WebhookFields): string {
-  const frameworkCap = capitalize(f.framework);
-  const testTypeCap = f.testType ? ` ${capitalize(f.testType)}` : "";
-  const title = `**Results - ${frameworkCap}${testTypeCap} Tests**`;
+  // Title: prefer the caller-owned context-name (matches the PR comment
+  // heading and the GitHub commit-status context). Falls back to
+  // `<Framework> Tests` only when context-name was not provided, so the
+  // attachment still has something readable in that path.
+  const titleSubject = f.contextName || `${capitalize(f.framework)} Tests`;
+  const title = `**Results - ${titleSubject}**`;
 
   // Source line: PR runs link the PR; everything else (MASTER, RELEASE,
   // RELEASE_CUT) links the commit + branch. RELEASE_CUT uses the
@@ -508,7 +565,10 @@ function renderWebhookPayload(f: WebhookFields): string {
 
   const retestPart = f.retestDisplay ? ` | ${f.retestDisplay}` : "";
   const dockerLine = f.serverImage ? `\n:docker: \`${f.serverImage}\`` : "";
-  const durationLine = f.durationDisplay ? `\n${f.durationDisplay}` : "";
+  const durationSegments = formatCommentDuration(f.setupMs, f.firstPassMs, f.retestMs);
+  const totalMs = (f.setupMs ?? 0) + (f.firstPassMs ?? 0) + (f.retestMs ?? 0);
+  const longRunBadge = totalMs > LONG_RUN_THRESHOLD_MS ? ":warning: " : "";
+  const durationLine = durationSegments ? `\n${longRunBadge}${durationSegments}` : "";
   const text = `${title}\n\n${sourceLine}${dockerLine}\n${f.commitStatusMessage}${retestPart} | [full report](${f.reportURL})${durationLine}`;
 
   return JSON.stringify({

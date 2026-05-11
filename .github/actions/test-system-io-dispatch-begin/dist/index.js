@@ -20239,11 +20239,14 @@ async function findCommentByMarker(token, owner, repo, prNumber, marker, singleP
   return null;
 }
 async function patchComment(token, owner, repo, commentId, body) {
-  const res = await retryFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`, {
-    method: "PATCH",
-    headers: { ...ghHeaders(token), "content-type": "application/json" },
-    body: JSON.stringify({ body })
-  });
+  const res = await retryFetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`,
+    {
+      method: "PATCH",
+      headers: { ...ghHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ body })
+    }
+  );
   if (!res.ok) {
     throw new Error(`patch comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
   }
@@ -20407,22 +20410,33 @@ async function run() {
   const { report_id } = await reportsRes.json();
   info(`report group ready: ${report_id}`);
   if (getInput("post-pr-comment") === "true") {
-    await postBeginComment(compositeIdentity, framework, baseURL);
+    await postBeginComment(compositeIdentity, baseURL);
   }
 }
-async function postBeginComment(c, framework, baseURL) {
+async function postBeginComment(c, baseURL) {
   if (c.gh_pr_number == null || c.gh_pr_number === "") return;
   const prNumber = Number.parseInt(String(c.gh_pr_number), 10);
   if (!Number.isFinite(prNumber)) return;
+  const contextName = getInput("context-name");
+  if (!contextName) {
+    warning("post-pr-comment is true but context-name is empty; skipping PR comment.");
+    return;
+  }
   const token = getInput("github-token");
-  const testType = getInput("test-type");
-  const serverEdition = getInput("server-edition");
   const [owner, repo] = (c.repository || "").split("/");
   if (!owner || !repo) return;
   const shortSha = (c.commit_sha || "").slice(0, 7);
+  const imageLabel = getInput("server-image") || shortSha;
   const reportURL = buildReportURL(baseURL, c);
-  const heading = formatHeading(framework, testType, serverEdition, shortSha, "started", reportURL);
-  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
+  const heading = formatHeading(
+    contextName,
+    imageLabel,
+    "started",
+    c.repository || "",
+    c.gh_run_id || "",
+    reportURL
+  );
+  const marker = `<!-- test-system-io:${contextName}@${shortSha} -->`;
   const body = [
     heading,
     "",
@@ -20441,15 +20455,13 @@ function buildReportURL(baseURL, c) {
   const name = encodeURIComponent(c.name);
   return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
 }
-function formatHeading(framework, testType, edition, shortSha, linkText, url) {
-  const fwCap = capitalize(framework);
-  const ttCap = testType ? ` ${capitalize(testType)}` : "";
-  const edPart = edition ? ` (${edition})` : "";
-  return `**E2E \u2014 ${fwCap}${ttCap}${edPart} - \`${shortSha}\`, [${linkText}](${url})**`;
+function formatHeading(contextName, imageLabel, statusLabel, repository, ghRunId, reportURL) {
+  const pipelineURL = buildPipelineURL(repository, ghRunId);
+  return `[${contextName}](${pipelineURL}) for \`${imageLabel}\` [${statusLabel}](${reportURL})`;
 }
-function capitalize(s) {
-  if (!s) return s;
-  return s.charAt(0).toUpperCase() + s.slice(1);
+function buildPipelineURL(repository, ghRunId) {
+  const serverURL = process.env.GITHUB_SERVER_URL || "https://github.com";
+  return `${serverURL}/${repository}/actions/runs/${ghRunId}`;
 }
 function identityForReports(c, framework, totalReportsExpected) {
   const body = {

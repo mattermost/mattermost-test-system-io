@@ -20022,10 +20022,13 @@ async function deletePRCommentByMarker(args) {
   }
 }
 async function deleteComment(token, owner, repo, commentId) {
-  const res = await retryFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`, {
-    method: "DELETE",
-    headers: ghHeaders(token)
-  });
+  const res = await retryFetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`,
+    {
+      method: "DELETE",
+      headers: ghHeaders(token)
+    }
+  );
   if (!res.ok && res.status !== 404) {
     throw new Error(`delete comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
   }
@@ -20047,11 +20050,14 @@ async function findCommentByMarker(token, owner, repo, prNumber, marker, singleP
   return null;
 }
 async function patchComment(token, owner, repo, commentId, body) {
-  const res = await retryFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`, {
-    method: "PATCH",
-    headers: { ...ghHeaders(token), "content-type": "application/json" },
-    body: JSON.stringify({ body })
-  });
+  const res = await retryFetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`,
+    {
+      method: "PATCH",
+      headers: { ...ghHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ body })
+    }
+  );
   if (!res.ok) {
     throw new Error(`patch comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
   }
@@ -20203,11 +20209,11 @@ async function run() {
   const retestMs = status?.durations?.retest_ms ?? null;
   const retestUnitCount = status?.durations?.retest_unit_count ?? 0;
   const durationDisplay = formatDurationDisplay(firstPassMs, retestMs);
+  const setupMs = computeSetupMs(status?.durations?.begin_at, status?.durations?.first_test_at);
   const imageTag = getInput("image-tag");
   const imageAliases = getInput("image-aliases");
   const serverImage = getInput("server-image") || imageTag;
   const reportType = (getInput("report-type") || "PR").toUpperCase();
-  const testType = getInput("test-type");
   const inputPRNumber = getInput("pr-number");
   const inputRefBranch = getInput("ref-branch");
   const webhookUsername = getInput("webhook-username") || "E2E Test";
@@ -20224,8 +20230,8 @@ async function run() {
     username: webhookUsername,
     iconURL: webhookIconURL,
     color: webhookColor,
+    contextName: getInput("context-name"),
     framework,
-    testType,
     reportType,
     repository: compositeIdentity.repository,
     commitSHA: compositeIdentity.commit_sha,
@@ -20234,7 +20240,9 @@ async function run() {
     serverImage,
     commitStatusMessage,
     retestDisplay,
-    durationDisplay,
+    setupMs,
+    firstPassMs,
+    retestMs,
     reportURL
   });
   setOutput("passed", passed);
@@ -20254,12 +20262,13 @@ async function run() {
   if (getInput("post-pr-comment") === "true") {
     await postSummaryComment({
       compositeIdentity,
-      framework,
-      testType,
-      serverEdition: getInput("server-edition"),
+      contextName: getInput("context-name"),
+      serverImage,
       runStatus: status?.status ?? "unknown",
       commitStatusMessage,
-      durationDisplay,
+      setupMs,
+      firstPassMs,
+      retestMs,
       reportURL,
       units: status?.units ?? [],
       failedUnitCount: failed
@@ -20292,6 +20301,20 @@ function formatDurationDisplay(firstPassMs, retestMs) {
   if (retestMs == null || retestMs <= 0) return first;
   return `${first} + ${formatDuration(retestMs)} retest`;
 }
+function computeSetupMs(beginAt, firstTestAt) {
+  if (!beginAt || !firstTestAt) return null;
+  const begin = Date.parse(beginAt);
+  const first = Date.parse(firstTestAt);
+  if (!Number.isFinite(begin) || !Number.isFinite(first)) return null;
+  return Math.max(0, first - begin);
+}
+function formatCommentDuration(setupMs, firstPassMs, retestMs) {
+  const parts = [];
+  if (setupMs != null && setupMs > 0) parts.push(`(${formatDuration(setupMs)} setup)`);
+  if (firstPassMs != null) parts.push(formatDuration(firstPassMs));
+  if (retestMs != null && retestMs > 0) parts.push(`${formatDuration(retestMs)} (retest)`);
+  return parts.join(" + ");
+}
 function colorForRate(rate) {
   if (rate === 100) return "#43A047";
   if (rate >= 99) return "#FFEB3B";
@@ -20312,11 +20335,15 @@ async function postSummaryComment(a) {
   if (c.gh_pr_number == null || c.gh_pr_number === "") return;
   const prNumber = Number.parseInt(String(c.gh_pr_number), 10);
   if (!Number.isFinite(prNumber)) return;
+  if (!a.contextName) {
+    warning("post-pr-comment is true but context-name is empty; skipping PR comment.");
+    return;
+  }
   const token = getInput("github-token");
   const [owner, repo] = (c.repository || "").split("/");
   if (!owner || !repo) return;
   const shortSha = (c.commit_sha || "").slice(0, 7);
-  const marker = `<!-- test-system-io:${c.name}@${shortSha} -->`;
+  const marker = `<!-- test-system-io:${a.contextName}@${shortSha} -->`;
   const cleanPass = a.runStatus === "completed" && a.failedUnitCount === 0;
   if (cleanPass) {
     await deletePRCommentByMarker({
@@ -20330,40 +20357,32 @@ async function postSummaryComment(a) {
     });
     return;
   }
-  const linkText = a.runStatus === "completed" ? "completed" : "ended";
+  const statusLabel = a.runStatus === "completed" ? a.failedUnitCount > 0 ? "failed" : "completed" : "ended";
+  const imageLabel = a.serverImage || shortSha;
   const heading = formatCommentHeading(
-    a.framework,
-    a.testType,
-    a.serverEdition,
-    shortSha,
-    linkText,
+    a.contextName,
+    imageLabel,
+    statusLabel,
+    c.repository || "",
+    c.gh_run_id || "",
     a.reportURL
   );
-  const lines = [heading, ""];
-  if (a.runStatus === "completed") {
-    lines.push(a.commitStatusMessage);
-  } else {
-    lines.push(`Run did not finish cleanly: ${a.runStatus}. ${a.commitStatusMessage}`);
-  }
-  if (a.durationDisplay) lines.push("", `Duration: ${a.durationDisplay}`);
-  const failed = a.units.filter((u) => u.state === "failed");
+  const durationSegment = formatCommentDuration(a.setupMs, a.firstPassMs, a.retestMs);
+  const durationSuffix = durationSegment ? `, duration: ${durationSegment}` : "";
+  const statsLine = a.runStatus === "completed" ? `${a.commitStatusMessage}${durationSuffix}` : `Run did not finish cleanly: ${a.runStatus}. ${a.commitStatusMessage}${durationSuffix}`;
+  const lines = [heading, "", statsLine];
+  const failed = a.units.filter((u) => u.state === "completed_fail");
   if (failed.length > 0) {
     failed.sort((u, v) => (u.dispatch_seq ?? 0) - (v.dispatch_seq ?? 0));
     const preview = failed.slice(0, FAILED_SPECS_PREVIEW);
     const remaining = failed.length - preview.length;
-    lines.push(
-      "",
-      `<details>`,
-      `<summary>Showing ${preview.length} of ${failed.length} failed specs</summary>`,
-      ""
-    );
+    lines.push("", "Failed specs:");
     for (const u of preview) {
       lines.push(`- \`${escapeForCodeSpan(u.spec_path)}\``);
     }
     if (remaining > 0) {
-      lines.push(`- _\u2026and ${remaining} more \u2014 see the full report._`);
+      lines.push(`- _\u2026and ${remaining} more \u2014 see the [full report](${a.reportURL})._`);
     }
-    lines.push("", `</details>`);
   }
   lines.push("", marker, "");
   await postOrUpdatePRComment({
@@ -20379,16 +20398,18 @@ async function postSummaryComment(a) {
     singlePage: true
   });
 }
-function formatCommentHeading(framework, testType, edition, shortSha, linkText, url) {
-  const fwCap = capitalize(framework);
-  const ttCap = testType ? ` ${capitalize(testType)}` : "";
-  const edPart = edition ? ` (${edition})` : "";
-  return `**E2E \u2014 ${fwCap}${ttCap}${edPart} - \`${shortSha}\`, [${linkText}](${url})**`;
+function formatCommentHeading(contextName, imageLabel, statusLabel, repository, ghRunId, reportURL) {
+  const pipelineURL = buildPipelineURL(repository, ghRunId);
+  return `[${contextName}](${pipelineURL}) for \`${imageLabel}\` [${statusLabel}](${reportURL})`;
 }
+function buildPipelineURL(repository, ghRunId) {
+  const serverURL = process.env.GITHUB_SERVER_URL || "https://github.com";
+  return `${serverURL}/${repository}/actions/runs/${ghRunId}`;
+}
+var LONG_RUN_THRESHOLD_MS = 15 * 60 * 1e3;
 function renderWebhookPayload(f) {
-  const frameworkCap = capitalize(f.framework);
-  const testTypeCap = f.testType ? ` ${capitalize(f.testType)}` : "";
-  const title = `**Results - ${frameworkCap}${testTypeCap} Tests**`;
+  const titleSubject = f.contextName || `${capitalize(f.framework)} Tests`;
+  const title = `**Results - ${titleSubject}**`;
   const commitShort = f.commitSHA ? f.commitSHA.slice(0, 7) : "";
   const commitURL = `https://github.com/${f.repository}/commit/${f.commitSHA}`;
   let sourceLine;
@@ -20403,8 +20424,11 @@ function renderWebhookPayload(f) {
   const retestPart = f.retestDisplay ? ` | ${f.retestDisplay}` : "";
   const dockerLine = f.serverImage ? `
 :docker: \`${f.serverImage}\`` : "";
-  const durationLine = f.durationDisplay ? `
-${f.durationDisplay}` : "";
+  const durationSegments = formatCommentDuration(f.setupMs, f.firstPassMs, f.retestMs);
+  const totalMs = (f.setupMs ?? 0) + (f.firstPassMs ?? 0) + (f.retestMs ?? 0);
+  const longRunBadge = totalMs > LONG_RUN_THRESHOLD_MS ? ":warning: " : "";
+  const durationLine = durationSegments ? `
+${longRunBadge}${durationSegments}` : "";
   const text = `${title}
 
 ${sourceLine}${dockerLine}

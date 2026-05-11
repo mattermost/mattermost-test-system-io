@@ -81,8 +81,9 @@ inputs:
     description: >
       When `"true"` and the composite identity carries a `gh_pr_number`,
       post a "started" status comment on the PR keyed by the marker
-      `<!-- test-system-io:<name>@<short_sha> -->`. A re-run on the same
-      commit replaces the existing comment. No-op for non-PR runs.
+      `<!-- test-system-io:<context-name>@<short_sha> -->`. A re-run on
+      the same commit replaces the existing comment. No-op for non-PR
+      runs. Requires `context-name`.
     required: false
     default: "false"
   github-token:
@@ -91,12 +92,19 @@ inputs:
       when `post-pr-comment` is `"true"`.
     required: false
     default: ""
-  test-type:
-    description: Test-type label folded into the comment heading (e.g. `full`).
+  context-name:
+    description: >
+      Slash-separated context label rendered as the linked heading in the PR
+      comment (e.g. `e2e-test/playwright-full/enterprise`). The caller owns
+      the format; the action embeds it verbatim. Required when
+      `post-pr-comment` is `"true"`.
     required: false
     default: ""
-  server-edition:
-    description: Server edition folded into the comment heading (e.g. `enterprise`, `fips`).
+  server-image:
+    description: >
+      Full Docker image string rendered inline in the PR comment heading
+      (e.g. `mattermostdevelopment/mattermost-enterprise-edition:abc123`).
+      Falls back to the short commit SHA when omitted.
     required: false
     default: ""
 

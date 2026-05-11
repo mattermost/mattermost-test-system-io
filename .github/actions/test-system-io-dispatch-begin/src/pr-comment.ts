@@ -116,10 +116,13 @@ async function deleteComment(
   repo: string,
   commentId: number,
 ): Promise<void> {
-  const res = await retryFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`, {
-    method: "DELETE",
-    headers: ghHeaders(token),
-  });
+  const res = await retryFetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`,
+    {
+      method: "DELETE",
+      headers: ghHeaders(token),
+    },
+  );
   // 204 No Content on success, 404 if it was already gone (idempotent).
   if (!res.ok && res.status !== 404) {
     throw new Error(`delete comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
@@ -161,11 +164,14 @@ async function patchComment(
   commentId: number,
   body: string,
 ): Promise<void> {
-  const res = await retryFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`, {
-    method: "PATCH",
-    headers: { ...ghHeaders(token), "content-type": "application/json" },
-    body: JSON.stringify({ body }),
-  });
+  const res = await retryFetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/issues/comments/${commentId}`,
+    {
+      method: "PATCH",
+      headers: { ...ghHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ body }),
+    },
+  );
   if (!res.ok) {
     throw new Error(`patch comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
   }

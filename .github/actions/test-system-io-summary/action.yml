@@ -39,12 +39,6 @@ inputs:
   # Formatting inputs — feed the commit_status_description and
   # webhook_payload outputs. All optional; omitted segments degrade
   # gracefully (e.g. no `image_tag:X` if image-tag is not provided).
-  test-type:
-    description: >
-      Test type label folded into the webhook title
-      (e.g. `full` → "Cypress Full Tests"). Empty omits the segment.
-    required: false
-    default: ""
   report-type:
     description: >
       One of `PR` (default), `MASTER`, `RELEASE`, `RELEASE_CUT`. Drives
@@ -87,15 +81,19 @@ inputs:
     description: >
       When `"true"` and the composite identity carries a `gh_pr_number`,
       finalize the PR comment keyed by the marker
-      `<!-- test-system-io:<name>@<short_sha> -->`:
+      `<!-- test-system-io:<context-name>@<short_sha> -->`:
 
         * Clean pass (run reached `completed` AND no failed units):
           DELETE the related comment so the PR conversation stays
           uncluttered after a successful run.
         * Anything else (failed units, timed_out, incomplete): UPDATE
-          the comment with the summary. Heading link reads `[completed]`
-          for finished runs and `[ended]` for non-completed states.
+          the comment with the summary. Heading link reads `[failed]`
+          when failures were recorded, `[completed]` for clean finishes
+          (rarely renders since clean-pass deletes), and `[ended]` for
+          non-completed states.
 
+      Requires `context-name` to match the value used by the begin
+      action so this finalizer finds the comment to update or delete.
       No-op for non-PR runs. Requires `pull-requests: write`.
     required: false
     default: "false"
@@ -105,8 +103,12 @@ inputs:
       when `post-pr-comment` is `"true"`.
     required: false
     default: ""
-  server-edition:
-    description: Server edition folded into the comment heading (e.g. `enterprise`, `fips`).
+  context-name:
+    description: >
+      Slash-separated context label rendered as the linked heading in the PR
+      comment (e.g. `e2e-test/playwright-full/enterprise`). The caller owns
+      the format; the action embeds it verbatim. Required when
+      `post-pr-comment` is `"true"`.
     required: false
     default: ""
 

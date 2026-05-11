@@ -28,8 +28,17 @@ inputs:
     required: true
   framework:
     description: >
-      Test framework label rendered in headers and webhook titles
-      (e.g. `playwright`, `cypress`).
+      Test framework label (e.g. `playwright`, `cypress`). Surfaced in the
+      step summary header as a free-form tag. Kept explicit rather than
+      derived from `context-name` because consumers in other repos may
+      pick context names that do not encode framework information.
+    required: true
+  context-name:
+    description: >
+      Slash-separated context label (e.g. `e2e-test/playwright-full/enterprise`)
+      rendered as the PR-comment heading and the webhook title, and used
+      as the comment marker key. Must match the value the begin action
+      received so this finalizer finds the comment to update or delete.
     required: true
   fail-on-test-failures:
     description: When true (default), exit non-zero if any unit ended in completed_fail
@@ -103,14 +112,6 @@ inputs:
       when `post-pr-comment` is `"true"`.
     required: false
     default: ""
-  context-name:
-    description: >
-      Slash-separated context label rendered as the linked heading in the PR
-      comment (e.g. `e2e-test/playwright-full/enterprise`). The caller owns
-      the format; the action embeds it verbatim. Required when
-      `post-pr-comment` is `"true"`.
-    required: false
-    default: ""
 
 outputs:
   passed:
@@ -129,33 +130,33 @@ outputs:
     description: Total number of dispatch units (one per spec) the run covered.
   pass_rate:
     description: Pass percentage as a string (e.g. `100%`, `99.5%`); excludes skipped from denominator.
+  setup_duration_ms:
+    description: >
+      Wall-clock milliseconds from run begin to the first checkout
+      (`first_test_at - begin_at`). Empty until the first attempt is dispatched.
   first_pass_duration_ms:
-    description: Wall-clock milliseconds spent on the first-pass dispatch. Empty until a first attempt reports.
+    description: >
+      Pure first-pass dispatch wall-clock milliseconds — `first_pass_end - first_test_at`,
+      excluding the setup window. Empty until a first attempt reports.
   retest_duration_ms:
     description: Wall-clock milliseconds spent on retest dispatches. Empty when no unit was re-leased.
   retest_unit_count:
     description: Distinct dispatch units that had at least one retest attempt.
-  duration_display:
-    description: >
-      Pre-formatted duration. `15m 23s` when no retests ran;
-      `15m 23s + 2m 5s retest` when first-pass and retest are both present.
   webhook_color:
-    description: Hex color matching v1's pass-rate bands (`#43A047`/`#FFEB3B`/`#FF9800`/`#F44336`).
+    description: Hex color keyed on pass-rate (`#43A047`/`#FFEB3B`/`#FF9800`/`#F44336`).
   commit_status_message:
     description: >
-      Short v1-compatible summary. Examples:
+      Short summary. Examples:
       `100% passed (1345), 446 specs`,
       `96.8% passed (457/472), 117 specs, 15 failed`.
   commit_status_description:
     description: >
       Fully-formatted description ready to plug into the commit-status
-      `description` input — message + duration + image-tag, no further
+      `description` input — message + duration segments + image-tag, no further
       wrangling needed on the consumer side. Example:
-      `96.8% passed (457/472), 117 specs, 15 failed, 17m 9s + 2m 5s retest, image_tag:9e955bf_3521709 (release-11.4, release-11)`.
+      `96.8% passed (457/472), 117 specs, 15 failed, (5m setup) + 14m 1s + 2m 15s (retest), image_tag:9e955bf_3521709 (release-11.4, release-11)`.
   webhook_payload:
-    description: >
-      Mattermost-style webhook JSON ready to POST as-is. Mirrors v1's
-      e2e-tests-cypress-template.yml ci/publish-report attachment shape.
+    description: Mattermost-style webhook JSON ready to POST as-is.
 
 runs:
   using: node24

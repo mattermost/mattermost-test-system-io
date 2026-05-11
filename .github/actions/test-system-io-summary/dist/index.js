@@ -19960,6 +19960,40 @@ function getIDToken(aud) {
 // src/main.ts
 var fs3 = __toESM(require("fs"));
 
+// src/retry-fetch.ts
+var DEFAULT_DELAYS_MS = [400, 1200, 3e3];
+async function retryFetch(input, init, label) {
+  const delays = DEFAULT_DELAYS_MS;
+  let lastErr;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const res = await fetch(input, init);
+      if (res.ok || !isRetryableStatus(res.status)) return res;
+      lastErr = new Error(`HTTP ${res.status} ${await safeText(res)}`);
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt === delays.length) break;
+    const ms = delays[attempt] + Math.floor(Math.random() * 200);
+    warning(
+      `${label}: fetch failed (attempt ${attempt + 1}/${delays.length + 1}): ${lastErr.message}; retrying in ${ms}ms`
+    );
+    await new Promise((r) => setTimeout(r, ms));
+  }
+  throw lastErr;
+}
+function isRetryableStatus(status) {
+  return status === 408 || status === 429 || status >= 500 && status < 600;
+}
+async function safeText(res, max = 500) {
+  try {
+    const t = await res.text();
+    return t.length <= max ? t : `${t.slice(0, max)}\u2026(${t.length - max} more chars)`;
+  } catch {
+    return "<unreadable body>";
+  }
+}
+
 // src/pr-comment.ts
 var GITHUB_API = "https://api.github.com";
 async function postOrUpdatePRComment(args) {
@@ -20027,7 +20061,8 @@ async function deleteComment(token, owner, repo, commentId) {
     {
       method: "DELETE",
       headers: ghHeaders(token)
-    }
+    },
+    "pr-comment:delete"
   );
   if (!res.ok && res.status !== 404) {
     throw new Error(`delete comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
@@ -20036,7 +20071,7 @@ async function deleteComment(token, owner, repo, commentId) {
 async function findCommentByMarker(token, owner, repo, prNumber, marker, singlePage) {
   let url = `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`;
   while (url) {
-    const res = await retryFetch(url, { headers: ghHeaders(token) });
+    const res = await retryFetch(url, { headers: ghHeaders(token) }, "pr-comment:list");
     if (!res.ok) {
       throw new Error(`list comments failed: ${res.status} ${await safeText(res)}`);
     }
@@ -20056,18 +20091,23 @@ async function patchComment(token, owner, repo, commentId, body) {
       method: "PATCH",
       headers: { ...ghHeaders(token), "content-type": "application/json" },
       body: JSON.stringify({ body })
-    }
+    },
+    "pr-comment:patch"
   );
   if (!res.ok) {
     throw new Error(`patch comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
   }
 }
 async function postComment(token, owner, repo, prNumber, body) {
-  const res = await retryFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments`, {
-    method: "POST",
-    headers: { ...ghHeaders(token), "content-type": "application/json" },
-    body: JSON.stringify({ body })
-  });
+  const res = await retryFetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments`,
+    {
+      method: "POST",
+      headers: { ...ghHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ body })
+    },
+    "pr-comment:create"
+  );
   if (!res.ok) {
     throw new Error(`create comment failed: ${res.status} ${await safeText(res)}`);
   }
@@ -20089,36 +20129,6 @@ function nextPageURL(link) {
   }
   return null;
 }
-async function safeText(res) {
-  try {
-    return (await res.text()).slice(0, 200);
-  } catch {
-    return "<unreadable body>";
-  }
-}
-async function retryFetch(input, init) {
-  const delays = [400, 1200, 3e3];
-  let lastErr;
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    try {
-      const res = await fetch(input, init);
-      if (res.ok || !isRetryableStatus(res.status)) return res;
-      lastErr = new Error(`HTTP ${res.status} ${await safeText(res)}`);
-    } catch (err) {
-      lastErr = err;
-    }
-    if (attempt === delays.length) break;
-    const ms = delays[attempt] + Math.floor(Math.random() * 200);
-    warning(
-      `pr-comment: GitHub API call failed (attempt ${attempt + 1}/${delays.length + 1}): ${lastErr.message}; retrying in ${ms}ms`
-    );
-    await new Promise((r) => setTimeout(r, ms));
-  }
-  throw lastErr;
-}
-function isRetryableStatus(status) {
-  return status === 408 || status === 429 || status >= 500 && status < 600;
-}
 
 // src/main.ts
 var PRODUCTION_URL = "https://test-io.test.mattermost.com";
@@ -20128,6 +20138,7 @@ async function run() {
   const audience = getInput("oidc-audience") || "mattermost-test-system-io";
   const compositeIdentityRaw = getInput("composite-identity", { required: true });
   const framework = getInput("framework", { required: true });
+  const contextName = getInput("context-name", { required: true });
   const failOnTestFailures = getInput("fail-on-test-failures") !== "false";
   let compositeIdentity;
   try {
@@ -20145,21 +20156,15 @@ async function run() {
     name: compositeIdentity.name,
     gh_run_attempt: compositeIdentity.gh_run_attempt
   });
-  const statusRes = await fetch(`${baseURL}/api/v1/orchestration/status?${params.toString()}`, {
-    headers: { Authorization: `Bearer ${bearer}` }
-  });
-  let status = null;
-  try {
-    status = await statusRes.json();
-  } catch {
-    status = null;
-  }
-  if (status) {
-    const counts = status.counts || {};
-    info(
-      `orchestration status: status=${status.status ?? "unknown"} total=${status.total_units ?? "?"} pass=${counts.completed_pass ?? 0} fail=${counts.completed_fail ?? 0} skip=${counts.completed_skipped ?? 0} pending=${counts.pending ?? 0} leased=${counts.leased ?? 0}`
-    );
-  }
+  const status = await fetchOrchestrationStatus(
+    `${baseURL}/api/v1/orchestration/status`,
+    params,
+    bearer
+  );
+  const counts = status.counts || {};
+  info(
+    `orchestration status: status=${status.status ?? "unknown"} total=${status.total_units ?? "?"} pass=${counts.completed_pass ?? 0} fail=${counts.completed_fail ?? 0} skip=${counts.completed_skipped ?? 0} pending=${counts.pending ?? 0} leased=${counts.leased ?? 0}`
+  );
   const repoSlug = compositeIdentity.repository || "";
   const repoTrailing = repoSlug.split("/").pop() || repoSlug;
   const repo = encodeURIComponent(repoTrailing);
@@ -20169,32 +20174,34 @@ async function run() {
   const reportURL = `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(compositeIdentity.gh_run_id)}`;
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) {
-    const counts = status?.counts || {};
-    const total = status?.total_units ?? "?";
+    const counts2 = status.counts || {};
+    const total = status.total_units ?? "?";
     const lines = [
-      `## E2E Test Results \u2014 ${framework} (Test System IO orchestrated)`,
+      `## E2E Test Results \u2014 ${framework}`,
       "",
-      `**Run status:** \`${status?.status ?? "unknown"}\``,
+      `**Context:** \`${contextName}\``,
+      "",
+      `**Run status:** \`${status.status ?? "unknown"}\``,
       "",
       "| metric | value |",
       "|---|---|",
       `| total units | ${total} |`,
-      `| pass | ${counts.completed_pass ?? 0} |`,
-      `| fail | ${counts.completed_fail ?? 0} |`,
-      `| skipped | ${counts.completed_skipped ?? 0} |`,
-      `| pending | ${counts.pending ?? 0} |`,
-      `| leased | ${counts.leased ?? 0} |`,
+      `| pass | ${counts2.completed_pass ?? 0} |`,
+      `| fail | ${counts2.completed_fail ?? 0} |`,
+      `| skipped | ${counts2.completed_skipped ?? 0} |`,
+      `| pending | ${counts2.pending ?? 0} |`,
+      `| leased | ${counts2.leased ?? 0} |`,
       "",
       `[Open Report Group](${reportURL})`,
       ""
     ];
     fs3.appendFileSync(summaryPath, lines.join("\n"));
   }
-  const unitPass = status?.counts?.completed_pass ?? 0;
-  const unitFail = status?.counts?.completed_fail ?? 0;
-  const unitSkip = status?.counts?.completed_skipped ?? 0;
+  const unitPass = status.counts?.completed_pass ?? 0;
+  const unitFail = status.counts?.completed_fail ?? 0;
+  const unitSkip = status.counts?.completed_skipped ?? 0;
   const totalSpecs = unitPass + unitFail + unitSkip;
-  const t = status?.tests;
+  const t = status.tests;
   const haveTestRollup = !!t && (t.total ?? 0) > 0;
   const passed = haveTestRollup ? (t.passed ?? 0) + (t.flaky ?? 0) : unitPass;
   const failed = haveTestRollup ? t.failed ?? 0 : unitFail;
@@ -20205,11 +20212,12 @@ async function run() {
   const rateStr = rate === 100 ? "100%" : `${rate.toFixed(1)}%`;
   const specSuffix = totalSpecs > 0 ? `, ${totalSpecs} specs` : "";
   const commitStatusMessage = rate === 100 ? `${rateStr} passed (${passed})${specSuffix}` : `${rateStr} passed (${passed}/${rateDenom})${specSuffix}, ${failed} failed`;
-  const firstPassMs = status?.durations?.first_pass_ms ?? null;
-  const retestMs = status?.durations?.retest_ms ?? null;
-  const retestUnitCount = status?.durations?.retest_unit_count ?? 0;
-  const durationDisplay = formatDurationDisplay(firstPassMs, retestMs);
-  const setupMs = computeSetupMs(status?.durations?.begin_at, status?.durations?.first_test_at);
+  const setupMs = computeSetupMs(status.durations?.begin_at, status.durations?.first_test_at);
+  const rawFirstPassMs = status.durations?.first_pass_ms ?? null;
+  const firstPassMs = rawFirstPassMs != null && setupMs != null ? Math.max(0, rawFirstPassMs - setupMs) : rawFirstPassMs;
+  const retestMs = status.durations?.retest_ms ?? null;
+  const retestUnitCount = status.durations?.retest_unit_count ?? 0;
+  const durationDisplay = formatDurationSegments(setupMs, firstPassMs, retestMs);
   const imageTag = getInput("image-tag");
   const imageAliases = getInput("image-aliases");
   const serverImage = getInput("server-image") || imageTag;
@@ -20230,8 +20238,7 @@ async function run() {
     username: webhookUsername,
     iconURL: webhookIconURL,
     color: webhookColor,
-    contextName: getInput("context-name"),
-    framework,
+    contextName,
     reportType,
     repository: compositeIdentity.repository,
     commitSHA: compositeIdentity.commit_sha,
@@ -20251,10 +20258,10 @@ async function run() {
   setOutput("skipped", skipped);
   setOutput("total_specs", totalSpecs);
   setOutput("pass_rate", rateStr);
+  setOutput("setup_duration_ms", setupMs ?? "");
   setOutput("first_pass_duration_ms", firstPassMs ?? "");
   setOutput("retest_duration_ms", retestMs ?? "");
   setOutput("retest_unit_count", retestUnitCount);
-  setOutput("duration_display", durationDisplay);
   setOutput("webhook_color", webhookColor);
   setOutput("commit_status_message", commitStatusMessage);
   setOutput("commit_status_description", commitStatusDescription);
@@ -20262,20 +20269,20 @@ async function run() {
   if (getInput("post-pr-comment") === "true") {
     await postSummaryComment({
       compositeIdentity,
-      contextName: getInput("context-name"),
+      contextName,
       serverImage,
-      runStatus: status?.status ?? "unknown",
+      runStatus: status.status ?? "unknown",
       commitStatusMessage,
       setupMs,
       firstPassMs,
       retestMs,
       reportURL,
-      units: status?.units ?? [],
+      units: status.units ?? [],
       failedUnitCount: failed
     });
   }
-  if (status?.status !== "completed") {
-    const msg = `run did not complete cleanly: ${status?.status}`;
+  if (status.status !== "completed") {
+    const msg = `run did not complete cleanly: ${status.status}`;
     if (failOnTestFailures) throw new Error(msg);
     warning(msg);
   }
@@ -20289,17 +20296,40 @@ function resolveBaseURL() {
   const useStaging = getInput("use-staging").trim().toLowerCase() === "true";
   return useStaging ? STAGING_URL : PRODUCTION_URL;
 }
+async function fetchOrchestrationStatus(endpoint, params, bearer) {
+  const url = `${endpoint}?${params.toString()}`;
+  const res = await retryFetch(
+    url,
+    { headers: { Authorization: `Bearer ${bearer}` } },
+    "orchestration/status"
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`orchestration/status ${res.status} ${res.statusText}: ${text.slice(0, 500)}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    throw new Error(
+      `orchestration/status returned non-JSON body: ${e.message}; raw=${text.slice(0, 500)}`
+    );
+  }
+  if (typeof parsed.status !== "string" || parsed.status === "") {
+    throw new Error(
+      `orchestration/status response missing 'status' field; raw=${text.slice(0, 500)}`
+    );
+  }
+  return parsed;
+}
 function formatDuration(ms) {
   const total = Math.max(0, Math.floor(ms / 1e3));
   const m = Math.floor(total / 60);
   const s = total % 60;
+  if (m === 0 && s === 0) return null;
+  if (m === 0) return `${s}s`;
+  if (s === 0) return `${m}m`;
   return `${m}m ${s}s`;
-}
-function formatDurationDisplay(firstPassMs, retestMs) {
-  if (firstPassMs == null) return "";
-  const first = formatDuration(firstPassMs);
-  if (retestMs == null || retestMs <= 0) return first;
-  return `${first} + ${formatDuration(retestMs)} retest`;
 }
 function computeSetupMs(beginAt, firstTestAt) {
   if (!beginAt || !firstTestAt) return null;
@@ -20308,11 +20338,20 @@ function computeSetupMs(beginAt, firstTestAt) {
   if (!Number.isFinite(begin) || !Number.isFinite(first)) return null;
   return Math.max(0, first - begin);
 }
-function formatCommentDuration(setupMs, firstPassMs, retestMs) {
+function formatDurationSegments(setupMs, firstPassMs, retestMs) {
   const parts = [];
-  if (setupMs != null && setupMs > 0) parts.push(`(${formatDuration(setupMs)} setup)`);
-  if (firstPassMs != null) parts.push(formatDuration(firstPassMs));
-  if (retestMs != null && retestMs > 0) parts.push(`${formatDuration(retestMs)} (retest)`);
+  if (setupMs != null) {
+    const d = formatDuration(setupMs);
+    if (d) parts.push(`(${d} setup)`);
+  }
+  if (firstPassMs != null) {
+    const d = formatDuration(firstPassMs);
+    if (d) parts.push(d);
+  }
+  if (retestMs != null) {
+    const d = formatDuration(retestMs);
+    if (d) parts.push(`${d} (retest)`);
+  }
   return parts.join(" + ");
 }
 function colorForRate(rate) {
@@ -20320,10 +20359,6 @@ function colorForRate(rate) {
   if (rate >= 99) return "#FFEB3B";
   if (rate >= 98) return "#FF9800";
   return "#F44336";
-}
-function capitalize(s) {
-  if (!s) return s;
-  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 function escapeForCodeSpan(s) {
   if (!s) return "<unknown>";
@@ -20335,10 +20370,6 @@ async function postSummaryComment(a) {
   if (c.gh_pr_number == null || c.gh_pr_number === "") return;
   const prNumber = Number.parseInt(String(c.gh_pr_number), 10);
   if (!Number.isFinite(prNumber)) return;
-  if (!a.contextName) {
-    warning("post-pr-comment is true but context-name is empty; skipping PR comment.");
-    return;
-  }
   const token = getInput("github-token");
   const [owner, repo] = (c.repository || "").split("/");
   if (!owner || !repo) return;
@@ -20367,7 +20398,7 @@ async function postSummaryComment(a) {
     c.gh_run_id || "",
     a.reportURL
   );
-  const durationSegment = formatCommentDuration(a.setupMs, a.firstPassMs, a.retestMs);
+  const durationSegment = formatDurationSegments(a.setupMs, a.firstPassMs, a.retestMs);
   const durationSuffix = durationSegment ? `, duration: ${durationSegment}` : "";
   const statsLine = a.runStatus === "completed" ? `${a.commitStatusMessage}${durationSuffix}` : `Run did not finish cleanly: ${a.runStatus}. ${a.commitStatusMessage}${durationSuffix}`;
   const lines = [heading, "", statsLine];
@@ -20408,8 +20439,7 @@ function buildPipelineURL(repository, ghRunId) {
 }
 var LONG_RUN_THRESHOLD_MS = 15 * 60 * 1e3;
 function renderWebhookPayload(f) {
-  const titleSubject = f.contextName || `${capitalize(f.framework)} Tests`;
-  const title = `**Results - ${titleSubject}**`;
+  const title = `**Results - ${f.contextName}**`;
   const commitShort = f.commitSHA ? f.commitSHA.slice(0, 7) : "";
   const commitURL = `https://github.com/${f.repository}/commit/${f.commitSHA}`;
   let sourceLine;
@@ -20424,7 +20454,7 @@ function renderWebhookPayload(f) {
   const retestPart = f.retestDisplay ? ` | ${f.retestDisplay}` : "";
   const dockerLine = f.serverImage ? `
 :docker: \`${f.serverImage}\`` : "";
-  const durationSegments = formatCommentDuration(f.setupMs, f.firstPassMs, f.retestMs);
+  const durationSegments = formatDurationSegments(f.setupMs, f.firstPassMs, f.retestMs);
   const totalMs = (f.setupMs ?? 0) + (f.firstPassMs ?? 0) + (f.retestMs ?? 0);
   const longRunBadge = totalMs > LONG_RUN_THRESHOLD_MS ? ":warning: " : "";
   const durationLine = durationSegments ? `

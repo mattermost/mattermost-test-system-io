@@ -11,6 +11,7 @@
  * (orchestration begin / summary) already happened before this runs.
  */
 import * as core from "@actions/core";
+import { retryFetch, safeText } from "./retry-fetch";
 
 interface ListedComment {
   id: number;
@@ -122,6 +123,7 @@ async function deleteComment(
       method: "DELETE",
       headers: ghHeaders(token),
     },
+    "pr-comment:delete",
   );
   // 204 No Content on success, 404 if it was already gone (idempotent).
   if (!res.ok && res.status !== 404) {
@@ -143,7 +145,7 @@ async function findCommentByMarker(
   let url: string | null =
     `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`;
   while (url) {
-    const res: Response = await retryFetch(url, { headers: ghHeaders(token) });
+    const res: Response = await retryFetch(url, { headers: ghHeaders(token) }, "pr-comment:list");
     if (!res.ok) {
       throw new Error(`list comments failed: ${res.status} ${await safeText(res)}`);
     }
@@ -171,6 +173,7 @@ async function patchComment(
       headers: { ...ghHeaders(token), "content-type": "application/json" },
       body: JSON.stringify({ body }),
     },
+    "pr-comment:patch",
   );
   if (!res.ok) {
     throw new Error(`patch comment ${commentId} failed: ${res.status} ${await safeText(res)}`);
@@ -184,11 +187,15 @@ async function postComment(
   prNumber: number,
   body: string,
 ): Promise<number> {
-  const res = await retryFetch(`${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments`, {
-    method: "POST",
-    headers: { ...ghHeaders(token), "content-type": "application/json" },
-    body: JSON.stringify({ body }),
-  });
+  const res = await retryFetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/issues/${prNumber}/comments`,
+    {
+      method: "POST",
+      headers: { ...ghHeaders(token), "content-type": "application/json" },
+      body: JSON.stringify({ body }),
+    },
+    "pr-comment:create",
+  );
   if (!res.ok) {
     throw new Error(`create comment failed: ${res.status} ${await safeText(res)}`);
   }
@@ -212,46 +219,4 @@ function nextPageURL(link: string | null): string | null {
     if (m) return m[1] ?? null;
   }
   return null;
-}
-
-async function safeText(res: Response): Promise<string> {
-  try {
-    return (await res.text()).slice(0, 200);
-  } catch {
-    return "<unreadable body>";
-  }
-}
-
-// retryFetch wraps a `fetch` call with bounded retries on transient
-// failures (5xx, 408, 429) and network-level errors so flaky GitHub
-// API moments don't drop the comment update. Permanent 4xx responses
-// (401/403/404 etc.) return immediately. The outer try/catch in
-// post/delete still swallows the final error as a warning, but a
-// retry budget here means the comment ops survive a single hiccup.
-async function retryFetch(input: string, init: RequestInit): Promise<Response> {
-  const delays = [400, 1200, 3000];
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    try {
-      const res = await fetch(input, init);
-      if (res.ok || !isRetryableStatus(res.status)) return res;
-      lastErr = new Error(`HTTP ${res.status} ${await safeText(res)}`);
-    } catch (err) {
-      // Network-layer failure (ECONNRESET, abort, DNS) — always
-      // retryable within the budget.
-      lastErr = err;
-    }
-    if (attempt === delays.length) break;
-    const ms = delays[attempt]! + Math.floor(Math.random() * 200);
-    core.warning(
-      `pr-comment: GitHub API call failed (attempt ${attempt + 1}/${delays.length + 1}): ` +
-        `${(lastErr as Error).message}; retrying in ${ms}ms`,
-    );
-    await new Promise<void>((r) => setTimeout(r, ms));
-  }
-  throw lastErr;
-}
-
-function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || (status >= 500 && status < 600);
 }

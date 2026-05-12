@@ -126,6 +126,7 @@ func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 		h.Publisher.ReportCreated(groupID, body.Framework, body.Repository, ref,
 			body.Commit, actor, body.GHRunID, body.GHPRNumber, time.Now().UTC())
 	}
+	h.refreshGroupSummaryBestEffort(r.Context(), groupID)
 	writeJSON(w, http.StatusOK, map[string]any{"report_id": groupID.String()})
 }
 
@@ -233,6 +234,7 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	} else {
 		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 	}
+	h.refreshGroupSummaryBestEffort(r.Context(), groupID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"report_id":            groupID.String(),
@@ -298,6 +300,7 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 	if suiteCount > 0 {
 		h.Publisher.SuitesAvailable(reportID, suiteCount)
 	}
+	h.refreshGroupSummaryBestEffort(r.Context(), groupID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"files_uploaded": uploaded,
@@ -352,6 +355,7 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 	if !h.tryAutoFinalize(r.Context(), groupID, reportID, "screenshots") {
 		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 	}
+	h.refreshGroupSummaryBestEffort(r.Context(), groupID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"files_uploaded": uploaded,

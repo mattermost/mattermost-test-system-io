@@ -25237,23 +25237,35 @@ async function resolveJobId(token, ghJobName) {
   return { id: String(m.id), name: m.name };
 }
 async function postJSON2(cfg, urlPath, body) {
-  const res = await fetchWithAuthRetry(async () => {
-    const bearer = await getBearer(cfg.audience);
-    return fetch(`${cfg.baseURL}${urlPath}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
-      body: JSON.stringify(body)
+  const delays = [500, 1500, 4e3];
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    const res = await fetchWithAuthRetry(async () => {
+      const bearer = await getBearer(cfg.audience);
+      return fetch(`${cfg.baseURL}${urlPath}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
+        body: JSON.stringify(body)
+      });
     });
-  });
-  const text = await res.text();
-  let parsed = null;
-  if (text.length) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {
+    const text = await res.text();
+    if (res.status >= 500 && res.status < 600 && attempt < delays.length) {
+      const ms = delays[attempt] + Math.floor(Math.random() * 250);
+      warning(
+        `${urlPath}: HTTP ${res.status} (attempt ${attempt + 1}/${delays.length + 1}); retrying in ${ms}ms. body=${text.slice(0, 200)}`
+      );
+      await sleep2(ms);
+      continue;
     }
+    let parsed = null;
+    if (text.length) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+      }
+    }
+    return { status: res.status, body: parsed };
   }
-  return { status: res.status, body: parsed };
+  return { status: 0, body: null };
 }
 function sleep2(ms) {
   return new Promise((r) => setTimeout(r, ms));

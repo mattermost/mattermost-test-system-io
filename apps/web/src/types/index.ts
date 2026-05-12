@@ -319,6 +319,12 @@ export interface RepositoryGroup {
 }
 
 export interface GroupedReportsResponse {
+  /** Total report_groups available (across all pages). */
+  total: number;
+  /** Echo of the limit applied to this response (page size). */
+  limit: number;
+  /** Echo of the offset applied (skip-pagination cursor). */
+  offset: number;
   groups: RepositoryGroup[];
 }
 

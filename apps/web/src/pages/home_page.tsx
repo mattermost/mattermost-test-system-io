@@ -211,19 +211,20 @@ export function HomePage() {
     setSearchParams(searchParams, { replace: true });
   };
 
-  // Grouped data
+  // Grouped data (paginated). Only fetches when the grouped view is
+  // visible — the individual view shouldn't pay for an unused grouped fetch.
   const {
     data: groupedData,
     isLoading: isGroupedLoading,
     error: groupedError,
-  } = useGroupedReports();
+  } = useGroupedReports(page, limit, { enabled: viewMode === 'grouped' });
 
-  // Individual data (paginated)
+  // Individual data (paginated). Same `enabled` gating in the other direction.
   const {
     data: individualData,
     isLoading: isIndividualLoading,
     error: individualError,
-  } = useIndividualReports(page, limit);
+  } = useIndividualReports(page, limit, { enabled: viewMode === 'individual' });
 
   const isLoading = viewMode === 'grouped' ? isGroupedLoading : isIndividualLoading;
   const error = viewMode === 'grouped' ? groupedError : individualError;
@@ -350,14 +351,19 @@ export function HomePage() {
               // home page renders one flat list, so re-sort across repos by
               // created_at so a fresh run from one repo isn't pushed below
               // older runs from a repo that happened to bucket first.
+              //
+              // Pagination is server-side: `groupedData.total` is the count
+              // of report_groups across all pages; the response already
+              // contains at most `limit` rows for this page. Do NOT re-slice
+              // client-side — that double-pagination would return empty
+              // slices for any page > 1.
               const allRuns = filteredGroups
                 .flatMap((g) => g.runs)
                 .sort((a, b) =>
                   a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
                 );
-              const total = allRuns.length;
-              const totalPages = Math.ceil(total / limit);
-              const paginatedRuns = allRuns.slice((page - 1) * limit, page * limit);
+              const total = groupedData?.total ?? allRuns.length;
+              const totalPages = Math.max(1, Math.ceil(total / limit));
               return (
                 <div className="space-y-4">
                   <RepoGroupCard
@@ -365,8 +371,9 @@ export function HomePage() {
                       repository: '',
                       repository_name: '',
                       latest_run_at: '',
-                      runs: paginatedRuns,
+                      runs: allRuns,
                     }}
+                    startNumber={(page - 1) * limit + 1}
                   />
                   {totalPages > 1 && (
                     <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">

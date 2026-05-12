@@ -72,16 +72,32 @@ export function useServerInfo() {
   });
 }
 
-// Grouped reports for landing page. Polls every 5s while any run is
-// reporting an in-progress orchestration so the inline "Live" pill on
-// each row reflects worker progress without requiring a manual refresh.
-export function useGroupedReports() {
+// Grouped reports for landing page.
+//
+// Paginated server-side via /reports/grouped?limit=&offset= so the response
+// is bounded regardless of historical row count. Default page size 50 matches
+// the home-page paginator (apps/web/src/pages/home_page.tsx).
+//
+// Polls every 5s while any run is reporting an in-progress orchestration so
+// the inline "Live" pill on each row reflects worker progress without
+// requiring a manual refresh. Polling is paused when the tab is hidden
+// (`refetchIntervalInBackground: false`) and resumed with a one-shot refresh
+// on focus (`refetchOnWindowFocus: true`). Both flags are pinned explicitly
+// to keep the cost model reviewable.
+//
+// `enabled` lets the call site gate the query on whether the consuming
+// component will actually render the data — HomePage passes
+// `viewMode === 'grouped'` so the individual view doesn't pay for an
+// unused grouped fetch (and vice versa).
+export function useGroupedReports(page = 1, limit = 50, options: { enabled?: boolean } = {}) {
+  const offset = (page - 1) * limit;
   return useQuery({
-    queryKey: ['reports-grouped'],
+    queryKey: ['reports-grouped', page, limit],
     queryFn: async () => {
-      const response = await fetch(`${API_URL}/reports/grouped`);
+      const response = await fetch(`${API_URL}/reports/grouped?limit=${limit}&offset=${offset}`);
       return handleResponse<GroupedReportsResponse>(response);
     },
+    enabled: options.enabled ?? true,
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return false;
@@ -90,6 +106,8 @@ export function useGroupedReports() {
       );
       return anyInProgress ? 5000 : false;
     },
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -172,7 +190,7 @@ export interface IndividualReportListResponse {
   offset: number;
 }
 
-export function useIndividualReports(page = 1, limit = 100) {
+export function useIndividualReports(page = 1, limit = 100, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['reports-individual', page, limit],
     queryFn: async () => {
@@ -180,6 +198,7 @@ export function useIndividualReports(page = 1, limit = 100) {
       const response = await fetch(`${API_URL}/reports/individual?limit=${limit}&offset=${offset}`);
       return handleResponse<IndividualReportListResponse>(response);
     },
+    enabled: options.enabled ?? true,
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return false;
@@ -188,6 +207,8 @@ export function useIndividualReports(page = 1, limit = 100) {
       );
       return anyInProgress ? 5000 : false;
     },
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
 }
 

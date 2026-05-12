@@ -60,16 +60,25 @@ func (c *groupedCache) get(
 	key := fmt.Sprintf("%d:%d", limit, offset)
 
 	c.mu.Lock()
-	now := time.Now()
 	if e, ok := c.entries[key]; ok {
 		// In-flight or fresh: wait on done, then return.
 		c.mu.Unlock()
 		select {
 		case <-e.done:
-			if now.Before(e.expiresAt) || e.err != nil {
+			// Compare against time.Now() after the wait, not the
+			// pre-wait clock — the wait can be arbitrarily long.
+			if time.Now().Before(e.expiresAt) || e.err != nil {
 				return e.body, e.err
 			}
-			// Expired — fall through to a new compute below.
+			// Expired. Evict this stale entry before retrying so the
+			// recursive call sees a clean miss and starts a new
+			// compute; otherwise it would race the time.AfterFunc
+			// eviction and could loop on the same expired entry.
+			c.mu.Lock()
+			if cur, ok := c.entries[key]; ok && cur == e {
+				delete(c.entries, key)
+			}
+			c.mu.Unlock()
 			return c.get(ctx, limit, offset, compute)
 		case <-ctx.Done():
 			return nil, ctx.Err()

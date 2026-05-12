@@ -357,13 +357,22 @@ export function HomePage() {
               // contains at most `limit` rows for this page. Do NOT re-slice
               // client-side — that double-pagination would return empty
               // slices for any page > 1.
+              //
+              // Filters (repoFilter, branchFilter) are applied client-side
+              // to the current page only. While a filter is active the
+              // server's `total` is the unfiltered count and would be
+              // misleading, so the count text and Prev/Next disabling
+              // switch to a page-local view; users can page manually to
+              // find matches on other pages.
               const allRuns = filteredGroups
                 .flatMap((g) => g.runs)
                 .sort((a, b) =>
                   a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
                 );
+              const hasFilter = !!repoFilter || !!branchFilter;
               const total = groupedData?.total ?? allRuns.length;
               const totalPages = Math.max(1, Math.ceil(total / limit));
+              const showPaginator = hasFilter || totalPages > 1;
               return (
                 <div className="space-y-4">
                   <RepoGroupCard
@@ -375,11 +384,21 @@ export function HomePage() {
                     }}
                     startNumber={(page - 1) * limit + 1}
                   />
-                  {totalPages > 1 && (
+                  {showPaginator && (
                     <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
                       <div className="text-sm text-gray-500 dark:text-gray-400">
-                        Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
-                        {total} report groups
+                        {hasFilter ? (
+                          <>
+                            Showing {allRuns.length} match
+                            {allRuns.length === 1 ? '' : 'es'} on page {page} (filter applied to
+                            current page only — page through to find more)
+                          </>
+                        ) : (
+                          <>
+                            Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
+                            {total} report groups
+                          </>
+                        )}
                       </div>
                       <div className="flex gap-2">
                         <button
@@ -418,8 +437,15 @@ export function HomePage() {
           )}
           {filteredReports.length > 0 &&
             (() => {
+              // Filters are applied client-side to the current page only;
+              // while one is active, the server's `total` is the unfiltered
+              // count and is misleading. Switch the count text to a
+              // page-local view so users aren't shown "Z of 200" when they
+              // see 3 matches.
+              const hasFilter = !!repoFilter || !!branchFilter;
               const total = individualData?.total ?? 0;
               const totalPages = Math.ceil(total / limit);
+              const showPaginator = hasFilter || totalPages > 1;
               return (
                 <div className="space-y-4">
                   <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800/50">
@@ -432,11 +458,21 @@ export function HomePage() {
                     </div>
                   </div>
 
-                  {totalPages > 1 && (
+                  {showPaginator && (
                     <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
                       <div className="text-sm text-gray-500 dark:text-gray-400">
-                        Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
-                        {total} reports
+                        {hasFilter ? (
+                          <>
+                            Showing {filteredReports.length} match
+                            {filteredReports.length === 1 ? '' : 'es'} on page {page} (filter
+                            applied to current page only — page through to find more)
+                          </>
+                        ) : (
+                          <>
+                            Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
+                            {total} reports
+                          </>
+                        )}
                       </div>
                       <div className="flex gap-2">
                         <button

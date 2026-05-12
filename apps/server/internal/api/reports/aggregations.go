@@ -372,10 +372,13 @@ func (h *Handlers) computeGrouped(ctx context.Context, limit, offset int) ([]byt
 		return nil, err
 	}
 
+	// id DESC is the stable tie-breaker: report_groups.id is a uuidv7,
+	// so within the same created_at it preserves creation order and
+	// keeps pagination boundaries deterministic across pages.
 	rows, err := h.Pool.Query(ctx, `
 		SELECT `+reportGroupSelectCols+`
 		  FROM report_groups
-		 ORDER BY created_at DESC
+		 ORDER BY created_at DESC, id DESC
 		 LIMIT $1 OFFSET $2
 	`, limit, offset)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,13 @@ import (
 // errors are returned to the caller, which is expected to log-and-ignore
 // (the caller's primary work has already succeeded).
 func RefreshGroupSummary(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) error {
+	// Captured before the SELECTs so it brackets the source state we're
+	// about to summarize. Used both as the new last_summary_at value and
+	// as a compare-and-swap guard on the UPDATE: if a concurrent refresh
+	// has already written a newer snapshot, our older one is dropped
+	// rather than overwriting it.
+	snapshotAt := time.Now().UTC()
+
 	// Pull the group's identity (orchestration lookup needs it).
 	var g groupDTO
 	var ghPRNumber *int
@@ -94,15 +102,19 @@ func RefreshGroupSummary(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 		}
 	}
 
+	// Drop a stale snapshot rather than overwriting a newer one: if two
+	// refreshes for the same group race, the loser's read started earlier
+	// and may be missing rows that the winner already captured.
 	_, err = pool.Exec(ctx, `
 		UPDATE report_groups
 		   SET test_stats_json    = $2,
 		       orchestration_json = $3,
 		       reports_count      = $4,
 		       total_duration_ms  = $5,
-		       last_summary_at    = now()
+		       last_summary_at    = $6
 		 WHERE id = $1
-	`, groupID, statsJSON, nullableJSON(orchJSON), stats.ReportsCount, totalDurationMs)
+		   AND (last_summary_at IS NULL OR last_summary_at < $6)
+	`, groupID, statsJSON, nullableJSON(orchJSON), stats.ReportsCount, totalDurationMs, snapshotAt)
 	if err != nil {
 		return fmt.Errorf("refresh_group_summary: update: %w", err)
 	}

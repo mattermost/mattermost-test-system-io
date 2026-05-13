@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -34,6 +35,21 @@ type Handlers struct {
 	MaxArtifactBytes int64
 	PresignTTL       time.Duration
 	SearchMinLength  int
+
+	// groupedCache memoizes /reports/grouped responses per (limit, offset)
+	// for a short TTL so polling tabs collapse onto one DB hit per window.
+	// Initialized lazily on first /reports/grouped request.
+	groupedCacheOnce sync.Once
+	groupedCache     *groupedCache
+}
+
+// initGroupedCache lazily initializes the response cache. Called from
+// the /reports/grouped handler so handlers constructed without explicit
+// initialization (existing call sites, tests) keep working.
+func (h *Handlers) initGroupedCache() {
+	h.groupedCacheOnce.Do(func() {
+		h.groupedCache = newGroupedCache(5 * time.Second)
+	})
 }
 
 // ---------- DTOs ----------

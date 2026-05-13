@@ -59,7 +59,7 @@ export const APP_CONFIG: AppConfig = {
     desiredCount: 2,
     minimumHealthyPercent: 100,
     maximumPercent: 200,
-    dbInstanceClass: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.MICRO),
+    dbInstanceClass: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.SMALL),
     dbAllocatedStorage: 100,
     dbBackupRetentionDays: 7,
   },

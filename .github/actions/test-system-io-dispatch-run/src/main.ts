@@ -331,29 +331,52 @@ interface PostResponse<T> {
   body: T | null;
 }
 
+// postJSON wraps fetchWithAuthRetry with a 5xx-retry policy. The
+// underlying fetchWithAuthRetry handles network-layer errors and OIDC
+// 401 refresh, but passes HTTP responses through verbatim — appropriate
+// for upload endpoints whose callers branch on specific status codes.
+// For the orchestration JSON endpoints (/checkout, /complete) a 5xx is
+// always transient: the proxy timed out waiting for the backend, the
+// caller can re-send safely (orchestrator detects duplicate completion
+// on a lease). 4xx still passes through so business signals like 409
+// `WORKER_HAS_ACTIVE_LEASE` reach the caller intact.
 async function postJSON<T>(
   cfg: { baseURL: string; audience: string },
   urlPath: string,
   body: Record<string, unknown>,
 ): Promise<PostResponse<T>> {
-  const res = await fetchWithAuthRetry(async () => {
-    const bearer = await getBearer(cfg.audience);
-    return fetch(`${cfg.baseURL}${urlPath}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
-      body: JSON.stringify(body),
+  const delays = [500, 1500, 4000];
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    const res = await fetchWithAuthRetry(async () => {
+      const bearer = await getBearer(cfg.audience);
+      return fetch(`${cfg.baseURL}${urlPath}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
+        body: JSON.stringify(body),
+      });
     });
-  });
-  const text = await res.text();
-  let parsed: T | null = null;
-  if (text.length) {
-    try {
-      parsed = JSON.parse(text) as T;
-    } catch {
-      // tolerate non-JSON body
+    const text = await res.text();
+    if (res.status >= 500 && res.status < 600 && attempt < delays.length) {
+      const ms = delays[attempt]! + Math.floor(Math.random() * 250);
+      core.warning(
+        `${urlPath}: HTTP ${res.status} (attempt ${attempt + 1}/${delays.length + 1}); ` +
+          `retrying in ${ms}ms. body=${text.slice(0, 200)}`,
+      );
+      await sleep(ms);
+      continue;
     }
+    let parsed: T | null = null;
+    if (text.length) {
+      try {
+        parsed = JSON.parse(text) as T;
+      } catch {
+        // tolerate non-JSON body
+      }
+    }
+    return { status: res.status, body: parsed };
   }
-  return { status: res.status, body: parsed };
+  // Unreachable: the loop above either returns or continues with `attempt < delays.length`.
+  return { status: 0, body: null };
 }
 
 function sleep(ms: number): Promise<void> {

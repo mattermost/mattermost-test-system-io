@@ -338,16 +338,51 @@ func toIndividualSummary(g groupDTO, e reportEntryDTO, stats groupStats) individ
 
 // ---------- aggregation handlers ----------
 
-// Grouped serves GET /api/v1/reports/grouped. Groups by repository; within a
-// repo, runs are returned newest-first (by group created_at). The repo order
-// is also newest-first so the dashboard's "recent activity" panel is stable.
+// Grouped serves GET /api/v1/reports/grouped?limit=&offset=. Paginated over
+// `report_groups` newest-first; within a page, rows are bucketed by repository
+// so the dashboard renders one card per repo. Default limit 50, cap 100 — same
+// shape as /reports/individual. The handler is wrapped by a shared in-process
+// cache (groupedCache) so concurrent polling tabs collapse into a single DB
+// query per (limit, offset) window. See cache_grouped.go.
 func (h *Handlers) Grouped(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.Pool.Query(r.Context(), `
-		SELECT `+reportGroupSelectCols+` FROM report_groups ORDER BY created_at DESC
-	`)
+	h.initGroupedCache()
+	limit := parseLimit(r.URL.Query().Get("limit"), 50, 100)
+	offset := parseOffset(r.URL.Query().Get("offset"))
+
+	body, err := h.groupedCache.get(r.Context(), limit, offset, func(ctx context.Context) ([]byte, error) {
+		return h.computeGrouped(ctx, limit, offset)
+	})
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=5, stale-while-revalidate=10")
+	// body is json.Marshal output served with Content-Type: application/json;
+	// browsers do not execute it as script, so gosec's XSS warning is a
+	// false positive here.
+	_, _ = w.Write(body) //nolint:gosec // G705 — JSON response, not HTML
+}
+
+// computeGrouped is the cache miss path — runs the actual DB queries and
+// serializes the response body. Returned []byte is what gets cached.
+func (h *Handlers) computeGrouped(ctx context.Context, limit, offset int) ([]byte, error) {
+	var total int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM report_groups`).Scan(&total); err != nil {
+		return nil, err
+	}
+
+	// id DESC is the stable tie-breaker: report_groups.id is a uuidv7,
+	// so within the same created_at it preserves creation order and
+	// keeps pagination boundaries deterministic across pages.
+	rows, err := h.Pool.Query(ctx, `
+		SELECT `+reportGroupSelectCols+`
+		  FROM report_groups
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT $1 OFFSET $2
+	`, limit, offset)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -357,18 +392,15 @@ func (h *Handlers) Grouped(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		g, err := scanGroup(rows)
 		if err != nil {
-			api.WriteError(w, r, err)
-			return
+			return nil, err
 		}
-		stats, err := aggregateGroupStats(r.Context(), h.Pool, g.ID)
+		stats, err := aggregateGroupStats(ctx, h.Pool, g.ID)
 		if err != nil {
-			api.WriteError(w, r, err)
-			return
+			return nil, err
 		}
-		orch, err := orchLookup.getForGroup(r.Context(), h.Pool, g)
+		orch, err := orchLookup.getForGroup(ctx, h.Pool, g)
 		if err != nil {
-			api.WriteError(w, r, err)
-			return
+			return nil, err
 		}
 		key := g.Repository
 		if key == "" {
@@ -390,15 +422,19 @@ func (h *Handlers) Grouped(w http.ResponseWriter, r *http.Request) {
 		bucket.Runs = append(bucket.Runs, entry)
 	}
 	if err := rows.Err(); err != nil {
-		api.WriteError(w, r, err)
-		return
+		return nil, err
 	}
 
 	groups := make([]repoGroup, 0, len(order))
 	for _, k := range order {
 		groups = append(groups, *byRepo[k])
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
+	return json.Marshal(map[string]any{
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"groups": groups,
+	})
 }
 
 func repositoryDisplayName(key string) string {

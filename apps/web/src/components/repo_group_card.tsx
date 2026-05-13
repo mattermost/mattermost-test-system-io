@@ -246,34 +246,95 @@ function run_entry_row({
         )}
       </div>
 
-      {/* Right: wall clock (numbered batch + optional retest) + relative time */}
+      {/* Right: total wall-clock + relative time. Total is `last_test_at − begin_at`
+          (always; phases may overlap due to per-failure re-dispatch, so summing
+          setup + first-pass + retest overcounts). Tooltip surfaces the segment
+          breakdown for users who want to see the split, with an explicit
+          "may overlap" note. Falls back to shard-level test_stats.wall_clock_ms
+          only when no orchestration data is present. */}
       <div className="flex items-center gap-2 text-sm flex-shrink-0">
-        <span
-          className="inline-flex items-center justify-end gap-1 text-gray-400 dark:text-gray-500"
-          title={
-            hasStats && stats?.retest_wall_clock_ms
-              ? 'Parallel shard batch, then separate retest run'
-              : undefined
-          }
-        >
-          {hasStats && stats?.wall_clock_ms != null && stats.wall_clock_ms > 0 && (
-            <>
-              <Clock className="h-3.5 w-3.5" />
-              {formatDuration(stats.wall_clock_ms)}
-            </>
-          )}
-          {hasStats && stats?.retest_wall_clock_ms != null && stats.retest_wall_clock_ms > 0 && (
-            <span className="text-gray-400 dark:text-gray-500">
-              {' + '}
-              {formatDuration(stats.retest_wall_clock_ms)}
-            </span>
-          )}
-        </span>
+        <DurationCell entry={entry} stats={stats} hasStats={hasStats} />
         <span className="text-gray-400 dark:text-gray-600 w-16 text-right">
           {format_time(entry.created_at)}
         </span>
       </div>
     </Link>
+  );
+}
+
+function DurationCell({
+  entry,
+  stats,
+  hasStats,
+}: {
+  entry: RunEntry;
+  stats: ReturnType<typeof resolveDisplayStats>;
+  hasStats: boolean;
+}) {
+  const d = entry.orchestration?.durations;
+  if (d && d.begin_at && d.last_test_at) {
+    const beginMs = Date.parse(d.begin_at);
+    const lastMs = Date.parse(d.last_test_at);
+    if (Number.isFinite(beginMs) && Number.isFinite(lastMs) && lastMs > beginMs) {
+      const totalMs = lastMs - beginMs;
+      const firstTestMs = d.first_test_at ? Date.parse(d.first_test_at) : NaN;
+      const setupMs = Number.isFinite(firstTestMs) ? Math.max(0, firstTestMs - beginMs) : null;
+      // Pure first-pass = (first_pass_ms − setup), clamped at zero — same
+      // derivation the orchestration tab + summary action use. first_pass_ms
+      // is begin → first-pass end (the server's existing semantic), so we
+      // subtract setup to get the dispatch-only duration.
+      const firstPassPureMs =
+        d.first_pass_ms != null && setupMs != null
+          ? Math.max(0, d.first_pass_ms - setupMs)
+          : (d.first_pass_ms ?? null);
+      const retestMs = d.retest_ms ?? null;
+
+      const segments = [
+        setupMs != null && setupMs > 0 ? `${formatDuration(setupMs)} setup` : null,
+        firstPassPureMs != null && firstPassPureMs > 0
+          ? `${formatDuration(firstPassPureMs)} first-pass`
+          : null,
+        retestMs != null && retestMs > 0 ? `${formatDuration(retestMs)} retest` : null,
+      ].filter(Boolean);
+      const title =
+        segments.length > 0 ? `${segments.join(' + ')} (phases may overlap)` : undefined;
+
+      return (
+        <span
+          className="inline-flex items-center justify-end gap-1 text-gray-400 dark:text-gray-500"
+          title={title}
+        >
+          <Clock className="h-3.5 w-3.5" />
+          {formatDuration(totalMs)}
+        </span>
+      );
+    }
+  }
+
+  // No orchestration data — fall back to shard-level wall_clock_ms (may
+  // under-represent total elapsed time since it excludes setup and retest).
+  return (
+    <span
+      className="inline-flex items-center justify-end gap-1 text-gray-400 dark:text-gray-500"
+      title={
+        hasStats && stats?.retest_wall_clock_ms
+          ? 'Parallel shard batch, then separate retest run'
+          : undefined
+      }
+    >
+      {hasStats && stats?.wall_clock_ms != null && stats.wall_clock_ms > 0 && (
+        <>
+          <Clock className="h-3.5 w-3.5" />
+          {formatDuration(stats.wall_clock_ms)}
+        </>
+      )}
+      {hasStats && stats?.retest_wall_clock_ms != null && stats.retest_wall_clock_ms > 0 && (
+        <span className="text-gray-400 dark:text-gray-500">
+          {' + '}
+          {formatDuration(stats.retest_wall_clock_ms)}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -300,9 +361,13 @@ function orchestration_strip(entry: RunEntry) {
 
 interface RepoGroupCardProps {
   group: RepositoryGroup;
+  // 1-based index of the first row in `group.runs` within a paginated list.
+  // When the home page is on page 2 with limit 50, pass 51 so rows render
+  // 51, 52, … instead of restarting at 1.
+  startNumber?: number;
 }
 
-export function RepoGroupCard({ group }: RepoGroupCardProps) {
+export function RepoGroupCard({ group, startNumber = 1 }: RepoGroupCardProps) {
   // Find the latest entry per unique consolidated key (url_path without query)
   // so non-latest entries get a `gh_run_id` query param. Disambiguating by
   // gh_run_id (rather than the report-group UUID via `gid`) keeps the URL
@@ -348,7 +413,7 @@ export function RepoGroupCard({ group }: RepoGroupCardProps) {
               {run_entry_row({
                 entry: decoratedEntry,
                 repoName: group.repository_name || entry.url_path.split('/')[2] || '',
-                rowNumber: idx + 1,
+                rowNumber: startNumber + idx,
               })}
               {orchestration_strip(decoratedEntry)}
             </div>

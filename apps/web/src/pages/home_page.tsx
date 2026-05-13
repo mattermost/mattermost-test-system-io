@@ -211,19 +211,20 @@ export function HomePage() {
     setSearchParams(searchParams, { replace: true });
   };
 
-  // Grouped data
+  // Grouped data (paginated). Only fetches when the grouped view is
+  // visible — the individual view shouldn't pay for an unused grouped fetch.
   const {
     data: groupedData,
     isLoading: isGroupedLoading,
     error: groupedError,
-  } = useGroupedReports();
+  } = useGroupedReports(page, limit, { enabled: viewMode === 'grouped' });
 
-  // Individual data (paginated)
+  // Individual data (paginated). Same `enabled` gating in the other direction.
   const {
     data: individualData,
     isLoading: isIndividualLoading,
     error: individualError,
-  } = useIndividualReports(page, limit);
+  } = useIndividualReports(page, limit, { enabled: viewMode === 'individual' });
 
   const isLoading = viewMode === 'grouped' ? isGroupedLoading : isIndividualLoading;
   const error = viewMode === 'grouped' ? groupedError : individualError;
@@ -350,14 +351,27 @@ export function HomePage() {
               // home page renders one flat list, so re-sort across repos by
               // created_at so a fresh run from one repo isn't pushed below
               // older runs from a repo that happened to bucket first.
+              //
+              // Pagination is server-side: `groupedData.total` is the count
+              // of report_groups across all pages; the response already
+              // contains at most `limit` rows for this page. Do NOT re-slice
+              // client-side — that double-pagination would return empty
+              // slices for any page > 1.
+              //
+              // Filters (repoFilter, branchFilter) are applied client-side
+              // to the current page only. While a filter is active the
+              // server's `total` is the unfiltered count and would be
+              // misleading, so the count text and Prev/Next disabling
+              // switch to a page-local view; users can page manually to
+              // find matches on other pages.
               const allRuns = filteredGroups
                 .flatMap((g) => g.runs)
                 .sort((a, b) =>
                   a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
                 );
-              const total = allRuns.length;
-              const totalPages = Math.ceil(total / limit);
-              const paginatedRuns = allRuns.slice((page - 1) * limit, page * limit);
+              const hasFilter = !!repoFilter || !!branchFilter;
+              const total = groupedData?.total ?? allRuns.length;
+              const totalPages = Math.max(1, Math.ceil(total / limit));
               return (
                 <div className="space-y-4">
                   <RepoGroupCard
@@ -365,34 +379,43 @@ export function HomePage() {
                       repository: '',
                       repository_name: '',
                       latest_run_at: '',
-                      runs: paginatedRuns,
+                      runs: allRuns,
                     }}
+                    startNumber={(page - 1) * limit + 1}
                   />
-                  {totalPages > 1 && (
-                    <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
-                      <div className="text-sm text-gray-500 dark:text-gray-400">
-                        Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
-                        {total} report groups
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setPage(page - 1)}
-                          disabled={page === 1}
-                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                        >
-                          Previous
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setPage(page + 1)}
-                          disabled={page >= totalPages}
-                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                        >
-                          Next
-                        </button>
-                      </div>
+                  {hasFilter ? (
+                    <div className="border-t border-gray-200 pt-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                      Showing {allRuns.length} match{allRuns.length === 1 ? '' : 'es'} on page{' '}
+                      {page}. Filter applies to the current page only; clear the filter to page
+                      through all report groups.
                     </div>
+                  ) : (
+                    totalPages > 1 && (
+                      <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
+                        <div className="text-sm text-gray-500 dark:text-gray-400">
+                          Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
+                          {total} report groups
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPage(page - 1)}
+                            disabled={page === 1}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                          >
+                            Previous
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPage(page + 1)}
+                            disabled={page >= totalPages}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
+                    )
                   )}
                 </div>
               );
@@ -411,6 +434,12 @@ export function HomePage() {
           )}
           {filteredReports.length > 0 &&
             (() => {
+              // Filters are applied client-side to the current page only;
+              // while one is active, the server's `total` is the unfiltered
+              // count and is misleading. Switch the count text to a
+              // page-local view so users aren't shown "Z of 200" when they
+              // see 3 matches.
+              const hasFilter = !!repoFilter || !!branchFilter;
               const total = individualData?.total ?? 0;
               const totalPages = Math.ceil(total / limit);
               return (
@@ -425,31 +454,39 @@ export function HomePage() {
                     </div>
                   </div>
 
-                  {totalPages > 1 && (
-                    <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
-                      <div className="text-sm text-gray-500 dark:text-gray-400">
-                        Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
-                        {total} reports
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setPage(page - 1)}
-                          disabled={page === 1}
-                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                        >
-                          Previous
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setPage(page + 1)}
-                          disabled={page >= totalPages}
-                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                        >
-                          Next
-                        </button>
-                      </div>
+                  {hasFilter ? (
+                    <div className="border-t border-gray-200 pt-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                      Showing {filteredReports.length} match
+                      {filteredReports.length === 1 ? '' : 'es'} on page {page}. Filter applies to
+                      the current page only; clear the filter to page through all reports.
                     </div>
+                  ) : (
+                    totalPages > 1 && (
+                      <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
+                        <div className="text-sm text-gray-500 dark:text-gray-400">
+                          Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
+                          {total} reports
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPage(page - 1)}
+                            disabled={page === 1}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                          >
+                            Previous
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPage(page + 1)}
+                            disabled={page >= totalPages}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
+                    )
                   )}
                 </div>
               );

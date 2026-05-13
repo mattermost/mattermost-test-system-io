@@ -372,7 +372,6 @@ export function HomePage() {
               const hasFilter = !!repoFilter || !!branchFilter;
               const total = groupedData?.total ?? allRuns.length;
               const totalPages = Math.max(1, Math.ceil(total / limit));
-              const showPaginator = hasFilter || totalPages > 1;
               return (
                 <div className="space-y-4">
                   <RepoGroupCard
@@ -384,41 +383,39 @@ export function HomePage() {
                     }}
                     startNumber={(page - 1) * limit + 1}
                   />
-                  {showPaginator && (
-                    <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
-                      <div className="text-sm text-gray-500 dark:text-gray-400">
-                        {hasFilter ? (
-                          <>
-                            Showing {allRuns.length} match
-                            {allRuns.length === 1 ? '' : 'es'} on page {page} (filter applied to
-                            current page only — page through to find more)
-                          </>
-                        ) : (
-                          <>
-                            Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
-                            {total} report groups
-                          </>
-                        )}
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setPage(page - 1)}
-                          disabled={page === 1}
-                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                        >
-                          Previous
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setPage(page + 1)}
-                          disabled={page >= totalPages}
-                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                        >
-                          Next
-                        </button>
-                      </div>
+                  {hasFilter ? (
+                    <div className="border-t border-gray-200 pt-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                      Showing {allRuns.length} match{allRuns.length === 1 ? '' : 'es'} on page{' '}
+                      {page}. Filter applies to the current page only; clear the filter to page
+                      through all report groups.
                     </div>
+                  ) : (
+                    totalPages > 1 && (
+                      <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
+                        <div className="text-sm text-gray-500 dark:text-gray-400">
+                          Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
+                          {total} report groups
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPage(page - 1)}
+                            disabled={page === 1}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                          >
+                            Previous
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPage(page + 1)}
+                            disabled={page >= totalPages}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
+                    )
                   )}
                 </div>
               );
@@ -445,7 +442,6 @@ export function HomePage() {
               const hasFilter = !!repoFilter || !!branchFilter;
               const total = individualData?.total ?? 0;
               const totalPages = Math.ceil(total / limit);
-              const showPaginator = hasFilter || totalPages > 1;
               return (
                 <div className="space-y-4">
                   <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800/50">
@@ -458,41 +454,39 @@ export function HomePage() {
                     </div>
                   </div>
 
-                  {showPaginator && (
-                    <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
-                      <div className="text-sm text-gray-500 dark:text-gray-400">
-                        {hasFilter ? (
-                          <>
-                            Showing {filteredReports.length} match
-                            {filteredReports.length === 1 ? '' : 'es'} on page {page} (filter
-                            applied to current page only — page through to find more)
-                          </>
-                        ) : (
-                          <>
-                            Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
-                            {total} reports
-                          </>
-                        )}
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setPage(page - 1)}
-                          disabled={page === 1}
-                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                        >
-                          Previous
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setPage(page + 1)}
-                          disabled={page >= totalPages}
-                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                        >
-                          Next
-                        </button>
-                      </div>
+                  {hasFilter ? (
+                    <div className="border-t border-gray-200 pt-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                      Showing {filteredReports.length} match
+                      {filteredReports.length === 1 ? '' : 'es'} on page {page}. Filter applies to
+                      the current page only; clear the filter to page through all reports.
                     </div>
+                  ) : (
+                    totalPages > 1 && (
+                      <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
+                        <div className="text-sm text-gray-500 dark:text-gray-400">
+                          Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
+                          {total} reports
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPage(page - 1)}
+                            disabled={page === 1}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                          >
+                            Previous
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPage(page + 1)}
+                            disabled={page >= totalPages}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
+                    )
                   )}
                 </div>
               );

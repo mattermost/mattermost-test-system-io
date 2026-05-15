@@ -35,15 +35,15 @@ inputs:
     description: >
       Test framework label (e.g. `playwright`, `cypress`). Surfaced in the
       step summary header as a free-form tag. Kept explicit rather than
-      derived from `context-name` because consumers in other repos may
+      derived from `commit-status-context` because consumers in other repos may
       pick context names that do not encode framework information.
     required: true
-  context-name:
+  commit-status-context:
     description: >
       Slash-separated context label (e.g. `e2e-test/playwright-full/enterprise`)
-      rendered as the PR-comment heading and the webhook title, and used
-      as the comment marker key. Must match the value the begin action
-      received so this finalizer finds the comment to update or delete.
+      used as the commit-status `context` and rendered in the summary
+      header and webhook title. Must match the value the begin action
+      received so this finalizer flips the same commit-status row.
     required: true
   fail-on-test-failures:
     description: When true (default), exit non-zero if any unit ended in completed_fail
@@ -104,7 +104,7 @@ inputs:
         * `failure` — run reached `completed` but recorded failed units.
         * `error`   — run did not reach `completed` (timed_out, incomplete).
 
-      Requires `context-name` to match the value used by the begin
+      Requires `commit-status-context` to match the value used by the begin
       action and `github-token` with `statuses: write` scope. Requires
       `permissions: statuses: write` on the calling job. Set to
       `"false"` to opt out.

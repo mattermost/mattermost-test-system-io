@@ -77,7 +77,7 @@ export async function run(): Promise<void> {
   const audience = core.getInput("oidc-audience") || "mattermost-test-system-io";
   const compositeIdentityRaw = core.getInput("composite-identity", { required: true });
   const framework = core.getInput("framework", { required: true });
-  const contextName = core.getInput("context-name", { required: true });
+  const contextName = core.getInput("commit-status-context", { required: true });
   const failOnTestFailures = core.getInput("fail-on-test-failures") !== "false";
 
   let compositeIdentity: CompositeIdentity;
@@ -271,7 +271,7 @@ export async function run(): Promise<void> {
       compositeIdentity,
       contextName,
       runStatus: status.status ?? "unknown",
-      failedUnitCount: failed,
+      failedUnitCount: unitFail,
       description: commitStatusDescription,
       targetURL: reportURL,
     });
@@ -434,7 +434,7 @@ async function finalizeCommitStatus(a: FinalizeCommitStatusArgs): Promise<void> 
     return;
   }
   if (!a.contextName) {
-    core.warning("update-commit-status is true but context-name is empty; skipping.");
+    core.warning("update-commit-status is true but commit-status-context is empty; skipping.");
     return;
   }
   const state: CommitStatusState =
@@ -457,9 +457,9 @@ async function finalizeCommitStatus(a: FinalizeCommitStatusArgs): Promise<void> 
 const LONG_RUN_THRESHOLD_MS = 15 * 60 * 1000;
 
 // renderWebhookPayload builds the Mattermost-style webhook JSON body.
-// Title is the caller-supplied context-name (same one shown in the PR
-// comment heading and the GitHub commit-status context); duration line
-// uses the `(setup) + first + (retest)` shape that matches the dashboard.
+// Title is the caller-supplied commit-status-context (same one shown
+// in the GitHub commit-status row); duration line uses the
+// `(setup) + first + (retest)` shape that matches the dashboard.
 function renderWebhookPayload(f: WebhookFields): string {
   const title = `**Results - ${f.contextName}**`;
 

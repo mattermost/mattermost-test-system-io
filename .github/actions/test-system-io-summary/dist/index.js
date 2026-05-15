@@ -26071,7 +26071,7 @@ async function run() {
   const audience = getInput("oidc-audience") || "mattermost-test-system-io";
   const compositeIdentityRaw = getInput("composite-identity", { required: true });
   const framework = getInput("framework", { required: true });
-  const contextName = getInput("context-name", { required: true });
+  const contextName = getInput("commit-status-context", { required: true });
   const failOnTestFailures = getInput("fail-on-test-failures") !== "false";
   let compositeIdentity;
   try {
@@ -26205,7 +26205,7 @@ async function run() {
       compositeIdentity,
       contextName,
       runStatus: status.status ?? "unknown",
-      failedUnitCount: failed,
+      failedUnitCount: unitFail,
       description: commitStatusDescription,
       targetURL: reportURL
     });
@@ -26297,7 +26297,7 @@ async function finalizeCommitStatus(a) {
     return;
   }
   if (!a.contextName) {
-    warning("update-commit-status is true but context-name is empty; skipping.");
+    warning("update-commit-status is true but commit-status-context is empty; skipping.");
     return;
   }
   const state = a.runStatus !== "completed" ? "error" : a.failedUnitCount > 0 ? "failure" : "success";

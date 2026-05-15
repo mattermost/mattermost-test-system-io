@@ -14,6 +14,8 @@ Then posts the dispatch units to:
 
 Authentication is the calling workflow's GitHub Actions OIDC token. The workflow MUST grant `permissions: id-token: write`.
 
+Optionally pushes a `pending` GitHub commit status whose `target_url` deep-links to the Test System IO report page, so reviewers click the commit-status row and land on the live dashboard instead of a PR comment. Set `post-pending-commit-status: 'true'` plus `commit-status-context` + `github-token` (and add `permissions: statuses: write` to the calling job).
+
 ## Inputs
 
 | name | required | default | description |
@@ -37,6 +39,11 @@ Authentication is the calling workflow's GitHub Actions OIDC token. The workflow
 | `retest-budget` | no | `1` | Max number of retest passes when `retest-on-fail` is true. |
 | `idle-timeout-ms` | no | `600000` | Inactivity window before the orchestrator transitions an idle run to `timed_out`. Bumped on every checkout/complete. |
 | `lease-timeout-ms` | no | `600000` | Per-lease ceiling before a stuck worker's units are reclaimed. |
+| `post-pending-commit-status` | no | `true` | When `true` (default), push a `pending` GitHub commit status whose `target_url` deep-links to the Test System IO report page. Requires `commit-status-context` + `github-token` and `permissions: statuses: write` on the job. Set `false` to opt out. |
+| `github-token` | no | `""` | GitHub token with `statuses: write` scope. Required only when `post-pending-commit-status` is `true`. |
+| `commit-status-context` | no | `""` | Commit-status context (e.g. `e2e-test/playwright-full/enterprise`). Required when `post-pending-commit-status` is `true`. Must match the value the finalizer (`test-system-io-summary`) uses. |
+| `image-tag` | no | `""` | Server image tag rendered in the commit-status description (e.g. `master`, `9e955bf_3521709`). Surfaced as `tests running, image_tag:<tag>`. |
+| `image-aliases` | no | `""` | Optional comma-separated alias suffix appended to `image_tag` (e.g. `release-11.4, release-11`). |
 
 ## Outputs
 
@@ -44,6 +51,7 @@ Authentication is the calling workflow's GitHub Actions OIDC token. The workflow
 |---|---|
 | `run-id` | Server-assigned `uuidv7` for the run. |
 | `total-units` | Number of dispatch units created. |
+| `report-url` | Test System IO report URL for this run (same value used as commit-status `target_url`). |
 
 ## Pinning a version
 

@@ -11,7 +11,9 @@
     "lint": "npx oxlint src"
   },
   "dependencies": {
-    "@actions/core": "3.0.1"
+    "@actions/core": "3.0.1",
+    "@actions/github": "9.1.1",
+    "@octokit/plugin-retry": "8.1.0"
   },
   "devDependencies": {
     "@types/node": "25.6.0",

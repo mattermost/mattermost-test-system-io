@@ -5,7 +5,11 @@ description: >
   Playwright (default) and Cypress via the `framework` input.
   Authenticates to Test System IO via the calling workflow's GitHub
   Actions OIDC token, so the workflow MUST grant
-  `permissions: id-token: write`.
+  `permissions: id-token: write`. When `post-pending-commit-status: "true"`
+  is also set, pushes a `pending` GitHub commit status whose
+  `target_url` deep-links to the Test System IO report page — this
+  needs `permissions: statuses: write` and a `github-token` with the
+  same scope.
 author: Mattermost
 
 inputs:
@@ -76,35 +80,42 @@ inputs:
     required: false
     default: "600000"
 
-  # ── PR comment (optional) ───────────────────────────────────────────
-  post-pr-comment:
+  # ── Commit status (optional) ────────────────────────────────────────
+  post-pending-commit-status:
     description: >
-      When `"true"` and the composite identity carries a `gh_pr_number`,
-      post a "started" status comment on the PR keyed by the marker
-      `<!-- test-system-io:<context-name>@<short_sha> -->`. A re-run on
-      the same commit replaces the existing comment. No-op for non-PR
-      runs. Requires `context-name`.
+      When `"true"` (default), push a `pending` GitHub commit status
+      whose `target_url` deep-links to the Test System IO report page.
+      The reviewer clicks the commit-status row on the PR / commit and
+      lands directly on the live dashboard, so no PR comment is needed.
+      Requires `commit-status-context` and `github-token`. Set to `"false"` to
+      opt out.
     required: false
-    default: "false"
+    default: "true"
   github-token:
     description: >
-      GitHub token with `pull-requests: write` scope. Required only
-      when `post-pr-comment` is `"true"`.
+      GitHub token with `statuses: write` scope. Required only when
+      `post-pending-commit-status` is `"true"`.
     required: false
     default: ""
-  context-name:
+  commit-status-context:
     description: >
-      Slash-separated context label rendered as the linked heading in the PR
-      comment (e.g. `e2e-test/playwright-full/enterprise`). The caller owns
-      the format; the action embeds it verbatim. Required when
-      `post-pr-comment` is `"true"`.
+      Commit-status context name (e.g. `e2e-test/playwright-full/enterprise`).
+      Must match the context the finalizer (`test-system-io-summary`)
+      uses so the pending status transitions to success/failure on the
+      same row. Required when `post-pending-commit-status` is `"true"`.
     required: false
     default: ""
-  server-image:
+  image-tag:
     description: >
-      Full Docker image string rendered inline in the PR comment heading
-      (e.g. `mattermostdevelopment/mattermost-enterprise-edition:abc123`).
-      Falls back to the short commit SHA when omitted.
+      Server image tag rendered in the commit-status description
+      (e.g. `master`, `9e955bf_3521709`). Surfaced as
+      `tests running, image_tag:<tag>`; omitted when empty.
+    required: false
+    default: ""
+  image-aliases:
+    description: >
+      Optional comma-separated alias suffix appended to image_tag
+      (e.g. `release-11.4, release-11`).
     required: false
     default: ""
 
@@ -190,6 +201,11 @@ outputs:
     description: Server-assigned run id (uuidv7)
   total-units:
     description: Number of dispatch units created on the server
+  report-url:
+    description: >
+      Test System IO report URL for this run — same value used as the
+      commit-status `target_url`. Surfaced so downstream steps can reuse
+      it (e.g. webhook bodies, additional commit-status updates).
 
 runs:
   using: node24

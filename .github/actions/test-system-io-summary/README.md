@@ -44,6 +44,8 @@ uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-summar
   with:
     composite-identity: ${{ needs.begin.outputs.composite-identity }}
     framework: playwright
+    commit-status-context: e2e-test/playwright-full/enterprise
+    github-token: ${{ secrets.GITHUB_TOKEN }}
 
 # Staging
 - uses: ./.github/actions/test-system-io-summary
@@ -52,6 +54,8 @@ uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-summar
     use-staging: "true"
     composite-identity: ${{ needs.begin.outputs.composite-identity }}
     framework: playwright
+    commit-status-context: e2e-test/playwright-full/enterprise
+    github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 ## Develop

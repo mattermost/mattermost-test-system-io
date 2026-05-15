@@ -71,6 +71,8 @@ uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispat
   with:
     composite-identity: ${{ steps.identity.outputs.json }}
     repo-dir: ./mattermost
+    commit-status-context: e2e-test/playwright-full/enterprise
+    github-token: ${{ secrets.GITHUB_TOKEN }}
 
 # Staging
 - uses: ./.github/actions/test-system-io-dispatch-begin
@@ -78,6 +80,8 @@ uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispat
     use-staging: "true"
     composite-identity: ${{ steps.identity.outputs.json }}
     repo-dir: ./mattermost
+    commit-status-context: e2e-test/playwright-full/enterprise
+    github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 ## Develop

@@ -86,7 +86,7 @@ func Build(d Deps) chi.Router {
 		CORSAllowedOrigins: d.CORSAllowedOrigins,
 	})
 
-	healthHandler, readyHandler := health.Handlers(d.Pool, d.Version)
+	healthHandler, readyHandler := health.Handlers(d.Pool, d.Version, d.Logger)
 	r.Get("/health", healthHandler)
 	r.Get("/ready", readyHandler)
 

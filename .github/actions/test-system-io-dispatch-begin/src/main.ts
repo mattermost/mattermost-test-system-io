@@ -246,8 +246,8 @@ function intInput(name: string, fallback: number): number {
   const raw = core.getInput(name);
   if (raw === "") return fallback;
   const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n)) {
-    throw new Error(`input ${name}=${raw} is not an integer`);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`input ${name}=${raw} is not a non-negative integer`);
   }
   return n;
 }

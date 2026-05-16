@@ -9,7 +9,7 @@ make ci     # Run checks, lint, test, build
 ```
 
 ## Structure
-```
+```text
 apps/server/   # Go API (chi, pgx/v5, PostgreSQL 18.3)
 apps/web/      # React (Vite, TailwindCSS, lucide-react)
 ```

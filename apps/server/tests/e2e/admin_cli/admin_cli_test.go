@@ -43,16 +43,13 @@ func TestKeysLifecycle(t *testing.T) {
 		t.Fatalf("list active count = %d, want 1", len(rows))
 	}
 
-	// rotate: mark rotating, issue new
-	if err := repo.MarkRotating(ctx, row.ID); err != nil {
-		t.Fatalf("mark rotating: %v", err)
-	}
+	// rotate: single transactional call
 	iss2, err := apikey.Issue()
 	if err != nil {
 		t.Fatalf("issue2: %v", err)
 	}
-	if _, err := repo.Insert(ctx, "ci-primary-rotated", iss2); err != nil {
-		t.Fatalf("insert2: %v", err)
+	if _, err := repo.RotateWithReplacement(ctx, row.ID, "ci-primary-rotated", iss2); err != nil {
+		t.Fatalf("rotate: %v", err)
 	}
 	allRows, err := repo.List(ctx, nil)
 	if err != nil {
@@ -108,5 +105,46 @@ func TestKeysLifecycle(t *testing.T) {
 	}
 	if !apikey.Verify(iss2.PlainText, fetched2.KeyHash) {
 		t.Error("new key hash failed to verify")
+	}
+}
+
+// If the replacement insert fails (here: by passing a key_prefix that's
+// already present), RotateWithReplacement must roll back so the original key
+// is NOT left in 'rotating' state without a successor.
+func TestRotateWithReplacement_rollsBackOnConflict(t *testing.T) {
+	env := testenv.Start(t)
+	repo := &apikey.Repo{Pool: env.Pool}
+	ctx := context.Background()
+
+	// Two distinct active keys. The second's prefix is what we'll collide on.
+	primary, err := apikey.Issue()
+	if err != nil {
+		t.Fatalf("issue primary: %v", err)
+	}
+	primaryRow, err := repo.Insert(ctx, "primary", primary)
+	if err != nil {
+		t.Fatalf("insert primary: %v", err)
+	}
+	collider, err := apikey.Issue()
+	if err != nil {
+		t.Fatalf("issue collider: %v", err)
+	}
+	if _, err := repo.Insert(ctx, "collider", collider); err != nil {
+		t.Fatalf("insert collider: %v", err)
+	}
+
+	// Attempt rotation of `primary` while supplying a replacement whose prefix
+	// duplicates `collider` — the INSERT inside the transaction must fail and
+	// trigger a rollback.
+	if _, err := repo.RotateWithReplacement(ctx, primaryRow.ID, "should-not-land", collider); err == nil {
+		t.Fatal("expected unique-prefix conflict; got nil error")
+	}
+
+	got, err := repo.ByPrefix(ctx, primary.Prefix)
+	if err != nil {
+		t.Fatalf("by prefix: %v", err)
+	}
+	if got.Status != apikey.StatusActive {
+		t.Errorf("primary status = %q after failed rotation, want active (rollback)", got.Status)
 	}
 }

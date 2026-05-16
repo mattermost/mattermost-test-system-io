@@ -137,14 +137,11 @@ func rotateCmd() *cobra.Command {
 			}
 			defer closer()
 
-			if err := repo.MarkRotating(ctx, id); err != nil {
-				return err
-			}
 			iss, err := apikey.Issue()
 			if err != nil {
 				return err
 			}
-			row, err := repo.Insert(ctx, "(rotated)", iss)
+			row, err := repo.RotateWithReplacement(ctx, id, "(rotated)", iss)
 			if err != nil {
 				return err
 			}

@@ -109,6 +109,36 @@ func (r *Repo) MarkRotating(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+// RotateWithReplacement atomically marks the named key as rotating and inserts
+// a replacement in a single transaction. Either both rows land in their new
+// state or neither does, so a partial failure can't strand the old key in
+// 'rotating' without a successor.
+func (r *Repo) RotateWithReplacement(ctx context.Context, id uuid.UUID, replacementName string, iss Issued) (Row, error) {
+	tx, err := r.Pool.Begin(ctx)
+	if err != nil {
+		return Row{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE api_keys SET status = 'rotating' WHERE id = $1 AND status = 'active'`, id); err != nil {
+		return Row{}, err
+	}
+	const insertQ = `
+		INSERT INTO api_keys (name, key_prefix, key_hash, status)
+		VALUES ($1, $2, $3, 'active')
+		RETURNING id, name, key_prefix, key_hash, status, created_at, last_used_at, revoked_at
+	`
+	row, err := scanRow(tx.QueryRow(ctx, insertQ, replacementName, iss.Prefix, iss.Hash))
+	if err != nil {
+		return Row{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Row{}, err
+	}
+	return row, nil
+}
+
 // Revoke marks a key revoked.
 func (r *Repo) Revoke(ctx context.Context, id uuid.UUID) error {
 	_, err := r.Pool.Exec(ctx,

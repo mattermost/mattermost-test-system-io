@@ -181,20 +181,34 @@ jobs:
             --tag "${{ env.IMAGE }}:latest" \
             "${{ env.IMAGE }}:${BETA_TAG}"
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.retag.outputs.release_version }}
           COMMIT_SHA: ${{ steps.beta-sha.outputs.commit_sha }}
+          NOTES: "Docker image: [`${{ env.IMAGE }}:${{ steps.retag.outputs.release_version }}`](https://hub.docker.com/r/${{ env.IMAGE }}/tags?name=${{ steps.retag.outputs.release_version }})"
         run: |
           RELEASE_TAG="release-${RELEASE_VERSION}"
 
-          gh release create "$RELEASE_TAG" \
-            --target "$COMMIT_SHA" \
-            --title "Release $RELEASE_VERSION" \
-            --latest \
-            --generate-notes \
-            --notes "Docker image: [\`${{ env.IMAGE }}:${RELEASE_VERSION}\`](https://hub.docker.com/r/${{ env.IMAGE }}/tags?name=${RELEASE_VERSION})"
+          # The image retag above is destructive (it overwrites :latest and
+          # :<version> on Docker Hub). If a later step in this job fails and
+          # we rerun the workflow, gh release create would fail with
+          # "release already exists" and block the retry. Edit in place when
+          # the release is already present so reruns succeed.
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --target "$COMMIT_SHA" \
+              --title "Release $RELEASE_VERSION" \
+              --latest \
+              --notes "$NOTES"
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "$COMMIT_SHA" \
+              --title "Release $RELEASE_VERSION" \
+              --latest \
+              --generate-notes \
+              --notes "$NOTES"
+          fi
 
   # ---------------------------------------------------------------------------
   # Job 3: Deploy to production ECS

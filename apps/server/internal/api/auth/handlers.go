@@ -77,6 +77,10 @@ func (h *Handlers) Callback(w http.ResponseWriter, r *http.Request) {
 		apiroot.WriteErrorCode(w, http.StatusServiceUnavailable, "OAUTH_DISABLED", "GitHub OAuth is not configured")
 		return
 	}
+	if h.Sessions == nil {
+		apiroot.WriteErrorCode(w, http.StatusServiceUnavailable, "SESSION_DISABLED", "session manager is not configured")
+		return
+	}
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
 	if code == "" || state == "" {
@@ -211,10 +215,14 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 
 // Logout clears the current session.
 func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {
-	c, err := r.Cookie(session.CookieName)
-	if err == nil {
-		if sess, err := h.Sessions.Verify(r.Context(), c.Value); err == nil {
-			_ = h.Sessions.Revoke(r.Context(), sess.ID)
+	// Session-side revoke is a best-effort step; if the session manager isn't
+	// wired (partial deployment, test harness) the cookie wipe still happens.
+	if h.Sessions != nil {
+		c, err := r.Cookie(session.CookieName)
+		if err == nil {
+			if sess, err := h.Sessions.Verify(r.Context(), c.Value); err == nil {
+				_ = h.Sessions.Revoke(r.Context(), sess.ID)
+			}
 		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: session.CookieName, Value: "", Path: "/", MaxAge: -1})

@@ -61,13 +61,18 @@ func (h *Handlers) CreateOIDCPolicy(w http.ResponseWriter, r *http.Request) {
 			"role must be uploader|contributor|viewer|editor|admin")
 		return
 	}
-	matchRepo, matchOwner, ok := parseRepositoryPattern(body.RepositoryPattern)
+	// Normalize once so the parser and the policy `name` agree on the same
+	// canonical form — otherwise "  owner/repo  " and "owner/repo" both
+	// match the parser but produce two distinct rows that bypass the
+	// name-uniqueness conflict handling below.
+	normalizedPattern := strings.TrimSpace(body.RepositoryPattern)
+	matchRepo, matchOwner, ok := parseRepositoryPattern(normalizedPattern)
 	if !ok {
 		apiroot.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST",
 			"repository_pattern must be 'owner/repo', 'owner/*', or '*'")
 		return
 	}
-	name := body.RepositoryPattern
+	name := normalizedPattern
 
 	id, err := insertOIDCPolicy(r.Context(), h.Pool, name, matchRepo, matchOwner, role)
 	if err != nil {

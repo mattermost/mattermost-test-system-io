@@ -3,11 +3,13 @@
 package artifacts
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
@@ -31,7 +33,14 @@ func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 	var key string
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT object_key FROM artifacts WHERE id = $1`, id).Scan(&key); err != nil {
-		api.WriteError(w, r, api.ErrNotFound)
+		// pgx.ErrNoRows is a legitimate 404; anything else (connection drop,
+		// permission error, timeout) is a server problem and should not be
+		// masked as "not found."
+		if errors.Is(err, pgx.ErrNoRows) {
+			api.WriteError(w, r, api.ErrNotFound)
+		} else {
+			api.WriteError(w, r, err)
+		}
 		return
 	}
 	url, err := h.Store.PresignGet(r.Context(), key, h.PresignTTL)

@@ -22194,11 +22194,7 @@ function extractStringOrArrayProp$1(block, key) {
 function parseCypressMetadata(absPath) {
 	let raw;
 	try {
-		const fd = node_fs.openSync(absPath, "r");
-		const buf = Buffer.alloc(4096);
-		const n = node_fs.readSync(fd, buf, 0, buf.length, 0);
-		node_fs.closeSync(fd);
-		raw = buf.subarray(0, n).toString("utf8");
+		raw = node_fs.readFileSync(absPath, "utf8").slice(0, 4096);
 	} catch {
 		return {
 			stages: [],

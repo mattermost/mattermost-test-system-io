@@ -193,13 +193,12 @@ function extractStringOrArrayProp(block: string, key: string): string[] {
  * `// Stage: @prod` and `// Stage: @dev` on adjacent lines).
  */
 export function parseCypressMetadata(absPath: string): SpecMetadata {
+  // readFileSync internally closes the fd even when decoding/throwing, so
+  // there's no descriptor leak if the read fails partway through. We only
+  // need the first ~4 KiB to find the preamble Stage/Group/Skip comments.
   let raw: string;
   try {
-    const fd = fs.openSync(absPath, "r");
-    const buf = Buffer.alloc(4096);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    fs.closeSync(fd);
-    raw = buf.subarray(0, n).toString("utf8");
+    raw = fs.readFileSync(absPath, "utf8").slice(0, 4096);
   } catch {
     return { stages: [], groups: [], skips: [] };
   }

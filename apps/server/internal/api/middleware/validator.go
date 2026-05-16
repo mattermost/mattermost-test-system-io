@@ -46,8 +46,15 @@ func (v *OpenAPIValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		route, pathParams, err := v.router.FindRoute(r)
 		if err != nil {
-			// Not in the spec → let the handler decide (chi may itself 404).
-			next.ServeHTTP(w, r)
+			// Expected misses (path not in the spec, or path matches with a
+			// different method) fall through to chi, which will 404/405. Any
+			// other error means the openapi router itself is broken — fail
+			// fast so it isn't silently masked.
+			if errors.Is(err, routers.ErrPathNotFound) || errors.Is(err, routers.ErrMethodNotAllowed) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			api.WriteError(w, r, err)
 			return
 		}
 		input := &openapi3filter.RequestValidationInput{

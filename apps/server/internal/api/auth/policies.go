@@ -68,9 +68,6 @@ func (h *Handlers) CreateOIDCPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := body.RepositoryPattern
-	if name == "" {
-		name = "policy"
-	}
 
 	id, err := insertOIDCPolicy(r.Context(), h.Pool, name, matchRepo, matchOwner, role)
 	if err != nil {
@@ -105,7 +102,12 @@ func insertOIDCPolicy(ctx context.Context, pool *pgxpool.Pool, name string, matc
 
 func parseRepositoryPattern(p string) (matchRepo, matchOwner *string, ok bool) {
 	p = strings.TrimSpace(p)
-	if p == "" || p == "*" {
+	if p == "" {
+		// Empty isn't an alias for "*" — silently creating an all-repos
+		// policy from a missing field would be a security footgun.
+		return nil, nil, false
+	}
+	if p == "*" {
 		return nil, nil, true
 	}
 	if strings.HasSuffix(p, "/*") {

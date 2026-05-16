@@ -134,26 +134,28 @@ jobs:
         env:
           BETA_TAG: ${{ inputs.beta_tag }}
           GH_TOKEN: ${{ github.token }}
+          BETA_SHA: ${{ steps.beta-sha.outputs.commit_sha }}
         run: |
           docker buildx imagetools inspect "${{ env.IMAGE }}:${BETA_TAG}"
 
-          # Cross-check the image's embedded commit_sha against the
-          # GH release's targetCommitish so a Docker tag rewritten out-
-          # of-band can't be promoted to production. Image labels are
-          # written by deploy_staging.yml's build-push step.
+          # Cross-check the image's embedded commit_sha against the resolved
+          # beta SHA (from the earlier "Resolve and verify beta commit" step)
+          # so a Docker tag rewritten out-of-band can't be promoted to
+          # production. Comparing against the raw GH release targetCommitish
+          # would have failed on releases where that field is still a branch
+          # ref. Image labels are written by deploy_staging.yml's build-push
+          # step.
           IMAGE_REVISION=$(docker buildx imagetools inspect "${{ env.IMAGE }}:${BETA_TAG}" \
             --format '{{ json .Manifest }}' | \
             jq -r '.annotations["org.opencontainers.image.revision"] // empty' 2>/dev/null || true)
 
-          BETA_COMMIT=$(gh release view "$BETA_TAG" --json targetCommitish --jq '.targetCommitish')
-
           if [ -z "$IMAGE_REVISION" ]; then
             echo "::warning::Image ${BETA_TAG} has no org.opencontainers.image.revision label. Older images built before label support were added are exempt; new builds MUST have it."
-          elif [ "$IMAGE_REVISION" != "$BETA_COMMIT" ]; then
-            echo "::error::Image revision ($IMAGE_REVISION) does not match GH release targetCommitish ($BETA_COMMIT). Image and release are out of sync — refusing to promote."
+          elif [ "$IMAGE_REVISION" != "$BETA_SHA" ]; then
+            echo "::error::Image revision ($IMAGE_REVISION) does not match resolved beta commit SHA ($BETA_SHA). Image and release are out of sync — refusing to promote."
             exit 1
           else
-            echo "Image revision matches GH release commit: ${BETA_COMMIT}"
+            echo "Image revision matches resolved beta commit SHA: ${BETA_SHA}"
           fi
 
       - name: Extract release version

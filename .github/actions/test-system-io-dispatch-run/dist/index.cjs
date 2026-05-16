@@ -21648,7 +21648,7 @@ async function uploadOrchScreenshot(cfg, specPath, absPath) {
 		warning(`screenshot upload error (${relPath}): ${err.message}`);
 		return null;
 	}
-	if (res.status !== 200) {
+	if (res.status !== 200 && res.status !== 201) {
 		const text = await res.text().catch(() => "");
 		warning(`screenshot upload ${relPath} failed: ${res.status} ${text}`);
 		return null;

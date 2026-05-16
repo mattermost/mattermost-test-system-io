@@ -476,7 +476,10 @@ async function uploadOrchScreenshot(
     core.warning(`screenshot upload error (${relPath}): ${(err as Error).message}`);
     return null;
   }
-  if (res.status !== 200) {
+  // Accept both 200 and 201: the spec (and the Go handler at
+  // /api/v1/orchestration/screenshots) returns 201 Created, but historical
+  // logs may show 200 — match either rather than dropping a valid upload.
+  if (res.status !== 200 && res.status !== 201) {
     const text = await res.text().catch(() => "");
     core.warning(`screenshot upload ${relPath} failed: ${res.status} ${text}`);
     return null;

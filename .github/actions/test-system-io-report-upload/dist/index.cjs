@@ -20775,16 +20775,19 @@ function getOctokit(token, options, ...additionalPlugins) {
 const TOKEN_REFRESH_AGE_MS = 300 * 1e3;
 let cachedToken = null;
 let cachedTokenMintedAt = 0;
+let cachedTokenAudience = null;
 function invalidateToken() {
 	cachedToken = null;
 	cachedTokenMintedAt = 0;
+	cachedTokenAudience = null;
 }
 async function getBearer(audience) {
-	if (cachedToken && Date.now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS) return cachedToken;
+	if (cachedToken && cachedTokenAudience === audience && Date.now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS) return cachedToken;
 	const token = await getIDToken(audience);
 	if (!token) throw new Error("OIDC mint returned empty value");
 	setSecret(token);
 	cachedToken = token;
+	cachedTokenAudience = audience;
 	cachedTokenMintedAt = Date.now();
 	return token;
 }

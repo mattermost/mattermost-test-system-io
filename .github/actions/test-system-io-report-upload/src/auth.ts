@@ -14,14 +14,23 @@ const TOKEN_REFRESH_AGE_MS = 5 * 60 * 1000;
 
 let cachedToken: string | null = null;
 let cachedTokenMintedAt = 0;
+// Tracking the audience the cached token was minted for prevents a second
+// getBearer(otherAudience) call from reusing a token whose `aud` claim won't
+// match — the server would reject it with 401 even though caching "worked".
+let cachedTokenAudience: string | null = null;
 
 function invalidateToken(): void {
   cachedToken = null;
   cachedTokenMintedAt = 0;
+  cachedTokenAudience = null;
 }
 
 export async function getBearer(audience: string): Promise<string> {
-  if (cachedToken && Date.now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS) {
+  if (
+    cachedToken &&
+    cachedTokenAudience === audience &&
+    Date.now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS
+  ) {
     return cachedToken;
   }
   const token = await core.getIDToken(audience);
@@ -30,6 +39,7 @@ export async function getBearer(audience: string): Promise<string> {
   // error messages, or stack traces involving it print as `***`.
   core.setSecret(token);
   cachedToken = token;
+  cachedTokenAudience = audience;
   cachedTokenMintedAt = Date.now();
   return token;
 }

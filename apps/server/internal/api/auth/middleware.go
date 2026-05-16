@@ -69,7 +69,7 @@ func resolve(
 	pol *policy.Engine,
 ) (Subject, bool) {
 	// 1) X-API-Key
-	if raw := r.Header.Get("X-API-Key"); raw != "" {
+	if raw := r.Header.Get("X-API-Key"); raw != "" && apiKeys != nil {
 		prefix, _, ok := apikey.ParsePlaintext(raw)
 		if !ok {
 			return Subject{}, false
@@ -85,7 +85,7 @@ func resolve(
 	}
 
 	// 2) Authorization: Bearer <jwt> (GitHub Actions OIDC)
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") && oidcV != nil {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") && oidcV != nil && pol != nil {
 		raw := strings.TrimPrefix(auth, "Bearer ")
 		claims, err := oidcV.Verify(r.Context(), raw)
 		if err != nil {

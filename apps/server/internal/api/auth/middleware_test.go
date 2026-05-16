@@ -70,6 +70,23 @@ func TestRequireAuth_wrongAuthScheme_is401(t *testing.T) {
 	}
 }
 
+// A well-formed X-API-Key arrives at a server with nil apiKeys deps (e.g., a
+// test or partial deployment). The middleware must return 401, not panic
+// dereferencing the missing repo.
+func TestRequireAuth_wellFormedAPIKeyWithNilDeps_is401(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	// prefix.secret — passes ParsePlaintext but apiKeys.ByPrefix would panic
+	// without the nil guard.
+	req.Header.Set("X-API-Key", "prefix."+strings.Repeat("a", 32))
+	rec := httptest.NewRecorder()
+
+	newProtected().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
 func TestSubjectFromContext_emptyIsError(t *testing.T) {
 	_, err := SubjectFromContext(t.Context())
 	if err == nil {

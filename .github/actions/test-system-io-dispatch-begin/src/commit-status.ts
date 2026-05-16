@@ -1,0 +1,73 @@
+/**
+ * Set a GitHub commit status via `POST /repos/{owner}/{repo}/statuses/{sha}`.
+ *
+ * Used by the dispatch-begin action to push a `pending` status whose
+ * `target_url` deep-links into the Test System IO report page — the
+ * reviewer clicks the commit-status link and lands on the live
+ * dashboard view instead of the noisy PR comment thread.
+ *
+ * Failures here are warnings only — orchestration/begin has already
+ * succeeded by the time this runs, so a flaky GitHub API moment must
+ * not fail the job. Transient 5xx / 429 retries are handled by
+ * `@octokit/plugin-retry`.
+ */
+import * as core from "@actions/core";
+import { GitHub, getOctokitOptions } from "@actions/github/lib/utils";
+import { retry } from "@octokit/plugin-retry";
+
+// GitHub caps commit-status descriptions at 140 chars.
+const DESCRIPTION_MAX = 140;
+
+const RetryingOctokit = GitHub.plugin(retry);
+
+// Source the state union from Octokit's typings so the four-string set
+// stays in sync with the API spec without a hand-maintained literal.
+type CreateCommitStatusParams = Parameters<
+  InstanceType<typeof RetryingOctokit>["rest"]["repos"]["createCommitStatus"]
+>[0];
+export type CommitStatusState = NonNullable<CreateCommitStatusParams>["state"];
+
+export interface CommitStatusArgs {
+  token: string;
+  owner: string;
+  repo: string;
+  sha: string;
+  state: CommitStatusState;
+  context: string;
+  description: string;
+  targetURL: string;
+}
+
+export async function setCommitStatus(args: CommitStatusArgs): Promise<void> {
+  const { token, owner, repo, sha, state, context, description, targetURL } = args;
+  if (!token) {
+    core.warning("post-pending-commit-status: github-token not provided; skipping status update.");
+    return;
+  }
+  // GitHub auto-masks secrets sourced from `secrets.*`; this is belt-and-
+  // suspenders for cases where the caller wires a non-secret token.
+  core.setSecret(token);
+  try {
+    const octokit = new RetryingOctokit(getOctokitOptions(token));
+    await octokit.rest.repos.createCommitStatus({
+      owner,
+      repo,
+      sha,
+      state,
+      context,
+      description: truncateDescription(description),
+      target_url: targetURL,
+    });
+    core.info(`post-pending-commit-status: ${context} = ${state}`);
+  } catch (e) {
+    core.warning(`post-pending-commit-status: ${(e as Error).message}`);
+  }
+}
+
+function truncateDescription(s: string): string {
+  if (s.length <= DESCRIPTION_MAX) return s;
+  core.warning(
+    `post-pending-commit-status: description is ${s.length} chars; truncating to GitHub's ${DESCRIPTION_MAX}-char limit.`,
+  );
+  return `${s.slice(0, DESCRIPTION_MAX - 1)}…`;
+}

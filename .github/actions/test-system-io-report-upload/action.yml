@@ -1,0 +1,67 @@
+name: Test System IO — report upload (no orchestration)
+description: >
+  Upload a single shard's test report to Test System IO without using the
+  orchestration queue. For workflows that produce results some other way
+  (their own --shard partitioning, an unrelated test runner, etc.) and
+  just want artifacts to land on the dashboard. Authenticates via the
+  calling workflow's GitHub Actions OIDC token, so the workflow MUST
+  grant `permissions: id-token: write`.
+author: Mattermost
+
+inputs:
+  use-staging:
+    description: >
+      When true, target the staging deployment
+      (https://staging-test-io.test.mattermost.com) instead of production
+      (https://test-io.test.mattermost.com).
+    required: false
+    default: "false"
+  oidc-audience:
+    description: OIDC audience claim that the orchestrator expects
+    required: false
+    default: mattermost-test-system-io
+  composite-identity:
+    description: >
+      Composite identity JSON with the keys repository, commit_sha,
+      gh_run_id, gh_run_attempt, name, and (optional) branch /
+      gh_pr_number.
+    required: true
+  total-reports-expected:
+    description: >
+      Number of per-shard reports the run will produce (== the matrix
+      size). MUST match across every shard's call. The report group
+      auto-finalizes once that many child reports reach `complete`.
+    required: true
+  framework:
+    description: >
+      Test framework label (e.g. `playwright`, `cypress`). Determines the
+      JSON parser the server uses to extract suites + cases from the
+      uploaded results.
+    required: true
+  github-token:
+    description: Token with actions:read; used to look up gh_job_id
+    required: true
+  gh-job-name:
+    description: >
+      Rendered job name of the calling matrix entry (e.g. `shard-3`).
+      Used to resolve gh_job_id via the GitHub API. Caller MUST keep
+      this in sync with the job's `name:` field.
+    required: true
+  json-path:
+    description: >
+      Absolute or workspace-relative path to the framework results JSON
+      file produced by this shard. For Playwright this is typically
+      `<results-dir>/reporter/results.json`; for Cypress it's the
+      configured json reporter output.
+    required: true
+  screenshots-dir:
+    description: >
+      Optional directory walked recursively for `.png` / `.jpg` /
+      `.jpeg` files to upload as screenshots. Omit to skip screenshot
+      upload entirely.
+    required: false
+    default: ""
+
+runs:
+  using: node24
+  main: dist/index.js

@@ -8,8 +8,9 @@
 /infra/ @saturninoabril
 
 # Container configuration
-/Dockerfile @saturninoabril
+/apps/server/Dockerfile @saturninoabril
 /.dockerignore @saturninoabril
+/apps/server/.dockerignore @saturninoabril
 
 # Security configuration
 /.gitignore @saturninoabril

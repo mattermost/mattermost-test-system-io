@@ -93,13 +93,20 @@ func resetCmd() *cobra.Command {
 }
 
 func seedCmd() *cobra.Command {
-	return &cobra.Command{
+	var force bool
+	c := &cobra.Command{
 		Use:   "seed",
 		Short: "Insert dev fixtures (a development API key)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
 			if err != nil {
 				return err
+			}
+			// seed mints a plaintext API key and prints it to stdout — fine
+			// for local dev, dangerous in CI or shared environments. Mirror
+			// the reset command's TSIO_ENVIRONMENT gate.
+			if cfg.Environment != "development" && !force {
+				return fmt.Errorf("refusing to seed: TSIO_ENVIRONMENT=%q (pass --force to override; the printed API key grants uploader access)", cfg.Environment)
 			}
 			ctx := cmd.Context()
 			pool, err := tsiodb.NewPool(ctx, cfg.DatabaseURL)
@@ -122,4 +129,6 @@ func seedCmd() *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().BoolVar(&force, "force", false, "Override the TSIO_ENVIRONMENT safety check (never use in production)")
+	return c
 }

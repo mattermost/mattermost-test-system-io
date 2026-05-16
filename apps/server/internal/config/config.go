@@ -63,7 +63,7 @@ type Config struct {
 	RefreshTokenTTL time.Duration `env:"TSIO_REFRESH_TOKEN_TTL" envDefault:"720h"`
 
 	// Admin key gates the privileged setup endpoints (e.g.
-	// POST /api/v1/auth/oidc-policies). Default is a known-bad placeholder
+	// POST /api/v1/admin/oidc-policies). Default is a known-bad placeholder
 	// that production MUST override.
 	AdminKey string `env:"TSIO_ADMIN_KEY" envDefault:"dev-admin-key-do-not-use-in-production"`
 

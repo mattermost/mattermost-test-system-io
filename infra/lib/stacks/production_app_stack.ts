@@ -56,7 +56,7 @@ export class ProductionAppStack extends cdk.Stack {
       },
     });
 
-    // Admin key gates POST /api/v1/auth/oidc-policies (and any future admin-only
+    // Admin key gates POST /api/v1/admin/oidc-policies (and any future admin-only
     // HTTP endpoints). Auto-generated; rotate via `aws secretsmanager
     // put-secret-value ... && aws ecs update-service --force-new-deployment`.
     const adminKey = new secretsmanager.Secret(this, "AdminKey", {

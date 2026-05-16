@@ -191,46 +191,6 @@ paths:
       responses:
         '204': { description: Logged out }
 
-  /api/v1/auth/oidc-policies:
-    post:
-      tags: [auth]
-      summary: Install a GitHub OIDC policy (admin-key gated)
-      security: []
-      parameters:
-        - in: header
-          name: X-Admin-Key
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [repository_pattern, role]
-              properties:
-                repository_pattern:
-                  type: string
-                  description: '"owner/*", "owner/repo", or "*".'
-                role:
-                  type: string
-                  description: contributor|uploader|viewer|editor|admin
-                description:
-                  type: string
-      responses:
-        '201':
-          description: Policy installed
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [id, role]
-                properties:
-                  id: { type: string, format: uuid }
-                  role: { type: string }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-
   /api/v1/reports:
     get:
       tags: [reports]
@@ -1014,29 +974,50 @@ paths:
         '204': { description: Revoked }
 
   /api/v1/admin/oidc-policies:
-    get:
-      tags: [admin]
-      responses:
-        '200':
-          description: OIDC policies list
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/OIDCPolicy' }
     post:
       tags: [admin]
+      summary: Install a GitHub OIDC policy (admin-key gated)
+      description: |
+        Admin write. Gated by X-Admin-Key — the admin auth scheme for /admin/*
+        endpoints. May be called any number of times to install policies for
+        additional orgs or repos.
+      security: []
+      parameters:
+        - in: header
+          name: X-Admin-Key
+          required: true
+          schema: { type: string }
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/OIDCPolicyInput' }
+            schema:
+              type: object
+              required: [repository_pattern, role]
+              properties:
+                repository_pattern:
+                  type: string
+                  description: '"owner/*", "owner/repo", or "*".'
+                role:
+                  type: string
+                  description: contributor|uploader|viewer|editor|admin
+                description:
+                  type: string
       responses:
         '201':
-          description: Created OIDC policy
+          description: Policy installed
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/OIDCPolicy' }
+              schema:
+                type: object
+                required: [id, role]
+                properties:
+                  id: { type: string, format: uuid }
+                  role: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: A policy with this repository_pattern already exists.
 
   /api/v1/admin/oidc-policies/{id}:
     parameters:

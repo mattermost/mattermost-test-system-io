@@ -623,7 +623,7 @@ function uploadFilesMultipart(url, files, authHeaders) {
  * will accept a duplicate (idempotent by pattern).
  */
 async function createOidcPolicy() {
-  const url = `${API_BASE}/auth/oidc-policies`;
+  const url = `${API_BASE}/admin/oidc-policies`;
   const body = JSON.stringify({
     repository_pattern: "mattermost/*",
     role: "contributor",

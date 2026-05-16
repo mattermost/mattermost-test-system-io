@@ -29,8 +29,8 @@ type Handlers struct {
 	Pool              *pgxpool.Pool
 	PostLoginRedirect string // where to send the browser after successful sign-in
 
-	// AdminKey gates POST /auth/oidc-policies. When empty the endpoint is
-	// effectively disabled (always returns 401).
+	// AdminKey gates POST /admin/oidc-policies and any other /admin/* endpoints
+	// added in the future. When empty those endpoints always return 401.
 	AdminKey string
 }
 

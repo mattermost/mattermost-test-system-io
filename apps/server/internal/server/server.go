@@ -162,8 +162,11 @@ func Build(d Deps) chi.Router {
 		r.Post("/auth/refresh", authH.Refresh)
 		r.Post("/auth/logout", authH.Logout)
 
-		// Admin-key-gated bootstrap endpoint (X-Admin-Key header).
-		r.Post("/auth/oidc-policies", authH.CreateOIDCPolicy)
+		// Admin write, gated by X-Admin-Key. The X-Admin-Key header is the
+		// admin auth scheme for /admin/* endpoints; the standard X-API-Key /
+		// Bearer / session contract applies to user/CI endpoints and does not
+		// apply here (admin actions don't authenticate as a user).
+		r.Post("/admin/oidc-policies", authH.CreateOIDCPolicy)
 
 		// --- Public: report reads ---
 		r.Get("/reports", reportsH.List)

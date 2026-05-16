@@ -760,6 +760,15 @@ func (h *Handlers) Screenshots(w http.ResponseWriter, r *http.Request) {
 			"invalid multipart body")
 		return
 	}
+	// ParseMultipartForm spills parts larger than its in-memory threshold
+	// (default 32 MiB) to temp files under the os.TempDir tree. Without an
+	// explicit RemoveAll on the way out, those files accumulate until the
+	// process exits — slow but real disk leak on a long-running server.
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
 
 	fields := identityFields{
 		Repository:   r.FormValue("repository"),

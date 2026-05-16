@@ -61,6 +61,16 @@ export function runUnit(
     env: { ...process.env, PW_SNAPSHOT_ENABLE: "true" },
     stdio: "inherit",
   });
+  // spawnSync doesn't throw on launch failure — it returns child.error
+  // (e.g. ENOENT, EACCES). A null status means the process was killed by a
+  // signal rather than exiting cleanly; surface both as hard failures so the
+  // caller doesn't proceed to read a results dir that was never written.
+  if (child.error) {
+    throw child.error;
+  }
+  if (child.status === null) {
+    throw new Error(`playwright terminated by signal: ${child.signal ?? "unknown"}`);
+  }
   const durationMs = Date.now() - startedAt;
   core.info(`playwright exit ${child.status} in ${Math.round(durationMs / 1000)}s`);
 

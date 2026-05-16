@@ -20874,6 +20874,8 @@ function runUnit$1(cfg, iterationSeq, specPaths) {
 		},
 		stdio: "inherit"
 	});
+	if (child.error) throw child.error;
+	if (child.status === null) throw new Error(`playwright terminated by signal: ${child.signal ?? "unknown"}`);
 	const durationMs = Date.now() - startedAt;
 	info(`playwright exit ${child.status} in ${Math.round(durationMs / 1e3)}s`);
 	if (!node_fs.existsSync(cfg.resultsDir)) throw new Error(`results dir missing after playwright run: ${cfg.resultsDir}`);

@@ -24,6 +24,7 @@ export interface UploadConfig {
   audience: string;
   ghJobId: string;
   ghJobName: string;
+  framework: string;
   compositeIdentity: CompositeIdentity;
 }
 
@@ -62,7 +63,7 @@ export async function uploadShard(
   }
 
   const regBody: Record<string, unknown> = {
-    ...identityFields(cfg.compositeIdentity),
+    ...identityFields(cfg.compositeIdentity, cfg.framework),
     gh_job_id: cfg.ghJobId,
     gh_job_name: cfg.ghJobName,
     json_files: jsonParts.map((p) => ({ path: p.relPath, size: p.size })),
@@ -166,13 +167,13 @@ function listImages(root: string): UploadPart[] {
   return out;
 }
 
-function identityFields(c: CompositeIdentity): Record<string, unknown> {
+function identityFields(c: CompositeIdentity, framework: string): Record<string, unknown> {
   const body: Record<string, unknown> = {
     repository: c.repository,
     commit: c.commit_sha,
     gh_run_id: c.gh_run_id,
     gh_run_attempt: c.gh_run_attempt,
-    framework: "playwright",
+    framework,
     name: c.name,
     branch: c.branch,
   };

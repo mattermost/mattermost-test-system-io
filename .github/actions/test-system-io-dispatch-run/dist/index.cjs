@@ -21224,7 +21224,7 @@ async function uploadShard(cfg, invocations) {
 		return;
 	}
 	const regRes = await postJSON$1(cfg, "/api/v1/reports/register", {
-		...identityFields(cfg.compositeIdentity),
+		...identityFields(cfg.compositeIdentity, cfg.framework),
 		gh_job_id: cfg.ghJobId,
 		gh_job_name: cfg.ghJobName,
 		json_files: jsonParts.map((p) => ({
@@ -21297,13 +21297,13 @@ function listImages(root) {
 	}
 	return out;
 }
-function identityFields(c) {
+function identityFields(c, framework) {
 	const body = {
 		repository: c.repository,
 		commit: c.commit_sha,
 		gh_run_id: c.gh_run_id,
 		gh_run_attempt: c.gh_run_attempt,
-		framework: "playwright",
+		framework,
 		name: c.name,
 		branch: c.branch
 	};
@@ -21409,6 +21409,7 @@ async function run() {
 			audience,
 			ghJobId,
 			ghJobName: resolvedJobName,
+			framework,
 			compositeIdentity
 		};
 		try {

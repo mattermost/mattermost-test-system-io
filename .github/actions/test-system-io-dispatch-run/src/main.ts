@@ -117,6 +117,7 @@ export async function run(): Promise<void> {
       audience,
       ghJobId,
       ghJobName: resolvedJobName,
+      framework,
       compositeIdentity,
     };
     try {

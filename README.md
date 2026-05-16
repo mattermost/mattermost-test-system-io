@@ -24,7 +24,7 @@ make dev           # Run server (:8080) and web (:3000) concurrently
 
 ## Project Structure
 
-```
+```text
 apps/server/       # Go API server (chi + pgx)
 apps/web/          # React frontend
 infra/             # AWS CDK infrastructure

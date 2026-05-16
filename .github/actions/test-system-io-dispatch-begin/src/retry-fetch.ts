@@ -6,11 +6,11 @@
  *
  * Behaviour:
  *   - HTTP 2xx → return Response.
- *   - HTTP 408/429/5xx → retry with backoff, return last Response (or
- *     throw the last network error) once the budget is spent.
+ *   - HTTP 408/429/5xx → retry with backoff; once the budget is spent,
+ *     throw an Error wrapping the final status + body (never a Response).
  *   - HTTP other 4xx → return Response immediately (caller decides).
- *   - Network/abort/DNS error → retry with backoff, throw last error
- *     once budget is spent.
+ *   - Network/abort/DNS error → retry with backoff, throw the last
+ *     error once budget is spent.
  *
  * `label` is prepended to the warning log so consumers can tell which
  * endpoint flaked in the action's output.

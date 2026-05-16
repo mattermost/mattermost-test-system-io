@@ -22133,8 +22133,8 @@ function readCypressSpecConfig(cypressDir) {
 		if (e2eBlock === null) continue;
 		const include = extractStringOrArrayProp$1(e2eBlock, "specPattern");
 		const exclude = extractStringOrArrayProp$1(e2eBlock, "excludeSpecPattern");
-		if (include.length > 0) return {
-			include,
+		if (include.length > 0 || exclude.length > 0) return {
+			include: include.length > 0 ? include : [...CYPRESS_DEFAULT_SPEC_PATTERN],
 			exclude
 		};
 	}

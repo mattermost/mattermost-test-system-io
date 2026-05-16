@@ -121,7 +121,17 @@ export function readCypressSpecConfig(cypressDir: string): CypressSpecConfig {
     if (e2eBlock === null) continue;
     const include = extractStringOrArrayProp(e2eBlock, "specPattern");
     const exclude = extractStringOrArrayProp(e2eBlock, "excludeSpecPattern");
-    if (include.length > 0) return { include, exclude };
+    // Returning a parsed config the moment EITHER pattern is present means
+    // a config that only sets excludeSpecPattern (relying on Cypress's
+    // default specPattern) still gets its excludes honored. The earlier
+    // form short-circuited only on include and silently dropped the
+    // exclude list.
+    if (include.length > 0 || exclude.length > 0) {
+      return {
+        include: include.length > 0 ? include : [...CYPRESS_DEFAULT_SPEC_PATTERN],
+        exclude,
+      };
+    }
   }
   return { include: [...CYPRESS_DEFAULT_SPEC_PATTERN], exclude: [] };
 }

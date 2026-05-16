@@ -433,6 +433,24 @@ test("readCypressSpecConfig: missing config falls back to default specPattern", 
   });
 });
 
+test("readCypressSpecConfig: excludeSpecPattern alone keeps default include", () => {
+  withTmpDir((cypressDir) => {
+    fs.writeFileSync(
+      path.join(cypressDir, "cypress.config.ts"),
+      `
+export default {
+  e2e: {
+    excludeSpecPattern: '**/wip/**',
+  },
+};
+`,
+    );
+    const cfg = readCypressSpecConfig(cypressDir);
+    assert.deepEqual(cfg.include, ["**/*.cy.{js,jsx,ts,tsx}"]); // default
+    assert.deepEqual(cfg.exclude, ["**/wip/**"]); // honored
+  });
+});
+
 test("readCypressSpecConfig: ignores specPattern outside the e2e block", () => {
   withTmpDir((cypressDir) => {
     // A specPattern in `component:` shouldn't be picked up for e2e.

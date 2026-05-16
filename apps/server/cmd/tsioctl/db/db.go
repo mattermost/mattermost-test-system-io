@@ -4,6 +4,9 @@ package db
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -11,6 +14,43 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/config"
 	tsiodb "github.com/mattermost/mattermost-test-system-io/apps/server/internal/db"
 )
+
+// isLocalDatabaseTarget reports whether the DSN points at a loopback /
+// link-local / RFC1918 host. A DSN we can't parse is treated as not-local so
+// the safety check fails closed.
+func isLocalDatabaseTarget(dsn string) bool {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".local") {
+		return host != ""
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+// guardDestructive enforces TWO conditions before a destructive db op runs:
+// the environment must be "development" AND the database target must be a
+// local/private host. --force bypasses both. The two-layer check prevents a
+// stray TSIO_ENVIRONMENT=development in a debug shell from being enough to
+// blow away a remote DB.
+func guardDestructive(cfg config.Config, op string, force bool) error {
+	if force {
+		return nil
+	}
+	if cfg.Environment != "development" {
+		return fmt.Errorf("refusing to %s: TSIO_ENVIRONMENT=%q (pass --force to override; never run this against production)", op, cfg.Environment)
+	}
+	if !isLocalDatabaseTarget(cfg.DatabaseURL) {
+		return fmt.Errorf("refusing to %s: database target is not local/private (pass --force if you really mean it)", op)
+	}
+	return nil
+}
 
 // New returns the root `db` command.
 func New() *cobra.Command {
@@ -77,9 +117,12 @@ func resetCmd() *cobra.Command {
 				return err
 			}
 			// Refuse outside development unless --force is set. Staging/prod
-			// DBs should only ever move forward via `migrate`.
-			if cfg.Environment != "development" && !force {
-				return fmt.Errorf("refusing to reset: TSIO_ENVIRONMENT=%q (pass --force to override; never run this against production)", cfg.Environment)
+			// DBs should only ever move forward via `migrate`. The
+			// guardDestructive check also requires the DSN to point at a
+			// local/private host so a stray TSIO_ENVIRONMENT=development in
+			// a debug shell isn't enough to wipe a remote DB.
+			if err := guardDestructive(cfg, "reset", force); err != nil {
+				return err
 			}
 			if err := tsiodb.Reset(cfg.DatabaseURL); err != nil {
 				return err
@@ -104,9 +147,10 @@ func seedCmd() *cobra.Command {
 			}
 			// seed mints a plaintext API key and prints it to stdout — fine
 			// for local dev, dangerous in CI or shared environments. Mirror
-			// the reset command's TSIO_ENVIRONMENT gate.
-			if cfg.Environment != "development" && !force {
-				return fmt.Errorf("refusing to seed: TSIO_ENVIRONMENT=%q (pass --force to override; the printed API key grants uploader access)", cfg.Environment)
+			// the reset command's TSIO_ENVIRONMENT + local-DSN gate via
+			// guardDestructive.
+			if err := guardDestructive(cfg, "seed", force); err != nil {
+				return err
 			}
 			ctx := cmd.Context()
 			pool, err := tsiodb.NewPool(ctx, cfg.DatabaseURL)

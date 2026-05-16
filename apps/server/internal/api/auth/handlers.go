@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -174,14 +175,28 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 	// Issue a fresh session token for the same user. We look up the session's
 	// user_id from the existing row so the new session cookie stays bound to
 	// the same principal.
-	var userID string
+	var userID uuid.UUID
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT user_id::text FROM sessions WHERE id = $1 AND revoked_at IS NULL LIMIT 1`,
+		`SELECT user_id FROM sessions WHERE id = $1 AND revoked_at IS NULL LIMIT 1`,
 		sessionID).Scan(&userID); err != nil {
 		apiroot.WriteError(w, r, apiroot.ErrSessionExpired)
 		return
 	}
+	sessionVal, _, err := h.Sessions.Issue(r.Context(), userID, r.RemoteAddr, r.UserAgent())
+	if err != nil {
+		apiroot.WriteError(w, r, apiroot.ErrInternal)
+		return
+	}
 
+	http.SetCookie(w, &http.Cookie{
+		Name:     session.CookieName,
+		Value:    sessionVal,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(h.Sessions.TTL),
+	})
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshCookie,
 		Value:    newTok,

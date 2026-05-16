@@ -1,6 +1,6 @@
 # test-system-io-summary
 
-GitHub composite-bundled JavaScript action that reads the orchestration status for a run and renders a Markdown summary to `$GITHUB_STEP_SUMMARY`. Also gates the workflow's exit code on the run's outcome.
+GitHub bundled JavaScript action that reads the orchestration status for a run and renders a Markdown summary to `$GITHUB_STEP_SUMMARY`. Also gates the workflow's exit code on the run's outcome.
 
 This is the controller-after-workers step in an orchestrated CI matrix. The report group itself auto-finalizes server-side (count-based predicate against `total_reports_expected`); this action's job is purely:
 

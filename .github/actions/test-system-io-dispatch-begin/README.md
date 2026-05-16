@@ -1,6 +1,6 @@
 # test-system-io-dispatch-begin
 
-GitHub composite-bundled JavaScript action that creates the orchestration queue for a Test System IO run.
+GitHub bundled JavaScript action that creates the orchestration queue for a Test System IO run.
 
 Supports Playwright (default) and Cypress via the `framework` input. Walks the consumer repo's spec directory:
 

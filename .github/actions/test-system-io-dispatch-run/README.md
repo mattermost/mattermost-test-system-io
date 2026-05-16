@@ -1,6 +1,6 @@
 # test-system-io-dispatch-run
 
-GitHub composite-bundled JavaScript action that drains a single matrix entry's slice of the orchestration dispatch queue.
+GitHub bundled JavaScript action that drains a single matrix entry's slice of the orchestration dispatch queue.
 
 Supports Playwright (default) and Cypress via the `framework` input. For each lease, the action:
 

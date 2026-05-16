@@ -1,6 +1,6 @@
 # test-system-io-report-upload
 
-GitHub composite-bundled JavaScript action that uploads one shard's test report to Test System IO without using the orchestration queue.
+GitHub bundled JavaScript action that uploads one shard's test report to Test System IO without using the orchestration queue.
 
 For workflows that produce test results some other way — their own `--shard=N/M` partitioning, an unrelated test runner, ad-hoc test suites, etc. — and just want artifacts to land on the dashboard.
 

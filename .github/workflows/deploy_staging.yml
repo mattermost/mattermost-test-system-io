@@ -177,6 +177,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          # Pin to the exact main HEAD that build-and-tag built and tagged.
+          # Default behavior would check out github.sha (the dispatch ref),
+          # which can diverge from main if the workflow is dispatched from
+          # a feature branch — leading to a deploy whose infra/ tree doesn't
+          # match the image that was just pushed.
+          ref: ${{ needs.build-and-tag.outputs.main_sha }}
           fetch-depth: 0   # full history needed for the infra-changed diff below
 
       - name: Configure AWS credentials via OIDC
@@ -207,9 +213,10 @@ jobs:
             exit 0
           fi
 
-          INFRA_CHANGES=$(git diff --name-only "$PREVIOUS_SHA" "$GITHUB_SHA" -- infra/ || true)
+          TARGET_SHA="${{ needs.build-and-tag.outputs.main_sha }}"
+          INFRA_CHANGES=$(git diff --name-only "$PREVIOUS_SHA" "$TARGET_SHA" -- infra/ || true)
           if [ -z "$INFRA_CHANGES" ]; then
-            echo "no infra/ changes between ${PREVIOUS_SHA} and ${GITHUB_SHA} — skipping CDK deploy"
+            echo "no infra/ changes between ${PREVIOUS_SHA} and ${TARGET_SHA} — skipping CDK deploy"
             echo "should_deploy=false" >> "$GITHUB_OUTPUT"
           else
             echo "infra/ changes detected:"

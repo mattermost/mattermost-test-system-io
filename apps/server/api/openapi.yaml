@@ -981,12 +981,8 @@ paths:
         Admin write. Gated by X-Admin-Key — the admin auth scheme for /admin/*
         endpoints. May be called any number of times to install policies for
         additional orgs or repos.
-      security: []
-      parameters:
-        - in: header
-          name: X-Admin-Key
-          required: true
-          schema: { type: string }
+      security:
+        - adminKey: []
       requestBody:
         required: true
         content:
@@ -1055,6 +1051,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: GitHub Actions OIDC ID token for CI workload auth.
+    adminKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: Long-lived admin key for /admin/* endpoints (Secrets Manager in staging/prod).
     sessionCookie:
       type: apiKey
       in: cookie

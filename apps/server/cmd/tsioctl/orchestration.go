@@ -164,13 +164,16 @@ shorthand for days and weeks (e.g. 30d, 4w).`,
 				}
 			}
 
-			// FK ON DELETE CASCADE on dispatch_units / leases / attempts handles
-			// the dependent rows transparently.
+			// Delete exactly the set we cleaned artifacts for. Re-running the
+			// cutoff predicate here would race against rows that crossed the
+			// boundary between the SELECT above and this DELETE, deleting
+			// their DB rows without first cleaning their object-store keys.
+			// FK ON DELETE CASCADE on dispatch_units / leases / attempts
+			// handles the dependent rows transparently.
 			tag, err := pool.Exec(ctx, `
 				DELETE FROM orchestration_runs
-				 WHERE terminal_at IS NOT NULL
-				   AND terminal_at < $1
-			`, cutoff)
+				 WHERE id = ANY($1)
+			`, runIDs)
 			if err != nil {
 				return fmt.Errorf("delete runs: %w", err)
 			}

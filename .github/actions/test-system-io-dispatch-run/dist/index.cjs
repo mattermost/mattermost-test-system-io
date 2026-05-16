@@ -21232,8 +21232,9 @@ async function uploadShard(cfg, invocations) {
 		}))
 	});
 	if (regRes.status !== 200) throw new Error(`reports/register failed: ${regRes.status} ${JSON.stringify(regRes.body)}`);
-	const reportGroupID = regRes.body.report_id;
-	const uploadID = regRes.body.upload_id;
+	const reportGroupID = regRes.body?.report_id;
+	const uploadID = regRes.body?.upload_id;
+	if (!reportGroupID || !uploadID) throw new Error(`reports/register missing report_id/upload_id: ${regRes.status} ${JSON.stringify(regRes.body)}`);
 	await uploadMultipart(cfg, `/api/v1/reports/upload/${reportGroupID}/${uploadID}/json`, jsonParts, "application/json");
 	if (screenshotParts.length > 0) await uploadMultipart(cfg, `/api/v1/reports/upload/${reportGroupID}/${uploadID}/screenshots`, screenshotParts);
 	info(`shard uploaded: ${jsonParts.length} json + ${screenshotParts.length} screenshot(s) (group=${reportGroupID}, upload=${uploadID})`);

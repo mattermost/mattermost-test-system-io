@@ -76,8 +76,13 @@ export async function uploadShard(
   if (regRes.status !== 200) {
     throw new Error(`reports/register failed: ${regRes.status} ${JSON.stringify(regRes.body)}`);
   }
-  const reportGroupID = regRes.body!.report_id;
-  const uploadID = regRes.body!.upload_id;
+  const reportGroupID = regRes.body?.report_id;
+  const uploadID = regRes.body?.upload_id;
+  if (!reportGroupID || !uploadID) {
+    throw new Error(
+      `reports/register missing report_id/upload_id: ${regRes.status} ${JSON.stringify(regRes.body)}`,
+    );
+  }
 
   await uploadMultipart(
     cfg,

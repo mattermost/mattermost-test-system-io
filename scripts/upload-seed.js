@@ -39,7 +39,7 @@
  * be run multiple times to populate different reports.
  *
  * Environment variables:
- *   API_BASE       - Base URL (default: http://localhost:8080/api/v1)
+ *   API_BASE       - Base URL (default: https://localhost:8443/api/v1)
  *   TSIO_API_KEY   - API key for authentication (falls back to admin key)
  *   TSIO_ADMIN_KEY - Admin key for OIDC policy setup (default: dev-admin-key-do-not-use-in-production)
  *   BATCH_SIZE     - Number of files per upload batch (default: 50)
@@ -54,8 +54,18 @@ const http = require("http");
 const https = require("https");
 const crypto = require("crypto");
 
+// Local-dev helper: accept the mkcert-issued self-signed cert that tsio
+// serves at https://localhost:8443. Node uses its bundled CA list (not the
+// OS keychain), so mkcert -install on the host doesn't reach this process.
+// Setting NODE_TLS_REJECT_UNAUTHORIZED=0 is process-local and only affects
+// this script. Override in the environment if you point API_BASE at a host
+// whose cert chains to a public CA.
+if (!process.env.NODE_TLS_REJECT_UNAUTHORIZED) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
+
 // Configuration
-const API_BASE = process.env.API_BASE || "http://localhost:8080/api/v1";
+const API_BASE = process.env.API_BASE || "https://localhost:8443/api/v1";
 const API_KEY = process.env.TSIO_API_KEY;
 const ADMIN_KEY =
   process.env.TSIO_ADMIN_KEY || "dev-admin-key-do-not-use-in-production";

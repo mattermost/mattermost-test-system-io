@@ -24,7 +24,7 @@
  *
  * The fixture targets https://example.cypress.io as its baseUrl, so
  * Cypress needs internet access to drive the kitchen-sink demo site.
- * The orchestration server itself still listens on http://localhost:8080
+ * The orchestration server itself listens on https://localhost:8443
  * — the two are separate concerns; baseUrl is for cy.visit, the API
  * target is for /api/v1/orchestration/*.
  *
@@ -36,7 +36,7 @@
  *   NUM_WORKERS=3                          # 3 parallel workers (default 1)
  *   RETEST=1 RETEST_BUDGET=2               # opt into retest of failed specs
  *   PR=4321                                # simulate a PR run (branch=pr-4321, gh_pr_number=4321)
- *   API_BASE=http://localhost:9080         # custom server
+ *   API_BASE=https://localhost:9443        # custom server
  *   TSIO_COMMIT_SHA=<40-char>              # pin the demo's commit SHA
  *
  * After the loop starts, open the per-group page printed on stdout to
@@ -48,6 +48,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -55,7 +56,17 @@ const {
   parseMochawesomeJson,
 } = require('./lib/cypress-mochawesome-parser');
 
-const API_BASE = process.env.API_BASE || 'http://localhost:8080';
+// Local-dev helper: accept the mkcert-issued self-signed cert that tsio
+// serves at https://localhost:8443. Node uses its bundled CA list (not the
+// OS keychain), so mkcert -install on the host doesn't reach this process.
+// Setting NODE_TLS_REJECT_UNAUTHORIZED=0 is process-local and only affects
+// this script. Override in the environment if you point API_BASE at a host
+// whose cert chains to a public CA.
+if (!process.env.NODE_TLS_REJECT_UNAUTHORIZED) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
+
+const API_BASE = process.env.API_BASE || 'https://localhost:8443';
 const API_KEY = process.env.TSIO_API_KEY;
 const NUM_WORKERS = Math.max(1, parseInt(process.env.NUM_WORKERS || '1', 10));
 
@@ -122,11 +133,12 @@ function request(method, urlPath, body) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlPath, API_BASE);
     const data = body == null ? null : Buffer.from(JSON.stringify(body));
-    const req = http.request(
+    const client = url.protocol === 'https:' ? https : http;
+    const req = client.request(
       {
         method,
         hostname: url.hostname,
-        port: url.port,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
         path: url.pathname + url.search,
         headers: {
           'Content-Type': 'application/json',
@@ -671,7 +683,7 @@ function printPageHint() {
   const branch = encodeURIComponent(IDENTITY.branch);
   const shortSha = IDENTITY.commit_sha.slice(0, 7);
   const name = encodeURIComponent(IDENTITY.name);
-  const url = `http://localhost:3000/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(IDENTITY.gh_run_id)}&tab=orchestration`;
+  const url = `https://localhost:3000/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(IDENTITY.gh_run_id)}&tab=orchestration`;
   console.log('');
   console.log('Orchestration tab:');
   console.log(`  ${url}`);

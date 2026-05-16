@@ -45,7 +45,7 @@
  *   RETEST=1 RETEST_BUDGET=2 node scripts/orchestration-demo-playwright.js
  *                                                       # turn on retest-on-fail
  *
- *   API_BASE=http://localhost:8080 \
+ *   API_BASE=https://localhost:9443 \
  *     node scripts/orchestration-demo-playwright.js                 # custom server
  *
  *   PLAYWRIGHT_PROJECT=firefox node scripts/orchestration-demo-playwright.js
@@ -62,7 +62,7 @@
  *                                                       # surfaces the PR.
  *
  * After it starts, open the per-group page to watch live progress:
- *   http://localhost:3000/reports/<repo-encoded>/<branch>/<short-sha>/<name>
+ *   https://localhost:3000/reports/<repo-encoded>/<branch>/<short-sha>/<name>
  *   (the script prints the exact URL on stdout)
  */
 
@@ -71,11 +71,22 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const API_BASE = process.env.API_BASE || 'http://localhost:8080';
+// Local-dev helper: accept the mkcert-issued self-signed cert that tsio
+// serves at https://localhost:8443. Node uses its bundled CA list (not the
+// OS keychain), so mkcert -install on the host doesn't reach this process.
+// Setting NODE_TLS_REJECT_UNAUTHORIZED=0 is process-local and only affects
+// this script. Override in the environment if you point API_BASE at a host
+// whose cert chains to a public CA.
+if (!process.env.NODE_TLS_REJECT_UNAUTHORIZED) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
+
+const API_BASE = process.env.API_BASE || 'https://localhost:8443';
 const API_KEY = process.env.TSIO_API_KEY;
 const NUM_WORKERS = Math.max(1, parseInt(process.env.NUM_WORKERS || '1', 10));
 const PLAYWRIGHT_PROJECT = process.env.PLAYWRIGHT_PROJECT || 'chromium';
@@ -216,11 +227,12 @@ function request(method, urlPath, body) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlPath, API_BASE);
     const data = body == null ? null : Buffer.from(JSON.stringify(body));
-    const req = http.request(
+    const client = url.protocol === 'https:' ? https : http;
+    const req = client.request(
       {
         method,
         hostname: url.hostname,
-        port: url.port,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
         path: url.pathname + url.search,
         headers: {
           'Content-Type': 'application/json',
@@ -908,7 +920,7 @@ function printReportGroupURL() {
   const branch = encodeURIComponent(IDENTITY.branch);
   const shortSha = IDENTITY.commit_sha.slice(0, 7);
   const name = encodeURIComponent(IDENTITY.name);
-  const url = `http://localhost:3000/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(IDENTITY.gh_run_id)}&tab=reports`;
+  const url = `https://localhost:3000/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(IDENTITY.gh_run_id)}&tab=reports`;
   console.log('');
   console.log('Report Group tab:');
   console.log(`  ${url}`);
@@ -937,7 +949,7 @@ function printPageHint() {
   const branch = encodeURIComponent(IDENTITY.branch);
   const shortSha = IDENTITY.commit_sha.slice(0, 7);
   const name = encodeURIComponent(IDENTITY.name);
-  const url = `http://localhost:3000/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(IDENTITY.gh_run_id)}&tab=orchestration`;
+  const url = `https://localhost:3000/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(IDENTITY.gh_run_id)}&tab=orchestration`;
   console.log('');
   console.log('Open the orchestration tab while this runs:');
   console.log(`  ${url}`);

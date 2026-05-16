@@ -53,6 +53,7 @@ docker run --rm -p 8443:8443 \
 # 4. Verify
 curl http://localhost:8443/health
 curl https://localhost:8443/api/v1/info
+# Open in browser (macOS: `open`, Linux: `xdg-open`, Windows: `start`)
 open https://localhost:8443/
 ```
 
@@ -138,7 +139,7 @@ curl http://localhost:8443/ready
 # Build info (HTTPS required)
 curl https://localhost:8443/api/v1/info
 
-# Embedded React web UI
+# Embedded React web UI (macOS: `open`, Linux: `xdg-open`, Windows: `start`)
 open https://localhost:8443/
 ```
 

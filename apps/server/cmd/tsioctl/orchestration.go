@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -80,6 +81,11 @@ func parseRetention(s string) (time.Duration, error) {
 			unit := 24 * time.Hour
 			if suffix == 'w' {
 				unit = 7 * 24 * time.Hour
+			}
+			// time.Duration is int64 nanoseconds. Reject values that would
+			// silently wrap (e.g., "20000000d" overflows ~292 years of ns).
+			if num > int64(math.MaxInt64/int64(unit)) {
+				return 0, fmt.Errorf("duration too large: %q", s)
 			}
 			return time.Duration(num) * unit, nil
 		}

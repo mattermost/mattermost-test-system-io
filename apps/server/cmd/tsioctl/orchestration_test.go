@@ -22,6 +22,9 @@ func TestParseRetention(t *testing.T) {
 		{"-30d", 0, true},
 		{"30x", 0, true},
 		{"30 days", 0, true},
+		// 20_000_000d overflows int64-ns (≈54 billion years vs 292-year cap).
+		{"20000000d", 0, true},
+		{"3000000w", 0, true},
 	}
 	for _, tc := range cases {
 		got, err := parseRetention(tc.in)

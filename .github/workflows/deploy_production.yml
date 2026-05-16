@@ -90,7 +90,8 @@ jobs:
       # provenance — nothing stops a release object from pointing at
       # an arbitrary commit. Combined with the image-label check below,
       # this keeps prod aligned with what's been merged to main.
-      - name: Verify beta commit is an ancestor of main
+      - name: Resolve and verify beta commit
+        id: beta-sha
         env:
           GH_TOKEN: ${{ github.token }}
           BETA_TAG: ${{ inputs.beta_tag }}
@@ -102,7 +103,10 @@ jobs:
           fi
 
           # `targetCommitish` is sometimes a branch name and sometimes a
-          # SHA; resolve to a SHA either way.
+          # SHA; resolve to a SHA either way. Persist the resolved SHA so
+          # later steps (--target, /api/v1/info verify, image-label diff)
+          # compare against a fixed commit instead of re-reading a moving
+          # branch ref.
           BETA_SHA=$(git rev-parse "${BETA_COMMIT}^{commit}" 2>/dev/null || true)
           if [ -z "$BETA_SHA" ]; then
             echo "::error::Beta commit ${BETA_COMMIT} not in fetched history"
@@ -114,6 +118,7 @@ jobs:
             exit 1
           fi
 
+          echo "commit_sha=${BETA_SHA}" >> "$GITHUB_OUTPUT"
           echo "Beta commit ${BETA_SHA} confirmed on main."
 
       - name: Set up Docker Buildx
@@ -165,16 +170,6 @@ jobs:
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "Release version: ${RELEASE_VERSION}"
           echo "Release tag: ${RELEASE_TAG}"
-
-      - name: Fetch beta commit SHA
-        id: beta-sha
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BETA_TAG: ${{ inputs.beta_tag }}
-        run: |
-          COMMIT_SHA=$(gh release view "$BETA_TAG" --json targetCommitish --jq '.targetCommitish')
-          echo "commit_sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "Beta commit SHA: ${COMMIT_SHA}"
 
       - name: Retag Docker image
         env:

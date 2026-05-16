@@ -21712,7 +21712,8 @@ function isRetryableGitHubError(err) {
 //#endregion
 //#region src/index.ts
 run().catch((err) => {
-	const message = err instanceof Error ? err.stack ?? err.message : String(err);
+	const message = err instanceof Error ? err.message : String(err);
+	if (err instanceof Error && err.stack) debug(err.stack);
 	setFailed(`dispatch-run action crashed: ${message}`);
 });
 

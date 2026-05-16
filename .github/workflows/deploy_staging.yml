@@ -138,18 +138,29 @@ jobs:
           cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
 
-      - name: Create GitHub prerelease
+      - name: Create or update GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
           BETA_TAG: ${{ steps.meta.outputs.beta_tag }}
           MAIN_SHA: ${{ steps.meta.outputs.main_sha }}
+          NOTES: "Docker image: [`${{ env.IMAGE }}:${{ steps.meta.outputs.beta_tag }}`](https://hub.docker.com/r/${{ env.IMAGE }}/tags?name=${{ steps.meta.outputs.beta_tag }})"
         run: |
-          gh release create "$BETA_TAG" \
-            --prerelease \
-            --target "$MAIN_SHA" \
-            --title "Beta $BETA_TAG" \
-            --generate-notes \
-            --notes "Docker image: [\`${{ env.IMAGE }}:${BETA_TAG}\`](https://hub.docker.com/r/${{ env.IMAGE }}/tags?name=${BETA_TAG})"
+          # Reruns target the same beta tag (BETA_TAG is derived from main HEAD,
+          # which doesn't change between attempts). gh release create hard-fails
+          # if the tag exists, so update in place on rerun instead.
+          if gh release view "$BETA_TAG" >/dev/null 2>&1; then
+            gh release edit "$BETA_TAG" \
+              --prerelease \
+              --title "Beta $BETA_TAG" \
+              --notes "$NOTES"
+          else
+            gh release create "$BETA_TAG" \
+              --prerelease \
+              --target "$MAIN_SHA" \
+              --title "Beta $BETA_TAG" \
+              --generate-notes \
+              --notes "$NOTES"
+          fi
 
   # ---------------------------------------------------------------------------
   # Job 3: Deploy to staging (migration path)

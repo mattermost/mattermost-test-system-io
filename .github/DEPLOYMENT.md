@@ -2,7 +2,7 @@
 
 ## Overview
 
-```
+```text
 Developer opens PR → CI runs on PR (auto)
         │
         │ All checks pass + approved review
@@ -46,7 +46,7 @@ After a PR is merged to `main` and CI passes on the merge commit.
 
 ### What happens
 
-```
+```text
 1. check-concurrent    → Rejects if another staging deploy is running
 2. build-and-tag       → Reads version from apps/server/VERSION
                         → Computes beta tag: {version}-{short_sha}.beta
@@ -65,7 +65,7 @@ After a PR is merged to `main` and CI passes on the merge commit.
 
 ### Version tag format
 
-```
+```text
 {version}-{short_sha}.beta
 Example: 0.1.0-abcdefg.beta
 ```
@@ -95,7 +95,7 @@ After validating the staging deployment (checking the staging URL, running tests
 
 ### What happens
 
-```
+```text
 1. check-concurrent    → Rejects if another production deploy is running
 2. validate-and-retag  → Validates beta tag exists as GitHub prerelease
                         → Validates beta Docker image exists in Docker Hub
@@ -112,7 +112,7 @@ After validating the staging deployment (checking the staging URL, running tests
 
 The production deployment does **not** rebuild the Docker image. It retags the exact same image that was tested in staging:
 
-```
+```bash
 docker buildx imagetools create \
   --tag mattermostdevelopment/mattermost-test-system-io:0.1.0 \
   --tag mattermostdevelopment/mattermost-test-system-io:latest \
@@ -168,7 +168,7 @@ Staging is automatically reset on every deployment (fresh PostgreSQL container).
 
 Concurrent deployments to the same environment are **rejected** (not queued). If another deployment is running:
 
-```
+```text
 ::error::Another staging deployment is already in progress.
 Please wait for it to complete.
 ```

@@ -62,6 +62,7 @@ jobs:
     environment: staging
     outputs:
       beta_tag: ${{ steps.meta.outputs.beta_tag }}
+      main_sha: ${{ steps.meta.outputs.main_sha }}
     steps:
       - name: Checkout main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -71,16 +72,23 @@ jobs:
       - name: Read VERSION and compute beta tag
         id: meta
         run: |
+          # Resolve the actual main HEAD after checkout. github.sha can point
+          # to a different ref when this workflow is dispatched manually from
+          # a non-main branch — using it would build from main yet stamp
+          # artifacts and the release with the dispatcher's SHA.
+          MAIN_SHA=$(git rev-parse HEAD)
           VERSION=$(tr -d '[:space:]' < apps/server/VERSION)
-          SHORT_SHA="${GITHUB_SHA::7}"
+          SHORT_SHA="${MAIN_SHA::7}"
           BETA_TAG="${VERSION}-${SHORT_SHA}.beta"
           BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "main_sha=${MAIN_SHA}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           echo "beta_tag=${BETA_TAG}" >> "$GITHUB_OUTPUT"
           echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
 
+          echo "MAIN_SHA=${MAIN_SHA}"
           echo "VERSION=${VERSION}"
           echo "BETA_TAG=${BETA_TAG}"
           echo "BUILD_TIME=${BUILD_TIME}"
@@ -111,7 +119,7 @@ jobs:
           # so every build is uniquely identifiable.
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
-            COMMIT_SHA=${{ github.sha }}
+            COMMIT_SHA=${{ steps.meta.outputs.main_sha }}
             BUILD_TIME=${{ steps.meta.outputs.build_time }}
           # SLSA provenance + SBOM so consumers (and the production
           # promote step) can verify the image came from this workflow
@@ -124,7 +132,7 @@ jobs:
           # GH release's targetCommitish.
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.meta.outputs.main_sha }}
             org.opencontainers.image.version=${{ steps.meta.outputs.beta_tag }}
             org.opencontainers.image.created=${{ steps.meta.outputs.build_time }}
           cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
@@ -134,10 +142,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BETA_TAG: ${{ steps.meta.outputs.beta_tag }}
+          MAIN_SHA: ${{ steps.meta.outputs.main_sha }}
         run: |
           gh release create "$BETA_TAG" \
             --prerelease \
-            --target "$GITHUB_SHA" \
+            --target "$MAIN_SHA" \
             --title "Beta $BETA_TAG" \
             --generate-notes \
             --notes "Docker image: [\`${{ env.IMAGE }}:${BETA_TAG}\`](https://hub.docker.com/r/${{ env.IMAGE }}/tags?name=${BETA_TAG})"
@@ -373,8 +382,9 @@ jobs:
       # matches the beta we built. Guards against load-balancer/DNS cache
       # quirks that could otherwise hide a stale server.
       - name: Verify running binary matches beta commit
+        env:
+          EXPECTED_SHA: ${{ needs.build-and-tag.outputs.main_sha }}
         run: |
-          EXPECTED_SHA="${GITHUB_SHA}"
           RUNNING_SHA=$(curl -sf "$APP_URL/api/v1/info" | jq -r '.commit_sha // empty')
 
           if [ -z "$RUNNING_SHA" ]; then

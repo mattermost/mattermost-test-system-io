@@ -71,8 +71,14 @@ export async function run(): Promise<void> {
   core.info(`resolved gh_job_id=${ghJobId} gh_job_name=${resolvedJobName} (input=${ghJobName})`);
 
   const playwrightDir = path.resolve(repoDir, playwrightDirInput);
-  const resultsDir = path.resolve(playwrightDir, resultsDirInput);
   const cypressDir = path.resolve(repoDir, cypressDirInput);
+  // resultsDirInput is a relative path inside the active framework's project,
+  // so root it under that project — anchoring it under playwrightDir for a
+  // Cypress run pointed runCypressUnit at the wrong tree.
+  const resultsDir = path.resolve(
+    framework === "cypress" ? cypressDir : playwrightDir,
+    resultsDirInput,
+  );
   const workerArtifacts = path.join(artifactsRoot, ghJobId);
   fs.mkdirSync(workerArtifacts, { recursive: true });
 

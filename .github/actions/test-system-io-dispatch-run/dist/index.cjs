@@ -21369,8 +21369,8 @@ async function run() {
 	const resolvedJobName = resolved.name;
 	info(`resolved gh_job_id=${ghJobId} gh_job_name=${resolvedJobName} (input=${ghJobName})`);
 	const playwrightDir = node_path.resolve(repoDir, playwrightDirInput);
-	const resultsDir = node_path.resolve(playwrightDir, resultsDirInput);
 	const cypressDir = node_path.resolve(repoDir, cypressDirInput);
+	const resultsDir = node_path.resolve(framework === "cypress" ? cypressDir : playwrightDir, resultsDirInput);
 	const workerArtifacts = node_path.join(artifactsRoot, ghJobId);
 	node_fs.mkdirSync(workerArtifacts, { recursive: true });
 	const invocations = [];

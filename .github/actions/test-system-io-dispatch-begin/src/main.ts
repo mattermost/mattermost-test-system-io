@@ -3,13 +3,19 @@
  * POST /api/v1/orchestration/begin so the dispatch-run action can drain
  * the dispatch queue. Also calls POST /api/v1/reports/begin so the
  * report group exists when shards start uploading.
+ *
+ * Optionally pushes a `pending` GitHub commit status whose `target_url`
+ * deep-links into the Test System IO report page, so reviewers land on
+ * the live dashboard from the commit-status row instead of needing a
+ * separate PR comment.
  */
 
 import * as path from "node:path";
 import * as core from "@actions/core";
+import { setCommitStatus } from "./commit-status";
 import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
 import { discoverPlaywrightSpecs } from "./playwright";
-import { postOrUpdatePRComment } from "./pr-comment";
+import { retryFetch, safeText } from "./retry-fetch";
 
 interface CompositeIdentity {
   repository: string;
@@ -120,14 +126,17 @@ export async function run(): Promise<void> {
     beginBody.playwright_project = playwrightProject;
   }
 
-  const beginRes = await fetch(`${baseURL}/api/v1/orchestration/begin`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
-    body: JSON.stringify(beginBody),
-  });
+  const beginRes = await retryFetch(
+    `${baseURL}/api/v1/orchestration/begin`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
+      body: JSON.stringify(beginBody),
+    },
+    "orchestration/begin",
+  );
   if (beginRes.status !== 200 && beginRes.status !== 201) {
-    const t = await beginRes.text().catch(() => "");
-    throw new Error(`orchestration/begin failed: ${beginRes.status} ${t}`);
+    throw new Error(`orchestration/begin failed: ${beginRes.status} ${await safeText(beginRes)}`);
   }
   let runId = "";
   try {
@@ -140,61 +149,64 @@ export async function run(): Promise<void> {
   core.setOutput("run-id", runId);
   core.setOutput("total-units", String(dispatchUnits.length));
 
-  const reportsRes = await fetch(`${baseURL}/api/v1/reports/begin`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
-    body: JSON.stringify(identityForReports(compositeIdentity, framework, totalReportsExpected)),
-  });
+  const reportsRes = await retryFetch(
+    `${baseURL}/api/v1/reports/begin`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
+      body: JSON.stringify(identityForReports(compositeIdentity, framework, totalReportsExpected)),
+    },
+    "reports/begin",
+  );
   if (reportsRes.status !== 200) {
-    const t = await reportsRes.text().catch(() => "");
-    throw new Error(`reports/begin failed: ${reportsRes.status} ${t}`);
+    throw new Error(`reports/begin failed: ${reportsRes.status} ${await safeText(reportsRes)}`);
   }
   const { report_id } = (await reportsRes.json()) as ReportsBeginResponse;
   core.info(`report group ready: ${report_id}`);
 
-  // PR comment — best-effort, opt-in. Skips silently for non-PR runs.
-  if (core.getInput("post-pr-comment") === "true") {
-    await postBeginComment(compositeIdentity, baseURL);
+  const reportURL = buildReportURL(baseURL, compositeIdentity);
+  core.setOutput("report-url", reportURL);
+
+  // Commit status — best-effort, opt-in. The target URL deep-links into
+  // the Test System IO report page so reviewers click the commit-status
+  // row and land on the live dashboard.
+  if (core.getInput("post-pending-commit-status") === "true") {
+    await pushPendingCommitStatus(compositeIdentity, reportURL);
   }
 }
 
-async function postBeginComment(c: CompositeIdentity, baseURL: string): Promise<void> {
-  if (c.gh_pr_number == null || c.gh_pr_number === "") return;
-  const prNumber = Number.parseInt(String(c.gh_pr_number), 10);
-  if (!Number.isFinite(prNumber)) return;
-
-  const contextName = core.getInput("context-name");
-  if (!contextName) {
-    core.warning("post-pr-comment is true but context-name is empty; skipping PR comment.");
+async function pushPendingCommitStatus(c: CompositeIdentity, reportURL: string): Promise<void> {
+  const context = core.getInput("commit-status-context");
+  if (!context) {
+    core.warning(
+      "post-pending-commit-status is true but commit-status-context is empty; skipping.",
+    );
     return;
   }
-
   const token = core.getInput("github-token");
   const [owner, repo] = (c.repository || "").split("/");
-  if (!owner || !repo) return;
+  if (!owner || !repo || !c.commit_sha) {
+    core.warning("post-pending-commit-status: missing repository or commit_sha; skipping.");
+    return;
+  }
+  await setCommitStatus({
+    token,
+    owner,
+    repo,
+    sha: c.commit_sha,
+    state: "pending",
+    context,
+    description: formatPendingDescription(),
+    targetURL: reportURL,
+  });
+}
 
-  const shortSha = (c.commit_sha || "").slice(0, 7);
-  const imageLabel = core.getInput("server-image") || shortSha;
-  const reportURL = buildReportURL(baseURL, c);
-  const heading = formatHeading(
-    contextName,
-    imageLabel,
-    "started",
-    c.repository || "",
-    c.gh_run_id || "",
-    reportURL,
-  );
-  const marker = `<!-- test-system-io:${contextName}@${shortSha} -->`;
-  const body = [
-    heading,
-    "",
-    "Tests dispatched. Will be updated when the run finishes.",
-    "",
-    marker,
-    "",
-  ].join("\n");
-
-  await postOrUpdatePRComment({ token, owner, repo, prNumber, marker, body });
+function formatPendingDescription(): string {
+  const imageTag = core.getInput("image-tag");
+  const imageAliases = core.getInput("image-aliases");
+  if (!imageTag) return "tests running";
+  const aliases = imageAliases ? ` (${imageAliases})` : "";
+  return `tests running, image_tag:${imageTag}${aliases}`;
 }
 
 function buildReportURL(baseURL: string, c: CompositeIdentity): string {
@@ -204,23 +216,6 @@ function buildReportURL(baseURL: string, c: CompositeIdentity): string {
   const shortSha = (c.commit_sha || "").slice(0, 7);
   const name = encodeURIComponent(c.name);
   return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
-}
-
-function formatHeading(
-  contextName: string,
-  imageLabel: string,
-  statusLabel: string,
-  repository: string,
-  ghRunId: string,
-  reportURL: string,
-): string {
-  const pipelineURL = buildPipelineURL(repository, ghRunId);
-  return `[${contextName}](${pipelineURL}) for \`${imageLabel}\` [${statusLabel}](${reportURL})`;
-}
-
-function buildPipelineURL(repository: string, ghRunId: string): string {
-  const serverURL = process.env.GITHUB_SERVER_URL || "https://github.com";
-  return `${serverURL}/${repository}/actions/runs/${ghRunId}`;
 }
 
 function identityForReports(

@@ -11,7 +11,7 @@
 
 import * as fs from "node:fs";
 import * as core from "@actions/core";
-import { deletePRCommentByMarker, postOrUpdatePRComment } from "./pr-comment";
+import { setCommitStatus, type CommitStatusState } from "./commit-status";
 import { retryFetch } from "./retry-fetch";
 
 interface CompositeIdentity {
@@ -77,7 +77,7 @@ export async function run(): Promise<void> {
   const audience = core.getInput("oidc-audience") || "mattermost-test-system-io";
   const compositeIdentityRaw = core.getInput("composite-identity", { required: true });
   const framework = core.getInput("framework", { required: true });
-  const contextName = core.getInput("context-name", { required: true });
+  const contextName = core.getInput("commit-status-context", { required: true });
   const failOnTestFailures = core.getInput("fail-on-test-failures") !== "false";
 
   let compositeIdentity: CompositeIdentity;
@@ -261,21 +261,19 @@ export async function run(): Promise<void> {
   core.setOutput("commit_status_message", commitStatusMessage);
   core.setOutput("commit_status_description", commitStatusDescription);
   core.setOutput("webhook_payload", webhookPayload);
+  core.setOutput("report_url", reportURL);
 
-  // PR comment — best-effort, opt-in. Skips silently for non-PR runs.
-  if (core.getInput("post-pr-comment") === "true") {
-    await postSummaryComment({
+  // Commit status — best-effort, opt-in. Push the terminal state BEFORE
+  // any throw below so a failing run still flips the pending row from
+  // the begin action to `failure`/`error` rather than leaving it stuck.
+  if (core.getInput("update-commit-status") === "true") {
+    await finalizeCommitStatus({
       compositeIdentity,
       contextName,
-      serverImage,
       runStatus: status.status ?? "unknown",
-      commitStatusMessage,
-      setupMs,
-      firstPassMs,
-      retestMs,
-      reportURL,
-      units: status.units ?? [],
-      failedUnitCount: failed,
+      failedUnitCount: unitFail,
+      description: commitStatusDescription,
+      targetURL: reportURL,
     });
   }
 
@@ -392,15 +390,6 @@ function colorForRate(rate: number): string {
   return "#F44336";
 }
 
-// escapeForCodeSpan strips characters that would break out of a Markdown
-// inline code span. Spec paths come from filesystem discovery on the
-// consumer's repo; defensive sanitization avoids visual breakage (and
-// minor format-injection vectors) on rendered comment bodies.
-function escapeForCodeSpan(s: string | undefined): string {
-  if (!s) return "<unknown>";
-  return s.replace(/[`\r\n]/g, "");
-}
-
 interface WebhookFields {
   username: string;
   iconURL: string;
@@ -420,125 +409,46 @@ interface WebhookFields {
   reportURL: string;
 }
 
-interface SummaryCommentArgs {
+interface FinalizeCommitStatusArgs {
   compositeIdentity: CompositeIdentity;
   contextName: string;
-  serverImage: string;
   runStatus: string;
-  commitStatusMessage: string;
-  setupMs: number | null;
-  firstPassMs: number | null;
-  retestMs: number | null;
-  reportURL: string;
-  units: NonNullable<OrchestrationStatus["units"]>;
   failedUnitCount: number;
+  description: string;
+  targetURL: string;
 }
 
-const FAILED_SPECS_PREVIEW = 5;
-
-// postSummaryComment finalizes the PR comment keyed by the test-system-io
-// marker:
+// finalizeCommitStatus flips the `pending` row the begin action
+// pushed to a terminal state on the same commit + context, with the
+// `target_url` still pointing at the Test System IO report page.
 //
-//   * Clean pass (run reached `completed` AND no failed units) — DELETE
-//     the related comment so the PR conversation stays uncluttered.
-//     The "started" comment from dispatch-begin is removed once it's no
-//     longer load-bearing.
-//   * Anything else (failed units, timed_out, incomplete) — UPDATE the
-//     comment with the summary so a reviewer sees the failed-spec list
-//     and where to look. Heading link reads `[completed]` for terminal
-//     runs and `[ended]` for non-completed states.
-async function postSummaryComment(a: SummaryCommentArgs): Promise<void> {
+// State mapping:
+//   * `success` — run reached `completed` and no failed units.
+//   * `failure` — run reached `completed` but recorded failed units.
+//   * `error`   — run did not reach `completed` (timed_out, incomplete).
+async function finalizeCommitStatus(a: FinalizeCommitStatusArgs): Promise<void> {
   const c = a.compositeIdentity;
-  if (c.gh_pr_number == null || c.gh_pr_number === "") return;
-  const prNumber = Number.parseInt(String(c.gh_pr_number), 10);
-  if (!Number.isFinite(prNumber)) return;
-
-  const token = core.getInput("github-token");
   const [owner, repo] = (c.repository || "").split("/");
-  if (!owner || !repo) return;
-
-  const shortSha = (c.commit_sha || "").slice(0, 7);
-  const marker = `<!-- test-system-io:${a.contextName}@${shortSha} -->`;
-
-  const cleanPass = a.runStatus === "completed" && a.failedUnitCount === 0;
-  if (cleanPass) {
-    await deletePRCommentByMarker({
-      token,
-      owner,
-      repo,
-      prNumber,
-      marker,
-      // Match the lookup window the post path uses.
-      singlePage: true,
-    });
+  if (!owner || !repo || !c.commit_sha) {
+    core.warning("update-commit-status: missing repository or commit_sha; skipping.");
     return;
   }
-
-  const statusLabel =
-    a.runStatus === "completed" ? (a.failedUnitCount > 0 ? "failed" : "completed") : "ended";
-  const imageLabel = a.serverImage || shortSha;
-  const heading = formatCommentHeading(
-    a.contextName,
-    imageLabel,
-    statusLabel,
-    c.repository || "",
-    c.gh_run_id || "",
-    a.reportURL,
-  );
-
-  const durationSegment = formatDurationSegments(a.setupMs, a.firstPassMs, a.retestMs);
-  const durationSuffix = durationSegment ? `, duration: ${durationSegment}` : "";
-  const statsLine =
-    a.runStatus === "completed"
-      ? `${a.commitStatusMessage}${durationSuffix}`
-      : `Run did not finish cleanly: ${a.runStatus}. ${a.commitStatusMessage}${durationSuffix}`;
-  const lines: string[] = [heading, "", statsLine];
-
-  const failed = a.units.filter((u) => u.state === "completed_fail");
-  if (failed.length > 0) {
-    failed.sort((u, v) => (u.dispatch_seq ?? 0) - (v.dispatch_seq ?? 0));
-    const preview = failed.slice(0, FAILED_SPECS_PREVIEW);
-    const remaining = failed.length - preview.length;
-    lines.push("", "Failed specs:");
-    for (const u of preview) {
-      lines.push(`- \`${escapeForCodeSpan(u.spec_path)}\``);
-    }
-    if (remaining > 0) {
-      lines.push(`- _…and ${remaining} more — see the [full report](${a.reportURL})._`);
-    }
+  if (!a.contextName) {
+    core.warning("update-commit-status is true but commit-status-context is empty; skipping.");
+    return;
   }
-
-  lines.push("", marker, "");
-
-  await postOrUpdatePRComment({
-    token,
+  const state: CommitStatusState =
+    a.runStatus !== "completed" ? "error" : a.failedUnitCount > 0 ? "failure" : "success";
+  await setCommitStatus({
+    token: core.getInput("github-token"),
     owner,
     repo,
-    prNumber,
-    marker,
-    body: lines.join("\n"),
-    // Cap the lookup at the first page (100 comments). On a busy PR
-    // the begin comment may be past page 1; in that rare case the
-    // summary is posted as a new comment instead of paginating.
-    singlePage: true,
+    sha: c.commit_sha,
+    state,
+    context: a.contextName,
+    description: a.description,
+    targetURL: a.targetURL,
   });
-}
-
-function formatCommentHeading(
-  contextName: string,
-  imageLabel: string,
-  statusLabel: string,
-  repository: string,
-  ghRunId: string,
-  reportURL: string,
-): string {
-  const pipelineURL = buildPipelineURL(repository, ghRunId);
-  return `[${contextName}](${pipelineURL}) for \`${imageLabel}\` [${statusLabel}](${reportURL})`;
-}
-
-function buildPipelineURL(repository: string, ghRunId: string): string {
-  const serverURL = process.env.GITHUB_SERVER_URL || "https://github.com";
-  return `${serverURL}/${repository}/actions/runs/${ghRunId}`;
 }
 
 // LONG_RUN_THRESHOLD_MS — total wall-clock at which the webhook prefixes
@@ -547,9 +457,9 @@ function buildPipelineURL(repository: string, ghRunId: string): string {
 const LONG_RUN_THRESHOLD_MS = 15 * 60 * 1000;
 
 // renderWebhookPayload builds the Mattermost-style webhook JSON body.
-// Title is the caller-supplied context-name (same one shown in the PR
-// comment heading and the GitHub commit-status context); duration line
-// uses the `(setup) + first + (retest)` shape that matches the dashboard.
+// Title is the caller-supplied commit-status-context (same one shown
+// in the GitHub commit-status row); duration line uses the
+// `(setup) + first + (retest)` shape that matches the dashboard.
 function renderWebhookPayload(f: WebhookFields): string {
   const title = `**Results - ${f.contextName}**`;
 

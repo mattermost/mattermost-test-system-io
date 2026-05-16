@@ -6,6 +6,11 @@ description: >
     * `commit_status_description` ready to feed update-commit-status'
       `description` input verbatim,
     * `webhook_payload` ready to POST as-is to a Mattermost-style webhook.
+  When `update-commit-status: "true"` is set, also flips the `pending`
+  commit status the begin action pushed to `success`/`failure`/`error`
+  on the same commit + context — `target_url` keeps deep-linking the
+  Test System IO report page. Requires `permissions: statuses: write`
+  and a `github-token` with the same scope.
   Exits non-zero when any unit ended in completed_fail or the run did not
   reach `completed`. Authenticates via the calling workflow's GitHub Actions
   OIDC token, so the workflow MUST grant `permissions: id-token: write`.
@@ -30,15 +35,15 @@ inputs:
     description: >
       Test framework label (e.g. `playwright`, `cypress`). Surfaced in the
       step summary header as a free-form tag. Kept explicit rather than
-      derived from `context-name` because consumers in other repos may
+      derived from `commit-status-context` because consumers in other repos may
       pick context names that do not encode framework information.
     required: true
-  context-name:
+  commit-status-context:
     description: >
       Slash-separated context label (e.g. `e2e-test/playwright-full/enterprise`)
-      rendered as the PR-comment heading and the webhook title, and used
-      as the comment marker key. Must match the value the begin action
-      received so this finalizer finds the comment to update or delete.
+      used as the commit-status `context` and rendered in the summary
+      header and webhook title. Must match the value the begin action
+      received so this finalizer flips the same commit-status row.
     required: true
   fail-on-test-failures:
     description: When true (default), exit non-zero if any unit ended in completed_fail
@@ -86,30 +91,29 @@ inputs:
     description: Avatar URL surfaced on the webhook post.
     required: false
     default: "https://mattermost.com/wp-content/uploads/2022/02/icon_WS.png"
-  post-pr-comment:
+  update-commit-status:
     description: >
-      When `"true"` and the composite identity carries a `gh_pr_number`,
-      finalize the PR comment keyed by the marker
-      `<!-- test-system-io:<context-name>@<short_sha> -->`:
+      When `"true"` (default), flip the `pending` GitHub commit status
+      the begin action pushed to a terminal state on the same commit +
+      context. `target_url` continues to deep-link the Test System IO
+      report page so the commit-status row stays the single entrypoint
+      into the dashboard.
 
-        * Clean pass (run reached `completed` AND no failed units):
-          DELETE the related comment so the PR conversation stays
-          uncluttered after a successful run.
-        * Anything else (failed units, timed_out, incomplete): UPDATE
-          the comment with the summary. Heading link reads `[failed]`
-          when failures were recorded, `[completed]` for clean finishes
-          (rarely renders since clean-pass deletes), and `[ended]` for
-          non-completed states.
+      State mapping:
+        * `success` — run reached `completed` and no failed units.
+        * `failure` — run reached `completed` but recorded failed units.
+        * `error`   — run did not reach `completed` (timed_out, incomplete).
 
-      Requires `context-name` to match the value used by the begin
-      action so this finalizer finds the comment to update or delete.
-      No-op for non-PR runs. Requires `pull-requests: write`.
+      Requires `commit-status-context` to match the value used by the begin
+      action and `github-token` with `statuses: write` scope. Requires
+      `permissions: statuses: write` on the calling job. Set to
+      `"false"` to opt out.
     required: false
-    default: "false"
+    default: "true"
   github-token:
     description: >
-      GitHub token with `pull-requests: write` scope. Required only
-      when `post-pr-comment` is `"true"`.
+      GitHub token with `statuses: write` scope. Required only when
+      `update-commit-status` is `"true"`.
     required: false
     default: ""
 
@@ -157,6 +161,11 @@ outputs:
       `96.8% passed (457/472), 117 specs, 15 failed, (5m setup) + 14m 1s + 2m 15s (retest), image_tag:9e955bf_3521709 (release-11.4, release-11)`.
   webhook_payload:
     description: Mattermost-style webhook JSON ready to POST as-is.
+  report_url:
+    description: >
+      Test System IO report URL for this run — same value used as the
+      commit-status `target_url`. Mirrors the begin action's
+      `report-url` output so downstream steps can reuse it.
 
 runs:
   using: node24

@@ -8,7 +8,9 @@ This is the controller-after-workers step in an orchestrated CI matrix. The repo
 2. Write a Markdown table + dashboard deep-link to `$GITHUB_STEP_SUMMARY`.
 3. Exit non-zero if any unit ended in `completed_fail` or the run did not reach `completed`, unless `fail-on-test-failures: false` is set.
 
-The calling workflow MUST grant `permissions: id-token: write`.
+The calling workflow MUST grant `permissions: id-token: write`. When `update-commit-status: 'true'` is set, the calling job MUST also grant `permissions: statuses: write`.
+
+Optionally flips the `pending` GitHub commit status the begin action pushed to `success`/`failure`/`error` on the same commit + context, with `target_url` pointing at the Test System IO report page. Set `update-commit-status: 'true'` plus `commit-status-context` + `github-token`.
 
 ## Inputs
 
@@ -18,7 +20,10 @@ The calling workflow MUST grant `permissions: id-token: write`.
 | `oidc-audience` | no | `mattermost-test-system-io` | OIDC audience claim. |
 | `composite-identity` | yes | — | Same JSON the begin action received. |
 | `framework` | yes | — | Label rendered in the summary header (e.g. `playwright`, `cypress`). |
+| `commit-status-context` | yes | — | Slash-separated context label used as the commit-status `context` and in rendered summaries/webhooks. Must match the begin action value. |
 | `fail-on-test-failures` | no | `true` | When `true`, exit non-zero if any unit ended in `completed_fail` or the run did not reach `completed`. |
+| `update-commit-status` | no | `true` | When `true` (default), flip the begin action's `pending` commit status to terminal state (`success`/`failure`/`error`). Requires `commit-status-context` + `github-token` and `permissions: statuses: write` on the job. Set `false` to opt out. |
+| `github-token` | no | `""` | GitHub token with `statuses: write` scope. Required only when `update-commit-status` is `true`. |
 
 ## Pinning a version
 
@@ -39,6 +44,8 @@ uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-summar
   with:
     composite-identity: ${{ needs.begin.outputs.composite-identity }}
     framework: playwright
+    commit-status-context: e2e-test/playwright-full/enterprise
+    github-token: ${{ secrets.GITHUB_TOKEN }}
 
 # Staging
 - uses: ./.github/actions/test-system-io-summary
@@ -47,6 +54,8 @@ uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-summar
     use-staging: "true"
     composite-identity: ${{ needs.begin.outputs.composite-identity }}
     framework: playwright
+    commit-status-context: e2e-test/playwright-full/enterprise
+    github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 ## Develop

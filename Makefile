@@ -8,11 +8,12 @@
         certs \
         dev dev-server dev-web dev-web-watch \
         build build-server build-web \
-        test test-server test-server-e2e test-web \
-        lint lint-server lint-web \
+        test test-server test-server-e2e test-web test-infra \
+        lint lint-server lint-web lint-infra \
         vet vet-server \
-        fmt fmt-server fmt-check-server fmt-web fmt-check-web \
-        typecheck typecheck-web \
+        fmt fmt-server fmt-web fmt-infra \
+        fmt-check fmt-check-server fmt-check-web fmt-check-infra \
+        typecheck typecheck-web typecheck-infra \
         ci ensure-docker \
         db-migrate db-status db-reset seed \
         docker-up docker-down docker-logs docker-build \

@@ -257,16 +257,12 @@ export function getWebSocketUrl(): string {
     return envUrl;
   }
 
-  // Derive from current location
+  // Derive from current location. The Vite dev server's `/api/*` proxy is
+  // configured with `ws: true`, so the SPA can hit wss://localhost:3000 and
+  // Vite tunnels the upgrade through to tsio at https://localhost:8443.
+  // Same-origin keeps SameSite=Lax cookies attached on the upgrade request.
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const host = window.location.host;
-
-  // In development, connect directly to the backend (Vite HTTP proxy
-  // doesn't reliably handle WebSocket upgrades)
-  if (import.meta.env.DEV) {
-    return `ws://localhost:8080/api/v1/ws`;
-  }
-
   return `${protocol}//${host}/api/v1/ws`;
 }
 

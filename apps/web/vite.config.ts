@@ -33,10 +33,13 @@ const restoreGitkeep = {
 // the OS, but Node uses its bundled CA list and won't see it without
 // NODE_EXTRA_CA_CERTS. Disabling verification here is local-dev-only and the
 // browser still validates the cert on https://localhost:3000.
+// `ws: true` lets the /api/v1/ws upgrade reach tsio so the orchestration
+// status indicator can leave its "Reconnecting…" state.
 const apiProxy = {
   target: 'https://localhost:8443',
   changeOrigin: false,
   secure: false,
+  ws: true,
 };
 
 export default defineConfig({

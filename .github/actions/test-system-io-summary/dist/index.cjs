@@ -22246,14 +22246,18 @@ async function run() {
 	setOutput("commit_status_description", commitStatusDescription);
 	setOutput("webhook_payload", webhookPayload);
 	setOutput("report_url", reportURL);
-	if (getInput("update-commit-status") === "true") await finalizeCommitStatus({
-		compositeIdentity,
-		contextName,
-		runStatus: status.status ?? "unknown",
-		failedUnitCount: unitFail,
-		description: commitStatusDescription,
-		targetURL: reportURL
-	});
+	if (getInput("update-commit-status") === "true") try {
+		await finalizeCommitStatus({
+			compositeIdentity,
+			contextName,
+			runStatus: status.status ?? "unknown",
+			failedUnitCount: unitFail,
+			description: commitStatusDescription,
+			targetURL: reportURL
+		});
+	} catch (err) {
+		warning(`update-commit-status failed: ${err.message}`);
+	}
 	if (status.status !== "completed") {
 		const msg = `run did not complete cleanly: ${status.status}`;
 		if (failOnTestFailures) throw new Error(msg);

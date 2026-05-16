@@ -266,15 +266,21 @@ export async function run(): Promise<void> {
   // Commit status — best-effort, opt-in. Push the terminal state BEFORE
   // any throw below so a failing run still flips the pending row from
   // the begin action to `failure`/`error` rather than leaving it stuck.
+  // Wrap so a transient GH API error here doesn't override the actual run
+  // result we're about to evaluate.
   if (core.getInput("update-commit-status") === "true") {
-    await finalizeCommitStatus({
-      compositeIdentity,
-      contextName,
-      runStatus: status.status ?? "unknown",
-      failedUnitCount: unitFail,
-      description: commitStatusDescription,
-      targetURL: reportURL,
-    });
+    try {
+      await finalizeCommitStatus({
+        compositeIdentity,
+        contextName,
+        runStatus: status.status ?? "unknown",
+        failedUnitCount: unitFail,
+        description: commitStatusDescription,
+        targetURL: reportURL,
+      });
+    } catch (err) {
+      core.warning(`update-commit-status failed: ${(err as Error).message}`);
+    }
   }
 
   if (status.status !== "completed") {

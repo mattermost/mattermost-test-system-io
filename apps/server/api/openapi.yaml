@@ -297,6 +297,146 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
 
+  /api/v1/reports/begin:
+    post:
+      tags: [reports]
+      summary: Open a report group for a CI run
+      description: |
+        First call in the stateless upload lifecycle. Identifies the run via
+        the composite identity tuple (repository + commit + gh_run_id +
+        framework + name + branch) and reserves a report_group with the
+        declared total_reports_expected. Subsequent shards register
+        themselves under the returned report_id via /reports/register.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportsBeginInput' }
+      responses:
+        '200':
+          description: Report group opened (existing group reused on repeat call)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report_id]
+                properties:
+                  report_id: { type: string, format: uuid }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: |
+            EXPECTED_REPORTS_MISMATCH — total_reports_expected on this call
+            doesn't match the value already recorded for the group.
+
+  /api/v1/reports/register:
+    post:
+      tags: [reports]
+      summary: Register a single worker (shard) under an open report group
+      description: |
+        Looks up (or upserts) the report_group identified by the composite
+        identity and creates one reports row keyed by gh_job_id. Workers
+        then stream their JSON + screenshots to the /reports/upload/{rid}/{uid}/*
+        endpoints using the returned (report_id, upload_id) pair.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportsRegisterInput' }
+      responses:
+        '200':
+          description: Worker registered (existing row reused on repeat call)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportsRegisterResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/reports/upload/{rid}/{uid}/json:
+    parameters:
+      - in: path
+        name: rid
+        description: report_id returned by /reports/begin or /reports/register
+        schema: { type: string, format: uuid }
+        required: true
+      - in: path
+        name: uid
+        description: upload_id returned by /reports/register
+        schema: { type: string, format: uuid }
+        required: true
+    post:
+      tags: [reports]
+      summary: Stream JSON result files for a registered worker
+      description: |
+        Multipart upload. Each part is streamed to the object store and
+        recorded as a report_json_files row. The body cap is governed by
+        TSIO_MAX_UPLOAD_BYTES and the per-file cap by TSIO_MAX_ARTIFACT_BYTES.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+      responses:
+        '200':
+          description: Upload accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [files_uploaded, files_total]
+                properties:
+                  files_uploaded: { type: integer }
+                  files_total: { type: integer }
+                  suites_parsed: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+
+  /api/v1/reports/upload/{rid}/{uid}/screenshots:
+    parameters:
+      - in: path
+        name: rid
+        schema: { type: string, format: uuid }
+        required: true
+      - in: path
+        name: uid
+        schema: { type: string, format: uuid }
+        required: true
+    post:
+      tags: [reports]
+      summary: Stream screenshot/attachment files for a registered worker
+      description: |
+        Multipart upload, same cap rules as /upload/{rid}/{uid}/json.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+      responses:
+        '200':
+          description: Upload accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [files_uploaded, files_total]
+                properties:
+                  files_uploaded: { type: integer }
+                  files_total: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+
   /api/v1/reports/grouped:
     get:
       tags: [reports]
@@ -1202,6 +1342,87 @@ components:
               type: array
               items: { $ref: '#/components/schemas/ReportEntry' }
             error_message: { type: string }
+
+    ReportsBeginInput:
+      type: object
+      required: [repository, commit, gh_run_id, framework, name, branch, total_reports_expected]
+      properties:
+        repository: { type: string, description: "Form `owner/repo`." }
+        commit: { type: string, description: "Full 40-char git SHA." }
+        gh_run_id: { type: string, description: "GitHub Actions run id." }
+        gh_run_attempt: { type: string, description: "Attempt number; default `1`." }
+        framework: { type: string, description: "`playwright` or `cypress`." }
+        name: { type: string, description: "Logical run name (e.g. `e2e`, `unit`)." }
+        branch: { type: string }
+        gh_pr_number: { type: integer, nullable: true }
+        total_reports_expected:
+          type: integer
+          minimum: 1
+          description: "Total worker shards the report group will accept."
+
+    ReportsRegisterInput:
+      type: object
+      required: [repository, commit, gh_run_id, framework, name, branch]
+      properties:
+        repository: { type: string }
+        commit: { type: string }
+        gh_run_id: { type: string }
+        gh_run_attempt: { type: string }
+        framework: { type: string }
+        name: { type: string }
+        branch: { type: string }
+        gh_pr_number: { type: integer, nullable: true }
+        total_reports_expected: { type: integer, nullable: true }
+        gh_job_id: { type: string }
+        gh_job_name: { type: string }
+        json_files:
+          type: array
+          items:
+            type: object
+            required: [path, size]
+            properties:
+              path: { type: string }
+              size: { type: integer, format: int64 }
+        screenshots:
+          type: array
+          items:
+            type: object
+            required: [path, size]
+            properties:
+              path: { type: string }
+              size: { type: integer, format: int64 }
+        environment_metadata:
+          type: object
+          additionalProperties: true
+          description: "Free-form metadata stamped onto the reports row."
+
+    ReportsRegisterResponse:
+      type: object
+      required: [report_id, upload_id]
+      properties:
+        report_id: { type: string, format: uuid }
+        upload_id: { type: string, format: uuid }
+        reports_in_group: { type: integer }
+        accepted_json_files:
+          type: array
+          items: { type: string }
+        rejected_json_files:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              reason: { type: string }
+        accepted_screenshots:
+          type: array
+          items: { type: string }
+        rejected_screenshots:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              reason: { type: string }
 
     Report:
       type: object

@@ -24,6 +24,22 @@ func Handlers(pool *pgxpool.Pool, version string, logger *slog.Logger) (health, 
 		})
 	}
 	ready = func(w http.ResponseWriter, r *http.Request) {
+		// A nil pool is an operator misconfiguration (partial Build()), not
+		// a transient outage — but the probe still answers 503 instead of
+		// panicking the request goroutine.
+		if pool == nil {
+			if logger != nil {
+				logger.Warn("readiness probe failed",
+					slog.String("reason", "postgres"),
+					slog.String("error", "database pool is not configured"),
+				)
+			}
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status": "not-ready",
+				"reason": "postgres",
+			})
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
 		defer cancel()
 		if err := pool.Ping(ctx); err != nil {

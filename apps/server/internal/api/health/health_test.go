@@ -37,6 +37,30 @@ func TestHealth_alwaysOK(t *testing.T) {
 	}
 }
 
+// A nil pool (partial wiring) must answer 503 instead of panicking on
+// pool.Ping.
+func TestReady_nilPoolReturns503(t *testing.T) {
+	_, readyHandler := Handlers(nil, "v-test", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rec := httptest.NewRecorder()
+	readyHandler(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "not-ready" {
+		t.Errorf("status = %q, want not-ready", body["status"])
+	}
+	if body["reason"] != "postgres" {
+		t.Errorf("reason = %q, want postgres", body["reason"])
+	}
+}
+
 // TestReady_failureDoesNotLeakError ensures the public /ready endpoint reports
 // the failure category ("postgres") without disclosing the underlying error
 // text (which can include host/port/auth detail).

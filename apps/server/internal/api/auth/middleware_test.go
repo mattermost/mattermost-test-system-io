@@ -87,6 +87,24 @@ func TestRequireAuth_wellFormedAPIKeyWithNilDeps_is401(t *testing.T) {
 	}
 }
 
+// An X-API-Key that's syntactically well-formed but unknown to apiKeys (nil
+// deps here) should NOT short-circuit the resolver — the request still falls
+// through to bearer + session evaluation. With nil deps everywhere, the final
+// outcome is 401, but the contract is "each method is tried."
+func TestRequireAuth_invalidPrimaryFallsThroughToOthers(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("X-API-Key", "prefix."+strings.Repeat("a", 32))
+	req.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 32))
+	rec := httptest.NewRecorder()
+
+	newProtected().ServeHTTP(rec, req)
+
+	// All deps nil → no credential resolves → 401 (not a panic, not a 500).
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
 func TestSubjectFromContext_emptyIsError(t *testing.T) {
 	_, err := SubjectFromContext(t.Context())
 	if err == nil {

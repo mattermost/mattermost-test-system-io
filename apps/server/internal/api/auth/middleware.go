@@ -68,45 +68,41 @@ func resolve(
 	oidcV *authoidc.Verifier,
 	pol *policy.Engine,
 ) (Subject, bool) {
+	// Each block returns the resolved Subject when its credential validates;
+	// invalid credentials fall through to the next method so a stale
+	// X-API-Key alongside a valid session cookie still authenticates.
+	// "None of the presented credentials worked" lands on the final
+	// `return false` at the bottom of the function (mapped to 401 by the
+	// caller).
+
 	// 1) X-API-Key
 	if raw := r.Header.Get("X-API-Key"); raw != "" && apiKeys != nil {
-		prefix, _, ok := apikey.ParsePlaintext(raw)
-		if !ok {
-			return Subject{}, false
+		if prefix, _, ok := apikey.ParsePlaintext(raw); ok {
+			row, err := apiKeys.ByPrefix(r.Context(), prefix)
+			if err == nil && row.Status != apikey.StatusRevoked && apikey.Verify(raw, row.KeyHash) {
+				return Subject{Kind: "apikey", APIKeyID: row.ID, Role: policy.RoleUploader}, true
+			}
 		}
-		row, err := apiKeys.ByPrefix(r.Context(), prefix)
-		if err != nil || row.Status == apikey.StatusRevoked {
-			return Subject{}, false
-		}
-		if !apikey.Verify(raw, row.KeyHash) {
-			return Subject{}, false
-		}
-		return Subject{Kind: "apikey", APIKeyID: row.ID, Role: policy.RoleUploader}, true
 	}
 
 	// 2) Authorization: Bearer <jwt> (GitHub Actions OIDC)
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") && oidcV != nil && pol != nil {
 		raw := strings.TrimPrefix(auth, "Bearer ")
-		claims, err := oidcV.Verify(r.Context(), raw)
-		if err != nil {
-			return Subject{}, false
+		if claims, err := oidcV.Verify(r.Context(), raw); err == nil {
+			if role, err := pol.Evaluate(r.Context(), claims); err == nil {
+				return Subject{
+					Kind:        "oidc",
+					OIDCSubject: claims.Subject,
+					OIDCClaims:  &claims,
+					Role:        role,
+				}, true
+			}
 		}
-		role, err := pol.Evaluate(r.Context(), claims)
-		if err != nil {
-			return Subject{}, false
-		}
-		return Subject{
-			Kind:        "oidc",
-			OIDCSubject: claims.Subject,
-			OIDCClaims:  &claims,
-			Role:        role,
-		}, true
 	}
 
 	// 3) Session cookie (humans)
 	if c, err := r.Cookie(session.CookieName); err == nil && sessions != nil {
-		sess, err := sessions.Verify(r.Context(), c.Value)
-		if err == nil {
+		if sess, err := sessions.Verify(r.Context(), c.Value); err == nil {
 			return Subject{Kind: "session", UserID: sess.UserID, Role: policy.RoleViewer}, true
 		}
 	}

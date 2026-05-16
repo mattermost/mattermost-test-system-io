@@ -161,6 +161,9 @@ For convenience, create a `.env.docker` file (gitignored):
 
 ```bash
 TSIO_ENVIRONMENT=development
+TSIO_HTTP_LISTEN_ADDR=:8443
+TSIO_TLS_CERT_FILE=/etc/tsio/localhost.pem
+TSIO_TLS_KEY_FILE=/etc/tsio/localhost-key.pem
 TSIO_DATABASE_URL=postgres://tsio:tsio@postgres:5432/tsio?sslmode=disable
 TSIO_S3_ENDPOINT=http://minio:9000
 TSIO_S3_BUCKET=reports
@@ -172,12 +175,14 @@ TSIO_SESSION_SECRET=dev-session-secret-change-me
 TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=mattermost-test-system-io
 ```
 
-Then run:
+Then run (the host-side `certs/` directory is mounted so tsio can read the
+mkcert-issued cert at the in-container paths declared above):
 
 ```bash
-docker run --rm -p 8080:8080 \
+docker run --rm -p 8443:8443 \
   --network tsio-dev_default \
   --env-file .env.docker \
+  -v "$(pwd)/certs:/etc/tsio:ro" \
   mattermost-test-system-io:local
 ```
 
@@ -185,9 +190,10 @@ docker run --rm -p 8080:8080 \
 
 ```bash
 # Start
-docker run -d --name tsio -p 8080:8080 \
+docker run -d --name tsio -p 8443:8443 \
   --network tsio-dev_default \
   --env-file .env.docker \
+  -v "$(pwd)/certs:/etc/tsio:ro" \
   mattermost-test-system-io:local
 
 # View logs

@@ -49,7 +49,22 @@ uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-report
 
 ```yaml
 jobs:
+  compute-identity:
+    runs-on: ubuntu-latest
+    outputs:
+      json: ${{ steps.out.outputs.json }}
+    steps:
+      - id: out
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          echo "json={\"repository\":\"$REPO\",\"commit_sha\":\"$SHA\",\"gh_run_id\":\"$RUN_ID\",\"gh_run_attempt\":\"$RUN_ATTEMPT\",\"name\":\"example\"}" >> "$GITHUB_OUTPUT"
+
   shards:
+    needs: compute-identity
     name: shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
     permissions:
@@ -79,7 +94,7 @@ jobs:
           screenshots-dir: ./test-results/output
 
   summary:
-    needs: shards
+    needs: [compute-identity, shards]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -98,7 +113,7 @@ jobs:
 npm install
 npm run lint     # oxlint
 npm run tsc      # type check (no emit)
-npm run build    # tsup → dist/index.js (committed)
+npm run build    # tsdown → dist/index.cjs (committed)
 npm run format   # oxfmt
 ```
 

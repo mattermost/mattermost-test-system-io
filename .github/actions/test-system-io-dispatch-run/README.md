@@ -80,7 +80,7 @@ uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispat
 npm install
 npm run lint     # oxlint
 npm run tsc      # type check (no emit)
-npm run build    # tsup → dist/index.js (committed)
+npm run build    # tsdown → dist/index.cjs (committed)
 npm run format   # oxfmt
 ```
 

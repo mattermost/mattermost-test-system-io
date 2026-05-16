@@ -58,10 +58,9 @@ type Config struct {
 	// to the server's expected audience to prevent cross-service token replay.
 	GitHubActionsOIDCAudience string `env:"TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE" envDefault:""`
 
-	SessionSecret       string        `env:"TSIO_SESSION_SECRET,required,unset"`
-	SessionTTL          time.Duration `env:"TSIO_SESSION_TTL" envDefault:"720h"`
-	RefreshTokenTTL     time.Duration `env:"TSIO_REFRESH_TOKEN_TTL" envDefault:"720h"`
-	APIKeyRotationGrace time.Duration `env:"TSIO_APIKEY_ROTATION_GRACE" envDefault:"24h"`
+	SessionSecret   string        `env:"TSIO_SESSION_SECRET,required,unset"`
+	SessionTTL      time.Duration `env:"TSIO_SESSION_TTL" envDefault:"720h"`
+	RefreshTokenTTL time.Duration `env:"TSIO_REFRESH_TOKEN_TTL" envDefault:"720h"`
 
 	// Admin key gates the privileged setup endpoints (e.g.
 	// POST /api/v1/auth/oidc-policies). Default is a known-bad placeholder

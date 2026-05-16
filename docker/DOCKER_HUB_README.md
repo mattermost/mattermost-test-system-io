@@ -40,7 +40,6 @@ All configuration is read from `TSIO_*` environment variables. The list below mi
 | `TSIO_SESSION_SECRET` | Yes | — | Secret used to sign browser sessions. Must be non-empty and unique per deployment. |
 | `TSIO_SESSION_TTL` | No | `720h` | Session lifetime. |
 | `TSIO_REFRESH_TOKEN_TTL` | No | `720h` | Refresh-token lifetime. |
-| `TSIO_APIKEY_ROTATION_GRACE` | No | `24h` | Grace window during API-key rotation. |
 | `TSIO_ADMIN_KEY` | No | `dev-admin-key-do-not-use-in-production` | Gates privileged setup endpoints (e.g. `POST /api/v1/auth/oidc-policies`). MUST be overridden in production; staging/prod CDK auto-generate via Secrets Manager. |
 | `TSIO_BOOTSTRAP_OIDC_POLICIES` | No | — | Comma-separated `pattern=role` list seeded into `github_oidc_policies` at startup (`ON CONFLICT (name) DO NOTHING`). Used by ephemeral staging deploys to re-seed the org-wide CI grant after the DB is recreated. Example: `mattermost/*=uploader`. |
 | `TSIO_OPENAPI_SPEC_PATH` | No | `api/openapi.yaml` | Path to the OpenAPI spec used for request validation. Pinned to `/api/openapi.yaml` in this image. |

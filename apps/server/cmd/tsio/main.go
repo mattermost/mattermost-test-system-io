@@ -170,6 +170,9 @@ func run() error {
 		IdleTimeout:       90 * time.Second,
 	}
 
+	// Bounded channel so the goroutine can deliver the listen error and exit
+	// even if run() has already returned via the ctx.Done() path.
+	serveErr := make(chan error, 1)
 	go func() {
 		tlsEnabled := cfg.TLSCertFile != "" && cfg.TLSKeyFile != ""
 		logger.Info("listening",
@@ -185,12 +188,24 @@ func run() error {
 			err = srv.ListenAndServe()
 		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("http server", slog.String("error", err.Error()))
-			cancel()
+			serveErr <- err
+			return
 		}
+		serveErr <- nil
 	}()
 
-	<-ctx.Done()
+	select {
+	case err := <-serveErr:
+		// Startup failure (e.g. "address already in use") or runtime crash.
+		// Surface as the run() error rather than masking it with a Shutdown
+		// status that never had a chance to run.
+		if err != nil {
+			return fmt.Errorf("http server: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+	}
+
 	logger.Info("shutting down")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()

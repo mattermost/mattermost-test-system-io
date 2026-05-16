@@ -33,6 +33,12 @@ export function runUnit(
   iterationSeq: number,
   specPaths: string[],
 ): { invocation: InvocationRecord; results: SpecResult[] } {
+  // Empty specPaths would silently degrade to `npx playwright test` (i.e. run
+  // the whole suite) and leave invocation.specPath undefined. Fail fast.
+  if (specPaths.length === 0) {
+    throw new Error("runUnit requires at least one spec path");
+  }
+
   const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs.mkdirSync(iterDir, { recursive: true });
 

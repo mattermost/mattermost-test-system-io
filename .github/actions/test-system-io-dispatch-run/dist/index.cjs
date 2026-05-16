@@ -20851,6 +20851,7 @@ async function fetchWithAuthRetry(makeRequest) {
 * instead of `failed`, keeping it out of the retest queue.
 */
 function runUnit$1(cfg, iterationSeq, specPaths) {
+	if (specPaths.length === 0) throw new Error("runUnit requires at least one spec path");
 	const iterDir = node_path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
 	node_fs.mkdirSync(iterDir, { recursive: true });
 	const args = [

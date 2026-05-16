@@ -171,12 +171,20 @@ func run() error {
 	}
 
 	go func() {
+		tlsEnabled := cfg.TLSCertFile != "" && cfg.TLSKeyFile != ""
 		logger.Info("listening",
 			slog.String("addr", cfg.HTTPListenAddr),
+			slog.Bool("tls", tlsEnabled),
 			slog.String("commit", commitSHA),
 			slog.String("build_time", buildTime),
 		)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		var err error
+		if tlsEnabled {
+			err = srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("http server", slog.String("error", err.Error()))
 			cancel()
 		}

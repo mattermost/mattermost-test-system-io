@@ -37,6 +37,26 @@ func TestValidate_rejectsNegativeMaxArtifact(t *testing.T) {
 	}
 }
 
+func TestValidate_rejectsHalfNativeTLS(t *testing.T) {
+	c := Config{LogFormat: "json", MaxUploadBytes: 1, MaxArtifactBytes: 1, TLSCertFile: "/etc/tsio/cert.pem"}
+	if err := c.validate(); err == nil {
+		t.Fatal("expected error when only TLSCertFile is set")
+	}
+}
+
+func TestValidate_acceptsNativeTLS(t *testing.T) {
+	c := Config{
+		LogFormat:        "json",
+		MaxUploadBytes:   1,
+		MaxArtifactBytes: 1,
+		TLSCertFile:      "/etc/tsio/cert.pem",
+		TLSKeyFile:       "/etc/tsio/key.pem",
+	}
+	if err := c.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
 func TestLoad_readsEnv(t *testing.T) {
 	t.Setenv("TSIO_DATABASE_URL", "postgres://user:pass@localhost/db?sslmode=disable")
 	t.Setenv("TSIO_S3_BUCKET", "reports")

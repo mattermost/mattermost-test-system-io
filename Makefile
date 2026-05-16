@@ -5,6 +5,7 @@
 
 .PHONY: help \
         install install-server install-web tools \
+        certs \
         dev dev-server dev-web dev-web-watch \
         build build-server build-web \
         test test-server test-server-e2e test-web \
@@ -36,6 +37,9 @@ ROOT_DIR    := $(shell pwd)
 SERVER_DIR  := $(ROOT_DIR)/apps/server
 WEB_DIR     := $(ROOT_DIR)/apps/web
 INFRA_DIR   := $(ROOT_DIR)/infra
+CERT_DIR    := $(ROOT_DIR)/certs
+CERT_FILE   := $(CERT_DIR)/localhost.pem
+KEY_FILE    := $(CERT_DIR)/localhost-key.pem
 SERVER_PORT := 8080
 WEB_PORT    := 3000
 # macOS default open-file limit (256) breaks testcontainers; bump for test targets.
@@ -117,13 +121,31 @@ tools: ## Install pinned Go CLI tools to GOBIN (optional; other targets use `go 
 
 ##@ Development
 
-dev: ## Run server + web concurrently with auto-reload
+certs: $(CERT_FILE) ## Generate locally-trusted TLS cert (idempotent; uses mkcert)
+
+# Materialize both files at once; either one missing triggers regeneration.
+$(CERT_FILE) $(KEY_FILE): | $(CERT_DIR)
+	@command -v mkcert >/dev/null 2>&1 || { \
+		echo "$(RED)mkcert is required for local HTTPS but was not found on PATH.$(RESET)"; \
+		echo "$(YELLOW)Install with: brew install mkcert nss && mkcert -install$(RESET)"; \
+		exit 1; \
+	}
+	@echo "$(CYAN)Generating local TLS cert at $(CERT_DIR)/...$(RESET)"
+	@mkcert -cert-file $(CERT_FILE) -key-file $(KEY_FILE) localhost 127.0.0.1 ::1
+	@echo "$(GREEN)Generated $(CERT_FILE) + $(KEY_FILE)$(RESET)"
+
+$(CERT_DIR):
+	@mkdir -p $@
+
+dev: certs ## Run server + web concurrently with auto-reload (generates TLS cert via mkcert if missing)
 	@echo "$(CYAN)Starting Go server + Vite web concurrently...$(RESET)"
 	@$(MAKE) dev-server & $(MAKE) dev-web & wait
 
-dev-server: ## Run Go server (ldflags inject version/sha/build time)
+dev-server: certs ## Run Go server (ldflags inject version/sha/build time)
 	@echo "$(CYAN)Starting Go server on :$(SERVER_PORT) ($(VERSION)@$(COMMIT_SHA))...$(RESET)"
-	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(GO) run -ldflags '$(LDFLAGS)' ./cmd/tsio
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && \
+		TSIO_TLS_CERT_FILE=$(CERT_FILE) TSIO_TLS_KEY_FILE=$(KEY_FILE) \
+		$(GO) run -ldflags '$(LDFLAGS)' ./cmd/tsio
 
 dev-web: ## Run Vite dev server with HMR
 	@echo "$(CYAN)Starting Vite dev server on :$(WEB_PORT)...$(RESET)"

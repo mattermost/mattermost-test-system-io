@@ -6,6 +6,17 @@ Run the production Docker image locally for testing and validation.
 
 - Docker installed and running
 - Git (to get the commit SHA)
+- A locally-trusted TLS cert. tsio rejects requests that don't arrive over
+  HTTPS, so local dev needs its own cert. The simplest path is
+  [mkcert](https://github.com/FiloSottile/mkcert):
+  ```bash
+  brew install mkcert nss   # mkcert + Firefox trust store
+  mkcert -install            # one-time root CA install
+  mkdir -p certs
+  mkcert -cert-file certs/localhost.pem -key-file certs/localhost-key.pem localhost 127.0.0.1 ::1
+  ```
+  Point `TSIO_TLS_CERT_FILE` / `TSIO_TLS_KEY_FILE` at the generated files; tsio
+  will listen with `ListenAndServeTLS` on `TSIO_HTTP_LISTEN_ADDR`.
 
 ## Quick Start
 
@@ -21,9 +32,10 @@ docker build \
   -f apps/server/Dockerfile .
 
 # 3. Run the container
-docker run --rm -p 8080:8080 \
+docker run --rm -p 8443:8443 \
   --network tsio-dev_default \
   -e TSIO_ENVIRONMENT=development \
+  -e TSIO_HTTP_LISTEN_ADDR=:8443 \
   -e TSIO_DATABASE_URL=postgres://tsio:tsio@postgres:5432/tsio?sslmode=disable \
   -e TSIO_S3_ENDPOINT=http://minio:9000 \
   -e TSIO_S3_BUCKET=reports \
@@ -33,12 +45,15 @@ docker run --rm -p 8080:8080 \
   -e TSIO_S3_FORCE_PATH_STYLE=true \
   -e TSIO_SESSION_SECRET=dev-session-secret-change-me \
   -e TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=mattermost-test-system-io \
+  -e TSIO_TLS_CERT_FILE=/etc/tsio/localhost.pem \
+  -e TSIO_TLS_KEY_FILE=/etc/tsio/localhost-key.pem \
+  -v "$(pwd)/certs:/etc/tsio:ro" \
   mattermost-test-system-io:local
 
 # 4. Verify
-curl http://localhost:8080/health
-curl http://localhost:8080/api/v1/info
-open http://localhost:8080/
+curl http://localhost:8443/health
+curl https://localhost:8443/api/v1/info
+open https://localhost:8443/
 ```
 
 ## Step-by-Step
@@ -90,9 +105,10 @@ A cold build typically takes ~30s for the Node (Vite) stage and <1 minute for th
 The container needs to reach PostgreSQL and MinIO running in Docker. Join the compose network (`tsio-dev_default`) so service names resolve:
 
 ```bash
-docker run --rm -p 8080:8080 \
+docker run --rm -p 8443:8443 \
   --network tsio-dev_default \
   -e TSIO_ENVIRONMENT=development \
+  -e TSIO_HTTP_LISTEN_ADDR=:8443 \
   -e TSIO_DATABASE_URL=postgres://tsio:tsio@postgres:5432/tsio?sslmode=disable \
   -e TSIO_S3_ENDPOINT=http://minio:9000 \
   -e TSIO_S3_BUCKET=reports \
@@ -102,6 +118,9 @@ docker run --rm -p 8080:8080 \
   -e TSIO_S3_FORCE_PATH_STYLE=true \
   -e TSIO_SESSION_SECRET=dev-session-secret-change-me \
   -e TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE=mattermost-test-system-io \
+  -e TSIO_TLS_CERT_FILE=/etc/tsio/localhost.pem \
+  -e TSIO_TLS_KEY_FILE=/etc/tsio/localhost-key.pem \
+  -v "$(pwd)/certs:/etc/tsio:ro" \
   mattermost-test-system-io:local
 ```
 
@@ -110,17 +129,17 @@ docker run --rm -p 8080:8080 \
 ### 4. Verify
 
 ```bash
-# Liveness (always 200)
-curl http://localhost:8080/health
+# Liveness (always 200) — health endpoints bypass the HTTPS check
+curl http://localhost:8443/health
 
 # Readiness (checks DB connectivity)
-curl http://localhost:8080/ready
+curl http://localhost:8443/ready
 
-# Build info
-curl http://localhost:8080/api/v1/info
+# Build info (HTTPS required)
+curl https://localhost:8443/api/v1/info
 
 # Embedded React web UI
-open http://localhost:8080/
+open https://localhost:8443/
 ```
 
 Expected `/api/v1/info` response:

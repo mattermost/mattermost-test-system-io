@@ -31,6 +31,7 @@ apps/server/internal/webui/dist/*
 credentials.json
 service-account*.json
 .oidc-keys.json
+certs/
 
 # CDK
 cdk.out/

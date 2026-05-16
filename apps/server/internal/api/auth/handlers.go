@@ -46,7 +46,7 @@ func (h *Handlers) StartRedirect(w http.ResponseWriter, r *http.Request) {
 		apiroot.WriteError(w, r, apiroot.ErrInternal)
 		return
 	}
-	h.setStateCookie(w, r, state)
+	h.setStateCookie(w, state)
 	http.Redirect(w, r, authorizeURL, http.StatusFound)
 }
 
@@ -62,7 +62,7 @@ func (h *Handlers) Start(w http.ResponseWriter, r *http.Request) {
 		apiroot.WriteError(w, r, apiroot.ErrInternal)
 		return
 	}
-	h.setStateCookie(w, r, state)
+	h.setStateCookie(w, state)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"authorize_url": authorizeURL,
@@ -110,7 +110,7 @@ func (h *Handlers) Callback(w http.ResponseWriter, r *http.Request) {
 		Value:    cookieVal,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(h.Sessions.TTL),
 	})
@@ -122,7 +122,7 @@ func (h *Handlers) Callback(w http.ResponseWriter, r *http.Request) {
 				Value:    refreshTok,
 				Path:     "/api/v1/auth/",
 				HttpOnly: true,
-				Secure:   r.TLS != nil,
+				Secure:   true,
 				SameSite: http.SameSiteLaxMode,
 				Expires:  time.Now().Add(h.Refresher.TTL),
 			})
@@ -187,7 +187,7 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 		Value:    newTok,
 		Path:     "/api/v1/auth/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(h.Refresher.TTL),
 	})
@@ -253,13 +253,13 @@ func (h *Handlers) currentUser(r *http.Request) map[string]any {
 	return out
 }
 
-func (h *Handlers) setStateCookie(w http.ResponseWriter, r *http.Request, state string) {
+func (h *Handlers) setStateCookie(w http.ResponseWriter, state string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     oauthStateCookie,
 		Value:    state,
 		Path:     "/api/v1/auth/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(10 * time.Minute),
 	})

@@ -25,6 +25,7 @@ func NewRouter(deps Deps) *chi.Mux {
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
+	r.Use(RequireHTTPS)
 	r.Use(telemetry.Middleware(deps.Logger))
 
 	if len(deps.CORSAllowedOrigins) > 0 {

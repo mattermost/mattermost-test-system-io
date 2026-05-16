@@ -157,7 +157,14 @@ func Start(t *testing.T) *Env {
 		PresignTTL:       5 * time.Minute,
 	})
 
-	srv := httptest.NewServer(handler)
+	// httptest.NewServer is plain HTTP; in prod the ALB sets X-Forwarded-Proto.
+	// Inject the header here so the production RequireHTTPS middleware passes
+	// without each test having to know about it.
+	secureHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-Forwarded-Proto", "https")
+		handler.ServeHTTP(w, r)
+	})
+	srv := httptest.NewServer(secureHandler)
 	t.Cleanup(srv.Close)
 
 	return &Env{

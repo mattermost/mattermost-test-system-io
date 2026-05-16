@@ -17,6 +17,13 @@ import (
 type Config struct {
 	HTTPListenAddr string `env:"TSIO_HTTP_LISTEN_ADDR" envDefault:":8080"`
 
+	// Optional native-TLS termination. When both are set the server listens
+	// with ListenAndServeTLS; otherwise it listens on plain HTTP and expects
+	// an upstream proxy (ALB in prod) to terminate TLS. Used in local dev
+	// with mkcert.
+	TLSCertFile string `env:"TSIO_TLS_CERT_FILE"`
+	TLSKeyFile  string `env:"TSIO_TLS_KEY_FILE"`
+
 	// Database connection. Supply either TSIO_DATABASE_URL directly, or the
 	// split TSIO_DB_HOST/PORT/USER/PASSWORD/NAME fields — in ECS, the password
 	// is injected from Secrets Manager as a separate env var, so a composed
@@ -186,6 +193,9 @@ func (c Config) validate() error {
 	}
 	if c.MaxArtifactBytes <= 0 {
 		return errors.New("TSIO_MAX_ARTIFACT_BYTES must be > 0")
+	}
+	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
+		return errors.New("TSIO_TLS_CERT_FILE and TSIO_TLS_KEY_FILE must be set together")
 	}
 	return nil
 }

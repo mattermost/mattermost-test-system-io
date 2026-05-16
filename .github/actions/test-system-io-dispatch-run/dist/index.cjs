@@ -21013,6 +21013,9 @@ function mapStatus(s) {
 *     report-ingest pipeline detects framework via the report_groups
 *     row's framework column.
 */
+function uniqueSpecKey(sp) {
+	return sp.replace(/^\.[/\\]/, "").replace(/[\\/]/g, "__").replace(/\.(ts|js)$/, "");
+}
 function runUnit(cfg, iterationSeq, specPaths) {
 	const iterDir = node_path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
 	node_fs.mkdirSync(iterDir, { recursive: true });
@@ -21079,7 +21082,7 @@ function runUnit(cfg, iterationSeq, specPaths) {
 			continue;
 		}
 		results.push(aggregateSpec(parsed, sp));
-		const archived = node_path.join(iterDir, `${baseName}.json`);
+		const archived = node_path.join(iterDir, `${uniqueSpecKey(sp)}.json`);
 		node_fs.cpSync(jsonPath, archived);
 		if (!firstArchivedPath) firstArchivedPath = archived;
 	}
@@ -21093,7 +21096,7 @@ function runUnit(cfg, iterationSeq, specPaths) {
 		walkPng(srcDir, absPaths);
 		if (absPaths.length === 0) continue;
 		screenshotsBySpec[sp] = absPaths;
-		const dstDir = node_path.join(outputRoot, baseName);
+		const dstDir = node_path.join(outputRoot, uniqueSpecKey(sp));
 		node_fs.mkdirSync(dstDir, { recursive: true });
 		for (const src of absPaths) node_fs.cpSync(src, node_path.join(dstDir, node_path.basename(src)));
 	}

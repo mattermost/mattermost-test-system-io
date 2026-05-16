@@ -31,6 +31,19 @@ import { spawnSync } from "node:child_process";
 import * as core from "@actions/core";
 import type { InvocationRecord, SpecResult, TestCaseResult, TestStatus } from "./types";
 
+// uniqueSpecKey derives a filesystem-safe identifier that is unique per spec
+// path within a worker batch. path.basename collides for specs like
+// `foo/login.spec.ts` and `bar/login.spec.ts`, which would silently overwrite
+// our archived JSON and screenshot copies. The strip of leading `./` plus
+// flattening of `/` and `\` to `__` keeps the key readable while making it
+// distinct across directories.
+function uniqueSpecKey(sp: string): string {
+  return sp
+    .replace(/^\.[/\\]/, "")
+    .replace(/[\\/]/g, "__")
+    .replace(/\.(ts|js)$/, "");
+}
+
 export interface RunUnitConfig {
   cypressDir: string;
   resultsDir: string;
@@ -137,8 +150,10 @@ export function runUnit(
     }
     results.push(aggregateSpec(parsed, sp));
 
-    // Persist a copy outside the soon-to-be-wiped live results tree.
-    const archived = path.join(iterDir, `${baseName}.json`);
+    // Persist a copy outside the soon-to-be-wiped live results tree. Key by
+    // the unique spec path (not basename) so two specs sharing a basename
+    // don't clobber each other's archive.
+    const archived = path.join(iterDir, `${uniqueSpecKey(sp)}.json`);
     fs.cpSync(jsonPath, archived);
     if (!firstArchivedPath) firstArchivedPath = archived;
   }
@@ -161,7 +176,10 @@ export function runUnit(
     walkPng(srcDir, absPaths);
     if (absPaths.length === 0) continue;
     screenshotsBySpec[sp] = absPaths;
-    const dstDir = path.join(outputRoot, baseName);
+    // Same collision concern as the JSON archive above: two specs with the
+    // same basename would land in the same output dir and the upload step
+    // would attribute one spec's screenshots to the other.
+    const dstDir = path.join(outputRoot, uniqueSpecKey(sp));
     fs.mkdirSync(dstDir, { recursive: true });
     for (const src of absPaths) {
       fs.cpSync(src, path.join(dstDir, path.basename(src)));

@@ -20846,7 +20846,8 @@ async function uploadShard(cfg, jsonPath, screenshotsDir) {
 	const reportsIdent = identityForReports(cfg.compositeIdentity, cfg.framework, cfg.totalReportsExpected);
 	const beginRes = await postJSON(cfg, "/api/v1/reports/begin", reportsIdent);
 	if (beginRes.status !== 200 && beginRes.status !== 201) throw new Error(`reports/begin failed: ${beginRes.status} ${JSON.stringify(beginRes.body)}`);
-	const reportGroupID = beginRes.body.report_id;
+	const reportGroupID = beginRes.body?.report_id;
+	if (!reportGroupID) throw new Error(`reports/begin missing report_id: ${beginRes.status} ${JSON.stringify(beginRes.body)}`);
 	const jsonParts = [{
 		absPath: jsonPath,
 		relPath: node_path.basename(jsonPath),
@@ -20868,7 +20869,8 @@ async function uploadShard(cfg, jsonPath, screenshotsDir) {
 		}))
 	});
 	if (regRes.status !== 200) throw new Error(`reports/register failed: ${regRes.status} ${JSON.stringify(regRes.body)}`);
-	const uploadID = regRes.body.upload_id;
+	const uploadID = regRes.body?.upload_id;
+	if (!uploadID) throw new Error(`reports/register missing upload_id: ${regRes.status} ${JSON.stringify(regRes.body)}`);
 	await uploadMultipart(cfg, `/api/v1/reports/upload/${reportGroupID}/${uploadID}/json`, jsonParts, "application/json");
 	if (screenshotParts.length > 0) await uploadMultipart(cfg, `/api/v1/reports/upload/${reportGroupID}/${uploadID}/screenshots`, screenshotParts);
 	info(`shard uploaded: 1 json + ${screenshotParts.length} screenshot(s) (group=${reportGroupID}, upload=${uploadID})`);

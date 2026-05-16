@@ -54,7 +54,12 @@ export async function uploadShard(
   if (beginRes.status !== 200 && beginRes.status !== 201) {
     throw new Error(`reports/begin failed: ${beginRes.status} ${JSON.stringify(beginRes.body)}`);
   }
-  const reportGroupID = beginRes.body!.report_id;
+  const reportGroupID = beginRes.body?.report_id;
+  if (!reportGroupID) {
+    throw new Error(
+      `reports/begin missing report_id: ${beginRes.status} ${JSON.stringify(beginRes.body)}`,
+    );
+  }
 
   const jsonRelName = path.basename(jsonPath);
   const jsonParts: UploadPart[] = [
@@ -83,7 +88,12 @@ export async function uploadShard(
   if (regRes.status !== 200) {
     throw new Error(`reports/register failed: ${regRes.status} ${JSON.stringify(regRes.body)}`);
   }
-  const uploadID = regRes.body!.upload_id;
+  const uploadID = regRes.body?.upload_id;
+  if (!uploadID) {
+    throw new Error(
+      `reports/register missing upload_id: ${regRes.status} ${JSON.stringify(regRes.body)}`,
+    );
+  }
 
   await uploadMultipart(
     cfg,

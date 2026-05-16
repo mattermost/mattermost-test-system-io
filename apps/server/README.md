@@ -12,7 +12,7 @@ HTTP API Server for uploading and viewing test reports.
 
 ## Layout
 
-```
+```text
 apps/server/
 ├── cmd/
 │   ├── tsio/           # HTTP server binary

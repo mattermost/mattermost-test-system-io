@@ -6,7 +6,7 @@ Supports Playwright (default) and Cypress via the `framework` input. For each le
 
 1. `POST /api/v1/orchestration/checkout` to lease a spec (or sleep on a non-empty retest pool).
 2. Shells out to the framework's runner:
-    - `framework: playwright` — `npx playwright test --project=<playwright-project> --grep-invert @visual --no-deps <specs>` inside `<repo-dir>/<playwright-dir>` (default `e2e-tests/playwright`), reading results from `<playwright-dir>/<results-dir>` (default `results`).
+    - `framework: playwright` — `npx playwright test --project=<playwright-project> --no-deps <specs>` inside `<repo-dir>/<playwright-dir>` (default `e2e-tests/playwright`), reading results from `<playwright-dir>/<results-dir>` (default `results`). Visual/spec filtering is applied pre-dispatch by `test-system-io-dispatch-begin`, so no runtime `--grep-invert` is needed.
     - `framework: cypress` — `npx cypress run --reporter cypress-multi-reporters --reporter-options configFile=reporter-config.json --spec <specs>` inside `<repo-dir>/<cypress-dir>` (default `e2e-tests/cypress`), reading per-spec Mochawesome JSON from `results/mochawesome-report/json/tests/[name].json`.
 3. Parses the reporter JSON, applying flaky-aware aggregation (a test that passes after a retry is `flaky`, not `failed`).
 4. `POST /api/v1/orchestration/complete` with the per-spec outcome.

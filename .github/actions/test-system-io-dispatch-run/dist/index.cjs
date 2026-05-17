@@ -21646,12 +21646,13 @@ async function uploadOrchScreenshot(cfg, specPath, absPath) {
 		return null;
 	}
 	const relPath = node_path.basename(absPath);
+	const mimeType = /\.jpe?g$/i.test(relPath) ? "image/jpeg" : "image/png";
 	const form = new FormData();
 	for (const [k, v] of Object.entries(cfg.compositeIdentity)) if (v !== void 0 && v !== null) form.append(k, String(v));
 	form.append("gh_job_id", cfg.ghJobId);
 	form.append("spec_path", specPath);
 	form.append("relative_path", relPath);
-	form.append("file", new Blob([new Uint8Array(buf)], { type: "image/png" }), relPath);
+	form.append("file", new Blob([new Uint8Array(buf)], { type: mimeType }), relPath);
 	let res;
 	try {
 		res = await fetchWithAuthRetry(async () => {

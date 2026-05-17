@@ -452,6 +452,10 @@ async function uploadOrchScreenshot(
     return null;
   }
   const relPath = path.basename(absPath);
+  // Match the staged extensions in cypress.ts (.png / .jpg / .jpeg). The
+  // server stores the MIME type and the dashboard sets Content-Type when
+  // serving — a hard-coded image/png broke the JPEG preview render.
+  const mimeType = /\.jpe?g$/i.test(relPath) ? "image/jpeg" : "image/png";
   const form = new FormData();
   for (const [k, v] of Object.entries(cfg.compositeIdentity)) {
     if (v !== undefined && v !== null) form.append(k, String(v));
@@ -461,7 +465,7 @@ async function uploadOrchScreenshot(
   form.append("relative_path", relPath);
   // Wrap Node's Buffer in Uint8Array — same trick upload.ts uses to bridge
   // node:buffer to DOM Blob's BlobPart type.
-  form.append("file", new Blob([new Uint8Array(buf)], { type: "image/png" }), relPath);
+  form.append("file", new Blob([new Uint8Array(buf)], { type: mimeType }), relPath);
 
   let res: Response;
   try {

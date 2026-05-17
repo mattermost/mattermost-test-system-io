@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -45,6 +46,7 @@ func issueCmd() *cobra.Command {
 		Use:   "issue",
 		Short: "Issue a new API key (plaintext printed once)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			name = strings.TrimSpace(name)
 			if name == "" {
 				return errors.New("--name is required")
 			}

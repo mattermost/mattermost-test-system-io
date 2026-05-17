@@ -20,7 +20,7 @@ Optionally flips the `pending` GitHub commit status the begin action pushed to `
 | `oidc-audience` | no | `mattermost-test-system-io` | OIDC audience claim. |
 | `composite-identity` | yes | — | Same JSON the begin action received. |
 | `framework` | yes | — | Label rendered in the summary header (e.g. `playwright`, `cypress`). |
-| `commit-status-context` | yes | — | Slash-separated context label used as the commit-status `context` and in rendered summaries/webhooks. Must match the begin action value. |
+| `commit-status-context` | conditional | — | Required when `update-commit-status` is `true`. Slash-separated context label used as the commit-status `context` and in rendered summaries/webhooks. Must match the value the `test-system-io-dispatch-begin` action used. |
 | `fail-on-test-failures` | no | `true` | When `true`, exit non-zero if any unit ended in `completed_fail` or the run did not reach `completed`. |
 | `update-commit-status` | no | `true` | When `true` (default), flip the begin action's `pending` commit status to terminal state (`success`/`failure`/`error`). Requires `commit-status-context` + `github-token` and `permissions: statuses: write` on the job. Set `false` to opt out. |
 | `github-token` | no | `""` | GitHub token with `statuses: write` scope. Required only when `update-commit-status` is `true`. |

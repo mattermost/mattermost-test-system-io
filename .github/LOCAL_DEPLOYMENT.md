@@ -53,8 +53,10 @@ docker run --rm -p 8443:8443 \
 # 4. Verify
 curl https://localhost:8443/health
 curl https://localhost:8443/api/v1/info
-# Open in browser (macOS: `open`, Linux: `xdg-open`, Windows: `start`)
-open https://localhost:8443/
+# Open in browser
+open https://localhost:8443/        # macOS
+# xdg-open https://localhost:8443/  # Linux
+# start https://localhost:8443/     # Windows (PowerShell)
 ```
 
 ## Step-by-Step
@@ -139,8 +141,10 @@ curl https://localhost:8443/ready
 # Build info (HTTPS required)
 curl https://localhost:8443/api/v1/info
 
-# Embedded React web UI (macOS: `open`, Linux: `xdg-open`, Windows: `start`)
-open https://localhost:8443/
+# Embedded React web UI
+open https://localhost:8443/        # macOS
+# xdg-open https://localhost:8443/  # Linux
+# start https://localhost:8443/     # Windows (PowerShell)
 ```
 
 Expected `/api/v1/info` response:

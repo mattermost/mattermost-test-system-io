@@ -22092,7 +22092,8 @@ async function retryFetch(input, init, label) {
 		}
 		if (attempt === delays.length) break;
 		const ms = delays[attempt] + Math.floor(Math.random() * 200);
-		warning(`${label}: fetch failed (attempt ${attempt + 1}/${delays.length + 1}): ${lastErr.message}; retrying in ${ms}ms`);
+		const errMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+		warning(`${label}: fetch failed (attempt ${attempt + 1}/${delays.length + 1}): ${errMsg}; retrying in ${ms}ms`);
 		await new Promise((r) => setTimeout(r, ms));
 	}
 	throw lastErr;

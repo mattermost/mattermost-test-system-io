@@ -37,9 +37,12 @@ export async function retryFetch(
     }
     if (attempt === delays.length) break;
     const ms = delays[attempt]! + Math.floor(Math.random() * 200);
+    // Normalize the thrown value — a non-Error throw (string, plain object,
+    // undici-internal symbol) would otherwise stringify to "undefined".
+    const errMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
     core.warning(
       `${label}: fetch failed (attempt ${attempt + 1}/${delays.length + 1}): ` +
-        `${(lastErr as Error).message}; retrying in ${ms}ms`,
+        `${errMsg}; retrying in ${ms}ms`,
     );
     await new Promise<void>((r) => setTimeout(r, ms));
   }

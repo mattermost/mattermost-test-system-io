@@ -3,7 +3,7 @@ description: >
   Read /api/v1/orchestration/status and produce all formatted CI artifacts
   the consumer needs:
     * a Markdown job summary written to $GITHUB_STEP_SUMMARY,
-    * `commit_status_description` ready to feed update-commit-status'
+    * `commit_status_description` ready to feed the `update-commit-status`
       `description` input verbatim,
     * `webhook_payload` ready to POST as-is to a Mattermost-style webhook.
   When `update-commit-status: "true"` is set, also flips the `pending`

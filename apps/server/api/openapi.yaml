@@ -935,7 +935,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RunSnapshot'
+                $ref: '#/components/schemas/OrchestrationStatusResponse'
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
@@ -2152,6 +2152,43 @@ components:
                 addresses exactly one spec file. Returned by /begin (all
                 pending) and /status.
               items: { $ref: '#/components/schemas/Unit' }
+
+    OrchestrationStatusResponse:
+      description: |
+        Response body for GET /api/v1/orchestration/status. Extends
+        RunSnapshot with the best-effort `tests` rollup and `durations`
+        timeline that the summary action consumes for the commit-status
+        description. Both keys are omitted when no attempts have reported
+        results yet.
+      allOf:
+        - $ref: '#/components/schemas/RunSnapshot'
+        - type: object
+          properties:
+            tests:
+              type: object
+              required: [passed, failed, flaky, skipped, total]
+              description: Aggregated test-case counts across all reported attempts.
+              properties:
+                passed: { type: integer }
+                failed: { type: integer }
+                flaky: { type: integer }
+                skipped: { type: integer }
+                total: { type: integer }
+            durations:
+              type: object
+              required: [retest_unit_count, begin_at]
+              description: |
+                First-pass vs retest wall-clock split. *_ms fields are
+                nullable when the corresponding milestone hasn't been
+                reached. `begin_at` is the run's started_at.
+              properties:
+                first_pass_ms: { type: integer, format: int64, nullable: true }
+                retest_ms: { type: integer, format: int64, nullable: true }
+                retest_unit_count: { type: integer }
+                begin_at: { type: string, format: date-time }
+                first_test_at: { type: string, format: date-time, nullable: true }
+                first_retest_at: { type: string, format: date-time, nullable: true }
+                last_test_at: { type: string, format: date-time, nullable: true }
 
     Unit:
       type: object

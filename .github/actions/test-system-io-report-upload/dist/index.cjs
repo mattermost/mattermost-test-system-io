@@ -21064,9 +21064,9 @@ function resolveBaseURL() {
 function intInput(name, fallback) {
 	const raw = getInput(name);
 	if (raw === "") return fallback;
-	const n = Number.parseInt(raw, 10);
-	if (!Number.isFinite(n) || n < 0) throw new Error(`input ${name}=${raw} is not a non-negative integer`);
-	return n;
+	const trimmed = raw.trim();
+	if (!/^\d+$/.test(trimmed)) throw new Error(`input ${name}=${raw} is not a non-negative integer`);
+	return Number(trimmed);
 }
 function normalizeCompositeIdentity(c) {
 	if (typeof c.gh_pr_number === "string") {

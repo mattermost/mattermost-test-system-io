@@ -127,11 +127,15 @@ function resolveBaseURL(): string {
 function intInput(name: string, fallback: number): number {
   const raw = core.getInput(name);
   if (raw === "") return fallback;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) {
+  // Strict-digit check mirrors normalizeCompositeIdentity below.
+  // Number.parseInt's prefix behavior coerces "12abc" to 12, which would
+  // accept malformed inputs (e.g. a copy-paste with a trailing token)
+  // and bind the upload to an unrelated shard count.
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
     throw new Error(`input ${name}=${raw} is not a non-negative integer`);
   }
-  return n;
+  return Number(trimmed);
 }
 
 // normalizeCompositeIdentity coerces gh_pr_number to a number when it

@@ -88,7 +88,11 @@ export function runUnit(
   const json = JSON.parse(fs.readFileSync(playwrightJsonPath, "utf8")) as PlaywrightJson;
   const results = specPaths.map((p) => aggregateSpec(json, p, durationMs));
   return {
-    invocation: { specPath: specPaths[0]!, iterDir: archivedResults, playwrightJsonPath },
+    invocation: {
+      specPath: specPaths[0]!,
+      iterDir: archivedResults,
+      jsonPaths: [playwrightJsonPath],
+    },
     results,
   };
 }

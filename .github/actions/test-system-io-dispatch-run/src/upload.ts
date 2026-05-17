@@ -41,11 +41,18 @@ export async function uploadShard(
   const screenshotParts: UploadPart[] = [];
   for (let i = 0; i < invocations.length; i++) {
     const inv = invocations[i]!;
-    if (fs.existsSync(inv.playwrightJsonPath)) {
-      const stat = fs.statSync(inv.playwrightJsonPath);
-      const rel =
-        invocations.length > 1 ? `playwright-results-${i}.json` : "playwright-results.json";
-      jsonParts.push({ absPath: inv.playwrightJsonPath, relPath: rel, size: stat.size });
+    // jsonPaths is 1 file for playwright, N for cypress. Each lands as a
+    // distinct multipart entry. iter index + per-file suffix keeps the
+    // relative paths unique across iterations and within an iteration's
+    // multi-spec cypress batch.
+    for (let j = 0; j < inv.jsonPaths.length; j++) {
+      const absPath = inv.jsonPaths[j]!;
+      if (!fs.existsSync(absPath)) continue;
+      const stat = fs.statSync(absPath);
+      const iterPart = invocations.length > 1 ? `-${i}` : "";
+      const subPart = inv.jsonPaths.length > 1 ? `-${j}` : "";
+      const rel = `playwright-results${iterPart}${subPart}.json`;
+      jsonParts.push({ absPath, relPath: rel, size: stat.size });
     }
     const outputRoot = path.join(inv.iterDir, "output");
     if (fs.existsSync(outputRoot)) {

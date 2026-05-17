@@ -75,5 +75,10 @@ export interface UploadPart {
 export interface InvocationRecord {
   specPath: string;
   iterDir: string;
-  playwrightJsonPath: string;
+  // Archived reporter-JSON paths for this iteration. Playwright emits a
+  // single combined results.json per batch, so this is a 1-element array
+  // in that path. Cypress + mochawesome emits one JSON per spec, so a
+  // multi-spec batch contributes multiple entries here. uploadShard
+  // streams each entry as a separate file part.
+  jsonPaths: string[];
 }

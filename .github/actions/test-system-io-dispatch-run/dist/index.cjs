@@ -20889,7 +20889,7 @@ function runUnit$1(cfg, iterationSeq, specPaths) {
 		invocation: {
 			specPath: specPaths[0],
 			iterDir: archivedResults,
-			playwrightJsonPath
+			jsonPaths: [playwrightJsonPath]
 		},
 		results
 	};
@@ -21065,7 +21065,7 @@ function runUnit(cfg, iterationSeq, specPaths) {
 	const durationMs = Date.now() - startedAt;
 	info(`cypress exit ${child.status} in ${Math.round(durationMs / 1e3)}s`);
 	const results = [];
-	let firstArchivedPath = null;
+	const archivedJSONs = [];
 	for (const sp of specPaths) {
 		const baseName = node_path.basename(sp).replace(/\.(ts|js)$/, "");
 		const jsonPath = node_path.join(reportRoot, "json", "tests", `${baseName}.json`);
@@ -21095,7 +21095,7 @@ function runUnit(cfg, iterationSeq, specPaths) {
 		results.push(aggregateSpec(parsed, sp));
 		const archived = node_path.join(iterDir, `${uniqueSpecKey(sp)}.json`);
 		node_fs.cpSync(jsonPath, archived);
-		if (!firstArchivedPath) firstArchivedPath = archived;
+		archivedJSONs.push(archived);
 	}
 	const screenshotsBySpec = {};
 	const outputRoot = node_path.join(iterDir, "output");
@@ -21111,12 +21111,11 @@ function runUnit(cfg, iterationSeq, specPaths) {
 		node_fs.mkdirSync(dstDir, { recursive: true });
 		for (const src of absPaths) node_fs.cpSync(src, node_path.join(dstDir, node_path.basename(src)));
 	}
-	const jsonForUpload = firstArchivedPath ?? node_path.join(iterDir, "missing.json");
 	return {
 		invocation: {
 			specPath: specPaths[0],
 			iterDir,
-			playwrightJsonPath: jsonForUpload
+			jsonPaths: archivedJSONs
 		},
 		results,
 		screenshotsBySpec
@@ -21207,11 +21206,13 @@ async function uploadShard(cfg, invocations) {
 	const screenshotParts = [];
 	for (let i = 0; i < invocations.length; i++) {
 		const inv = invocations[i];
-		if (node_fs.existsSync(inv.playwrightJsonPath)) {
-			const stat = node_fs.statSync(inv.playwrightJsonPath);
-			const rel = invocations.length > 1 ? `playwright-results-${i}.json` : "playwright-results.json";
+		for (let j = 0; j < inv.jsonPaths.length; j++) {
+			const absPath = inv.jsonPaths[j];
+			if (!node_fs.existsSync(absPath)) continue;
+			const stat = node_fs.statSync(absPath);
+			const rel = `playwright-results${invocations.length > 1 ? `-${i}` : ""}${inv.jsonPaths.length > 1 ? `-${j}` : ""}.json`;
 			jsonParts.push({
-				absPath: inv.playwrightJsonPath,
+				absPath,
 				relPath: rel,
 				size: stat.size
 			});

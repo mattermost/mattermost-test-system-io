@@ -135,7 +135,7 @@ export function runUnit(
   // finishes draining (uploadShard skips paths whose file no longer
   // exists).
   const results: SpecResult[] = [];
-  let firstArchivedPath: string | null = null;
+  const archivedJSONs: string[] = [];
   for (const sp of specPaths) {
     const baseName = path.basename(sp).replace(/\.(ts|js)$/, "");
     const jsonPath = path.join(reportRoot, "json", "tests", `${baseName}.json`);
@@ -171,7 +171,7 @@ export function runUnit(
     // don't clobber each other's archive.
     const archived = path.join(iterDir, `${uniqueSpecKey(sp)}.json`);
     fs.cpSync(jsonPath, archived);
-    if (!firstArchivedPath) firstArchivedPath = archived;
+    archivedJSONs.push(archived);
   }
 
   // Collect Cypress failure screenshots and stage them for both upload
@@ -202,14 +202,13 @@ export function runUnit(
     }
   }
 
-  // The InvocationRecord wants ONE json path; pick the first archived
-  // file (so it survives subsequent iterations that wipe the live
-  // results dir), falling back to a synthetic path that will fail the
-  // existence check upstream and be skipped from the upload set
-  // (matching playwright's semantics when its results.json is missing).
-  const jsonForUpload = firstArchivedPath ?? path.join(iterDir, "missing.json");
+  // Surface every archived JSON in the InvocationRecord — uploadShard
+  // iterates jsonPaths and ships each as its own multipart entry. The
+  // empty-list case (every spec missing its mochawesome JSON) lands as
+  // "no playwright json to upload" in uploadShard, matching the
+  // playwright path's missing-results.json semantics.
   return {
-    invocation: { specPath: specPaths[0]!, iterDir, playwrightJsonPath: jsonForUpload },
+    invocation: { specPath: specPaths[0]!, iterDir, jsonPaths: archivedJSONs },
     results,
     screenshotsBySpec,
   };

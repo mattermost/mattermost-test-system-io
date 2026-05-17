@@ -52,7 +52,7 @@ cp .env.example .env
 make docker-up    # Postgres 18.3 + MinIO + adminer
 make db-reset     # apply migrations/*.sql
 make seed         # fixtures: default report group + TSIO_API_KEY
-make dev          # server :8080 and web :3000
+make dev          # server :8443 (HTTPS, mkcert) and web :3000 (HTTPS via Vite proxy)
 ```
 
 Or just the server:

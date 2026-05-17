@@ -4,7 +4,7 @@ Go API + React frontend for viewing Playwright, Cypress, and Detox test reports,
 
 ## Quick Start
 ```bash
-make dev    # Start servers (API :8080, Web :3000)
+make dev    # Start servers (API https://localhost:8443, Web https://localhost:3000)
 make ci     # Run checks, lint, test, build
 ```
 

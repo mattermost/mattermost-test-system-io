@@ -19,7 +19,7 @@ make install       # Install all dependencies (Go modules + npm)
 make docker-up     # Start PostgreSQL 18.3 + MinIO + Adminer
 make db-reset      # Apply migrations (fresh schema)
 make seed          # Seed default group + dev API key
-make dev           # Run server (:8080) and web (:3000) concurrently
+make dev           # Run server (https://localhost:8443) and web (https://localhost:3000) concurrently
 ```
 
 ## Project Structure

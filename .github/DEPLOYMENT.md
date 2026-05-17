@@ -124,8 +124,8 @@ This guarantees 100% artifact parity between staging and production.
 ### What is created
 
 - Docker Hub image: `mattermostdevelopment/mattermost-test-system-io:0.1.0` + `:latest`
-- GitHub release: `0.1.0`
-- Git tag: `0.1.0`
+- GitHub release: `release-0.1.0`
+- Git tag: `release-0.1.0`
 
 ## Deployment Flow Example
 

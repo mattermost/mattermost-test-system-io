@@ -11,6 +11,11 @@
  * Transient 5xx / 429 retries are handled by `@octokit/plugin-retry`.
  */
 import * as core from "@actions/core";
+// @actions/github's top-level entry (lib/github) only re-exports `context` and
+// `getOctokit`. The plugin-extensible `GitHub` constructor and the
+// `getOctokitOptions` helper live in lib/utils, which is exposed as a public
+// subpath via the package's `exports` map ("./lib/utils") — not an internal
+// path. Importing it directly is the documented way to attach octokit plugins.
 import { GitHub, getOctokitOptions } from "@actions/github/lib/utils";
 import { retry } from "@octokit/plugin-retry";
 

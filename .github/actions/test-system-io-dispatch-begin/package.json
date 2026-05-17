@@ -2,7 +2,7 @@
   "name": "test-system-io-dispatch-begin",
   "private": true,
   "version": "0.1.0",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "scripts": {
     "build": "tsdown",
     "tsc": "tsc -b",

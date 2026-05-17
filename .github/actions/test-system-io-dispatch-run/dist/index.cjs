@@ -21022,6 +21022,12 @@ function uniqueSpecKey(sp) {
 	return sp.replace(/^\.[/\\]/, "").replace(/[\\/]/g, "__").replace(/\.(ts|js)$/, "");
 }
 function runUnit(cfg, iterationSeq, specPaths) {
+	const seenBasenames = /* @__PURE__ */ new Set();
+	for (const sp of specPaths) {
+		const base = node_path.basename(sp);
+		if (seenBasenames.has(base)) throw new Error(`Cypress batch contains duplicate spec basename: ${base}`);
+		seenBasenames.add(base);
+	}
 	const iterDir = node_path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
 	node_fs.mkdirSync(iterDir, { recursive: true });
 	const reportRoot = node_path.join(cfg.cypressDir, "results", "mochawesome-report");

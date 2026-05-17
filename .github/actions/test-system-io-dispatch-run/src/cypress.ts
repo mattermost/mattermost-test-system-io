@@ -65,6 +65,22 @@ export function runUnit(
   iterationSeq: number,
   specPaths: string[],
 ): CypressUnitResult {
+  // Cypress + mochawesome key their output (JSON files, screenshot
+  // directories) by spec basename. Two specs sharing a basename in the same
+  // batch would let the second one overwrite the first AT THE UPSTREAM
+  // LAYER — before uniqueSpecKey() ever runs — so the worker would
+  // attribute one spec's results/screenshots to the other. Fail fast
+  // rather than silently corrupt; the orchestrator can re-lease the
+  // colliding specs in separate batches.
+  const seenBasenames = new Set<string>();
+  for (const sp of specPaths) {
+    const base = path.basename(sp);
+    if (seenBasenames.has(base)) {
+      throw new Error(`Cypress batch contains duplicate spec basename: ${base}`);
+    }
+    seenBasenames.add(base);
+  }
+
   const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs.mkdirSync(iterDir, { recursive: true });
 

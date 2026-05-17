@@ -22372,8 +22372,8 @@ function renderWebhookPayload(f) {
 }
 function normalizeCompositeIdentity(c) {
 	if (typeof c.gh_pr_number === "string") {
-		const n = Number.parseInt(c.gh_pr_number, 10);
-		if (Number.isFinite(n)) c.gh_pr_number = n;
+		const raw = c.gh_pr_number.trim();
+		if (/^\d+$/.test(raw)) c.gh_pr_number = Number(raw);
 		else delete c.gh_pr_number;
 	}
 }

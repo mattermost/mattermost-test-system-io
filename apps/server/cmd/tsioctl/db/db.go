@@ -131,7 +131,7 @@ func resetCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().BoolVar(&force, "force", false, "Override the TSIO_ENVIRONMENT safety check (never use in production)")
+	c.Flags().BoolVar(&force, "force", false, "Override destructive safety checks (environment + local/private DB target); never use in production")
 	return c
 }
 
@@ -173,6 +173,6 @@ func seedCmd() *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().BoolVar(&force, "force", false, "Override the TSIO_ENVIRONMENT safety check (never use in production)")
+	c.Flags().BoolVar(&force, "force", false, "Override destructive safety checks (environment + local/private DB target); never use in production")
 	return c
 }

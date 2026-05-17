@@ -269,9 +269,13 @@ violation or a manual edit has left a row inconsistent.`,
 			// reconcile reads dispatch_units, aggregates, and writes back —
 			// three separate statements. A dispatcher tick on an in-progress
 			// run between the read and write would persist a stale snapshot.
-			// Refuse unless the run has reached a terminal state, where
-			// dispatch_units won't change underneath us.
-			if runStatus == "in_progress" {
+			// Allowlist the terminal states explicitly so that a future
+			// schema migration adding a new non-terminal status (e.g.
+			// 'paused') doesn't silently bypass this gate.
+			switch runStatus {
+			case "completed", "timed_out":
+				// terminal; safe to reconcile
+			default:
 				return fmt.Errorf("refusing to reconcile run %s: status=%q (must be terminal — completed or timed_out — to avoid racing the dispatcher)", runID, runStatus)
 			}
 

@@ -3,6 +3,7 @@ package artifacts
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ func TestGet_badUUID(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("Content-Type"); got != "application/json" {
-		t.Errorf("content-type = %q", got)
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Errorf("content-type = %q, want application/json[; charset=…]", got)
 	}
 }

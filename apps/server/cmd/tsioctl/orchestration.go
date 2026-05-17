@@ -225,11 +225,13 @@ violation or a manual edit has left a row inconsistent.`,
 			defer pool.Close()
 
 			var (
-				runID  string
-				before counters
+				runID     string
+				runStatus string
+				before    counters
 			)
 			err = pool.QueryRow(ctx, `
 				SELECT id,
+				       status,
 				       pending_count,
 				       leased_count,
 				       completed_pass_count,
@@ -246,6 +248,7 @@ violation or a manual edit has left a row inconsistent.`,
 				   AND gh_run_attempt = $5
 			`, repository, commitSHA, ghRunID, name, ghRunAttempt).Scan(
 				&runID,
+				&runStatus,
 				&before.Pending,
 				&before.Leased,
 				&before.CompletedPass,
@@ -261,6 +264,15 @@ violation or a manual edit has left a row inconsistent.`,
 						repository, commitSHA, ghRunID, name, ghRunAttempt)
 				}
 				return fmt.Errorf("lookup run: %w", err)
+			}
+
+			// reconcile reads dispatch_units, aggregates, and writes back —
+			// three separate statements. A dispatcher tick on an in-progress
+			// run between the read and write would persist a stale snapshot.
+			// Refuse unless the run has reached a terminal state, where
+			// dispatch_units won't change underneath us.
+			if runStatus == "in_progress" {
+				return fmt.Errorf("refusing to reconcile run %s: status=%q (must be terminal — completed or timed_out — to avoid racing the dispatcher)", runID, runStatus)
 			}
 
 			var after counters

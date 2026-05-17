@@ -126,7 +126,13 @@ export async function run(): Promise<void> {
   const branch = encodeURIComponent(compositeIdentity.branch || "main");
   const shortSha = (compositeIdentity.commit_sha || "").slice(0, 7);
   const name = encodeURIComponent(compositeIdentity.name);
-  const reportURL = `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(compositeIdentity.gh_run_id)}`;
+  // gh_run_attempt is also a primary-key field on report_groups; a rerun
+  // keeps the same gh_run_id and bumps the attempt counter. Omitting it
+  // here would aim every attempt's deep link at the first attempt's row.
+  const reportURL =
+    `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}` +
+    `?gh_run_id=${encodeURIComponent(compositeIdentity.gh_run_id)}` +
+    `&gh_run_attempt=${encodeURIComponent(compositeIdentity.gh_run_attempt || "1")}`;
 
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) {

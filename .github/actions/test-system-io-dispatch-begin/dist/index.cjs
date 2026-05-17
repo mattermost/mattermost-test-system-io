@@ -22567,7 +22567,7 @@ function formatPendingDescription() {
 }
 function buildReportURL(baseURL, c) {
 	const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
-	return `${baseURL}/reports/${encodeURIComponent(repoTrailing)}/${encodeURIComponent(c.branch || "main")}/${(c.commit_sha || "").slice(0, 7)}/${encodeURIComponent(c.name)}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
+	return `${baseURL}/reports/${encodeURIComponent(repoTrailing)}/${encodeURIComponent(c.branch || "main")}/${(c.commit_sha || "").slice(0, 7)}/${encodeURIComponent(c.name)}?gh_run_id=${encodeURIComponent(c.gh_run_id)}&gh_run_attempt=${encodeURIComponent(c.gh_run_attempt || "1")}`;
 }
 function identityForReports(c, framework, totalReportsExpected) {
 	const body = {

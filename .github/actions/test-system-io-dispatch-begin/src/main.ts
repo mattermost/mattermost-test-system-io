@@ -215,7 +215,14 @@ function buildReportURL(baseURL: string, c: CompositeIdentity): string {
   const branch = encodeURIComponent(c.branch || "main");
   const shortSha = (c.commit_sha || "").slice(0, 7);
   const name = encodeURIComponent(c.name);
-  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
+  // gh_run_attempt is part of the report_groups primary key; a rerun keeps
+  // the same gh_run_id and bumps the attempt counter. Without it, the link
+  // always lands on attempt 1.
+  return (
+    `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}` +
+    `?gh_run_id=${encodeURIComponent(c.gh_run_id)}` +
+    `&gh_run_attempt=${encodeURIComponent(c.gh_run_attempt || "1")}`
+  );
 }
 
 function identityForReports(

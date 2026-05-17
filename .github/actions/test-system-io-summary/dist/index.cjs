@@ -22151,7 +22151,7 @@ async function run() {
 	info(`orchestration status: status=${status.status ?? "unknown"} total=${status.total_units ?? "?"} pass=${counts.completed_pass ?? 0} fail=${counts.completed_fail ?? 0} skip=${counts.completed_skipped ?? 0} pending=${counts.pending ?? 0} leased=${counts.leased ?? 0}`);
 	const repoSlug = compositeIdentity.repository || "";
 	const repoTrailing = repoSlug.split("/").pop() || repoSlug;
-	const reportURL = `${baseURL}/reports/${encodeURIComponent(repoTrailing)}/${encodeURIComponent(compositeIdentity.branch || "main")}/${(compositeIdentity.commit_sha || "").slice(0, 7)}/${encodeURIComponent(compositeIdentity.name)}?gh_run_id=${encodeURIComponent(compositeIdentity.gh_run_id)}`;
+	const reportURL = `${baseURL}/reports/${encodeURIComponent(repoTrailing)}/${encodeURIComponent(compositeIdentity.branch || "main")}/${(compositeIdentity.commit_sha || "").slice(0, 7)}/${encodeURIComponent(compositeIdentity.name)}?gh_run_id=${encodeURIComponent(compositeIdentity.gh_run_id)}&gh_run_attempt=${encodeURIComponent(compositeIdentity.gh_run_attempt || "1")}`;
 	const summaryPath = process.env.GITHUB_STEP_SUMMARY;
 	if (summaryPath) {
 		const counts = status.counts || {};

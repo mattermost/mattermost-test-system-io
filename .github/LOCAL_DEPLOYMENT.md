@@ -51,7 +51,7 @@ docker run --rm -p 8443:8443 \
   mattermost-test-system-io:local
 
 # 4. Verify
-curl http://localhost:8443/health
+curl https://localhost:8443/health
 curl https://localhost:8443/api/v1/info
 # Open in browser (macOS: `open`, Linux: `xdg-open`, Windows: `start`)
 open https://localhost:8443/
@@ -130,11 +130,11 @@ docker run --rm -p 8443:8443 \
 ### 4. Verify
 
 ```bash
-# Liveness (always 200) — health endpoints bypass the HTTPS check
-curl http://localhost:8443/health
+# Liveness (always 200)
+curl https://localhost:8443/health
 
 # Readiness (checks DB connectivity)
-curl http://localhost:8443/ready
+curl https://localhost:8443/ready
 
 # Build info (HTTPS required)
 curl https://localhost:8443/api/v1/info

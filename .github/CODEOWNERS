@@ -1,8 +1,9 @@
 # CODEOWNERS - Require maintainer review for sensitive files
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
-# CI/CD workflows
+# CI/CD workflows + bundled actions (both are executable in CI)
 /.github/workflows/ @saturninoabril
+/.github/actions/ @saturninoabril
 
 # Infrastructure as code
 /infra/ @saturninoabril

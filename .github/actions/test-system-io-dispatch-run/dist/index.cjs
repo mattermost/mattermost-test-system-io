@@ -20866,6 +20866,10 @@ function runUnit$1(cfg, iterationSeq, specPaths) {
 	];
 	if (cfg.playwrightRetries > 0) args.push(`--retries=${cfg.playwrightRetries}`);
 	args.push(...specPaths);
+	node_fs.rmSync(cfg.resultsDir, {
+		recursive: true,
+		force: true
+	});
 	const startedAt = Date.now();
 	const child = (0, node_child_process.spawnSync)("npx", args, {
 		cwd: cfg.playwrightDir,

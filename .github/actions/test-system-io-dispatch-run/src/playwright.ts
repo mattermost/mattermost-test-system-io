@@ -55,6 +55,12 @@ export function runUnit(
   if (cfg.playwrightRetries > 0) args.push(`--retries=${cfg.playwrightRetries}`);
   args.push(...specPaths);
 
+  // Clear the shared results dir so a Playwright crash before it writes
+  // fresh reporter output doesn't let us archive the previous lease's
+  // results for the current spec. Mirrors the cypress adapter's wipe of
+  // results/mochawesome-report at the top of runUnit.
+  fs.rmSync(cfg.resultsDir, { recursive: true, force: true });
+
   const startedAt = Date.now();
   const child = spawnSync("npx", args, {
     cwd: cfg.playwrightDir,

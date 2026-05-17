@@ -21278,7 +21278,8 @@ function listImages(root) {
 			recursive: true,
 			withFileTypes: true
 		});
-	} catch {
+	} catch (err) {
+		if (err?.code !== "ENOENT") warning(`failed to enumerate screenshots under ${root}: ${err.message}`);
 		return out;
 	}
 	for (const ent of entries) {

@@ -140,7 +140,15 @@ function listImages(root: string): UploadPart[] {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(root, { recursive: true, withFileTypes: true }) as fs.Dirent[];
-  } catch {
+  } catch (err) {
+    // A missing screenshots dir is a normal "no failures, no screenshots"
+    // outcome — quietly return empty. Anything else (permission denied, I/O
+    // error) should be surfaced so the operator notices instead of seeing
+    // a successful-looking shard upload with zero attachments.
+    const e = err as NodeJS.ErrnoException;
+    if (e?.code !== "ENOENT") {
+      core.warning(`failed to enumerate screenshots under ${root}: ${(err as Error).message}`);
+    }
     return out;
   }
   for (const ent of entries) {

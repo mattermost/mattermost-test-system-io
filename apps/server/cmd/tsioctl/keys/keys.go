@@ -91,8 +91,13 @@ func listCmd() *cobra.Command {
 
 			var filter *apikey.Status
 			if status != "" {
-				s := apikey.Status(status)
-				filter = &s
+				switch apikey.Status(status) {
+				case apikey.StatusActive, apikey.StatusRotating, apikey.StatusRevoked:
+					s := apikey.Status(status)
+					filter = &s
+				default:
+					return fmt.Errorf("invalid --status %q (expected active|rotating|revoked)", status)
+				}
 			}
 			rows, err := repo.List(ctx, filter)
 			if err != nil {

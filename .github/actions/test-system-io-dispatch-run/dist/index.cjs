@@ -21063,6 +21063,8 @@ function runUnit(cfg, iterationSeq, specPaths) {
 		},
 		stdio: "inherit"
 	});
+	if (child.error) throw child.error;
+	if (child.status === null) throw new Error(`cypress terminated by signal: ${child.signal ?? "unknown"}`);
 	const durationMs = Date.now() - startedAt;
 	info(`cypress exit ${child.status} in ${Math.round(durationMs / 1e3)}s`);
 	const results = [];

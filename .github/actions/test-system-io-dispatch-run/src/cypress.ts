@@ -123,6 +123,17 @@ export function runUnit(
     env: { ...process.env, FORCE_COLOR: "0" },
     stdio: "inherit",
   });
+  // Mirror playwright.ts: spawnSync doesn't throw on launch failure
+  // (ENOENT, EACCES land on child.error), and a null status means the
+  // process was killed by signal. Without these checks, both cases fall
+  // through to "missing mochawesome JSON" and surface as "interrupted"
+  // spec results — hiding the real dispatch fault.
+  if (child.error) {
+    throw child.error;
+  }
+  if (child.status === null) {
+    throw new Error(`cypress terminated by signal: ${child.signal ?? "unknown"}`);
+  }
   const durationMs = Date.now() - startedAt;
   core.info(`cypress exit ${child.status} in ${Math.round(durationMs / 1000)}s`);
 

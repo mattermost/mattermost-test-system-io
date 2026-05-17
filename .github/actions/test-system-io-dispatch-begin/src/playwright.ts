@@ -54,8 +54,15 @@ export function discoverPlaywrightSpecs(
     }
   }
 
+  // Path-boundary matching: a bare `startsWith(ex)` would treat
+  // "specs/visual" as matching "specs/visual2/foo.spec.ts". Anchor both
+  // ends on `/` so an exclusion matches only the exact path, a leaf with
+  // that suffix, or a directory by that name.
   const isExcluded = (p: string): boolean =>
-    excludePaths.some((ex) => p === ex || p.endsWith("/" + ex) || p.startsWith(ex));
+    excludePaths.some((ex) => {
+      const exNorm = ex.replace(/\/+$/, "");
+      return p === exNorm || p.endsWith(`/${exNorm}`) || p.startsWith(`${exNorm}/`);
+    });
   return [...seen].filter((p) => !isExcluded(p)).sort();
 }
 

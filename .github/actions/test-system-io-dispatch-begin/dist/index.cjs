@@ -22297,7 +22297,10 @@ function discoverPlaywrightSpecs(playwrightDir, excludePaths = []) {
 		if (seen.has(rel)) continue;
 		seen.add(rel);
 	}
-	const isExcluded = (p) => excludePaths.some((ex) => p === ex || p.endsWith("/" + ex) || p.startsWith(ex));
+	const isExcluded = (p) => excludePaths.some((ex) => {
+		const exNorm = ex.replace(/\/+$/, "");
+		return p === exNorm || p.endsWith(`/${exNorm}`) || p.startsWith(`${exNorm}/`);
+	});
 	return [...seen].filter((p) => !isExcluded(p)).sort();
 }
 /**

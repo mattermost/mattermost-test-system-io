@@ -206,10 +206,15 @@ export function aggregateSpec(
     return { spec_path: specPath, status: "skipped", actual_duration_ms: 0, test_cases: [] };
   }
 
+  // When every case in the spec is "skipped", totalMs is legitimately 0
+  // — falling back to the whole-run wall clock would attribute the entire
+  // playwright invocation to this one spec. Only use the fallback when
+  // totalMs is missing AND the spec actually ran something.
+  const actualDurationMs = totalMs > 0 || worst === "skipped" ? totalMs : fallbackDurationMs;
   const out: SpecResult = {
     spec_path: specPath,
     status: worst,
-    actual_duration_ms: totalMs || fallbackDurationMs,
+    actual_duration_ms: actualDurationMs,
     test_cases: cases,
   };
   const firstFail = cases.find(

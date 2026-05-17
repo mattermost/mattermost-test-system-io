@@ -20968,7 +20968,7 @@ function aggregateSpec$1(json, specPath, fallbackDurationMs) {
 	const out = {
 		spec_path: specPath,
 		status: worst,
-		actual_duration_ms: totalMs || fallbackDurationMs,
+		actual_duration_ms: totalMs > 0 || worst === "skipped" ? totalMs : fallbackDurationMs,
 		test_cases: cases
 	};
 	const firstFail = cases.find((c) => c.status === "failed" || c.status === "timedOut" || c.status === "interrupted");

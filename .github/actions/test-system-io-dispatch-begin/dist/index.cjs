@@ -22534,7 +22534,11 @@ async function run() {
 	info(`report group ready: ${report_id}`);
 	const reportURL = buildReportURL(baseURL, compositeIdentity);
 	setOutput("report-url", reportURL);
-	if (getInput("post-pending-commit-status") === "true") await pushPendingCommitStatus(compositeIdentity, reportURL);
+	if (getInput("post-pending-commit-status") === "true") try {
+		await pushPendingCommitStatus(compositeIdentity, reportURL);
+	} catch (err) {
+		warning(`post-pending-commit-status failed: ${err.message}`);
+	}
 }
 async function pushPendingCommitStatus(c, reportURL) {
 	const context = getInput("commit-status-context");

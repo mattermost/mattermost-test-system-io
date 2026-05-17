@@ -169,9 +169,16 @@ export async function run(): Promise<void> {
 
   // Commit status — best-effort, opt-in. The target URL deep-links into
   // the Test System IO report page so reviewers click the commit-status
-  // row and land on the live dashboard.
+  // row and land on the live dashboard. /orchestration/begin and
+  // /reports/begin have already succeeded by this point; a token/permission
+  // hiccup here must NOT roll those back, so a failure degrades to a
+  // warning rather than failing the action.
   if (core.getInput("post-pending-commit-status") === "true") {
-    await pushPendingCommitStatus(compositeIdentity, reportURL);
+    try {
+      await pushPendingCommitStatus(compositeIdentity, reportURL);
+    } catch (err) {
+      core.warning(`post-pending-commit-status failed: ${(err as Error).message}`);
+    }
   }
 }
 

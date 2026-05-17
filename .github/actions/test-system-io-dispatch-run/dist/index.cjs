@@ -20830,6 +20830,7 @@ async function fetchWithAuthRetry(makeRequest) {
 	let res = await fetchWithRetry(makeRequest);
 	if (res.status === 401) {
 		info("401 — invalidating cached OIDC token and retrying once");
+		await res.body?.cancel();
 		invalidateToken();
 		res = await fetchWithRetry(makeRequest);
 	}

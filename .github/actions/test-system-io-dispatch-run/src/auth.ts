@@ -96,6 +96,10 @@ export async function fetchWithAuthRetry(makeRequest: () => Promise<Response>): 
   let res = await fetchWithRetry(makeRequest);
   if (res.status === 401) {
     core.info("401 — invalidating cached OIDC token and retrying once");
+    // Release the unread 401 body so undici can return the socket to the
+    // pool instead of holding it open until GC. Long-lived workers can
+    // accumulate dozens of these on flaky token-rotation windows.
+    await res.body?.cancel();
     invalidateToken();
     res = await fetchWithRetry(makeRequest);
   }

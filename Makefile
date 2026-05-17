@@ -313,6 +313,7 @@ clean-web: ## Remove web build artifacts
 clean-all: clean ## Clean + purge caches (go mod/test cache, node_modules)
 	cd $(SERVER_DIR) && $(GO) clean -cache -testcache -modcache
 	cd $(WEB_DIR) && rm -rf node_modules
+	cd $(INFRA_DIR) && rm -rf node_modules
 
 ##@ Dependencies
 

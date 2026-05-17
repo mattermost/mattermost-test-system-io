@@ -219,10 +219,16 @@ fmt-server: ## Format Go code (writes)
 
 fmt-check: fmt-check-server fmt-check-web fmt-check-infra ## Verify formatting on Go + web + infra (matches GitHub `web-checks` / `server-checks` / `infra-checks` jobs)
 
-fmt-check-server: ## Verify Go is gofmt-clean (CI-friendly; exit 1 on drift)
+fmt-check-server: ## Verify Go is gofmt+goimports clean (CI-friendly; exit 1 on drift)
 	@cd $(SERVER_DIR) && out=$$($(GOFMT) -s -l .); \
 	if [ -n "$$out" ]; then \
 		echo "$(RED)gofmt -s finds formatting issues:$(RESET)"; \
+		echo "$$out"; \
+		exit 1; \
+	fi
+	@cd $(SERVER_DIR) && out=$$($(GOIMPORTS_CMD) -l .); \
+	if [ -n "$$out" ]; then \
+		echo "$(RED)goimports finds import-ordering issues:$(RESET)"; \
 		echo "$$out"; \
 		exit 1; \
 	fi

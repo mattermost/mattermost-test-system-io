@@ -65,8 +65,14 @@ export async function uploadShard(
   }
 
   if (jsonParts.length === 0) {
-    core.info("no playwright json to upload");
-    return;
+    // The empty-invocations case is handled above. Reaching here means the
+    // worker ran specs but produced zero parseable JSON — almost always
+    // signals a reporter / archive regression. Failing loudly forces the
+    // operator to look; a silent skip would have the shard vanish from
+    // the report-group with no breadcrumb.
+    throw new Error(
+      `no JSON artifacts found for ${invocations.length} invocation(s); refusing to silently skip upload`,
+    );
   }
 
   const regBody: Record<string, unknown> = {

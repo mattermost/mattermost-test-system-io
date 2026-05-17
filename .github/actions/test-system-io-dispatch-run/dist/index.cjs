@@ -21233,10 +21233,7 @@ async function uploadShard(cfg, invocations) {
 			});
 		}
 	}
-	if (jsonParts.length === 0) {
-		info("no playwright json to upload");
-		return;
-	}
+	if (jsonParts.length === 0) throw new Error(`no JSON artifacts found for ${invocations.length} invocation(s); refusing to silently skip upload`);
 	const regRes = await postJSON$1(cfg, "/api/v1/reports/register", {
 		...identityFields(cfg.compositeIdentity, cfg.framework),
 		gh_job_id: cfg.ghJobId,

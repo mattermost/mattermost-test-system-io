@@ -521,9 +521,12 @@ function intInput(name: string, fallback: number): number {
 // action body-agnostic.
 function normalizeCompositeIdentity(c: CompositeIdentity): void {
   if (typeof c.gh_pr_number === "string") {
-    const n = Number.parseInt(c.gh_pr_number, 10);
-    if (Number.isFinite(n)) {
-      c.gh_pr_number = n;
+    // Strict-digit check — Number.parseInt's prefix behavior would coerce
+    // "123abc" to 123 and bind the run to the wrong PR. Whitespace-only
+    // payloads from shell interpolation also need to drop cleanly.
+    const raw = c.gh_pr_number.trim();
+    if (/^\d+$/.test(raw)) {
+      c.gh_pr_number = Number(raw);
     } else {
       delete c.gh_pr_number;
     }

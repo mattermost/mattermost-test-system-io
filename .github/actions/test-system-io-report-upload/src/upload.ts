@@ -150,7 +150,14 @@ function listImages(root: string): UploadPart[] {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(root, { recursive: true, withFileTypes: true }) as fs.Dirent[];
-  } catch {
+  } catch (err) {
+    // ENOENT means "no screenshots produced" — common, stay quiet. Any
+    // other error (EACCES, EIO, ELOOP) hides real artefacts behind a
+    // successful-looking shard upload; warn so the operator notices.
+    const e = err as NodeJS.ErrnoException;
+    if (e?.code !== "ENOENT") {
+      core.warning(`failed to enumerate screenshots under ${root}: ${(err as Error).message}`);
+    }
     return out;
   }
   for (const ent of entries) {

@@ -71,6 +71,7 @@ uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispat
   with:
     composite-identity: ${{ steps.identity.outputs.json }}
     repo-dir: ./mattermost
+    total-reports-expected: "64"   # set this to your worker matrix size
     commit-status-context: e2e-test/playwright-full/enterprise
     github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -80,6 +81,7 @@ uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispat
     use-staging: "true"
     composite-identity: ${{ steps.identity.outputs.json }}
     repo-dir: ./mattermost
+    total-reports-expected: "64"   # set this to your worker matrix size
     commit-status-context: e2e-test/playwright-full/enterprise
     github-token: ${{ secrets.GITHUB_TOKEN }}
 ```

@@ -944,6 +944,7 @@ paths:
       tags: [orchestration]
       summary: List runs matching a display identity
       operationId: orchestrationListRuns
+      security: []
       description: |
         Lists every orchestration run matching the dashboard URL's display
         identity: repository (full slug or trailing segment), commit_sha (full

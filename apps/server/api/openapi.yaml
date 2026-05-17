@@ -1052,6 +1052,8 @@ paths:
   /api/v1/admin/api-keys:
     get:
       tags: [admin]
+      security:
+        - adminKey: []
       responses:
         '200':
           description: API keys list
@@ -1062,6 +1064,8 @@ paths:
                 items: { $ref: '#/components/schemas/APIKeySummary' }
     post:
       tags: [admin]
+      security:
+        - adminKey: []
       requestBody:
         required: true
         content:
@@ -1091,6 +1095,8 @@ paths:
         required: true
     post:
       tags: [admin]
+      security:
+        - adminKey: []
       responses:
         '200':
           description: Rotated; new plaintext shown once
@@ -1111,6 +1117,8 @@ paths:
         required: true
     delete:
       tags: [admin]
+      security:
+        - adminKey: []
       responses:
         '204': { description: Revoked }
 

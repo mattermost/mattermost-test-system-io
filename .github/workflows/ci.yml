@@ -178,9 +178,15 @@ jobs:
         run: npm run build
 
       - name: Verify dist is up to date
+        # `git diff --exit-code dist/` only catches modifications to tracked
+        # files. `npm run build` can also create new files (e.g. a sourcemap
+        # added by a tsdown bump), which are untracked and would pass diff
+        # silently. Use `git status --porcelain` so any change under dist/
+        # — modification, addition, or deletion — fails the check.
         run: |
-          if ! git diff --exit-code dist/; then
+          if [ -n "$(git status --porcelain -- dist/)" ]; then
             echo "::error::dist/ is stale — run 'npm run build' in .github/actions/${{ matrix.action }} and commit the result"
+            git status --short -- dist/
             exit 1
           fi
 

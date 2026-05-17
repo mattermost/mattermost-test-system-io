@@ -245,11 +245,12 @@ function resolveBaseURL(): string {
 function intInput(name: string, fallback: number): number {
   const raw = core.getInput(name);
   if (raw === "") return fallback;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) {
+  // Reject anything other than digits — parseInt accepts trailing garbage
+  // ("10ms" → 10, "42x" → 42), which silently swallows typo'd timeouts.
+  if (!/^\d+$/.test(raw)) {
     throw new Error(`input ${name}=${raw} is not a non-negative integer`);
   }
-  return n;
+  return Number(raw);
 }
 
 // normalizeCompositeIdentity coerces gh_pr_number to a number when it
@@ -261,9 +262,10 @@ function intInput(name: string, fallback: number): number {
 // action body-agnostic.
 function normalizeCompositeIdentity(c: CompositeIdentity): void {
   if (typeof c.gh_pr_number === "string") {
-    const n = Number.parseInt(c.gh_pr_number, 10);
-    if (Number.isFinite(n)) {
-      c.gh_pr_number = n;
+    // Strict digit check — parseInt's prefix behavior would coerce
+    // "5/13" into 5 and bind the run to the wrong PR.
+    if (/^\d+$/.test(c.gh_pr_number)) {
+      c.gh_pr_number = Number(c.gh_pr_number);
     } else {
       delete c.gh_pr_number;
     }

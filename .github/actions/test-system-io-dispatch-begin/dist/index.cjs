@@ -22589,16 +22589,12 @@ function resolveBaseURL() {
 function intInput(name, fallback) {
 	const raw = getInput(name);
 	if (raw === "") return fallback;
-	const n = Number.parseInt(raw, 10);
-	if (!Number.isFinite(n) || n < 0) throw new Error(`input ${name}=${raw} is not a non-negative integer`);
-	return n;
+	if (!/^\d+$/.test(raw)) throw new Error(`input ${name}=${raw} is not a non-negative integer`);
+	return Number(raw);
 }
 function normalizeCompositeIdentity(c) {
-	if (typeof c.gh_pr_number === "string") {
-		const n = Number.parseInt(c.gh_pr_number, 10);
-		if (Number.isFinite(n)) c.gh_pr_number = n;
-		else delete c.gh_pr_number;
-	}
+	if (typeof c.gh_pr_number === "string") if (/^\d+$/.test(c.gh_pr_number)) c.gh_pr_number = Number(c.gh_pr_number);
+	else delete c.gh_pr_number;
 }
 
 //#endregion

@@ -753,7 +753,7 @@ paths:
           description: |
             Run is not in_progress (already completed or timed_out), OR the
             worker (gh_job_id) already holds an active lease on this run.
-            The error body distinguishes the two cases via `code`:
+            The error body distinguishes the two cases via `error`:
             `RUN_NOT_IN_PROGRESS` vs. `WORKER_HAS_ACTIVE_LEASE`.
           content:
             application/json:

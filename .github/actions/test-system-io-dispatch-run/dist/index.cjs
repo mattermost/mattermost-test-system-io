@@ -21031,7 +21031,7 @@ function runUnit(cfg, iterationSeq, specPaths) {
 	}
 	const iterDir = node_path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
 	node_fs.mkdirSync(iterDir, { recursive: true });
-	const reportRoot = node_path.join(cfg.cypressDir, "results", "mochawesome-report");
+	const reportRoot = node_path.join(cfg.resultsDir, "mochawesome-report");
 	node_fs.rmSync(reportRoot, {
 		recursive: true,
 		force: true

@@ -86,7 +86,11 @@ export function runUnit(
 
   // Wipe the previous run's mochawesome output to avoid stale per-spec
   // files from a prior lease confusing the post-run lookup.
-  const reportRoot = path.join(cfg.cypressDir, "results", "mochawesome-report");
+  // results-dir is the action's user-tunable Cypress output root (defaults
+  // to <cypressDir>/results, rooted under cypressDir by main.ts). Anchor
+  // both the report and screenshots paths under it so consumers with a
+  // custom results-dir don't silently get "json missing" warnings.
+  const reportRoot = path.join(cfg.resultsDir, "mochawesome-report");
   fs.rmSync(reportRoot, { recursive: true, force: true });
 
   // Same idea for the per-spec screenshot dirs of the leased specs:

@@ -20,6 +20,8 @@ func TestParseRepositoryPattern(t *testing.T) {
 		{in: "/*", wantOK: false, wantReason: "missing owner"},
 		{in: "a/b/c", wantOK: false, wantReason: "too many slashes"},
 		{in: "owner/sub/*", wantOK: false, wantReason: "nested owner segments not allowed"},
+		{in: "owner/", wantOK: false, wantReason: "missing repo half"},
+		{in: "/repo", wantOK: false, wantReason: "missing owner half"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {

@@ -123,6 +123,12 @@ func parseRepositoryPattern(p string) (matchRepo, matchOwner *string, ok bool) {
 		return nil, &owner, true
 	}
 	if strings.Count(p, "/") == 1 {
+		// "owner/" or "/repo" would slip past a slash-count-only check; both
+		// halves must be non-empty before we treat it as a valid pair.
+		parts := strings.SplitN(p, "/", 2)
+		if parts[0] == "" || parts[1] == "" {
+			return nil, nil, false
+		}
 		s := p
 		return &s, nil, true
 	}

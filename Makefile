@@ -4,7 +4,7 @@
 # Internal helpers (like `ensure-docker`) have none so they don't clutter help.
 
 .PHONY: help \
-        install install-server install-web tools \
+        install install-server install-web install-infra tools \
         certs \
         dev dev-server dev-web dev-web-watch \
         build build-server build-web \
@@ -104,15 +104,19 @@ help: ## Show this categorized help
 
 ##@ Installation
 
-install: install-server install-web ## Install server + web deps
+install: install-server install-web install-infra ## Install server + web + infra deps
 
 install-server: ## Fetch Go module deps
 	@echo "$(CYAN)Fetching Go dependencies...$(RESET)"
 	cd $(SERVER_DIR) && $(GO) mod download
 
 install-web: ## Install npm deps (apps/web)
-	@echo "$(CYAN)Installing Node.js dependencies...$(RESET)"
+	@echo "$(CYAN)Installing Node.js dependencies (web)...$(RESET)"
 	cd $(WEB_DIR) && npm ci
+
+install-infra: ## Install npm deps (infra)
+	@echo "$(CYAN)Installing Node.js dependencies (infra)...$(RESET)"
+	cd $(INFRA_DIR) && npm ci
 
 tools: ## Install pinned Go CLI tools to GOBIN (optional; other targets use `go run`)
 	@echo "$(CYAN)Installing Go developer tools (optional)...$(RESET)"

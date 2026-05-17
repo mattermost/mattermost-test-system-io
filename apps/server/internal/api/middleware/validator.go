@@ -78,7 +78,3 @@ func (v *OpenAPIValidator) Middleware(next http.Handler) http.Handler {
 func noopAuth(_ context.Context, _ *openapi3filter.AuthenticationInput) error {
 	return nil
 }
-
-// ErrNoRoute is returned when a request path is not in the spec. Exposed so
-// handlers can choose to treat it as 404 if desired.
-var ErrNoRoute = errors.New("no matching openapi route")

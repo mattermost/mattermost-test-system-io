@@ -311,7 +311,7 @@ violation or a manual edit has left a row inconsistent.`,
 				return fmt.Errorf("aggregate dispatch_units: %w", err)
 			}
 
-			_, err = pool.Exec(ctx, `
+			tag, err := pool.Exec(ctx, `
 				UPDATE orchestration_runs
 				   SET pending_count           = $2,
 				       leased_count            = $3,
@@ -334,6 +334,13 @@ violation or a manual edit has left a row inconsistent.`,
 			)
 			if err != nil {
 				return fmt.Errorf("update counters: %w", err)
+			}
+			// Lookup + aggregate + write are three statements; a delete
+			// landing between them would let this path print "Reconciled
+			// run X" without having written anything. Verify the row was
+			// still there at write time.
+			if tag.RowsAffected() != 1 {
+				return fmt.Errorf("update counters: run %s no longer exists (rows affected: %d)", runID, tag.RowsAffected())
 			}
 
 			fmt.Printf("Reconciled run %s\n", runID)

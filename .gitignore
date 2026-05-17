@@ -13,7 +13,7 @@ apps/server/internal/webui/dist/*
 *.log
 *.tsbuildinfo
 .npm/
-.pnpm-debug.log*
+pnpm-debug.log*
 
 # npm (allow package-lock.json for reproducible builds)
 

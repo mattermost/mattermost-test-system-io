@@ -1172,6 +1172,8 @@ paths:
         required: true
     put:
       tags: [admin]
+      security:
+        - adminKey: []
       requestBody:
         required: true
         content:
@@ -1185,6 +1187,8 @@ paths:
               schema: { $ref: '#/components/schemas/OIDCPolicy' }
     delete:
       tags: [admin]
+      security:
+        - adminKey: []
       responses:
         '204': { description: Deleted }
 

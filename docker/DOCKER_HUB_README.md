@@ -82,7 +82,7 @@ open http://localhost:8080/
 - **Architecture**: `linux/amd64`
 - **User**: Non-root (`nonroot:nonroot`)
 - **Port**: `8080`
-- **Contents**: `/tsio` (server), `/tsioctl` (admin CLI), `/api/openapi.yaml`. The web bundle and SQL migrations are embedded into the Go binary.
+- **Contents**: `/tsio` (server), `/api/openapi.yaml`. The web bundle and SQL migrations are embedded into the Go binary. The `tsioctl` admin CLI is intentionally NOT shipped in the runtime image — run it from a separate admin task / dev workstation against the same DSN.
 
 ## Source
 

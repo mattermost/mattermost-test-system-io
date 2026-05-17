@@ -58,7 +58,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=go-builder /out/tsio /tsio
-COPY --from=go-builder /out/tsioctl /tsioctl
+# tsioctl is deliberately NOT shipped in the runtime image. Admin operations
+# (db reset/seed, keys lifecycle, orchestration prune) run from a separate
+# admin task / dev workstation against the same DSN. Keeping destructive
+# tooling out of the serving container shrinks the blast radius if runtime
+# shell access is ever obtained.
 COPY --from=go-builder /src/apps/server/api/openapi.yaml /api/openapi.yaml
 
 # Pin the OpenAPI path absolutely. The runtime image has no explicit WORKDIR

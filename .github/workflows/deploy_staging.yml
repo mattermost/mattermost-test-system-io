@@ -1,0 +1,427 @@
+name: Deploy Staging
+
+on:
+  workflow_dispatch:
+    # No inputs required — deploys current main branch
+
+permissions:
+  id-token: write    # GitHub OIDC for AWS
+  contents: write    # Create Git tags and GitHub prereleases
+  actions: read      # Check for concurrent workflow runs
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  IMAGE: mattermostdevelopment/mattermost-test-system-io
+  CLUSTER: mattermost-test-system-io-staging-cluster
+  APP_SERVICE: mattermost-test-system-io-staging-staging-test-io
+  PG_SERVICE: mattermost-test-system-io-staging-postgres
+  APP_URL: https://staging-test-io.test.mattermost.com
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Reject if another staging deployment is already in progress
+  # ---------------------------------------------------------------------------
+  check-concurrent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for in-progress runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IN_PROGRESS=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/deploy_staging.yml/runs?status=in_progress" \
+            --jq '[.workflow_runs[] | select(.id != '${{ github.run_id }}')] | length')
+
+          if [ "$IN_PROGRESS" -gt 0 ]; then
+            echo "::error::Another staging deployment is already in progress. Please wait for it to complete."
+            exit 1
+          fi
+
+          echo "No other staging deployments in progress. Proceeding."
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Run CI checks (lint, test, typecheck)
+  # ---------------------------------------------------------------------------
+  ci:
+    needs: check-concurrent
+    uses: ./.github/workflows/ci.yml
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Build Docker image, push with beta tag, create GitHub prerelease
+  # ---------------------------------------------------------------------------
+  build-and-tag:
+    needs: [check-concurrent, ci]
+    runs-on: ubuntu-latest
+    # Gate the Docker Hub push behind the `staging` environment so secret
+    # access (DOCKERHUB_DEV_*) is governed by the same review / branch-
+    # protection rules configured on that environment, matching the gate
+    # already applied to the deploy job below.
+    environment: staging
+    outputs:
+      beta_tag: ${{ steps.meta.outputs.beta_tag }}
+      main_sha: ${{ steps.meta.outputs.main_sha }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+
+      - name: Read VERSION and compute beta tag
+        id: meta
+        run: |
+          # Resolve the actual main HEAD after checkout. github.sha can point
+          # to a different ref when this workflow is dispatched manually from
+          # a non-main branch — using it would build from main yet stamp
+          # artifacts and the release with the dispatcher's SHA.
+          MAIN_SHA=$(git rev-parse HEAD)
+          VERSION=$(tr -d '[:space:]' < apps/server/VERSION)
+          SHORT_SHA="${MAIN_SHA::7}"
+          BETA_TAG="${VERSION}-${SHORT_SHA}.beta"
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "main_sha=${MAIN_SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "beta_tag=${BETA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "build_time=${BUILD_TIME}" >> "$GITHUB_OUTPUT"
+
+          echo "MAIN_SHA=${MAIN_SHA}"
+          echo "VERSION=${VERSION}"
+          echo "BETA_TAG=${BETA_TAG}"
+          echo "BUILD_TIME=${BUILD_TIME}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_DEV_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_DEV_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.beta_tag }}
+          # VERSION is the base semver only (e.g. 0.5.0). The binary reports
+          # it via /api/v1/info.server_version and in structured logs. Keeping
+          # it bare lets the same immutable artifact carry a version string
+          # that matches the production Docker tag (IMAGE:0.5.0) after
+          # deploy_production.yml retags without rebuilding. The beta SHA
+          # is preserved in COMMIT_SHA (and in the Docker image tag itself)
+          # so every build is uniquely identifiable.
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT_SHA=${{ steps.meta.outputs.main_sha }}
+            BUILD_TIME=${{ steps.meta.outputs.build_time }}
+          # SLSA provenance + SBOM so consumers (and the production
+          # promote step) can verify the image came from this workflow
+          # run. The provenance attestation embeds the source repo,
+          # commit SHA, and the workflow ref.
+          provenance: mode=max
+          sbom: true
+          # Image labels are pulled by deploy_production.yml's provenance
+          # check to verify the promoted image's commit_sha matches the
+          # GH release's targetCommitish.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.meta.outputs.main_sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.beta_tag }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.build_time }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+
+      - name: Create or update GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BETA_TAG: ${{ steps.meta.outputs.beta_tag }}
+          MAIN_SHA: ${{ steps.meta.outputs.main_sha }}
+          NOTES: "Docker image: [`${{ env.IMAGE }}:${{ steps.meta.outputs.beta_tag }}`](https://hub.docker.com/r/${{ env.IMAGE }}/tags?name=${{ steps.meta.outputs.beta_tag }})"
+        run: |
+          # Reruns target the same beta tag (BETA_TAG is derived from main HEAD,
+          # which doesn't change between attempts). gh release create hard-fails
+          # if the tag exists, so update in place on rerun instead.
+          if gh release view "$BETA_TAG" >/dev/null 2>&1; then
+            gh release edit "$BETA_TAG" \
+              --prerelease \
+              --title "Beta $BETA_TAG" \
+              --notes "$NOTES"
+          else
+            gh release create "$BETA_TAG" \
+              --prerelease \
+              --target "$MAIN_SHA" \
+              --title "Beta $BETA_TAG" \
+              --generate-notes \
+              --notes "$NOTES"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Deploy to staging (migration path)
+  #   - Fresh PostgreSQL container
+  #   - Deploy latest release first, then deploy beta (exercises migrations)
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: build-and-tag
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      BETA_TAG: ${{ needs.build-and-tag.outputs.beta_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Pin to the exact main HEAD that build-and-tag built and tagged.
+          # Default behavior would check out github.sha (the dispatch ref),
+          # which can diverge from main if the workflow is dispatched from
+          # a feature branch — leading to a deploy whose infra/ tree doesn't
+          # match the image that was just pushed.
+          ref: ${{ needs.build-and-tag.outputs.main_sha }}
+          fetch-depth: 0   # full history needed for the infra-changed diff below
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # Decide whether CDK deploy is needed by comparing infra/** between the
+      # currently-running staging commit (read from /api/v1/info) and the
+      # commit being deployed. Fails open: if the previous SHA can't be
+      # determined or isn't in the fetched history, CDK deploy runs as a
+      # precaution rather than risking task-definition drift.
+      - name: Detect infra changes since last staging deploy
+        id: infra-changed
+        run: |
+          # --connect-timeout / --max-time bound the probe so a hung ALB
+          # or DNS issue surfaces in seconds instead of consuming the job's
+          # 6h default. Step fails open below if curl returns empty.
+          PREVIOUS_SHA=$(curl -sf --connect-timeout 10 --max-time 30 "$APP_URL/api/v1/info" | jq -r '.commit_sha // empty' || true)
+
+          if [ -z "$PREVIOUS_SHA" ]; then
+            echo "::warning::could not read commit_sha from $APP_URL/api/v1/info — running CDK deploy as a precaution"
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git rev-parse --verify --quiet "${PREVIOUS_SHA}^{commit}" >/dev/null; then
+            echo "::warning::previous SHA ${PREVIOUS_SHA} not in fetched history — running CDK deploy as a precaution"
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TARGET_SHA="${{ needs.build-and-tag.outputs.main_sha }}"
+          INFRA_CHANGES=$(git diff --name-only "$PREVIOUS_SHA" "$TARGET_SHA" -- infra/ || true)
+          if [ -z "$INFRA_CHANGES" ]; then
+            echo "no infra/ changes between ${PREVIOUS_SHA} and ${TARGET_SHA} — skipping CDK deploy"
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "infra/ changes detected:"
+            echo "$INFRA_CHANGES"
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.infra-changed.outputs.should_deploy == 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install CDK dependencies
+        if: steps.infra-changed.outputs.should_deploy == 'true'
+        working-directory: infra
+        run: npm ci
+
+      # Must precede the image-swap steps below. The image swaps are
+      # field-level patches — they copy the existing task definition and
+      # replace only `image`, so any new env var, secret binding, or IAM
+      # grant added to StagingAppStack only reaches staging when CDK has
+      # refreshed the task definition first.
+      - name: Deploy StagingAppStack
+        if: steps.infra-changed.outputs.should_deploy == 'true'
+        working-directory: infra
+        # Required by infra/lib/config.ts; synth fails fast if unset.
+        # Locally these come from infra/.env (gitignored).
+        env:
+          ROUTE53_ZONE_ID: ${{ secrets.ROUTE53_ZONE_ID }}
+          CERTIFICATE_ARN: ${{ secrets.CERTIFICATE_ARN }}
+        run: |
+          npx cdk deploy StagingAppStack \
+            --require-approval never \
+            -c imageTag="${BETA_TAG}"
+
+      - name: Force new PostgreSQL deployment
+        run: |
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$PG_SERVICE" \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Wait for PostgreSQL to be healthy
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$PG_SERVICE"
+
+      - name: Fetch latest release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LATEST_RELEASE=$(gh release list \
+            --exclude-pre-releases \
+            --limit 1 \
+            --json tagName \
+            --jq '.[0].tagName')
+
+          if [ -z "$LATEST_RELEASE" ] || [ "$LATEST_RELEASE" = "null" ]; then
+            echo "::warning::No previous release found. Skipping migration step — deploying beta directly."
+            echo "has_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest_release=${LATEST_RELEASE}" >> "$GITHUB_OUTPUT"
+            echo "has_release=true" >> "$GITHUB_OUTPUT"
+            echo "Latest release: ${LATEST_RELEASE}"
+          fi
+
+      - name: Deploy latest release version first
+        if: steps.release.outputs.has_release == 'true'
+        id: release-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "::add-mask::${TASK_DEF_ARN}"
+
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition "$TASK_DEF_ARN" \
+            --query 'taskDefinition')
+
+          RELEASE_TAG="${{ steps.release.outputs.latest_release }}"
+          # Strip "release-" prefix to get the Docker image version
+          RELEASE_VERSION="${RELEASE_TAG#release-}"
+          RELEASE_TASK_DEF=$(echo "$TASK_DEF" | \
+            jq --arg IMG "${{ env.IMAGE }}:${RELEASE_VERSION}" \
+            '(.containerDefinitions[] | select(.name == "app")).image = $IMG |
+             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)')
+
+          RELEASE_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$RELEASE_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "::add-mask::${RELEASE_TASK_DEF_ARN}"
+
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$APP_SERVICE" \
+            --task-definition "$RELEASE_TASK_DEF_ARN" \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Wait for release version to be stable
+        if: steps.release.outputs.has_release == 'true'
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE"
+
+      - name: Deploy beta version
+        id: beta-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "::add-mask::${TASK_DEF_ARN}"
+
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition "$TASK_DEF_ARN" \
+            --query 'taskDefinition')
+
+          BETA_TASK_DEF=$(echo "$TASK_DEF" | \
+            jq --arg IMG "${{ env.IMAGE }}:${BETA_TAG}" \
+            '(.containerDefinitions[] | select(.name == "app")).image = $IMG |
+             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)')
+
+          BETA_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$BETA_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "::add-mask::${BETA_TASK_DEF_ARN}"
+          echo "beta_task_def_arn=${BETA_TASK_DEF_ARN}" >> "$GITHUB_OUTPUT"
+
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$APP_SERVICE" \
+            --task-definition "$BETA_TASK_DEF_ARN" \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Wait for beta version to be stable
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE"
+
+      # `aws ecs wait services-stable` returns success whether the service
+      # stabilized on the new task definition or on an old one after ECS's
+      # circuit breaker rolled back. Compare ARNs to catch the silent-rollback
+      # case where the workflow would otherwise report success.
+      - name: Verify beta deployment landed (not rolled back)
+        env:
+          EXPECTED_ARN: ${{ steps.beta-task-def.outputs.beta_task_def_arn }}
+        run: |
+          RUNNING_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER" \
+            --services "$APP_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          if [ "$RUNNING_ARN" != "$EXPECTED_ARN" ]; then
+            echo "::error::ECS rolled back: service is on ${RUNNING_ARN}, expected ${EXPECTED_ARN}. Inspect task logs and service events; a common cause is a task-definition env-var drift (e.g. missing TSIO_SESSION_SECRET) that a 'cdk deploy StagingAppStack' would fix before the next workflow run."
+            exit 1
+          fi
+
+          echo "Service running expected beta task definition."
+
+      # Hits /api/v1/info to assert the binary the ALB routes to actually
+      # matches the beta we built. Guards against load-balancer/DNS cache
+      # quirks that could otherwise hide a stale server.
+      - name: Verify running binary matches beta commit
+        env:
+          EXPECTED_SHA: ${{ needs.build-and-tag.outputs.main_sha }}
+        run: |
+          # Explicit timeouts so a hung ALB / DNS issue fails this step in
+          # ~30s instead of running out the job's 6h default budget.
+          RUNNING_SHA=$(curl -sf --connect-timeout 10 --max-time 30 "$APP_URL/api/v1/info" | jq -r '.commit_sha // empty')
+
+          if [ -z "$RUNNING_SHA" ]; then
+            echo "::error::/api/v1/info returned no commit_sha (got: $(curl -sf --connect-timeout 10 --max-time 30 "$APP_URL/api/v1/info" || echo "<request failed>"))"
+            exit 1
+          fi
+
+          if [ "$RUNNING_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::Running binary reports commit_sha=${RUNNING_SHA}, expected ${EXPECTED_SHA}."
+            exit 1
+          fi
+
+          echo "Running binary commit_sha matches beta: ${RUNNING_SHA}"
+
+      - name: Health check
+        run: |
+          curl -sf --connect-timeout 10 --max-time 30 "$APP_URL/ready"

@@ -1,0 +1,207 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow_ref }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: apps/server/go.mod
+          cache-dependency-path: apps/server/go.sum
+
+      - name: Verify gofmt
+        run: make fmt-check-server
+
+      - name: Vet
+        run: make vet-server
+
+      # golangci-lint runs as an action (not `make lint-server`) so the
+      # binary is cached between runs and PRs get delta-only annotations.
+      # Keep `version` in sync with `GOLANGCI_LINT_VERSION` in the Makefile so
+      # CI and local `make lint-server` check against the same ruleset.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
+        with:
+          version: v2.11.4 # keep in sync with Makefile's GOLANGCI_LINT_VERSION
+          working-directory: apps/server
+
+      - name: Unit tests (race)
+        run: make test-server
+
+  server-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: apps/server/go.mod
+          cache-dependency-path: apps/server/go.sum
+
+      # make test-server-e2e runs every -tags=e2e package (admin_cli, oidc,
+      # contract) against a testcontainers Postgres and exercises embedded
+      # migrations as a side-effect.
+      - name: Run E2E tests
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "false"
+        run: make test-server-e2e
+
+  web-checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+  infra-checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm run test
+
+  actions-checks:
+    # Each composite action under .github/actions/ ships a committed
+    # dist/index.js bundle that GH Actions executes directly. The matrix
+    # runs format:check / lint / tsc / build for every action and then
+    # asserts the dist/ tree on disk matches what `npm run build` just
+    # produced — catches PRs that touched src/ without rebuilding.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        action:
+          - test-system-io-dispatch-begin
+          - test-system-io-dispatch-run
+          - test-system-io-summary
+          - test-system-io-report-upload
+    defaults:
+      run:
+        working-directory: .github/actions/${{ matrix.action }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: .github/actions/${{ matrix.action }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npm run tsc
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify dist is up to date
+        # `git diff --exit-code dist/` only catches modifications to tracked
+        # files. `npm run build` can also create new files (e.g. a sourcemap
+        # added by a tsdown bump), which are untracked and would pass diff
+        # silently. Use `git status --porcelain` so any change under dist/
+        # — modification, addition, or deletion — fails the check.
+        run: |
+          if [ -n "$(git status --porcelain -- dist/)" ]; then
+            echo "::error::dist/ is stale — run 'npm run build' in .github/actions/${{ matrix.action }} and commit the result"
+            git status --short -- dist/
+            exit 1
+          fi
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          push: false

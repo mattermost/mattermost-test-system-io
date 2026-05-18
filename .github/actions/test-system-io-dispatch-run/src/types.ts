@@ -1,0 +1,84 @@
+/**
+ * Shared types for the worker action. Mirrors the Test System IO API
+ * payloads on the wire so the strict-mode compiler can catch
+ * mismatches at build time instead of at orchestration time.
+ */
+
+export interface CompositeIdentity {
+  repository: string;
+  commit_sha: string;
+  gh_run_id: string;
+  gh_run_attempt: string;
+  name: string;
+  branch?: string;
+  gh_pr_number?: number | string;
+}
+
+export type TestStatus = "passed" | "failed" | "flaky" | "skipped" | "timedOut" | "interrupted";
+
+export interface TestCaseResult {
+  title: string;
+  full_title: string;
+  status: TestStatus;
+  retry_count: number;
+  duration_ms: number;
+  ordinal: number;
+  error_message?: string;
+  error_stack?: string;
+  attachments?: { screenshots: { key: string; relative_path?: string }[] };
+}
+
+export interface SpecResult {
+  spec_path: string;
+  status: TestStatus;
+  actual_duration_ms: number;
+  test_cases: TestCaseResult[];
+  error_message?: string;
+  error_stack?: string;
+}
+
+export interface CheckoutUnit {
+  spec_path: string;
+}
+
+export interface CheckoutResponseBody {
+  queue_empty: boolean;
+  is_retest?: boolean;
+  retry_after_ms?: number;
+  units?: CheckoutUnit[];
+  error?: string;
+  message?: string;
+}
+
+export interface CompleteResponseBody {
+  unit_states_changed?: { new_state: string }[];
+}
+
+export interface ReportsRegisterResponseBody {
+  report_id: string;
+  upload_id: string;
+}
+
+export interface UploadPart {
+  absPath: string;
+  relPath: string;
+  size: number;
+  contentType?: string;
+}
+
+/**
+ * One per-iteration archived results dir, captured after each Playwright
+ * invocation so the worker can upload the accumulated artifacts at
+ * queue-empty without racing against the next iteration overwriting
+ * `playwright/results/`.
+ */
+export interface InvocationRecord {
+  specPath: string;
+  iterDir: string;
+  // Archived reporter-JSON paths for this iteration. Playwright emits a
+  // single combined results.json per batch, so this is a 1-element array
+  // in that path. Cypress + mochawesome emits one JSON per spec, so a
+  // multi-spec batch contributes multiple entries here. uploadShard
+  // streams each entry as a separate file part.
+  jsonPaths: string[];
+}

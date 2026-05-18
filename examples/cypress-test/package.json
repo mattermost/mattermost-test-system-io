@@ -1,0 +1,21 @@
+{
+  "name": "cypress-test-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local-test Cypress fixture used by scripts/orchestration-demo-cypress.js to exercise the orchestration loop end-to-end against a dev server. Mirrors the upstream mattermost/mattermost/e2e-tests/cypress reporter layout so the dispatcher's parser sees the same artifact shape as production runs.",
+  "scripts": {
+    "cypress:run": "cypress run --reporter cypress-multi-reporters --reporter-options configFile=reporter-config.json",
+    "cypress:open": "cypress open"
+  },
+  "devDependencies": {
+    "@types/node": "25.6.0",
+    "cypress": "15.14.2",
+    "cypress-multi-reporters": "2.0.5",
+    "mocha": "11.7.5",
+    "mocha-junit-reporter": "2.2.1",
+    "mochawesome": "7.1.4",
+    "mochawesome-merge": "5.1.1",
+    "mochawesome-report-generator": "6.3.2",
+    "typescript": "6.0.3"
+  }
+}

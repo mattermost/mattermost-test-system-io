@@ -1,0 +1,25 @@
+{
+  "name": "test-system-io-summary",
+  "private": true,
+  "version": "0.1.0",
+  "main": "dist/index.cjs",
+  "scripts": {
+    "build": "tsdown",
+    "tsc": "tsc -b",
+    "format": "npx oxfmt src --write",
+    "format:check": "npx oxfmt src --check",
+    "lint": "npx oxlint src"
+  },
+  "dependencies": {
+    "@actions/core": "3.0.1",
+    "@actions/github": "9.1.1",
+    "@octokit/plugin-retry": "8.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.4",
+    "oxfmt": "0.46.0",
+    "oxlint": "1.61.0",
+    "tsdown": "0.22.0",
+    "typescript": "6.0.3"
+  }
+}

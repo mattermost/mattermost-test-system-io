@@ -243,7 +243,10 @@ jobs:
         env:
           BETA_SHA: ${{ needs.validate-and-retag.outputs.beta_commit_sha }}
         run: |
-          PREVIOUS_SHA=$(curl -sf "$APP_URL/api/v1/info" | jq -r '.commit_sha // empty' || true)
+          # --connect-timeout / --max-time bound the probe so a hung ALB
+          # or DNS issue surfaces in seconds instead of consuming the job's
+          # 6h default. Step fails open below if curl returns empty.
+          PREVIOUS_SHA=$(curl -sf --connect-timeout 10 --max-time 30 "$APP_URL/api/v1/info" | jq -r '.commit_sha // empty' || true)
 
           if [ -z "$PREVIOUS_SHA" ]; then
             echo "::warning::could not read commit_sha from $APP_URL/api/v1/info — running CDK deploy as a precaution"
@@ -369,10 +372,12 @@ jobs:
         env:
           EXPECTED_SHA: ${{ needs.validate-and-retag.outputs.beta_commit_sha }}
         run: |
-          RUNNING_SHA=$(curl -sf "$APP_URL/api/v1/info" | jq -r '.commit_sha // empty')
+          # Explicit timeouts so a hung ALB / DNS issue fails this step in
+          # ~30s instead of running out the job's 6h default budget.
+          RUNNING_SHA=$(curl -sf --connect-timeout 10 --max-time 30 "$APP_URL/api/v1/info" | jq -r '.commit_sha // empty')
 
           if [ -z "$RUNNING_SHA" ]; then
-            echo "::error::/api/v1/info returned no commit_sha (got: $(curl -sf "$APP_URL/api/v1/info" || echo "<request failed>"))"
+            echo "::error::/api/v1/info returned no commit_sha (got: $(curl -sf --connect-timeout 10 --max-time 30 "$APP_URL/api/v1/info" || echo "<request failed>"))"
             exit 1
           fi
 
@@ -385,4 +390,4 @@ jobs:
 
       - name: Health check
         run: |
-          curl -sf "$APP_URL/ready"
+          curl -sf --connect-timeout 10 --max-time 30 "$APP_URL/ready"

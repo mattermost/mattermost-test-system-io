@@ -213,7 +213,15 @@ export function runUnit(
     const dstDir = path.join(outputRoot, uniqueSpecKey(sp));
     fs.mkdirSync(dstDir, { recursive: true });
     for (const src of absPaths) {
-      fs.cpSync(src, path.join(dstDir, path.basename(src)));
+      // Preserve the source-relative path. Cypress nests screenshots under
+      // describe blocks, so two `it` blocks named identically in different
+      // describes (or the same `it` across retry attempts in separate
+      // subfolders) would collide on basename and one set would clobber
+      // the other before upload.
+      const rel = path.relative(srcDir, src);
+      const dst = path.join(dstDir, rel);
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      fs.cpSync(src, dst);
     }
   }
 

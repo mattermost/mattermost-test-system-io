@@ -21116,7 +21116,12 @@ function runUnit(cfg, iterationSeq, specPaths) {
 		screenshotsBySpec[sp] = absPaths;
 		const dstDir = node_path.join(outputRoot, uniqueSpecKey(sp));
 		node_fs.mkdirSync(dstDir, { recursive: true });
-		for (const src of absPaths) node_fs.cpSync(src, node_path.join(dstDir, node_path.basename(src)));
+		for (const src of absPaths) {
+			const rel = node_path.relative(srcDir, src);
+			const dst = node_path.join(dstDir, rel);
+			node_fs.mkdirSync(node_path.dirname(dst), { recursive: true });
+			node_fs.cpSync(src, dst);
+		}
 	}
 	return {
 		invocation: {

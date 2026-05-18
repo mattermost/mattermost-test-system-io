@@ -87,10 +87,10 @@ inputs:
     default: "1"
   results-dir:
     description: >
-      Path to Playwright's results output, relative to `playwright-dir`.
-      Must match the `outputDir` configured in the consumer repo's
-      `playwright.config.ts`. Defaults to `results`. Ignored when
-      `framework: cypress`.
+      Relative path (rooted under the active framework's project dir) where
+      the reporter writes its output. For Playwright this is the `outputDir`
+      configured in `playwright.config.ts`. For Cypress this is the base
+      directory that contains `mochawesome-report/`. Defaults to `results`.
     required: false
     default: results
 

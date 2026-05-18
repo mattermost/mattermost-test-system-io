@@ -520,7 +520,7 @@ paths:
               schema: { $ref: '#/components/schemas/ReportDetail' }
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
-      tags: [admin]
+      tags: [reports]
       responses:
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFound' }

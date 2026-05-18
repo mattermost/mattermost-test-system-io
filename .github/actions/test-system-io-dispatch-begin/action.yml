@@ -30,8 +30,9 @@ inputs:
   total-reports-expected:
     description: >
       Number of per-shard reports the run will produce (== the worker
-      matrix size). Frozen on first /reports/begin; the report group
-      auto-finalizes once that many child reports reach `complete`.
+      matrix size). Frozen when the orchestration run is created; the
+      report group auto-finalizes once that many child reports reach
+      `complete`.
     required: true
 
   # ── Optional (top-level) ─────────────────────────────────────────────

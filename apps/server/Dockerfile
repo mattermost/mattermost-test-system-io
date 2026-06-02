@@ -5,7 +5,7 @@
 # (apps/server/migrations) are embedded into the Go binary. Image target: < 60 MB.
 
 # ----- Stage 1: web bundle -----
-FROM node:24-alpine AS web-builder
+FROM node:26-alpine AS web-builder
 
 WORKDIR /src/apps/web
 

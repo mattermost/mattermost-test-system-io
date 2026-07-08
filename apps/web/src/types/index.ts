@@ -273,6 +273,7 @@ export interface ReportDetail {
   gh_pr_number?: number;
   gh_run_attempt: string;
   environment_metadata?: ReportEnvironmentMetadata;
+  test_stats?: TestStats;
   orchestration?: OrchestrationSummary;
   created_at: string;
   updated_at: string;

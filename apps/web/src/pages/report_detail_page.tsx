@@ -64,6 +64,17 @@ export function ReportDetailPage() {
     return { passed, failed, skipped, flaky, total, durationMs };
   }, [filteredSuites]);
 
+  // Group-level duration: the numbered + retest wall-clock spans the backend
+  // already computes (min start → max end per shard batch), not a sum of
+  // every shard's test durations — shards run in parallel, so summing them
+  // (testStats.durationMs above) overstates elapsed time by roughly the
+  // shard count (e.g. 5 parallel ~11m shards reads as "55m" instead of the
+  // actual ~21m wall-clock). Only meaningful for the whole-group view;
+  // an individual shard has no separate wall-clock field, so it keeps using
+  // the summed per-suite duration as a reasonable single-shard proxy.
+  const groupDurationMs =
+    (report?.test_stats?.wall_clock_ms ?? 0) + (report?.test_stats?.retest_wall_clock_ms ?? 0);
+
   // Build URL segments from report data for breadcrumb and name link
   const urlParts = useMemo(() => {
     if (!report?.repository || !report?.branch || !report?.commit || !report?.name) return null;
@@ -145,7 +156,13 @@ export function ReportDetailPage() {
         flaky={testStats.flaky}
         skipped={testStats.skipped}
         total={testStats.total}
-        durationMs={testStats.durationMs > 0 ? testStats.durationMs : undefined}
+        durationMs={
+          !isIndividualReport && groupDurationMs > 0
+            ? groupDurationMs
+            : testStats.durationMs > 0
+              ? testStats.durationMs
+              : undefined
+        }
         beginAt={report.orchestration?.durations?.begin_at}
         firstTestAt={report.orchestration?.durations?.first_test_at}
         firstRetestAt={report.orchestration?.durations?.first_retest_at}

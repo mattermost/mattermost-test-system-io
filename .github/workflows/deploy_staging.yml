@@ -2,7 +2,14 @@ name: Deploy Staging
 
 on:
   workflow_dispatch:
-    # No inputs required — deploys current main branch
+    inputs:
+      ref:
+        description: Git ref (branch/tag/SHA) to build and deploy. Defaults to main.
+        required: false
+        default: main
+    # Defaults to main. Pass a PR branch to stage a change before merging.
+    # The dispatch still runs on `main` so the `staging` environment's branch
+    #  protection is satisfied; only the checkout ref changes.
 
 permissions:
   id-token: write    # GitHub OIDC for AWS
@@ -63,10 +70,10 @@ jobs:
     outputs:
       beta_tag: ${{ steps.meta.outputs.beta_tag }}
     steps:
-      - name: Checkout main
+      - name: Checkout ${{ inputs.ref }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: main
+          ref: ${{ inputs.ref }}
 
       - name: Read VERSION and compute beta tag
         id: meta
@@ -154,9 +161,10 @@ jobs:
     env:
       BETA_TAG: ${{ needs.build-and-tag.outputs.beta_tag }}
     steps:
-      - name: Checkout
+      - name: Checkout ${{ inputs.ref }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0   # full history needed for the infra-changed diff below
 
       - name: Configure AWS credentials via OIDC

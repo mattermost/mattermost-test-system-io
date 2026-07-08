@@ -482,7 +482,8 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
                 {row.attempts.length > 0 && (
                   <span className="ml-1 inline-flex flex-shrink-0 items-center gap-0.5">
                     {row.attempts.map((a, i) => {
-                      const slot = workerSlot(a.gh_job_name, i + 1);
+                      const siblingJobNames = row.attempts.map((att) => att.gh_job_name);
+                      const slot = workerSlot(a.gh_job_name, i + 1, siblingJobNames);
                       const inFlight = !a.status && !a.expired;
                       const passed = a.status === 'passed' || a.status === 'flaky';
                       const failed =

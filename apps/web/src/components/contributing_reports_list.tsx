@@ -18,6 +18,7 @@
  */
 
 import { CheckCircle, XCircle, AlertCircle, Loader2, Play, ExternalLink } from 'lucide-react';
+import { splitTrailingNumber } from '@/components/test_suites';
 
 export interface ContributingReportEntry {
   id: string;
@@ -134,9 +135,20 @@ export function ContributingReportsList({
                   const testResult = reportTestStatus.get(entry.id);
                   const isFailed = testResult === 'failed';
                   const isFlaky = testResult === 'flaky';
-                  const slotMatch = entry.display_name.match(/^(.*)-(\d+)$/);
-                  const baseLabel = slotMatch ? slotMatch[1] : entry.display_name;
-                  const slot = slotMatch ? slotMatch[2] : null;
+                  // Only split off a numeric badge when a sibling report shares the same
+                  // base label — that's the real "these are numbered shards" signal, not
+                  // just any name that happens to end in digits (e.g. an OS version).
+                  const split = splitTrailingNumber(entry.display_name);
+                  const hasSiblingShard = Boolean(
+                    split &&
+                      reports.some((other) => {
+                        if (other === entry) return false;
+                        const otherSplit = splitTrailingNumber(other.display_name);
+                        return otherSplit !== null && otherSplit.base === split.base;
+                      }),
+                  );
+                  const baseLabel = hasSiblingShard && split ? split.base : entry.display_name;
+                  const slot = hasSiblingShard && split ? split.digits : null;
                   return (
                     <a
                       key={entry.id}

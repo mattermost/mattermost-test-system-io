@@ -646,13 +646,15 @@ export function TestSuitesView({
                         All Reports
                       </button>
                       <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-                      {[...reports]
-                        .sort(
-                          (a, b) =>
-                            workerSlot(a.report_name, a.report_number) -
-                            workerSlot(b.report_name, b.report_number),
-                        )
-                        .map((entry) => (
+                      {(() => {
+                        const reportNames = reports.map((r) => r.report_name);
+                        return [...reports]
+                          .sort(
+                            (a, b) =>
+                              workerSlot(a.report_name, a.report_number, reportNames) -
+                              workerSlot(b.report_name, b.report_number, reportNames),
+                          )
+                          .map((entry) => (
                           <button
                             key={entry.report_id}
                             type="button"
@@ -665,14 +667,15 @@ export function TestSuitesView({
                           >
                             <span className="flex items-center gap-2 min-w-0">
                               <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-gray-200 px-1 text-[10px] font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-300">
-                                {workerSlot(entry.report_name, entry.report_number)}
+                                {workerSlot(entry.report_name, entry.report_number, reportNames)}
                               </span>
                               <span className="truncate" title={entry.report_name}>
                                 {entry.report_name}
                               </span>
                             </span>
                           </button>
-                        ))}
+                          ));
+                      })()}
                     </div>
                   </div>
                 )}
@@ -1010,6 +1013,7 @@ const SuiteRow = memo(function SuiteRow({
                 {hasMultipleReports && allReportsForFile.length > 0 && (
                   <span className="ml-1 inline-flex items-center gap-0.5 flex-shrink-0">
                     {allReportsForFile.map((j) => {
+                      const siblingNames = allReportsForFile.map((r) => r.report_name);
                       const isCurrent = j.report_number === suite.report_number;
                       const colorClass = j.passed
                         ? isCurrent
@@ -1024,7 +1028,7 @@ const SuiteRow = memo(function SuiteRow({
                           className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${colorClass}`}
                           title={j.report_name || `Report ${j.report_number}`}
                         >
-                          {workerSlot(j.report_name, j.report_number)}
+                          {workerSlot(j.report_name, j.report_number, siblingNames)}
                         </span>
                       );
                     })}

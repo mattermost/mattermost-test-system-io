@@ -79,14 +79,35 @@ const defaultFormatDate = (iso: string) =>
  * leases scramble — `dispatch-run-31` is no slower than `dispatch-run-1`
  * and a reader expects "1, 2, 3, …" not the upload race winner.
  */
+/**
+ * Splits off a numeric badge only when a sibling report shares the same base
+ * label — that's the real "these are numbered shards" signal, not just any
+ * name that happens to end in digits (e.g. an OS version like
+ * `e2e-on-macos-26`). Shared by the sort order below and the rendered label
+ * so the two never disagree.
+ */
+function siblingSplit<T extends { display_name: string }>(
+  entry: T,
+  all: T[],
+): { base: string; digits: string } | null {
+  const split = splitTrailingNumber(entry.display_name);
+  if (!split) return null;
+  const hasSibling = all.some(
+    (other) => other !== entry && splitTrailingNumber(other.display_name)?.base === split.base,
+  );
+  return hasSibling ? split : null;
+}
+
 function sortReportsBySlot<T extends { display_name: string }>(reports: T[]): T[] {
-  const slotOf = (name: string): number => {
-    const m = /-(\d+)$/.exec(name);
-    return m ? Number.parseInt(m[1]!, 10) : Number.MAX_SAFE_INTEGER;
+  const slotOf = (entry: T): number => {
+    const split = siblingSplit(entry, reports);
+    if (!split) return Number.MAX_SAFE_INTEGER;
+    const n = Number.parseInt(split.digits, 10);
+    return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
   };
   return [...reports].sort((a, b) => {
-    const sa = slotOf(a.display_name);
-    const sb = slotOf(b.display_name);
+    const sa = slotOf(a);
+    const sb = slotOf(b);
     if (sa !== sb) return sa - sb;
     return a.display_name.localeCompare(b.display_name);
   });
@@ -135,20 +156,9 @@ export function ContributingReportsList({
                   const testResult = reportTestStatus.get(entry.id);
                   const isFailed = testResult === 'failed';
                   const isFlaky = testResult === 'flaky';
-                  // Only split off a numeric badge when a sibling report shares the same
-                  // base label — that's the real "these are numbered shards" signal, not
-                  // just any name that happens to end in digits (e.g. an OS version).
-                  const split = splitTrailingNumber(entry.display_name);
-                  const hasSiblingShard = Boolean(
-                    split &&
-                      reports.some((other) => {
-                        if (other === entry) return false;
-                        const otherSplit = splitTrailingNumber(other.display_name);
-                        return otherSplit !== null && otherSplit.base === split.base;
-                      }),
-                  );
-                  const baseLabel = hasSiblingShard && split ? split.base : entry.display_name;
-                  const slot = hasSiblingShard && split ? split.digits : null;
+                  const split = siblingSplit(entry, reports);
+                  const baseLabel = split ? split.base : entry.display_name;
+                  const slot = split ? split.digits : null;
                   return (
                     <a
                       key={entry.id}

@@ -655,25 +655,25 @@ export function TestSuitesView({
                               workerSlot(b.report_name, b.report_number, reportNames),
                           )
                           .map((entry) => (
-                          <button
-                            key={entry.report_id}
-                            type="button"
-                            onClick={() => toggleReport(entry.report_id)}
-                            className={`w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
-                              selectedReports.has(entry.report_id)
-                                ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                                : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700'
-                            }`}
-                          >
-                            <span className="flex items-center gap-2 min-w-0">
-                              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-gray-200 px-1 text-[10px] font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-300">
-                                {workerSlot(entry.report_name, entry.report_number, reportNames)}
+                            <button
+                              key={entry.report_id}
+                              type="button"
+                              onClick={() => toggleReport(entry.report_id)}
+                              className={`w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
+                                selectedReports.has(entry.report_id)
+                                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700'
+                              }`}
+                            >
+                              <span className="flex items-center gap-2 min-w-0">
+                                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-gray-200 px-1 text-[10px] font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-300">
+                                  {workerSlot(entry.report_name, entry.report_number, reportNames)}
+                                </span>
+                                <span className="truncate" title={entry.report_name}>
+                                  {entry.report_name}
+                                </span>
                               </span>
-                              <span className="truncate" title={entry.report_name}>
-                                {entry.report_name}
-                              </span>
-                            </span>
-                          </button>
+                            </button>
                           ));
                       })()}
                     </div>
@@ -1012,26 +1012,28 @@ const SuiteRow = memo(function SuiteRow({
                 </span>
                 {hasMultipleReports && allReportsForFile.length > 0 && (
                   <span className="ml-1 inline-flex items-center gap-0.5 flex-shrink-0">
-                    {allReportsForFile.map((j) => {
+                    {(() => {
                       const siblingNames = allReportsForFile.map((r) => r.report_name);
-                      const isCurrent = j.report_number === suite.report_number;
-                      const colorClass = j.passed
-                        ? isCurrent
-                          ? 'bg-green-200 text-green-700 dark:bg-green-800 dark:text-green-200'
-                          : 'bg-green-100 text-green-400 dark:bg-green-900/40 dark:text-green-500'
-                        : isCurrent
-                          ? 'bg-red-200 text-red-700 dark:bg-red-800 dark:text-red-200'
-                          : 'bg-red-100 text-red-400 dark:bg-red-900/40 dark:text-red-500';
-                      return (
-                        <span
-                          key={j.report_number}
-                          className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${colorClass}`}
-                          title={j.report_name || `Report ${j.report_number}`}
-                        >
-                          {workerSlot(j.report_name, j.report_number, siblingNames)}
-                        </span>
-                      );
-                    })}
+                      return allReportsForFile.map((j) => {
+                        const isCurrent = j.report_number === suite.report_number;
+                        const colorClass = j.passed
+                          ? isCurrent
+                            ? 'bg-green-200 text-green-700 dark:bg-green-800 dark:text-green-200'
+                            : 'bg-green-100 text-green-400 dark:bg-green-900/40 dark:text-green-500'
+                          : isCurrent
+                            ? 'bg-red-200 text-red-700 dark:bg-red-800 dark:text-red-200'
+                            : 'bg-red-100 text-red-400 dark:bg-red-900/40 dark:text-red-500';
+                        return (
+                          <span
+                            key={j.report_number}
+                            className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${colorClass}`}
+                            title={j.report_name || `Report ${j.report_number}`}
+                          >
+                            {workerSlot(j.report_name, j.report_number, siblingNames)}
+                          </span>
+                        );
+                      });
+                    })()}
                   </span>
                 )}
               </p>

@@ -481,33 +481,35 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
                 </span>
                 {row.attempts.length > 0 && (
                   <span className="ml-1 inline-flex flex-shrink-0 items-center gap-0.5">
-                    {row.attempts.map((a, i) => {
+                    {(() => {
                       const siblingJobNames = row.attempts.map((att) => att.gh_job_name);
-                      const slot = workerSlot(a.gh_job_name, i + 1, siblingJobNames);
-                      const inFlight = !a.status && !a.expired;
-                      const passed = a.status === 'passed' || a.status === 'flaky';
-                      const failed =
-                        a.expired ||
-                        a.status === 'failed' ||
-                        a.status === 'timedOut' ||
-                        a.status === 'interrupted';
-                      const color = inFlight
-                        ? 'bg-blue-200 text-blue-700 dark:bg-blue-800 dark:text-blue-200'
-                        : passed
-                          ? 'bg-green-200 text-green-700 dark:bg-green-800 dark:text-green-200'
-                          : failed
-                            ? 'bg-red-200 text-red-700 dark:bg-red-800 dark:text-red-200'
-                            : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200';
-                      return (
-                        <span
-                          key={a.id}
-                          className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${color}`}
-                          title={a.gh_job_name || `Attempt ${i + 1}`}
-                        >
-                          {slot}
-                        </span>
-                      );
-                    })}
+                      return row.attempts.map((a, i) => {
+                        const slot = workerSlot(a.gh_job_name, i + 1, siblingJobNames);
+                        const inFlight = !a.status && !a.expired;
+                        const passed = a.status === 'passed' || a.status === 'flaky';
+                        const failed =
+                          a.expired ||
+                          a.status === 'failed' ||
+                          a.status === 'timedOut' ||
+                          a.status === 'interrupted';
+                        const color = inFlight
+                          ? 'bg-blue-200 text-blue-700 dark:bg-blue-800 dark:text-blue-200'
+                          : passed
+                            ? 'bg-green-200 text-green-700 dark:bg-green-800 dark:text-green-200'
+                            : failed
+                              ? 'bg-red-200 text-red-700 dark:bg-red-800 dark:text-red-200'
+                              : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200';
+                        return (
+                          <span
+                            key={a.id}
+                            className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${color}`}
+                            title={a.gh_job_name || `Attempt ${i + 1}`}
+                          >
+                            {slot}
+                          </span>
+                        );
+                      });
+                    })()}
                   </span>
                 )}
               </p>

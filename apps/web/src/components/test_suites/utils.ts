@@ -10,9 +10,9 @@ export function calcPassRate(stats: ReportStats): string {
 }
 
 /** Splits "<base>-<N>" into its base prefix and trailing digits, or null if there's no numeric suffix. */
-export function splitTrailingNumber(name: string): {base: string; digits: string} | null {
+export function splitTrailingNumber(name: string): { base: string; digits: string } | null {
   const m = name.match(/^(.*)-(\d+)$/);
-  return m ? {base: m[1]!, digits: m[2]!} : null;
+  return m ? { base: m[1]!, digits: m[2]! } : null;
 }
 
 /**

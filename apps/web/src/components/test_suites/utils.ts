@@ -50,3 +50,32 @@ export function workerSlot(
   const n = Number(split.digits);
   return Number.isFinite(n) ? n : fallback;
 }
+
+/**
+ * Collapse a chronologically-sorted suite list to one entry per
+ * (report_name, file_path) pair, keeping the latest (last in the input
+ * order). A report group can mix genuine retries of one shard — same
+ * report_name, later row supersedes the earlier one — with independent
+ * parallel shards that happen to run the identical spec file (the same
+ * suite on linux/macos/windows, or several CMT server versions). Deduping
+ * on file_path alone collapses those together, silently discarding a real
+ * per-platform failure whenever a different platform's later-uploaded run
+ * of the same file passed. Keying on report_name too keeps unrelated
+ * shards independent while still letting true retries dedupe as intended.
+ */
+export function dedupeSuitesByReportAndPath<T extends { report_name?: string; file_path?: string }>(
+  sortedByTime: readonly T[],
+): T[] {
+  const keyOf = (item: T) => `${item.report_name ?? ''}::${item.file_path ?? ''}`;
+  const lastIndexByKey = new Map<string, number>();
+  for (let i = sortedByTime.length - 1; i >= 0; i--) {
+    const item = sortedByTime[i]!;
+    if (item.file_path && !lastIndexByKey.has(keyOf(item))) {
+      lastIndexByKey.set(keyOf(item), i);
+    }
+  }
+  return sortedByTime.filter((item, i) => {
+    if (!item.file_path) return true;
+    return lastIndexByKey.get(keyOf(item)) === i;
+  });
+}

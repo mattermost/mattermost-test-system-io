@@ -37,6 +37,7 @@ import {
   calcPassRate,
   formatDuration,
   workerSlot,
+  dedupeSuitesByReportAndPath,
   type StatusFilter,
 } from './test_suites';
 
@@ -243,20 +244,10 @@ export function TestSuitesView({
         return 0;
       });
 
-    // Deduplicate by file_path: keep the latest entry (last created wins)
+    // Deduplicate by (report_name, file_path) — see dedupeSuitesByReportAndPath
+    // for why report_name must be part of the key, not just file_path.
     if (reports && reports.length > 1) {
-      const seen = new Map<string, number>();
-      // Walk in reverse so later entries (latest) overwrite earlier ones
-      for (let i = sorted.length - 1; i >= 0; i--) {
-        const fp = sorted[i]!.file_path;
-        if (fp && !seen.has(fp)) {
-          seen.set(fp, i);
-        }
-      }
-      return sorted.filter((suite, i) => {
-        if (!suite.file_path) return true;
-        return seen.get(suite.file_path) === i;
-      });
+      return dedupeSuitesByReportAndPath(sorted);
     }
 
     return sorted;

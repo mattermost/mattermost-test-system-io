@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { workerSlot, splitTrailingNumber } from './utils';
+import { workerSlot, splitTrailingNumber, dedupeSuitesByReportAndPath } from './utils';
 
 describe('splitTrailingNumber', () => {
   it('splits a name ending in digits', () => {
@@ -41,5 +41,39 @@ describe('workerSlot', () => {
     // array by reference equality, must not treat itself as a sibling.
     const names = ['e2e-on-macos-26'];
     expect(workerSlot('e2e-on-macos-26', 1, names)).toBe(1);
+  });
+});
+
+describe('dedupeSuitesByReportAndPath', () => {
+  // Regression: a real per-platform failure (ubuntu) was silently hidden
+  // whenever a different platform's later-uploaded run of the identical
+  // spec file (macos) passed — file_path-only dedup treated them as the
+  // same suite and kept only the later, passing one.
+  it('keeps failures from independent shards even when a later shard with the same file_path passes', () => {
+    const suites = [
+      {
+        report_name: 'e2e-on-ubuntu-latest',
+        file_path: 'user_attributes.test.ts',
+        failed_count: 1,
+      },
+      { report_name: 'e2e-on-macos-26', file_path: 'user_attributes.test.ts', failed_count: 0 },
+    ];
+    const result = dedupeSuitesByReportAndPath(suites);
+    expect(result).toHaveLength(2);
+    expect(result).toEqual(expect.arrayContaining(suites));
+  });
+
+  it('still dedupes true retries of the same shard, keeping the latest', () => {
+    const suites = [
+      { report_name: 'e2e-on-ubuntu-latest', file_path: 'flaky.test.ts', failed_count: 1 },
+      { report_name: 'e2e-on-ubuntu-latest', file_path: 'flaky.test.ts', failed_count: 0 },
+    ];
+    const result = dedupeSuitesByReportAndPath(suites);
+    expect(result).toEqual([suites[1]]);
+  });
+
+  it('passes through entries with no file_path unchanged', () => {
+    const suites = [{ report_name: 'e2e-on-ubuntu-latest', file_path: undefined, failed_count: 0 }];
+    expect(dedupeSuitesByReportAndPath(suites)).toEqual(suites);
   });
 });

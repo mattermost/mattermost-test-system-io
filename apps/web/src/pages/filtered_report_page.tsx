@@ -105,6 +105,9 @@ export function FilteredReportPage() {
   }, [allSuitesQueries]);
 
   const isLoadingSuites = allSuitesQueries.some((q) => q.isLoading);
+  const suitesQueryError = allSuitesQueries.find((q) => q.isError)?.error;
+  const hasPartialSuiteData =
+    allSuitesQueries.some((q) => q.isError) && mergedSuites.suites.length > 0;
 
   // Auto-resolve gh_run_id when neither the URL nor the latest contributing
   // report carries one. Hits /orchestration/runs to find every run matching
@@ -412,14 +415,49 @@ export function FilteredReportPage() {
         </div>
       ) : (
         latestReportId && (
-          <TestSuitesView
-            reportId={latestReportId}
-            suites={mergedSuites.suites}
-            title={`${name} — ${branch}/${commit}`}
-            reports={mergedSuites.reports}
-            crossShardHistory={crossShardHistory}
-            orchestrationUnits={orchestrationRun?.units}
-          />
+          <>
+            {suitesQueryError && (
+              <div
+                className={`rounded-lg border p-4 mb-4 ${
+                  hasPartialSuiteData
+                    ? 'border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30'
+                    : 'border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30'
+                }`}
+              >
+                <div
+                  className={`flex items-center gap-2 text-sm ${
+                    hasPartialSuiteData
+                      ? 'text-amber-700 dark:text-amber-400'
+                      : 'text-red-700 dark:text-red-400'
+                  }`}
+                >
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  {hasPartialSuiteData
+                    ? `Some report suites failed to load; showing partial results. ${
+                        suitesQueryError instanceof Error
+                          ? suitesQueryError.message
+                          : 'Unknown error'
+                      }`
+                    : `Failed to load test suites: ${
+                        suitesQueryError instanceof Error
+                          ? suitesQueryError.message
+                          : 'Unknown error'
+                      }`}
+                </div>
+              </div>
+            )}
+            {!suitesQueryError || hasPartialSuiteData ? (
+              <TestSuitesView
+                reportId={latestReportId}
+                searchReportIds={contributingIds}
+                suites={mergedSuites.suites}
+                title={`${name} — ${branch}/${commit}`}
+                reports={mergedSuites.reports}
+                crossShardHistory={crossShardHistory}
+                orchestrationUnits={orchestrationRun?.units}
+              />
+            ) : null}
+          </>
         )
       )}
 

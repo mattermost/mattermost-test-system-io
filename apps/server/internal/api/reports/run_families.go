@@ -60,6 +60,28 @@ func isRunFamily(name string) bool {
 	return false
 }
 
+// rewriteGroupedRunURLPath replaces only the final URL segment when canonicalizing
+// a run-family name, so an earlier path segment that happens to contain the old
+// name (branch, repo slug, etc.) is left untouched.
+func rewriteGroupedRunURLPath(path, oldName, canon string) string {
+	if oldName == canon || path == "" {
+		return path
+	}
+	oldSeg := url.PathEscape(oldName)
+	newSeg := url.PathEscape(canon)
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return path
+	}
+	segments := strings.Split(trimmed, "/")
+	last := len(segments) - 1
+	if segments[last] == oldSeg || segments[last] == oldName {
+		segments[last] = newSeg
+		return "/" + strings.Join(segments, "/")
+	}
+	return path
+}
+
 func mergeRunEntryStats(a, b *runEntry) {
 	if a.TestStats == nil {
 		a.TestStats = b.TestStats
@@ -130,7 +152,7 @@ func mergeGroupedRunEntries(runs []runEntry) []runEntry {
 		oldName := e.Name
 		canon := canonicalRunName(e.Name)
 		if canon != oldName {
-			e.URLPath = strings.Replace(e.URLPath, url.PathEscape(oldName), url.PathEscape(canon), 1)
+			e.URLPath = rewriteGroupedRunURLPath(e.URLPath, oldName, canon)
 		}
 		e.Name = canon
 		byKey[k] = &slot{entry: e, order: i}

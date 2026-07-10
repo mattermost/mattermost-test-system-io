@@ -466,6 +466,15 @@ Timeout waiting for delete button after 30 seconds
 	if len(chanNav.Cases) != 2 {
 		t.Errorf("expected 2 cases in Channels > Navigation, got %d", len(chanNav.Cases))
 	}
+	channelsStart, err := time.Parse(time.RFC3339, "2026-03-11T10:45:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tc := range chanNav.Cases {
+		if tc.StartTime == nil || !tc.StartTime.Equal(channelsStart) {
+			t.Errorf("Navigation case %d: expected inherited StartTime %v, got %v", i, channelsStart, tc.StartTime)
+		}
+	}
 
 	chanMsg := suites[2]
 	if chanMsg.Title != "Channels > Messaging" {
@@ -473,6 +482,11 @@ Timeout waiting for delete button after 30 seconds
 	}
 	if len(chanMsg.Cases) != 4 {
 		t.Errorf("expected 4 cases in Channels > Messaging, got %d", len(chanMsg.Cases))
+	}
+	for i, tc := range chanMsg.Cases {
+		if tc.StartTime == nil || !tc.StartTime.Equal(channelsStart) {
+			t.Errorf("Messaging case %d: expected inherited StartTime %v, got %v", i, channelsStart, tc.StartTime)
+		}
 	}
 
 	// Check skipped case

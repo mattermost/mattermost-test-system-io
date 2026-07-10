@@ -48,6 +48,8 @@ const PAGE_SIZE = 100;
 
 interface TestSuitesViewProps {
   reportId: string;
+  /** When set, search spans every contributing group (consolidated view). */
+  searchReportIds?: string[];
   suites: TestSuite[];
   stats?: ReportStats;
   title?: string;
@@ -75,6 +77,7 @@ interface TestSuitesViewProps {
 
 export function TestSuitesView({
   reportId,
+  searchReportIds,
   suites,
   stats,
   title,
@@ -130,7 +133,7 @@ export function TestSuitesView({
 
   // Search API - only calls when search query meets min length
   const { data: searchData, isLoading: isSearching } = useSearchTestCases(
-    reportId,
+    searchReportIds?.length ? searchReportIds : reportId,
     debouncedSearch,
     minSearchLength,
     500, // Get more results for better grouping
@@ -348,6 +351,7 @@ export function TestSuitesView({
 
   // Build map: file_path -> list of report badge info (ordered by created_at) for all reports that tested this file
   type ReportBadge = {
+    report_key: string;
     report_number: number;
     report_name: string;
     passed: boolean;
@@ -358,6 +362,9 @@ export function TestSuitesView({
     const map = new Map<string, ReportBadge[]>();
     for (const suite of suites) {
       if (!suite.file_path || suite.tests_count === 0) continue;
+      const reportKey =
+        suite.report_id ||
+        `${suite.report_name ?? ''}:${suite.report_number ?? 0}`;
       const reportNumber = suite.report_number ?? 0;
       const existing = map.get(suite.file_path);
       // A spec file can emit multiple suite rows sharing file_path (a
@@ -366,11 +373,12 @@ export function TestSuitesView({
       // describe must not mask a file-level failure for the same shard.
       const failed = suite.failed_count !== 0;
       if (existing) {
-        const e = existing.find((x) => x.report_number === reportNumber);
+        const e = existing.find((x) => x.report_key === reportKey);
         if (e) {
           if (failed) e.passed = false;
         } else {
           existing.push({
+            report_key: reportKey,
             report_number: reportNumber,
             report_name: suite.report_name || '',
             passed: !failed,
@@ -380,6 +388,7 @@ export function TestSuitesView({
       } else {
         map.set(suite.file_path, [
           {
+            report_key: reportKey,
             report_number: reportNumber,
             report_name: suite.report_name || '',
             passed: !failed,

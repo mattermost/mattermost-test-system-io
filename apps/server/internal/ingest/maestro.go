@@ -60,7 +60,7 @@ func extractMaestro(body []byte, seq *int) []ExtractedSuite {
 	if err := xml.Unmarshal(body, &root); err == nil && len(root.TestSuites) > 0 {
 		var out []ExtractedSuite
 		for _, suite := range root.TestSuites {
-			out = append(out, extractTestSuite(&suite, seq, nil)...)
+			out = append(out, extractTestSuite(&suite, seq, nil, nil)...)
 		}
 		return out
 	}
@@ -73,12 +73,13 @@ func extractMaestro(body []byte, seq *int) []ExtractedSuite {
 	if single.Name == "" {
 		return nil
 	}
-	return extractTestSuite(&single, seq, nil)
+	return extractTestSuite(&single, seq, nil, nil)
 }
 
 // extractTestSuite recursively processes a single testsuite, handling both
 // nested suites and testcases. ancestorPath tracks the hierarchy for FullTitle.
-func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string) []ExtractedSuite {
+// inheritedStart carries a parent suite timestamp to nested suites that omit one.
+func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, inheritedStart *time.Time) []ExtractedSuite {
 	var out []ExtractedSuite
 
 	// Build the full path including this suite's name
@@ -88,13 +89,14 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string) []
 		suiteTitle = junitRootSuiteTitle
 	}
 
-	// Parse suite-level timestamp if present (for StartTime)
 	var suiteStart *time.Time
 	if suite.Timestamp != "" {
 		if t, err := time.Parse(time.RFC3339, suite.Timestamp); err == nil {
 			u := t.UTC()
 			suiteStart = &u
 		}
+	} else if inheritedStart != nil {
+		suiteStart = inheritedStart
 	}
 
 	// Extract test cases from this suite
@@ -176,7 +178,7 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string) []
 	// Recursively process nested suites (passing current path as ancestors)
 	for _, nested := range suite.TestSuites {
 		nested := nested // copy to avoid reference issues
-		out = append(out, extractTestSuite(&nested, seq, fullPath)...)
+		out = append(out, extractTestSuite(&nested, seq, fullPath, suiteStart)...)
 	}
 
 	return out

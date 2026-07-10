@@ -86,3 +86,29 @@ func TestMergeGroupedRunEntries(t *testing.T) {
 		t.Fatalf("url path %q", mobile.URLPath)
 	}
 }
+
+func TestRewriteGroupedRunURLPathFinalSegment(t *testing.T) {
+	t.Parallel()
+	// Repo slug contains the old name; only the trailing segment should change.
+	path := "/reports/mobile-detox-pr-repo/main/abc/mobile-detox-pr"
+	got := rewriteGroupedRunURLPath(path, "mobile-detox-pr", "mobile-pr")
+	want := "/reports/mobile-detox-pr-repo/main/abc/mobile-pr"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestMergeRunEntryStatsNilTestStats(t *testing.T) {
+	t.Parallel()
+	withStats := runEntry{TestStats: &testStats{Total: 5, Passed: 4, Failed: 1}}
+	nilStats := runEntry{TestStats: nil}
+	mergeRunEntryStats(&withStats, &nilStats)
+	if withStats.TestStats.Total != 5 {
+		t.Fatalf("nil rhs should not change lhs: %+v", withStats.TestStats)
+	}
+
+	mergeRunEntryStats(&nilStats, &withStats)
+	if nilStats.TestStats == nil || nilStats.TestStats.Total != 5 {
+		t.Fatalf("nil lhs should adopt rhs stats: %+v", nilStats.TestStats)
+	}
+}

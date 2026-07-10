@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { workerSlot, splitTrailingNumber, dedupeSuitesByReportAndPath } from './utils';
+import {
+  workerSlot,
+  splitTrailingNumber,
+  dedupeSuitesByReportAndPath,
+  isFlakyTestSpec,
+} from './utils';
 
 describe('splitTrailingNumber', () => {
   it('splits a name ending in digits', () => {
@@ -109,5 +114,29 @@ describe('dedupeSuitesByReportAndPath', () => {
   it('passes through entries with no file_path unchanged', () => {
     const suites = [{ report_name: 'e2e-on-ubuntu-latest', file_path: undefined, failed_count: 0 }];
     expect(dedupeSuitesByReportAndPath(suites)).toEqual(suites);
+  });
+});
+
+describe('isFlakyTestSpec', () => {
+  it('treats Playwright ingest status "flaky" as flaky', () => {
+    expect(
+      isFlakyTestSpec(true, [
+        { status: 'flaky' },
+        { status: 'flaky' },
+      ]),
+    ).toBe(true);
+  });
+
+  it('treats failed-then-passed retries as flaky', () => {
+    expect(
+      isFlakyTestSpec(true, [
+        { status: 'failed' },
+        { status: 'passed' },
+      ]),
+    ).toBe(true);
+  });
+
+  it('does not mark a clean pass as flaky', () => {
+    expect(isFlakyTestSpec(true, [{ status: 'passed' }])).toBe(false);
   });
 });

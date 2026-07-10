@@ -9,5 +9,6 @@ export {
   workerSlot,
   splitTrailingNumber,
   dedupeSuitesByReportAndPath,
+  isFlakyTestSpec,
 } from './utils';
 export type { StatusFilter, StatVariant, StatPillProps, ProgressBarProps } from './types';

@@ -38,6 +38,7 @@ import {
   formatDuration,
   workerSlot,
   dedupeSuitesByReportAndPath,
+  isFlakyTestSpec,
   type StatusFilter,
 } from './test_suites';
 
@@ -950,10 +951,7 @@ const SuiteRow = memo(function SuiteRow({
       if (statusFilter === 'all') return true;
       if (spec.results.length === 0) return false;
 
-      // Check for flaky: passed eventually but had at least one failure
-      const hasFailure = spec.results.some((r) => r.status === 'failed');
-      const hasPassed = spec.results.some((r) => r.status === 'passed');
-      const isFlaky = spec.ok && hasFailure && hasPassed;
+      const isFlaky = isFlakyTestSpec(spec.ok, spec.results);
 
       // Get the final result (highest retry number)
       const finalResult = spec.results.reduce((latest, r) =>

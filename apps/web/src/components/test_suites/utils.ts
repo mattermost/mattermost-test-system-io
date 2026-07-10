@@ -143,3 +143,23 @@ export function dedupeSuitesByReportAndPath<T extends { report_name?: string; fi
   }
   return out;
 }
+
+export type FlakySpecResult = { status?: string };
+
+/**
+ * Whether a spec counts as flaky for the test_flaky filter.
+ * Playwright ingest stores retry-passed tests as status "flaky" on every
+ * attempt; the older failed+passed check alone left suites flagged flaky
+ * with an empty expanded list ("No test_flaky tests").
+ */
+export function isFlakyTestSpec(ok: boolean, results: ReadonlyArray<FlakySpecResult>): boolean {
+  if (!ok || results.length === 0) {
+    return false;
+  }
+  if (results.some((r) => r.status === 'flaky')) {
+    return true;
+  }
+  const hasFailure = results.some((r) => r.status === 'failed' || r.status === 'timedOut');
+  const hasPassed = results.some((r) => r.status === 'passed');
+  return hasFailure && hasPassed;
+}

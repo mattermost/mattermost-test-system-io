@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -318,6 +319,18 @@ func stripRefPrefix(b string) string {
 	return b
 }
 
+// parsePRBranch extracts a PR number from URL branch segments like "pr-3891".
+func parsePRBranch(branch string) (int, bool) {
+	if !strings.HasPrefix(strings.ToLower(branch), "pr-") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(branch[3:])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 func toIndividualSummary(g groupDTO, e reportEntryDTO, stats groupStats) individualReportSummary {
 	return individualReportSummary{
 		ID:            e.ID.String(),
@@ -425,6 +438,10 @@ func (h *Handlers) computeGrouped(ctx context.Context, limit, offset int) ([]byt
 		return nil, err
 	}
 
+	for _, bucket := range byRepo {
+		bucket.Runs = mergeGroupedRunEntries(bucket.Runs)
+	}
+
 	groups := make([]repoGroup, 0, len(order))
 	for _, k := range order {
 		groups = append(groups, *byRepo[k])
@@ -526,6 +543,8 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			"repository, branch, commit, and name are all required")
 		return
 	}
+	groupNames := expandedGroupNames(name)
+	displayName := canonicalRunName(name)
 	var pinnedAttempt *string
 	if v := q.Get("run_attempt"); v != "" {
 		pinnedAttempt = &v
@@ -543,6 +562,10 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 	var pinnedGHRunID *string
 	if v := q.Get("gh_run_id"); v != "" {
 		pinnedGHRunID = &v
+	}
+	var prBranchNumber *int
+	if n, ok := parsePRBranch(branch); ok {
+		prBranchNumber = &n
 	}
 
 	// The URL carries the repository slug (e.g. "mattermost"); the DB stores
@@ -574,13 +597,13 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			WHERE rs.case_id = tc.id
 		) ss ON TRUE
 		WHERE (g.repository = $1 OR g.repository LIKE '%/' || $1)
-		  AND g.branch = $2
+		  AND (g.branch = $2 OR ($8::int IS NOT NULL AND g.gh_pr_number = $8::int))
 		  AND g.commit_sha LIKE $3 || '%'
-		  AND g.name = $4
+		  AND g.name = ANY($4::text[])
 		  AND ($5::text IS NULL OR g.gh_run_attempt = $5::text)
 		  AND ($6::uuid IS NULL OR g.id = $6::uuid)
 		  AND ($7::text IS NULL OR g.gh_run_id = $7::text)
-	`, repository, branch, commit, name, pinnedAttempt, pinnedGroup, pinnedGHRunID)
+	`, repository, branch, commit, groupNames, pinnedAttempt, pinnedGroup, pinnedGHRunID, prBranchNumber)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -628,7 +651,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 
 	filters := map[string]any{
 		"repository":  repository,
-		"target_name": name,
+		"target_name": displayName,
 		"commit_sha":  commit,
 		"tool_name":   "",
 	}

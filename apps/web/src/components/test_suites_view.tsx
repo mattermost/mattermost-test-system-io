@@ -357,19 +357,34 @@ export function TestSuitesView({
     const map = new Map<string, ReportBadge[]>();
     for (const suite of suites) {
       if (!suite.file_path || suite.tests_count === 0) continue;
-      const entry: ReportBadge = {
-        report_number: suite.report_number ?? 0,
-        report_name: suite.report_name || '',
-        passed: suite.failed_count === 0,
-        created_at: suite.created_at || '',
-      };
+      const reportNumber = suite.report_number ?? 0;
       const existing = map.get(suite.file_path);
+      // A spec file can emit multiple suite rows sharing file_path (a
+      // top-level describe alongside file-level tests). A file is "passed"
+      // for a report only when NONE of its suites failed — a passing
+      // describe must not mask a file-level failure for the same shard.
+      const failed = suite.failed_count !== 0;
       if (existing) {
-        if (!existing.some((e) => e.report_number === entry.report_number)) {
-          existing.push(entry);
+        const e = existing.find((x) => x.report_number === reportNumber);
+        if (e) {
+          if (failed) e.passed = false;
+        } else {
+          existing.push({
+            report_number: reportNumber,
+            report_name: suite.report_name || '',
+            passed: !failed,
+            created_at: suite.created_at || '',
+          });
         }
       } else {
-        map.set(suite.file_path, [entry]);
+        map.set(suite.file_path, [
+          {
+            report_number: reportNumber,
+            report_name: suite.report_name || '',
+            passed: !failed,
+            created_at: suite.created_at || '',
+          },
+        ]);
       }
     }
     // Sort each entry by created_at (chronological order)

@@ -240,7 +240,7 @@ export interface TestSpecListResponse {
 // Report types
 export type ProcessingStatus = 'pending' | 'processing' | 'complete' | 'failed';
 export type ReportStatus = 'in_progress' | 'completed' | 'incomplete';
-export type Framework = 'playwright' | 'cypress' | 'detox';
+export type Framework = 'playwright' | 'cypress' | 'detox' | 'maestro';
 
 export interface ReportEnvironment {
   os?: string;

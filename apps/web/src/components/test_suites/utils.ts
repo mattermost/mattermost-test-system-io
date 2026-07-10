@@ -53,29 +53,93 @@ export function workerSlot(
 
 /**
  * Collapse a chronologically-sorted suite list to one entry per
- * (report_name, file_path) pair, keeping the latest (last in the input
- * order). A report group can mix genuine retries of one shard — same
- * report_name, later row supersedes the earlier one — with independent
- * parallel shards that happen to run the identical spec file (the same
- * suite on linux/macos/windows, or several CMT server versions). Deduping
- * on file_path alone collapses those together, silently discarding a real
- * per-platform failure whenever a different platform's later-uploaded run
- * of the same file passed. Keying on report_name too keeps unrelated
- * shards independent while still letting true retries dedupe as intended.
+ * (report_name, file_path) pair by MERGING suites that share that pair,
+ * rather than keeping only the latest.
+ *
+ * Why merge (not keep-latest): a spec file whose Playwright suite tree has a
+ * top-level `describe` block is emitted as TWO suite rows sharing the same
+ * file_path — the file-level suite and the describe-level suite — with
+ * distinct test sets. A keep-latest strategy let a later all-skipped describe
+ * clobber an earlier file-level failure, silently hiding it on the
+ * dashboard (e.g. popout_windows.test.ts showing 0 failures while the file
+ * actually failed). Merging sums the per-suite counts (and duration) and
+ * keeps the earliest member's identity/start_time so the merged per-file row
+ * reflects every test in the file and sorts where the file first ran.
+ *
+ * Why (report_name, file_path) and not file_path alone: independent shards
+ * (linux/macos/windows, or several CMT server versions) that ran the same
+ * file must NOT be merged — each shard keeps its own row so a per-platform
+ * failure is never hidden by another platform's passing run.
+ *
+ * Why summing never double-counts: the server collapses same-(file,title)
+ * retries into one suite before the client sees them, so by the time
+ * multiple rows share a (report_name, file_path) here they are always
+ * distinct-title file+describe rows with disjoint test sets.
  */
 export function dedupeSuitesByReportAndPath<T extends { report_name?: string; file_path?: string }>(
   sortedByTime: readonly T[],
 ): T[] {
+  // Count + duration fields aggregated across suites that share a
+  // (report_name, file_path). Each is only set on the merged row when at
+  // least one member defines it, so minimal shapes (e.g. test fixtures with
+  // only failed_count) pass through without inventing other fields.
+  const SUM_FIELDS = [
+    'tests_count',
+    'passed_count',
+    'failed_count',
+    'flaky_count',
+    'skipped_count',
+    'duration_ms',
+  ] as const;
+
   const keyOf = (item: T) => `${item.report_name ?? ''}::${item.file_path ?? ''}`;
-  const lastIndexByKey = new Map<string, number>();
-  for (let i = sortedByTime.length - 1; i >= 0; i--) {
-    const item = sortedByTime[i]!;
-    if (item.file_path && !lastIndexByKey.has(keyOf(item))) {
-      lastIndexByKey.set(keyOf(item), i);
+
+  // Pre-index every group (preserving first-seen order) so the merged row
+  // can be emitted at the position of the group's earliest member.
+  const groups = new Map<string, T[]>();
+  for (const item of sortedByTime) {
+    if (!item.file_path) continue;
+    const k = keyOf(item);
+    let g = groups.get(k);
+    if (!g) {
+      g = [] as T[];
+      groups.set(k, g);
     }
+    g.push(item);
   }
-  return sortedByTime.filter((item, i) => {
-    if (!item.file_path) return true;
-    return lastIndexByKey.get(keyOf(item)) === i;
-  });
+
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of sortedByTime) {
+    if (!item.file_path) {
+      out.push(item); // no merge key — pass through unchanged
+      continue;
+    }
+    const k = keyOf(item);
+    if (seen.has(k)) continue; // a later member of an already-emitted group
+    seen.add(k);
+    const g = groups.get(k)!;
+    if (g.length === 1) {
+      out.push(item); // nothing to merge
+      continue;
+    }
+    // Merge: base = earliest member (input is sorted ascending by time),
+    // with count/duration fields summed across the whole group.
+    const merged = { ...g[0]! } as Record<string, unknown> as T;
+    const record = merged as unknown as Record<string, unknown>;
+    for (const f of SUM_FIELDS) {
+      let sum = 0;
+      let any = false;
+      for (const m of g) {
+        const v = (m as Record<string, unknown>)[f];
+        if (typeof v === 'number') {
+          sum += v;
+          any = true;
+        }
+      }
+      if (any) record[f] = sum;
+    }
+    out.push(merged);
+  }
+  return out;
 }

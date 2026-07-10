@@ -63,13 +63,47 @@ describe('dedupeSuitesByReportAndPath', () => {
     expect(result).toEqual(expect.arrayContaining(suites));
   });
 
-  it('still dedupes true retries of the same shard, keeping the latest', () => {
+  // Regression: popout_windows.test.ts has file-level tests (one fails) AND a
+  // `describe` block (all skipped) in the same file, so Playwright emits two
+  // suite rows sharing file_path. A keep-latest strategy would let the later
+  // describe clobber the file-level failure (hidden on the dashboard).
+  // Merging sums the counts so the failure survives, and keeps the earliest
+  // row's identity/start_time so the per-file row sorts where the file ran.
+  it('merges a file-level suite and a later describe suite of the same shard, summing counts so a file-level failure is not hidden', () => {
     const suites = [
-      { report_name: 'e2e-on-ubuntu-latest', file_path: 'flaky.test.ts', failed_count: 1 },
-      { report_name: 'e2e-on-ubuntu-latest', file_path: 'flaky.test.ts', failed_count: 0 },
+      {
+        report_name: 'e2e-on-macos-26',
+        file_path: 'popout_windows.test.ts',
+        tests_count: 4,
+        passed_count: 1,
+        failed_count: 1,
+        skipped_count: 2,
+        duration_ms: 4000,
+        start_time: '2026-07-08T11:27:44Z',
+      },
+      {
+        report_name: 'e2e-on-macos-26',
+        file_path: 'popout_windows.test.ts',
+        tests_count: 2,
+        passed_count: 0,
+        failed_count: 0,
+        skipped_count: 2,
+        duration_ms: 0,
+        start_time: '2026-07-08T11:27:59Z',
+      },
     ];
     const result = dedupeSuitesByReportAndPath(suites);
-    expect(result).toEqual([suites[1]]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      report_name: 'e2e-on-macos-26',
+      file_path: 'popout_windows.test.ts',
+      tests_count: 6,
+      passed_count: 1,
+      failed_count: 1,
+      skipped_count: 4,
+      duration_ms: 4000,
+      start_time: '2026-07-08T11:27:44Z',
+    });
   });
 
   it('passes through entries with no file_path unchanged', () => {

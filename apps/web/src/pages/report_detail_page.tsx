@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, Navigate } from 'react-router-dom';
 import { useReportDetail, useReportSuites } from '@/services/api';
 import { TestSuitesView } from '@/components/test_suites_view';
 import { Loader2, AlertCircle } from 'lucide-react';
@@ -8,6 +8,7 @@ import { ReportSummary } from '@/components/report_summary';
 import { isRetestName } from '@/components/report_card_parts';
 import { EnvironmentMetadataDisplay } from '@/components/report_card_parts/environment_metadata';
 import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
+import { runConsolidatedHref } from '@/components/run_families';
 
 export function ReportDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -111,6 +112,11 @@ export function ReportDetailPage() {
         </Link>
       </div>
     );
+  }
+
+  const consolidatedHref = runConsolidatedHref(report);
+  if (consolidatedHref) {
+    return <Navigate to={consolidatedHref} replace />;
   }
 
   return (

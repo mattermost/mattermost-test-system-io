@@ -4,7 +4,6 @@ import { useQueries } from '@tanstack/react-query';
 import {
   useConsolidatedResults,
   useReportDetail,
-  useReportSuites,
   useOrchestrationRun,
   useOrchestrationRuns,
   fetchReportDetail,
@@ -85,7 +84,27 @@ export function FilteredReportPage() {
   }, [allReportQueries, data]);
 
   const { data: report } = useReportDetail(latestReportId);
-  const { data: suitesData, isLoading: isLoadingSuites } = useReportSuites(latestReportId);
+
+  const allSuitesQueries = useQueries({
+    queries: contributingIds.map((id) => ({
+      queryKey: ['report', id, 'suites'],
+      queryFn: () => fetchReportSuites(id),
+      enabled: !!id,
+    })),
+  });
+
+  const mergedSuites = useMemo(() => {
+    const suites: import('@/types').TestSuite[] = [];
+    const reports: import('@/types').ReportEntryInfo[] = [];
+    for (const q of allSuitesQueries) {
+      if (!q.data) continue;
+      if (q.data.suites) suites.push(...q.data.suites);
+      if (q.data.reports) reports.push(...q.data.reports);
+    }
+    return { suites, reports };
+  }, [allSuitesQueries]);
+
+  const isLoadingSuites = allSuitesQueries.some((q) => q.isLoading);
 
   // Auto-resolve gh_run_id when neither the URL nor the latest contributing
   // report carries one. Hits /orchestration/runs to find every run matching
@@ -174,15 +193,6 @@ export function FilteredReportPage() {
     }
     return { numbered, retest };
   }, [allReportQueries]);
-
-  // Step 3: Fetch suites for ALL contributing reports (for chip status indicators)
-  const allSuitesQueries = useQueries({
-    queries: contributingIds.map((id) => ({
-      queryKey: ['report', id, 'suites'],
-      queryFn: () => fetchReportSuites(id),
-      enabled: !!id,
-    })),
-  });
 
   // Map each per-shard report_id → display_name by flattening every contributing
   // group's reports[] entries. Used to enrich consolidated spec history with
@@ -404,9 +414,9 @@ export function FilteredReportPage() {
         latestReportId && (
           <TestSuitesView
             reportId={latestReportId}
-            suites={suitesData?.suites || []}
+            suites={mergedSuites.suites}
             title={`${name} — ${branch}/${commit}`}
-            reports={suitesData?.reports}
+            reports={mergedSuites.reports}
             crossShardHistory={crossShardHistory}
             orchestrationUnits={orchestrationRun?.units}
           />

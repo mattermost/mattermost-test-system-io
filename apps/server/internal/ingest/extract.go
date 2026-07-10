@@ -20,6 +20,8 @@ func Extract(framework string, body []byte, seq *int) (suites []ExtractedSuite, 
 		suites = extractCypress(body, seq)
 	case "detox":
 		suites = extractDetox(body, seq)
+	case "maestro":
+		suites = extractMaestro(body, seq)
 	default:
 		suites = autoDetect(body, seq)
 	}
@@ -27,11 +29,11 @@ func Extract(framework string, body []byte, seq *int) (suites []ExtractedSuite, 
 	return
 }
 
-// autoDetect runs structural sniffing across the three supported frameworks,
+// autoDetect runs structural sniffing across the supported frameworks,
 // returning the first extractor whose parse yields at least one suite.
 // Defensive fallback when the framework column is mis-set.
 func autoDetect(body []byte, seq *int) []ExtractedSuite {
-	for _, f := range []func([]byte, *int) []ExtractedSuite{extractPlaywright, extractCypress, extractDetox} {
+	for _, f := range []func([]byte, *int) []ExtractedSuite{extractPlaywright, extractCypress, extractDetox, extractMaestro} {
 		scratch := *seq
 		if out := f(body, &scratch); len(out) > 0 {
 			*seq = scratch

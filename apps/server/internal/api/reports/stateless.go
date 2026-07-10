@@ -693,9 +693,9 @@ func validateGroupKey(repository, commit, runID, framework, name, _ string) erro
 		return fmt.Errorf("%w: repository, commit, gh_run_id, and name are required", api.ErrBadRequest)
 	}
 	switch framework {
-	case "playwright", "cypress", "detox":
+	case "playwright", "cypress", "detox", "maestro":
 	default:
-		return fmt.Errorf("%w: framework must be playwright|cypress|detox", api.ErrBadRequest)
+		return fmt.Errorf("%w: framework must be playwright|cypress|detox|maestro", api.ErrBadRequest)
 	}
 	return nil
 }

@@ -362,9 +362,7 @@ export function TestSuitesView({
     const map = new Map<string, ReportBadge[]>();
     for (const suite of suites) {
       if (!suite.file_path || suite.tests_count === 0) continue;
-      const reportKey =
-        suite.report_id ||
-        `${suite.report_name ?? ''}:${suite.report_number ?? 0}`;
+      const reportKey = suite.report_id || `${suite.report_name ?? ''}:${suite.report_number ?? 0}`;
       const reportNumber = suite.report_number ?? 0;
       const existing = map.get(suite.file_path);
       // A spec file can emit multiple suite rows sharing file_path (a

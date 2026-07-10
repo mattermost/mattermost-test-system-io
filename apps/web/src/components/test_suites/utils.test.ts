@@ -119,21 +119,11 @@ describe('dedupeSuitesByReportAndPath', () => {
 
 describe('isFlakyTestSpec', () => {
   it('treats Playwright ingest status "flaky" as flaky', () => {
-    expect(
-      isFlakyTestSpec(true, [
-        { status: 'flaky' },
-        { status: 'flaky' },
-      ]),
-    ).toBe(true);
+    expect(isFlakyTestSpec(true, [{ status: 'flaky' }, { status: 'flaky' }])).toBe(true);
   });
 
   it('treats failed-then-passed retries as flaky', () => {
-    expect(
-      isFlakyTestSpec(true, [
-        { status: 'failed' },
-        { status: 'passed' },
-      ]),
-    ).toBe(true);
+    expect(isFlakyTestSpec(true, [{ status: 'failed' }, { status: 'passed' }])).toBe(true);
   });
 
   it('does not mark a clean pass as flaky', () => {

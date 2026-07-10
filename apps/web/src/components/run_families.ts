@@ -30,8 +30,7 @@ export function runConsolidatedHref(report: {
 
   const repoName = report.repository.split('/').pop() || report.repository;
   const shortBranch = report.branch.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
-  const prMatch =
-    shortBranch.match(/^pr-(\d+)/i) || report.branch.match(/^refs\/pull\/(\d+)\//);
+  const prMatch = shortBranch.match(/^pr-(\d+)/i) || report.branch.match(/^refs\/pull\/(\d+)\//);
   const branchSegment =
     report.gh_pr_number != null
       ? `pr-${report.gh_pr_number}`

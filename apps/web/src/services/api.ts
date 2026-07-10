@@ -349,14 +349,15 @@ export function useSearchTestCases(
   const totalMatches = results.reduce((sum, r) => sum + r.matches.length, 0);
 
   return {
-    data: enabled && !isLoading
-      ? {
-          query,
-          search_min_length: minSearchLength,
-          total_matches: totalMatches,
-          results,
-        }
-      : undefined,
+    data:
+      enabled && !isLoading
+        ? {
+            query,
+            search_min_length: minSearchLength,
+            total_matches: totalMatches,
+            results,
+          }
+        : undefined,
     isLoading,
     isError,
     error,

@@ -1,4 +1,6 @@
 /** Canonical run labels and their uploaded report_group.name members (mobile). */
+import { buildConsolidatedReportPath } from '@/lib/report_urls';
+
 const RUN_FAMILIES: Record<string, string[]> = {
   'mobile-pr': ['mobile-detox-pr', 'mobile-maestro-pr'],
   'mobile-master': ['mobile-detox-master', 'mobile-maestro-master'],
@@ -28,19 +30,13 @@ export function runConsolidatedHref(report: {
   const canon = canonicalRunName(report.name);
   if (canon === report.name) return null;
 
-  const repoName = report.repository.split('/').pop() || report.repository;
-  const shortBranch = report.branch.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
-  const prMatch = shortBranch.match(/^pr-(\d+)/i) || report.branch.match(/^refs\/pull\/(\d+)\//);
-  const branchSegment =
-    report.gh_pr_number != null
-      ? `pr-${report.gh_pr_number}`
-      : prMatch
-        ? `pr-${prMatch[1]}`
-        : shortBranch;
-  const shortSha = report.commit.slice(0, 7);
-  const params = new URLSearchParams();
-  if (report.gh_run_id) params.set('gh_run_id', report.gh_run_id);
-  if (report.gh_run_attempt) params.set('gh_run_attempt', report.gh_run_attempt);
-  const qs = params.toString();
-  return `/reports/${encodeURIComponent(repoName)}/${encodeURIComponent(branchSegment)}/${shortSha}/${encodeURIComponent(canon)}${qs ? `?${qs}` : ''}`;
+  return buildConsolidatedReportPath({
+    repository: report.repository,
+    branch: report.branch,
+    commit: report.commit,
+    name: canon,
+    gh_pr_number: report.gh_pr_number,
+    gh_run_id: report.gh_run_id,
+    gh_run_attempt: report.gh_run_attempt,
+  });
 }

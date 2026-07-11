@@ -87,12 +87,31 @@ func TestMergeGroupedRunEntries(t *testing.T) {
 	}
 }
 
+func TestConsolidatedRunURLPath(t *testing.T) {
+	t.Parallel()
+	g := groupDTO{
+		Repository:   "mattermost/desktop",
+		Branch:       "tsio-spike",
+		CommitSHA:    "29b47e7dcda38b98726f2abeafc4682bf945f440",
+		Name:         "desktop-pr",
+		GHRunID:      "837585694163",
+		GHRunAttempt: "1",
+	}
+	pr := 3891
+	g.GHPRNumber = &pr
+	got := consolidatedRunURLPath(g)
+	want := "/reports/desktop/pr-3891/29b47e7/desktop-pr?gh_run_attempt=1&gh_run_id=837585694163"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
 func TestRewriteGroupedRunURLPathFinalSegment(t *testing.T) {
 	t.Parallel()
 	// Repo slug contains the old name; only the trailing segment should change.
-	path := "/reports/mobile-detox-pr-repo/main/abc/mobile-detox-pr"
+	path := "/reports/mobile-detox-pr-repo/main/abc/mobile-detox-pr?gh_run_id=99&gh_run_attempt=1"
 	got := rewriteGroupedRunURLPath(path, "mobile-detox-pr", "mobile-pr")
-	want := "/reports/mobile-detox-pr-repo/main/abc/mobile-pr"
+	want := "/reports/mobile-detox-pr-repo/main/abc/mobile-pr?gh_run_id=99&gh_run_attempt=1"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}

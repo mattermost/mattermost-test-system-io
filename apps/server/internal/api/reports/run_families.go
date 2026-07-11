@@ -67,19 +67,24 @@ func rewriteGroupedRunURLPath(path, oldName, canon string) string {
 	if oldName == canon || path == "" {
 		return path
 	}
+	query := ""
+	if i := strings.Index(path, "?"); i >= 0 {
+		query = path[i:]
+		path = path[:i]
+	}
 	oldSeg := url.PathEscape(oldName)
 	newSeg := url.PathEscape(canon)
 	trimmed := strings.Trim(path, "/")
 	if trimmed == "" {
-		return path
+		return path + query
 	}
 	segments := strings.Split(trimmed, "/")
 	last := len(segments) - 1
 	if segments[last] == oldSeg || segments[last] == oldName {
 		segments[last] = newSeg
-		return "/" + strings.Join(segments, "/")
+		return "/" + strings.Join(segments, "/") + query
 	}
-	return path
+	return path + query
 }
 
 func mergeRunEntryStats(a, b *runEntry) {

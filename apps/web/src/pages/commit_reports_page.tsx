@@ -7,6 +7,7 @@ import { RepoGroupCard } from '@/components/repo_group_card';
 import { ReportSummary, resolveEffectiveReportStatus } from '@/components/report_summary';
 import { resolveDisplayStats } from '@/components/report_card_parts';
 import type { RepositoryGroup, RunEntry } from '@/types';
+import { parsePRBranch } from '@/lib/report_urls';
 
 interface AggregatedStats {
   passed: number;
@@ -168,11 +169,7 @@ export function CommitReportsPage() {
     const branchName = firstRun.branch;
 
     // PR number: prefer API field, fallback to parsing branch name
-    let prNumber: number | undefined = firstRun.gh_pr_number;
-    if (!prNumber) {
-      const prMatch = branchName.match(/^pr-(\d+)/i);
-      if (prMatch) prNumber = parseInt(prMatch[1]!, 10);
-    }
+    const prNumber = firstRun.gh_pr_number ?? parsePRBranch(branchName);
 
     return { repository, fullCommit, shortSha, branchName, prNumber };
   }, [filteredGroups, isAmbiguous]);

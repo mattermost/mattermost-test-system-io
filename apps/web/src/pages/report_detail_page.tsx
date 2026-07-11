@@ -9,6 +9,12 @@ import { isRetestName } from '@/components/report_card_parts';
 import { EnvironmentMetadataDisplay } from '@/components/report_card_parts/environment_metadata';
 import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
 import { runConsolidatedHref } from '@/components/run_families';
+import {
+  buildConsolidatedReportPath,
+  reportBranchSegment,
+  repositoryDisplayName,
+  shortSHA,
+} from '@/lib/report_urls';
 
 export function ReportDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -79,17 +85,26 @@ export function ReportDetailPage() {
   // Build URL segments from report data for breadcrumb and name link
   const urlParts = useMemo(() => {
     if (!report?.repository || !report?.branch || !report?.commit || !report?.name) return null;
-    const repoName = report.repository.split('/').pop() || report.repository;
-    const shortBranch = report.branch.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
-    const prMatch = shortBranch.match(/^pr-(\d+)/i) || report.branch.match(/^refs\/pull\/(\d+)\//);
-    const branchSegment = prMatch ? `pr-${prMatch[1]}` : shortBranch;
-    const shortSha = report.commit.slice(0, 7);
-    return { repoName, branchSegment, shortSha, name: report.name };
+    return {
+      repoName: repositoryDisplayName(report.repository),
+      branchSegment: reportBranchSegment(report.branch, report.gh_pr_number),
+      shortSha: shortSHA(report.commit),
+      name: report.name,
+    };
   }, [report]);
 
-  const nameHref = urlParts
-    ? `/reports/${encodeURIComponent(urlParts.repoName)}/${encodeURIComponent(urlParts.branchSegment)}/${urlParts.shortSha}/${encodeURIComponent(urlParts.name)}`
-    : undefined;
+  const nameHref =
+    report && urlParts
+      ? buildConsolidatedReportPath({
+          repository: report.repository,
+          branch: report.branch,
+          commit: report.commit,
+          name: report.name,
+          gh_pr_number: report.gh_pr_number,
+          gh_run_id: report.gh_run_id,
+          gh_run_attempt: report.gh_run_attempt,
+        })
+      : undefined;
 
   if (isLoading) {
     return (

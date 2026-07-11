@@ -277,6 +277,36 @@ func toReportDetail(g groupDTO, entries []reportEntryDTO, s groupStats) reportDe
 	return out
 }
 
+func reportBranchSegment(g groupDTO) string {
+	branch := stripRefPrefix(g.Branch)
+	if g.GHPRNumber != nil && *g.GHPRNumber > 0 {
+		return fmt.Sprintf("pr-%d", *g.GHPRNumber)
+	}
+	if n, ok := parsePRBranch(branch); ok {
+		return fmt.Sprintf("pr-%d", n)
+	}
+	return branch
+}
+
+func consolidatedRunURLPath(g groupDTO) string {
+	path := "/reports/" +
+		url.PathEscape(repositoryDisplayName(g.Repository)) + "/" +
+		url.PathEscape(reportBranchSegment(g)) + "/" +
+		url.PathEscape(shortSHA(g.CommitSHA)) + "/" +
+		url.PathEscape(canonicalRunName(g.Name))
+	if g.GHRunID == "" {
+		return path
+	}
+	q := url.Values{}
+	q.Set("gh_run_id", g.GHRunID)
+	attempt := g.GHRunAttempt
+	if attempt == "" {
+		attempt = "1"
+	}
+	q.Set("gh_run_attempt", attempt)
+	return path + "?" + q.Encode()
+}
+
 func toRunEntry(g groupDTO, s groupStats) runEntry {
 	branch := stripRefPrefix(g.Branch)
 	return runEntry{
@@ -295,16 +325,7 @@ func toRunEntry(g groupDTO, s groupStats) runEntry {
 		LastUploadAt:         fmtTime(g.LastUploadAt),
 		TotalReportsExpected: derefIntOrZero(g.TotalReportsExpected),
 		ReportsCount:         s.ReportsCount,
-		// Consolidated-view URL shape: {repo-slug}/{branch}/{short-sha}/{name}.
-		// Each segment is URL-encoded so names containing spaces or slashes
-		// stay as one path segment. Short SHA keeps the URL compact; any
-		// prefix length resolves because the filter matches against the
-		// full commit.
-		URLPath: "/reports/" +
-			url.PathEscape(repositoryDisplayName(g.Repository)) + "/" +
-			url.PathEscape(branch) + "/" +
-			url.PathEscape(shortSHA(g.CommitSHA)) + "/" +
-			url.PathEscape(g.Name),
+		URLPath:              consolidatedRunURLPath(g),
 	}
 }
 

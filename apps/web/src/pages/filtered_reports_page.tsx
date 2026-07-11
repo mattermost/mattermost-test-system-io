@@ -7,9 +7,10 @@ import { Breadcrumb } from '@/components/breadcrumb';
 import { ReportSummary, resolveEffectiveReportStatus } from '@/components/report_summary';
 import { resolveDisplayStats } from '@/components/report_card_parts';
 import type { RepositoryGroup, RunEntry } from '@/types';
+import { parsePRBranch, stripRefPrefix } from '@/lib/report_urls';
 
 function short_branch(branch: string): string {
-  return branch.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
+  return stripRefPrefix(branch);
 }
 
 function filterGroups(
@@ -208,11 +209,7 @@ export function FilteredReportsPage() {
     const shortSha = firstRun.short_sha || firstRun.commit.slice(0, 7);
 
     // PR number: prefer API field, fallback to parsing branch name
-    let prNumber: number | undefined = firstRun.gh_pr_number;
-    if (!prNumber) {
-      const prMatch = branchName.match(/^pr-(\d+)/i);
-      if (prMatch) prNumber = parseInt(prMatch[1]!, 10);
-    }
+    const prNumber = firstRun.gh_pr_number ?? parsePRBranch(branchName);
 
     return { repository, fullCommit, shortSha, branchName, prNumber };
   }, [filteredGroups, commit, resolvedCommit]);

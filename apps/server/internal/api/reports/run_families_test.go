@@ -5,7 +5,7 @@ import "testing"
 func TestExpandedGroupNames(t *testing.T) {
 	t.Parallel()
 	got := expandedGroupNames("mobile-pr")
-	want := []string{"mobile-detox-pr", "mobile-maestro-pr"}
+	want := []string{"mobile-pr", "mobile-detox-pr", "mobile-maestro-pr"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -50,13 +50,13 @@ func TestMergeGroupedRunEntries(t *testing.T) {
 	runs := []runEntry{
 		{
 			ReportID: "d1", Name: "mobile-detox-pr", GHRunID: "100", GHRunAttempt: "1",
-			Branch: "main", Commit: "abc", URLPath: "/reports/mattermost-mobile/main/abc/mobile-detox-pr",
+			Branch: "main", Commit: "abc", URLPath: "/reports/mobile/main/abc/mobile-detox-pr",
 			TestStats: &testStats{Total: 10, Passed: 9, Failed: 1}, ReportsCount: 3, TotalReportsExpected: 3,
 			CreatedAt: "2026-01-01T00:00:00Z",
 		},
 		{
 			ReportID: "m1", Name: "mobile-maestro-pr", GHRunID: "100", GHRunAttempt: "1",
-			Branch: "main", Commit: "abc", URLPath: "/reports/mattermost-mobile/main/abc/mobile-maestro-pr",
+			Branch: "main", Commit: "abc", URLPath: "/reports/mobile/main/abc/mobile-maestro-pr",
 			TestStats: &testStats{Total: 8, Passed: 7, Failed: 1}, ReportsCount: 2, TotalReportsExpected: 2,
 			CreatedAt: "2026-01-01T00:01:00Z",
 		},
@@ -82,17 +82,17 @@ func TestMergeGroupedRunEntries(t *testing.T) {
 	if mobile.TestStats.Total != 18 || mobile.ReportsCount != 5 || mobile.TotalReportsExpected != 5 {
 		t.Fatalf("bad merge: %+v", mobile)
 	}
-	if mobile.URLPath != "/reports/mattermost-mobile/main/abc/mobile-pr" {
+	if mobile.URLPath != "/reports/mobile/main/abc/mobile-pr" {
 		t.Fatalf("url path %q", mobile.URLPath)
 	}
 }
 
-func TestConsolidatedRunURLPath(t *testing.T) {
+func TestConsolidatedRunURLPathDesktopPR(t *testing.T) {
 	t.Parallel()
 	g := groupDTO{
 		Repository:   "mattermost/desktop",
 		Branch:       "tsio-spike",
-		CommitSHA:    "29b47e7dcda38b98726f2abeafc4682bf945f440",
+		CommitSHA:    "cbe461edcda38b98726f2abeafc4682bf945f440",
 		Name:         "desktop-pr",
 		GHRunID:      "837585694163",
 		GHRunAttempt: "1",
@@ -100,7 +100,43 @@ func TestConsolidatedRunURLPath(t *testing.T) {
 	pr := 3891
 	g.GHPRNumber = &pr
 	got := consolidatedRunURLPath(g)
-	want := "/reports/desktop/pr-3891/29b47e7/desktop-pr?gh_run_attempt=1&gh_run_id=837585694163"
+	want := "/reports/desktop/tsio-spike/cbe461e/desktop-pr"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestConsolidatedRunURLPathMobile(t *testing.T) {
+	t.Parallel()
+	g := groupDTO{
+		Repository:   "mattermost/mattermost-mobile",
+		Branch:       "feat/tsio-mobile-reporting",
+		CommitSHA:    "abc1234deadbeef0123456789abcdef012345678",
+		Name:         "mobile-pr",
+		GHRunID:      "12345678901",
+		GHRunAttempt: "1",
+	}
+	pr := 8421
+	g.GHPRNumber = &pr
+	got := consolidatedRunURLPath(g)
+	want := "/reports/mobile/feat~tsio-mobile-reporting/abc1234/mobile-pr"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestConsolidatedRunURLPathDesktopMaster(t *testing.T) {
+	t.Parallel()
+	g := groupDTO{
+		Repository:   "mattermost/desktop",
+		Branch:       "master",
+		CommitSHA:    "29b47e7dcda38b98726f2abeafc4682bf945f440",
+		Name:         "desktop-master",
+		GHRunID:      "837585694163",
+		GHRunAttempt: "1",
+	}
+	got := consolidatedRunURLPath(g)
+	want := "/reports/desktop/master/29b47e7/desktop-master"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}

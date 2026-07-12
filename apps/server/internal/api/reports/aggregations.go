@@ -277,34 +277,16 @@ func toReportDetail(g groupDTO, entries []reportEntryDTO, s groupStats) reportDe
 	return out
 }
 
-func reportBranchSegment(g groupDTO) string {
-	branch := stripRefPrefix(g.Branch)
-	if g.GHPRNumber != nil && *g.GHPRNumber > 0 {
-		return fmt.Sprintf("pr-%d", *g.GHPRNumber)
-	}
-	if n, ok := parsePRBranch(branch); ok {
-		return fmt.Sprintf("pr-%d", n)
-	}
-	return branch
+func reportBranchPathSegment(branch string) string {
+	return strings.ReplaceAll(stripRefPrefix(branch), "/", "~")
 }
 
 func consolidatedRunURLPath(g groupDTO) string {
-	path := "/reports/" +
+	return "/reports/" +
 		url.PathEscape(repositoryDisplayName(g.Repository)) + "/" +
-		url.PathEscape(reportBranchSegment(g)) + "/" +
+		url.PathEscape(reportBranchPathSegment(g.Branch)) + "/" +
 		url.PathEscape(shortSHA(g.CommitSHA)) + "/" +
 		url.PathEscape(canonicalRunName(g.Name))
-	if g.GHRunID == "" {
-		return path
-	}
-	q := url.Values{}
-	q.Set("gh_run_id", g.GHRunID)
-	attempt := g.GHRunAttempt
-	if attempt == "" {
-		attempt = "1"
-	}
-	q.Set("gh_run_attempt", attempt)
-	return path + "?" + q.Encode()
 }
 
 func toRunEntry(g groupDTO, s groupStats) runEntry {
@@ -476,10 +458,18 @@ func (h *Handlers) computeGrouped(ctx context.Context, limit, offset int) ([]byt
 }
 
 func repositoryDisplayName(key string) string {
+	tail := key
 	if i := strings.LastIndex(key, "/"); i >= 0 && i < len(key)-1 {
-		return key[i+1:]
+		tail = key[i+1:]
 	}
-	return key
+	switch tail {
+	case "mattermost-mobile":
+		return "mobile"
+	case "mattermost-desktop":
+		return "desktop"
+	default:
+		return tail
+	}
 }
 
 // Individual serves GET /api/v1/reports/individual?limit=&offset=. Flat per-job
@@ -574,12 +564,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("gid"); v != "" {
 		pinnedGroup = &v
 	}
-	// gh_run_id narrows to a single Actions workflow run when present.
-	// Without it, two distinct runs sharing a (repo, branch, commit, name,
-	// run_attempt) tuple — e.g. a re-trigger of the same workflow against
-	// an unchanged commit — get merged into one consolidated view, and
-	// whichever finished /reports/upload first claims the badges. Optional
-	// to preserve the cross-run aggregate behavior callers may rely on.
+	// gid/gh_run_id pin a run; otherwise the latest upload for this SHA wins.
 	var pinnedGHRunID *string
 	if v := q.Get("gh_run_id"); v != "" {
 		pinnedGHRunID = &v
@@ -617,13 +602,32 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			FROM report_screenshots rs
 			WHERE rs.case_id = tc.id
 		) ss ON TRUE
-		WHERE (g.repository = $1 OR g.repository LIKE '%/' || $1)
+		WHERE (g.repository = $1 OR g.repository LIKE '%/' || $1
+		  OR ($1 = 'mobile' AND g.repository LIKE '%/mattermost-mobile')
+		  OR ($1 = 'desktop' AND (g.repository LIKE '%/desktop' OR g.repository LIKE '%/mattermost-desktop')))
 		  AND (g.branch = $2 OR ($8::int IS NOT NULL AND g.gh_pr_number = $8::int))
 		  AND g.commit_sha LIKE $3 || '%'
 		  AND g.name = ANY($4::text[])
 		  AND ($5::text IS NULL OR g.gh_run_attempt = $5::text)
-		  AND ($6::uuid IS NULL OR g.id = $6::uuid)
-		  AND ($7::text IS NULL OR g.gh_run_id = $7::text)
+		  AND (
+		    ($6::uuid IS NOT NULL AND g.id = $6::uuid)
+		    OR ($7::text IS NOT NULL AND g.gh_run_id = $7::text)
+		    OR (
+		      $6::uuid IS NULL AND $7::text IS NULL
+		      AND (g.gh_run_id, g.gh_run_attempt) = (
+		        SELECT g_pick.gh_run_id, g_pick.gh_run_attempt
+		        FROM report_groups g_pick
+		        WHERE (g_pick.repository = $1 OR g_pick.repository LIKE '%/' || $1
+		          OR ($1 = 'mobile' AND g_pick.repository LIKE '%/mattermost-mobile')
+		          OR ($1 = 'desktop' AND (g_pick.repository LIKE '%/desktop' OR g_pick.repository LIKE '%/mattermost-desktop')))
+		          AND (g_pick.branch = $2 OR ($8::int IS NOT NULL AND g_pick.gh_pr_number = $8::int))
+		          AND g_pick.commit_sha LIKE $3 || '%'
+		          AND g_pick.name = ANY($4::text[])
+		        ORDER BY COALESCE(g_pick.last_upload_at, g_pick.created_at) DESC, g_pick.id DESC
+		        LIMIT 1
+		      )
+		    )
+		  )
 	`, repository, branch, commit, groupNames, pinnedAttempt, pinnedGroup, pinnedGHRunID, prBranchNumber)
 	if err != nil {
 		api.WriteError(w, r, err)

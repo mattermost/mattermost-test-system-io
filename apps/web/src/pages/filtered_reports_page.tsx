@@ -7,7 +7,7 @@ import { Breadcrumb } from '@/components/breadcrumb';
 import { ReportSummary, resolveEffectiveReportStatus } from '@/components/report_summary';
 import { resolveDisplayStats } from '@/components/report_card_parts';
 import type { RepositoryGroup, RunEntry } from '@/types';
-import { parsePRBranch, stripRefPrefix } from '@/lib/report_urls';
+import { parsePRBranch, stripRefPrefix, encodeBranchPathSegment } from '@/lib/report_urls';
 
 function short_branch(branch: string): string {
   return stripRefPrefix(branch);
@@ -140,14 +140,22 @@ function aggregateRunStats(groups: RepositoryGroup[]): AggregatedStats {
   };
 }
 
-export function FilteredReportsPage() {
-  const { repo, branch, commit, param } = useParams<{
+export type FilteredReportsPageProps = {
+  repo?: string;
+  branch?: string;
+  commit?: string;
+};
+
+export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
+  const params = useParams<{
     repo: string;
     branch: string;
     commit: string;
     param: string;
   }>();
-  const repoName = repo || param;
+  const repoName = props.repo ?? params.repo ?? params.param;
+  const branch = props.branch ?? params.branch;
+  const commit = props.commit ?? params.commit;
 
   const { data, isLoading, error } = useGroupedReports();
 
@@ -224,7 +232,10 @@ export function FilteredReportsPage() {
   }
   if (branch) {
     if (commit) {
-      breadcrumbItems.push({ label: branch, to: `/reports/${repoName}/${branch}` });
+      breadcrumbItems.push({
+        label: branch,
+        to: `/reports/${repoName}/${encodeURIComponent(encodeBranchPathSegment(branch))}`,
+      });
     } else {
       breadcrumbItems.push({ label: branch });
     }

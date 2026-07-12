@@ -11,7 +11,7 @@ import { OrchestrationInlineSummary } from '@/components/orchestration_inline_su
 import { runConsolidatedHref } from '@/components/run_families';
 import {
   buildConsolidatedReportPath,
-  reportBranchSegment,
+  encodeBranchPathSegment,
   repositoryDisplayName,
   shortSHA,
 } from '@/lib/report_urls';
@@ -87,7 +87,7 @@ export function ReportDetailPage() {
     if (!report?.repository || !report?.branch || !report?.commit || !report?.name) return null;
     return {
       repoName: repositoryDisplayName(report.repository),
-      branchSegment: reportBranchSegment(report.branch, report.gh_pr_number),
+      branchSegment: encodeBranchPathSegment(report.branch),
       shortSha: shortSHA(report.commit),
       name: report.name,
     };
@@ -100,9 +100,6 @@ export function ReportDetailPage() {
           branch: report.branch,
           commit: report.commit,
           name: report.name,
-          gh_pr_number: report.gh_pr_number,
-          gh_run_id: report.gh_run_id,
-          gh_run_attempt: report.gh_run_attempt,
         })
       : undefined;
 

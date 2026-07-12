@@ -21,17 +21,6 @@ import {
 } from '@/components/report_card_parts';
 import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
 import { resolveEffectiveReportStatus } from '@/components/report_summary';
-import { ensureRunQueryParams } from '@/lib/report_urls';
-
-function ensureRunUrlPath(entry: RunEntry): string {
-  if (entry.gh_run_id) {
-    return ensureRunQueryParams(entry.url_path, entry.gh_run_id, entry.gh_run_attempt);
-  }
-  if (entry.url_path.includes('gh_run_id=')) {
-    return entry.url_path;
-  }
-  return `${entry.url_path}?gid=${entry.report_id}`;
-}
 
 function status_icon(entry: RunEntry) {
   const effective = resolveEffectiveReportStatus(
@@ -383,14 +372,7 @@ export function RepoGroupCard({ group, startNumber = 1 }: RepoGroupCardProps) {
     <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800/50">
       <div className="divide-y divide-gray-50 dark:divide-gray-700/50">
         {group.runs.map((entry, idx) => {
-          const urlPath = ensureRunUrlPath(entry);
-          const decoratedEntry = { ...entry, url_path: urlPath };
-          // Background + hover live on the wrapper so they cover both the
-          // link row AND the orchestration progress strip below it. With
-          // them on the link, hovering past the bottom edge of the link
-          // would lose the highlight while the cursor was still over the
-          // same logical card.
-          const stats = resolveDisplayStats(decoratedEntry);
+          const stats = resolveDisplayStats(entry);
           const hasFailed = !!stats && stats.total > 0 && stats.failed > 0;
           const wrapperClass = `rounded-md transition-colors ${
             hasFailed
@@ -400,11 +382,11 @@ export function RepoGroupCard({ group, startNumber = 1 }: RepoGroupCardProps) {
           return (
             <div key={entry.report_id} className={wrapperClass}>
               {run_entry_row({
-                entry: decoratedEntry,
+                entry,
                 repoName: group.repository_name || entry.url_path.split('/')[2] || '',
                 rowNumber: startNumber + idx,
               })}
-              {orchestration_strip(decoratedEntry)}
+              {orchestration_strip(entry)}
             </div>
           );
         })}

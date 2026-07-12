@@ -491,6 +491,9 @@ func (h *Handlers) extractReport(ctx context.Context, groupID, reportID uuid.UUI
 			continue
 		}
 		suites, ps, pe := ingest.Extract(framework, body, &seq)
+		if len(suites) == 0 {
+			suites, ps, pe = ingest.Extract("", body, &seq)
+		}
 		allSuites = append(allSuites, suites...)
 		reportStart = earlier(reportStart, ps)
 		reportEnd = later(reportEnd, pe)

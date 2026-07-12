@@ -12,18 +12,27 @@ export function parsePRBranch(branch: string): number | undefined {
   return n > 0 ? n : undefined;
 }
 
-/** Branch path segment for consolidated report URLs. */
-export function reportBranchSegment(branch: string, ghPrNumber?: number | null): string {
-  if (ghPrNumber != null && ghPrNumber > 0) {
-    return `pr-${ghPrNumber}`;
+const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/i;
+
+/** Encode a git ref for a single URL path segment (slashes → ~). */
+export function encodeBranchPathSegment(branch: string): string {
+  return stripRefPrefix(branch).replace(/\//g, '~');
+}
+
+/** Decode a branch path segment from the URL back to a git ref. */
+export function decodeBranchPathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment).replace(/~/g, '/');
+  } catch {
+    return segment.replace(/~/g, '/');
   }
-  const pr = parsePRBranch(branch);
-  if (pr != null) return `pr-${pr}`;
-  return stripRefPrefix(branch);
 }
 
 export function repositoryDisplayName(repository: string): string {
-  return repository.split('/').pop() || repository;
+  const tail = repository.split('/').pop() || repository;
+  if (tail === 'mattermost-mobile') return 'mobile';
+  if (tail === 'mattermost-desktop') return 'desktop';
+  return tail;
 }
 
 export function shortSHA(commit: string): string {
@@ -35,21 +44,43 @@ export type ConsolidatedReportLinkInput = {
   branch: string;
   commit: string;
   name: string;
-  gh_pr_number?: number | null;
-  gh_run_id?: string | null;
-  gh_run_attempt?: string | null;
 };
 
-/** Consolidated report path: /reports/{repo}/{branch}/{sha}/{name}[?gh_run_id=…]. */
+/** Consolidated report path: /reports/{repo}/{branch}/{sha}/{name}. */
 export function buildConsolidatedReportPath(input: ConsolidatedReportLinkInput): string {
   const repoName = repositoryDisplayName(input.repository);
-  const branchSegment = reportBranchSegment(input.branch, input.gh_pr_number);
+  const branchSegment = encodeBranchPathSegment(input.branch);
   const path = `/reports/${encodeURIComponent(repoName)}/${encodeURIComponent(branchSegment)}/${shortSHA(input.commit)}/${encodeURIComponent(input.name)}`;
-  if (!input.gh_run_id) return path;
-  const params = new URLSearchParams();
-  params.set('gh_run_id', input.gh_run_id);
-  params.set('gh_run_attempt', input.gh_run_attempt || '1');
-  return `${path}?${params}`;
+  return path;
+}
+
+export type ParsedReportPath =
+  | { mode: 'consolidated'; branch: string; commit: string; name: string }
+  | { mode: 'commit'; branch: string; commit: string }
+  | { mode: 'branch'; branch: string };
+
+/** Parse /reports/:repo/<splat> where the branch may contain slashes. */
+export function parseReportPathSplat(splat: string): ParsedReportPath | null {
+  const trimmed = splat.replace(/^\/+|\/+$/g, '');
+  if (!trimmed) return null;
+  const parts = trimmed.split('/');
+
+  if (parts.length >= 3) {
+    const name = decodeURIComponent(parts[parts.length - 1]!);
+    const commit = parts[parts.length - 2]!;
+    if (COMMIT_SHA_RE.test(commit)) {
+      const branch = parts.slice(0, -2).map(decodeBranchPathSegment).join('/');
+      return { mode: 'consolidated', branch, commit, name };
+    }
+  }
+  if (parts.length >= 2) {
+    const commit = parts[parts.length - 1]!;
+    if (COMMIT_SHA_RE.test(commit)) {
+      const branch = parts.slice(0, -1).map(decodeBranchPathSegment).join('/');
+      return { mode: 'commit', branch, commit };
+    }
+  }
+  return { mode: 'branch', branch: parts.map(decodeBranchPathSegment).join('/') };
 }
 
 /** Append gh_run_id when the server path omits it (legacy rows). */

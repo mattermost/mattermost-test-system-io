@@ -19,6 +19,7 @@ import { isRetestName } from '@/components/report_card_parts';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { OrchestrationTab } from '@/components/orchestration/orchestration_tab';
 import type { CompositeIdentity } from '@/types/orchestration';
+import { encodeBranchPathSegment } from '@/lib/report_urls';
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleString(undefined, {
@@ -30,13 +31,25 @@ function formatDate(dateString: string): string {
   });
 }
 
-export function FilteredReportPage() {
-  const { repo, branch, commit, name } = useParams<{
+export type FilteredReportPageProps = {
+  repo?: string;
+  branch?: string;
+  commit?: string;
+  name?: string;
+};
+
+export function FilteredReportPage(props: FilteredReportPageProps = {}) {
+  const params = useParams<{
     repo: string;
     branch: string;
     commit: string;
     name: string;
   }>();
+
+  const repo = props.repo ?? params.repo;
+  const branch = props.branch ?? params.branch;
+  const commit = props.commit ?? params.commit;
+  const name = props.name ?? params.name;
 
   const [search_params, setSearchParams] = useSearchParams();
   const run_attempt_param = search_params.get('run_attempt');
@@ -45,10 +58,7 @@ export function FilteredReportPage() {
   const gh_run_id_param = search_params.get('gh_run_id') || undefined;
   const gh_run_attempt_param = search_params.get('gh_run_attempt') || undefined;
 
-  // Step 1: Get consolidated results to find contributing report IDs.
-  // gh_run_id is forwarded so two workflow runs that share the same
-  // (repo, branch, commit, name, run_attempt) tuple don't merge into
-  // one view — the URL's run_id wins.
+  // Step 1: consolidated results to find contributing report IDs.
   const { data, isLoading, error } = useConsolidatedResults(
     repo || '',
     branch || '',
@@ -495,11 +505,11 @@ export function FilteredReportPage() {
             { label: repo || '', to: `/reports/${encodeURIComponent(repo || '')}` },
             {
               label: branch || '',
-              to: `/reports/${encodeURIComponent(repo || '')}/${encodeURIComponent(branch || '')}`,
+              to: `/reports/${encodeURIComponent(repo || '')}/${encodeURIComponent(encodeBranchPathSegment(branch || ''))}`,
             },
             {
               label: commit || '',
-              to: `/reports/${encodeURIComponent(repo || '')}/${encodeURIComponent(branch || '')}/${encodeURIComponent(commit || '')}`,
+              to: `/reports/${encodeURIComponent(repo || '')}/${encodeURIComponent(encodeBranchPathSegment(branch || ''))}/${encodeURIComponent(commit || '')}`,
             },
             { label: name || '' },
           ]}

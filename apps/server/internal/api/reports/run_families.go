@@ -6,14 +6,11 @@ import (
 	"strings"
 )
 
-// runFamilies maps a canonical run label (used in URLs and the landing page)
-// to every report_group.name uploaded for that workflow run. Mobile uploads
-// Detox and Maestro into separate groups (framework is scalar on report_groups)
-// but the dashboard treats them as one run keyed by gh_run_id.
+// runFamilies maps canonical run labels to legacy mobile report_group.name values.
 var runFamilies = map[string][]string{
 	"mobile-pr":     {"mobile-detox-pr", "mobile-maestro-pr"},
 	"mobile-master": {"mobile-detox-master", "mobile-maestro-master"},
-	"mobile-cmt":    {"mobile-cmt-detox", "mobile-cmt-maestro"},
+	"cmt-mobile":    {"mobile-cmt-detox", "mobile-cmt-maestro", "mobile-cmt"},
 }
 
 // canonicalRunName returns the unified run label for a stored group name.
@@ -28,13 +25,10 @@ func canonicalRunName(groupName string) string {
 	return groupName
 }
 
-// expandedGroupNames returns every report_group.name that belongs to the same
-// workflow run as the given URL or stored name. A bare member name (e.g.
-// mobile-detox-pr) expands to the full family so /reports/consolidated can
-// merge Detox + Maestro shards into one view.
+// expandedGroupNames returns all report_group.name values for the same workflow run.
 func expandedGroupNames(name string) []string {
 	if members, ok := runFamilies[name]; ok {
-		return append([]string(nil), members...)
+		return append([]string{name}, members...)
 	}
 	for _, members := range runFamilies {
 		for _, m := range members {
@@ -60,9 +54,7 @@ func isRunFamily(name string) bool {
 	return false
 }
 
-// rewriteGroupedRunURLPath replaces only the final URL segment when canonicalizing
-// a run-family name, so an earlier path segment that happens to contain the old
-// name (branch, repo slug, etc.) is left untouched.
+// rewriteGroupedRunURLPath replaces only the final URL segment when canonicalizing a run name.
 func rewriteGroupedRunURLPath(path, oldName, canon string) string {
 	if oldName == canon || path == "" {
 		return path

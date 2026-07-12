@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   parsePRBranch,
-  reportBranchSegment,
+  encodeBranchPathSegment,
+  decodeBranchPathSegment,
+  parseReportPathSplat,
   repositoryDisplayName,
-  shortSHA,
   stripRefPrefix,
   buildConsolidatedReportPath,
   ensureRunQueryParams,
@@ -17,61 +18,93 @@ describe('stripRefPrefix', () => {
   });
 });
 
-describe('parsePRBranch', () => {
-  it('parses pr-N branch segments', () => {
-    expect(parsePRBranch('pr-3891')).toBe(3891);
-    expect(parsePRBranch('PR-42')).toBe(42);
-  });
-
-  it('parses refs/pull/N/ head refs', () => {
-    expect(parsePRBranch('refs/pull/123/merge')).toBe(123);
-  });
-
-  it('returns undefined for non-PR branches', () => {
-    expect(parsePRBranch('tsio-spike')).toBeUndefined();
-    expect(parsePRBranch('pr-0')).toBeUndefined();
+describe('encodeBranchPathSegment', () => {
+  it('replaces slashes with tilde for URL paths', () => {
+    expect(encodeBranchPathSegment('feat/tsio-mobile-reporting')).toBe(
+      'feat~tsio-mobile-reporting',
+    );
+    expect(encodeBranchPathSegment('refs/heads/release-2.40')).toBe('release-2.40');
   });
 });
 
-describe('reportBranchSegment', () => {
-  it('prefers gh_pr_number over branch parsing', () => {
-    expect(reportBranchSegment('refs/heads/feature', 3891)).toBe('pr-3891');
+describe('parseReportPathSplat', () => {
+  it('parses consolidated paths when branch contains slashes', () => {
+    expect(parseReportPathSplat('feat/tsio-mobile-reporting/074d2d0/mobile-pr')).toEqual({
+      mode: 'consolidated',
+      branch: 'feat/tsio-mobile-reporting',
+      commit: '074d2d0',
+      name: 'mobile-pr',
+    });
   });
 
-  it('falls back to branch parsing', () => {
-    expect(reportBranchSegment('pr-3891')).toBe('pr-3891');
-    expect(reportBranchSegment('refs/heads/main')).toBe('main');
+  it('parses consolidated paths with tilde-encoded branch', () => {
+    expect(parseReportPathSplat('feat~tsio-mobile-reporting/074d2d0/mobile-pr')).toEqual({
+      mode: 'consolidated',
+      branch: 'feat/tsio-mobile-reporting',
+      commit: '074d2d0',
+      name: 'mobile-pr',
+    });
   });
-});
 
-describe('repositoryDisplayName', () => {
-  it('returns the repo slug', () => {
-    expect(repositoryDisplayName('mattermost/desktop')).toBe('desktop');
+  it('parses branch-only and commit-only paths', () => {
+    expect(parseReportPathSplat('tsio-spike')).toEqual({ mode: 'branch', branch: 'tsio-spike' });
+    expect(parseReportPathSplat('master/29b47e7')).toEqual({
+      mode: 'commit',
+      branch: 'master',
+      commit: '29b47e7',
+    });
   });
 });
 
 describe('buildConsolidatedReportPath', () => {
-  it('includes gh_run_id query params', () => {
+  it('builds path-only desktop PR URLs', () => {
     expect(
       buildConsolidatedReportPath({
         repository: 'mattermost/desktop',
         branch: 'tsio-spike',
-        commit: '29b47e7dcda38b98726f2abeafc4682bf945f440',
+        commit: 'cbe461edcda38b98726f2abeafc4682bf945f440',
         name: 'desktop-pr',
-        gh_pr_number: 3891,
-        gh_run_id: '837585694163',
-        gh_run_attempt: '1',
       }),
-    ).toBe(
-      '/reports/desktop/pr-3891/29b47e7/desktop-pr?gh_run_id=837585694163&gh_run_attempt=1',
-    );
+    ).toBe('/reports/desktop/tsio-spike/cbe461e/desktop-pr');
+  });
+
+  it('builds path-only mobile PR URLs with tilde branch encoding', () => {
+    expect(
+      buildConsolidatedReportPath({
+        repository: 'mattermost/mattermost-mobile',
+        branch: 'feat/tsio-mobile-reporting',
+        commit: 'abc1234deadbeef',
+        name: 'mobile-pr',
+      }),
+    ).toBe('/reports/mobile/feat~tsio-mobile-reporting/abc1234/mobile-pr');
+  });
+});
+
+describe('repositoryDisplayName', () => {
+  it('maps repo slugs to display tails', () => {
+    expect(repositoryDisplayName('mattermost/desktop')).toBe('desktop');
+    expect(repositoryDisplayName('mattermost/mattermost-mobile')).toBe('mobile');
+  });
+});
+
+describe('parsePRBranch', () => {
+  it('parses pr-N for metadata only', () => {
+    expect(parsePRBranch('pr-3891')).toBe(3891);
   });
 });
 
 describe('ensureRunQueryParams', () => {
-  it('appends gh_run_id when missing', () => {
+  it('appends gh_run_id when missing (legacy rows)', () => {
     expect(ensureRunQueryParams('/reports/desktop/main/abc/desktop-master', '99', '2')).toBe(
       '/reports/desktop/main/abc/desktop-master?gh_run_id=99&gh_run_attempt=2',
+    );
+  });
+});
+
+describe('decodeBranchPathSegment', () => {
+  it('restores slashes from tilde encoding', () => {
+    expect(decodeBranchPathSegment('feat~tsio-mobile-reporting')).toBe(
+      'feat/tsio-mobile-reporting',
     );
   });
 });

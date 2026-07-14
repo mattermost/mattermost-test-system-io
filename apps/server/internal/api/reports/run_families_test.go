@@ -2,10 +2,15 @@ package reports
 
 import "testing"
 
+const (
+	runNameMobilePR   = "mobile-pr"
+	runNameMobileMain = "mobile-main"
+)
+
 func TestExpandedGroupNames(t *testing.T) {
 	t.Parallel()
-	got := expandedGroupNames("mobile-pr")
-	want := []string{"mobile-pr", "mobile-detox-pr", "mobile-maestro-pr"}
+	got := expandedGroupNames(runNameMobilePR)
+	want := []string{runNameMobilePR, "mobile-detox-pr", "mobile-maestro-pr"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -14,29 +19,29 @@ func TestExpandedGroupNames(t *testing.T) {
 			t.Fatalf("got %v want %v", got, want)
 		}
 	}
-	if names := expandedGroupNames("mobile-detox-pr"); len(names) != 3 || names[0] != "mobile-pr" {
+	if names := expandedGroupNames("mobile-detox-pr"); len(names) != 3 || names[0] != runNameMobilePR {
 		t.Fatalf("member should expand to canon + family, got %v", names)
 	}
 	if names := expandedGroupNames("desktop-pr"); len(names) != 1 || names[0] != "desktop-pr" {
 		t.Fatalf("desktop-pr should not expand, got %v", names)
 	}
-	if names := expandedGroupNames("mobile-main"); names[0] != "mobile-main" {
+	if names := expandedGroupNames(runNameMobileMain); names[0] != runNameMobileMain {
 		t.Fatalf("mobile-main should be canonical, got %v", names)
 	}
-	if names := expandedGroupNames("mobile-master"); names[0] != "mobile-main" {
+	if names := expandedGroupNames("mobile-master"); names[0] != runNameMobileMain {
 		t.Fatalf("legacy mobile-master should expand under mobile-main, got %v", names)
 	}
 }
 
 func TestCanonicalRunName(t *testing.T) {
 	t.Parallel()
-	if got := canonicalRunName("mobile-maestro-pr"); got != "mobile-pr" {
+	if got := canonicalRunName("mobile-maestro-pr"); got != runNameMobilePR {
 		t.Fatalf("got %q", got)
 	}
-	if got := canonicalRunName("mobile-master"); got != "mobile-main" {
+	if got := canonicalRunName("mobile-master"); got != runNameMobileMain {
 		t.Fatalf("legacy mobile-master should canonicalize to mobile-main, got %q", got)
 	}
-	if got := canonicalRunName("mobile-detox-main"); got != "mobile-main" {
+	if got := canonicalRunName("mobile-detox-main"); got != runNameMobileMain {
 		t.Fatalf("got %q", got)
 	}
 	if got := canonicalRunName("cmt-desktop"); got != "cmt-desktop" {
@@ -84,7 +89,7 @@ func TestMergeGroupedRunEntries(t *testing.T) {
 	}
 	var mobile *runEntry
 	for i := range merged {
-		if merged[i].Name == "mobile-pr" {
+		if merged[i].Name == runNameMobilePR {
 			mobile = &merged[i]
 		}
 	}
@@ -94,7 +99,7 @@ func TestMergeGroupedRunEntries(t *testing.T) {
 	if mobile.TestStats.Total != 18 || mobile.ReportsCount != 5 || mobile.TotalReportsExpected != 5 {
 		t.Fatalf("bad merge: %+v", mobile)
 	}
-	if mobile.URLPath != "/reports/mobile/main/abc/mobile-pr" {
+	if mobile.URLPath != "/reports/mobile/main/abc/"+runNameMobilePR {
 		t.Fatalf("url path %q", mobile.URLPath)
 	}
 }
@@ -124,14 +129,14 @@ func TestConsolidatedRunURLPathMobile(t *testing.T) {
 		Repository:   "mattermost/mattermost-mobile",
 		Branch:       "feat/tsio-mobile-reporting",
 		CommitSHA:    "abc1234deadbeef0123456789abcdef012345678",
-		Name:         "mobile-pr",
+		Name:         runNameMobilePR,
 		GHRunID:      "12345678901",
 		GHRunAttempt: "1",
 	}
 	pr := 8421
 	g.GHPRNumber = &pr
 	got := consolidatedRunURLPath(g)
-	want := "/reports/mobile/feat~tsio-mobile-reporting/abc1234/mobile-pr"
+	want := "/reports/mobile/feat~tsio-mobile-reporting/abc1234/" + runNameMobilePR
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -158,8 +163,8 @@ func TestRewriteGroupedRunURLPathFinalSegment(t *testing.T) {
 	t.Parallel()
 	// Repo slug contains the old name; only the trailing segment should change.
 	path := "/reports/mobile-detox-pr-repo/main/abc/mobile-detox-pr?gh_run_id=99&gh_run_attempt=1"
-	got := rewriteGroupedRunURLPath(path, "mobile-detox-pr", "mobile-pr")
-	want := "/reports/mobile-detox-pr-repo/main/abc/mobile-pr?gh_run_id=99&gh_run_attempt=1"
+	got := rewriteGroupedRunURLPath(path, "mobile-detox-pr", runNameMobilePR)
+	want := "/reports/mobile-detox-pr-repo/main/abc/" + runNameMobilePR + "?gh_run_id=99&gh_run_attempt=1"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}

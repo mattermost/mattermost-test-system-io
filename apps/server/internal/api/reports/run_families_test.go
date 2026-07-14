@@ -14,17 +14,29 @@ func TestExpandedGroupNames(t *testing.T) {
 			t.Fatalf("got %v want %v", got, want)
 		}
 	}
-	if names := expandedGroupNames("mobile-detox-pr"); len(names) != 2 {
-		t.Fatalf("member should expand family, got %v", names)
+	if names := expandedGroupNames("mobile-detox-pr"); len(names) != 3 || names[0] != "mobile-pr" {
+		t.Fatalf("member should expand to canon + family, got %v", names)
 	}
 	if names := expandedGroupNames("desktop-pr"); len(names) != 1 || names[0] != "desktop-pr" {
 		t.Fatalf("desktop-pr should not expand, got %v", names)
+	}
+	if names := expandedGroupNames("mobile-main"); names[0] != "mobile-main" {
+		t.Fatalf("mobile-main should be canonical, got %v", names)
+	}
+	if names := expandedGroupNames("mobile-master"); names[0] != "mobile-main" {
+		t.Fatalf("legacy mobile-master should expand under mobile-main, got %v", names)
 	}
 }
 
 func TestCanonicalRunName(t *testing.T) {
 	t.Parallel()
 	if got := canonicalRunName("mobile-maestro-pr"); got != "mobile-pr" {
+		t.Fatalf("got %q", got)
+	}
+	if got := canonicalRunName("mobile-master"); got != "mobile-main" {
+		t.Fatalf("legacy mobile-master should canonicalize to mobile-main, got %q", got)
+	}
+	if got := canonicalRunName("mobile-detox-main"); got != "mobile-main" {
 		t.Fatalf("got %q", got)
 	}
 	if got := canonicalRunName("cmt-desktop"); got != "cmt-desktop" {

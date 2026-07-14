@@ -2,7 +2,14 @@ import { buildConsolidatedReportPath } from '@/lib/report_urls';
 
 const RUN_FAMILIES: Record<string, string[]> = {
   'mobile-pr': ['mobile-detox-pr', 'mobile-maestro-pr'],
-  'mobile-master': ['mobile-detox-master', 'mobile-maestro-master'],
+  // mobile-main is canonical; include legacy mobile-master* names for old uploads.
+  'mobile-main': [
+    'mobile-detox-main',
+    'mobile-maestro-main',
+    'mobile-master',
+    'mobile-detox-master',
+    'mobile-maestro-master',
+  ],
   'cmt-mobile': ['mobile-cmt-detox', 'mobile-cmt-maestro', 'mobile-cmt'],
 };
 

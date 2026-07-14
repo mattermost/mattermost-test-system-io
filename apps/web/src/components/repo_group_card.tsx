@@ -21,6 +21,7 @@ import {
 } from '@/components/report_card_parts';
 import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
 import { resolveEffectiveReportStatus } from '@/components/report_summary';
+import { ensureRunQueryParams } from '@/lib/report_urls';
 
 function status_icon(entry: RunEntry) {
   const effective = resolveEffectiveReportStatus(
@@ -372,7 +373,13 @@ export function RepoGroupCard({ group, startNumber = 1 }: RepoGroupCardProps) {
     <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800/50">
       <div className="divide-y divide-gray-50 dark:divide-gray-700/50">
         {group.runs.map((entry, idx) => {
-          const stats = resolveDisplayStats(entry);
+          // Always stamp gh_run_id so same-SHA rows open the correct Actions run
+          // (bare consolidated URLs otherwise resolve to the latest run).
+          const urlPath = entry.gh_run_id
+            ? ensureRunQueryParams(entry.url_path, entry.gh_run_id, entry.gh_run_attempt)
+            : `${entry.url_path}${entry.url_path.includes('?') ? '&' : '?'}gid=${entry.report_id}`;
+          const decoratedEntry = { ...entry, url_path: urlPath };
+          const stats = resolveDisplayStats(decoratedEntry);
           const hasFailed = !!stats && stats.total > 0 && stats.failed > 0;
           const wrapperClass = `rounded-md transition-colors ${
             hasFailed
@@ -382,11 +389,11 @@ export function RepoGroupCard({ group, startNumber = 1 }: RepoGroupCardProps) {
           return (
             <div key={entry.report_id} className={wrapperClass}>
               {run_entry_row({
-                entry,
+                entry: decoratedEntry,
                 repoName: group.repository_name || entry.url_path.split('/')[2] || '',
                 rowNumber: startNumber + idx,
               })}
-              {orchestration_strip(entry)}
+              {orchestration_strip(decoratedEntry)}
             </div>
           );
         })}

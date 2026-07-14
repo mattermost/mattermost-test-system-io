@@ -8,14 +8,17 @@ import (
 
 // runFamilies maps canonical run labels to legacy mobile report_group.name values.
 var runFamilies = map[string][]string{
-	"mobile-pr":     {"mobile-detox-pr", "mobile-maestro-pr"},
-	"mobile-master": {"mobile-detox-master", "mobile-maestro-master"},
-	"cmt-mobile":    {"mobile-cmt-detox", "mobile-cmt-maestro", "mobile-cmt"},
+	"mobile-pr":   {"mobile-detox-pr", "mobile-maestro-pr"},
+	"mobile-main": {"mobile-detox-main", "mobile-maestro-main", "mobile-master", "mobile-detox-master", "mobile-maestro-master"},
+	"cmt-mobile":  {"mobile-cmt-detox", "mobile-cmt-maestro", "mobile-cmt"},
 }
 
 // canonicalRunName returns the unified run label for a stored group name.
 func canonicalRunName(groupName string) string {
 	for canon, members := range runFamilies {
+		if groupName == canon {
+			return canon
+		}
 		for _, m := range members {
 			if m == groupName {
 				return canon
@@ -30,10 +33,10 @@ func expandedGroupNames(name string) []string {
 	if members, ok := runFamilies[name]; ok {
 		return append([]string{name}, members...)
 	}
-	for _, members := range runFamilies {
+	for canon, members := range runFamilies {
 		for _, m := range members {
 			if m == name {
-				return append([]string(nil), members...)
+				return append([]string{canon}, members...)
 			}
 		}
 	}

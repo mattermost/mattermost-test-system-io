@@ -1,4 +1,4 @@
-import { buildConsolidatedReportPath } from '@/lib/report_urls';
+import { buildConsolidatedReportPath, ensureRunQueryParams } from '@/lib/report_urls';
 
 const RUN_FAMILIES: Record<string, string[]> = {
   'mobile-pr': ['mobile-detox-pr', 'mobile-maestro-pr'],
@@ -25,13 +25,16 @@ export function runConsolidatedHref(report: {
   branch: string;
   commit: string;
   name: string;
+  gh_run_id?: string | null;
+  gh_run_attempt?: string | null;
 }): string | null {
   const canon = canonicalRunName(report.name);
   if (canon === report.name && !RUN_FAMILIES[report.name]) return null;
-  return buildConsolidatedReportPath({
+  const path = buildConsolidatedReportPath({
     repository: report.repository,
     branch: report.branch,
     commit: report.commit,
     name: canon,
   });
+  return ensureRunQueryParams(path, report.gh_run_id, report.gh_run_attempt);
 }

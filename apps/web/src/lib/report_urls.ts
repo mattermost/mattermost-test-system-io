@@ -28,6 +28,15 @@ export function decodeBranchPathSegment(segment: string): string {
   }
 }
 
+/** decodeURIComponent that returns the raw segment on malformed percent-encoding. */
+function decodeURIComponentSafe(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 export function repositoryDisplayName(repository: string): string {
   const tail = repository.split('/').pop() || repository;
   if (tail === 'mattermost-mobile') return 'mobile';
@@ -66,7 +75,7 @@ export function parseReportPathSplat(splat: string): ParsedReportPath | null {
   const parts = trimmed.split('/');
 
   if (parts.length >= 3) {
-    const name = decodeURIComponent(parts[parts.length - 1]!);
+    const name = decodeURIComponentSafe(parts[parts.length - 1]!);
     const commit = parts[parts.length - 2]!;
     if (COMMIT_SHA_RE.test(commit)) {
       const branch = parts.slice(0, -2).map(decodeBranchPathSegment).join('/');

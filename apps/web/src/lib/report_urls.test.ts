@@ -46,12 +46,12 @@ describe('parseReportPathSplat', () => {
     });
   });
 
-  it('parses branch-only and commit-only paths', () => {
-    expect(parseReportPathSplat('tsio-spike')).toEqual({ mode: 'branch', branch: 'tsio-spike' });
-    expect(parseReportPathSplat('master/29b47e7')).toEqual({
-      mode: 'commit',
-      branch: 'master',
-      commit: '29b47e7',
+  it('keeps the raw report name when percent-encoding is malformed', () => {
+    expect(parseReportPathSplat('main/074d2d0/bad%name')).toEqual({
+      mode: 'consolidated',
+      branch: 'main',
+      commit: '074d2d0',
+      name: 'bad%name',
     });
   });
 });

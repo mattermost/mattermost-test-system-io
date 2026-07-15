@@ -1039,6 +1039,14 @@ func attachmentsOrEmpty(raw []byte) []any {
 	return out
 }
 
+// escapeLike escapes the LIKE/ILIKE metacharacters (\, %, _) so a user-supplied
+// query is matched as a literal substring rather than a pattern. Used with an
+// explicit ESCAPE '\' clause on the SQL side.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
 // Search serves GET /api/v1/reports/{id}/search?q=&limit=. Searches across
 // every test case under the report_group.
 func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
@@ -1063,10 +1071,10 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 		FROM test_cases tc
 		JOIN suites s ON s.id = tc.suite_id
 		JOIN reports r ON r.id = s.report_id
-		WHERE r.report_group_id = $1 AND tc.title ILIKE '%' || $2 || '%'
+		WHERE r.report_group_id = $1 AND tc.title ILIKE '%' || $2 || '%' ESCAPE '\'
 		ORDER BY s.ordinal, tc.ordinal
 		LIMIT $3
-	`, groupID, query, limit)
+	`, groupID, escapeLike(query), limit)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return

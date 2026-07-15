@@ -51,14 +51,12 @@ type Config struct {
 	// to the server's expected audience to prevent cross-service token replay.
 	GitHubActionsOIDCAudience string `env:"TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE" envDefault:""`
 
-	SessionSecret       string        `env:"TSIO_SESSION_SECRET,required,unset"`
-	SessionTTL          time.Duration `env:"TSIO_SESSION_TTL" envDefault:"720h"`
-	RefreshTokenTTL     time.Duration `env:"TSIO_REFRESH_TOKEN_TTL" envDefault:"720h"`
-	APIKeyRotationGrace time.Duration `env:"TSIO_APIKEY_ROTATION_GRACE" envDefault:"24h"`
+	SessionTTL      time.Duration `env:"TSIO_SESSION_TTL" envDefault:"720h"`
+	RefreshTokenTTL time.Duration `env:"TSIO_REFRESH_TOKEN_TTL" envDefault:"720h"`
 
 	// Admin key gates the privileged setup endpoints (e.g.
 	// POST /api/v1/auth/oidc-policies). Default is a known-bad placeholder
-	// that production MUST override.
+	// that non-development environments MUST override (enforced in validate).
 	AdminKey string `env:"TSIO_ADMIN_KEY" envDefault:"dev-admin-key-do-not-use-in-production"`
 
 	// Comma-separated `pattern=role` list applied as github_oidc_policies rows
@@ -175,6 +173,10 @@ func loadDotenv() {
 	}
 }
 
+// defaultAdminKey is the known-bad placeholder for TSIO_ADMIN_KEY. Deployments
+// outside development must override it (enforced in validate).
+const defaultAdminKey = "dev-admin-key-do-not-use-in-production"
+
 func (c Config) validate() error {
 	switch c.LogFormat {
 	case "json", "text":
@@ -186,6 +188,18 @@ func (c Config) validate() error {
 	}
 	if c.MaxArtifactBytes <= 0 {
 		return errors.New("TSIO_MAX_ARTIFACT_BYTES must be > 0")
+	}
+	// Fail fast on insecure defaults outside development. Production and
+	// staging must pin the OIDC audience (so tokens minted for other services
+	// sharing GitHub's issuer can't authenticate) and override the placeholder
+	// admin key.
+	if c.Environment != "" && c.Environment != "development" {
+		if c.GitHubActionsOIDCAudience == "" {
+			return errors.New("TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE must be set outside development")
+		}
+		if c.AdminKey == "" || c.AdminKey == defaultAdminKey {
+			return errors.New("TSIO_ADMIN_KEY must be overridden from its default outside development")
+		}
 	}
 	return nil
 }

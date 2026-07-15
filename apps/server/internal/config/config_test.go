@@ -37,12 +37,43 @@ func TestValidate_rejectsNegativeMaxArtifact(t *testing.T) {
 	}
 }
 
+func TestValidate_productionRequiresAudience(t *testing.T) {
+	c := Config{
+		LogFormat: "json", MaxUploadBytes: 1, MaxArtifactBytes: 1,
+		Environment: "production", AdminKey: "real-key",
+	}
+	if err := c.validate(); err == nil {
+		t.Fatal("expected error when OIDC audience is unset in production")
+	}
+}
+
+func TestValidate_productionRequiresNonDefaultAdminKey(t *testing.T) {
+	c := Config{
+		LogFormat: "json", MaxUploadBytes: 1, MaxArtifactBytes: 1,
+		Environment: "production", GitHubActionsOIDCAudience: "tsio",
+		AdminKey: defaultAdminKey,
+	}
+	if err := c.validate(); err == nil {
+		t.Fatal("expected error when admin key is the default placeholder in production")
+	}
+}
+
+func TestValidate_productionOKWhenSecured(t *testing.T) {
+	c := Config{
+		LogFormat: "json", MaxUploadBytes: 1, MaxArtifactBytes: 1,
+		Environment: "production", GitHubActionsOIDCAudience: "tsio",
+		AdminKey: "real-key",
+	}
+	if err := c.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
 func TestLoad_readsEnv(t *testing.T) {
 	t.Setenv("TSIO_DATABASE_URL", "postgres://user:pass@localhost/db?sslmode=disable")
 	t.Setenv("TSIO_S3_BUCKET", "reports")
 	t.Setenv("TSIO_S3_ACCESS_KEY", "minioadmin")
 	t.Setenv("TSIO_S3_SECRET_KEY", "minioadmin")
-	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
 	t.Setenv("TSIO_LOG_LEVEL", "debug")
 	t.Setenv("TSIO_LOG_FORMAT", "text")
 	t.Setenv("TSIO_SESSION_TTL", "48h")
@@ -82,7 +113,6 @@ func TestLoad_assemblesDatabaseURLFromParts(t *testing.T) {
 	t.Setenv("TSIO_DB_NAME", "tsio")
 	t.Setenv("TSIO_DB_SSLMODE", "disable")
 	t.Setenv("TSIO_S3_BUCKET", "reports")
-	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
 
 	cfg, err := Load()
 	if err != nil {
@@ -104,7 +134,6 @@ func TestLoad_directURLWinsOverParts(t *testing.T) {
 	t.Setenv("TSIO_DB_PASSWORD", "ignored")
 	t.Setenv("TSIO_DB_NAME", "ignored")
 	t.Setenv("TSIO_S3_BUCKET", "reports")
-	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
 
 	cfg, err := Load()
 	if err != nil {
@@ -117,7 +146,6 @@ func TestLoad_directURLWinsOverParts(t *testing.T) {
 
 func TestLoad_missingDatabaseConfigErrors(t *testing.T) {
 	t.Setenv("TSIO_S3_BUCKET", "reports")
-	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error when neither TSIO_DATABASE_URL nor split fields are set")
@@ -129,7 +157,6 @@ func TestLoad_partialDatabasePartsErrors(t *testing.T) {
 	t.Setenv("TSIO_DB_USER", "tsio")
 	// Missing TSIO_DB_PASSWORD and TSIO_DB_NAME.
 	t.Setenv("TSIO_S3_BUCKET", "reports")
-	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error when some but not all split DB fields are set")
@@ -141,7 +168,6 @@ func TestLoad_s3KeysOptional(t *testing.T) {
 	// credentials. Load() must succeed without them.
 	t.Setenv("TSIO_DATABASE_URL", "postgres://user:pass@localhost/db?sslmode=disable")
 	t.Setenv("TSIO_S3_BUCKET", "reports")
-	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
 
 	cfg, err := Load()
 	if err != nil {

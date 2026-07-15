@@ -49,7 +49,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   // Handle incoming WebSocket messages
   const handleMessage = useCallback(
     (event: WsEventMessage) => {
-      console.log('[WS] Received event:', event.type);
+      if (import.meta.env.DEV) console.log('[WS] Received event:', event.type);
 
       switch (event.type) {
         case 'report_created':

@@ -12,6 +12,12 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 const STORAGE_KEY = 'theme';
 
+const THEMES: readonly Theme[] = ['light', 'dark', 'system'];
+
+function isTheme(value: string | null): value is Theme {
+  return value !== null && (THEMES as readonly string[]).includes(value);
+}
+
 function getSystemTheme(): 'light' | 'dark' {
   if (typeof window === 'undefined') return 'light';
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -20,8 +26,8 @@ function getSystemTheme(): 'light' | 'dark' {
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
     if (typeof window === 'undefined') return 'system';
-    const stored = localStorage.getItem(STORAGE_KEY) as Theme | null;
-    return stored || 'system';
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return isTheme(stored) ? stored : 'system';
   });
 
   const [systemTheme, setSystemTheme] = useState<'light' | 'dark'>(getSystemTheme);

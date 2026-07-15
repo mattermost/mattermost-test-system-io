@@ -26,7 +26,12 @@ import type {
 import type { Divergence, SnapshotUnit } from '@/types/orchestration';
 import { PaginationBar } from '@/components/ui/pagination_bar';
 import { ScreenshotGallery } from '@/components/ui/screenshot-gallery';
-import { useSearchTestCases, useClientConfig, type SearchSuiteResult } from '@/services/api';
+import {
+  useSearchTestCases,
+  useClientConfig,
+  fetchSuiteSpecs,
+  type SearchSuiteResult,
+} from '@/services/api';
 import { DivergenceBadge } from '@/components/orchestration/divergence_badge';
 import {
   StatPill,
@@ -40,7 +45,6 @@ import {
   type StatusFilter,
 } from './test_suites';
 
-const API_BASE = '/api/v1';
 const SEARCH_DEBOUNCE_MS = 500; // 500ms debounce for both client and API search
 const PAGE_SIZE = 100;
 
@@ -901,11 +905,7 @@ const SuiteRow = memo(function SuiteRow({
     isFetched,
   } = useQuery<TestSpecListResponse>({
     queryKey: ['suite-specs', reportId, suite.id],
-    queryFn: async () => {
-      const res = await fetch(`${API_BASE}/reports/${reportId}/suites/${suite.id}/specs`);
-      if (!res.ok) throw new Error('Failed to fetch specs');
-      return res.json();
-    },
+    queryFn: () => fetchSuiteSpecs(reportId, suite.id),
     enabled: isExpanded,
     staleTime: 60000,
   });

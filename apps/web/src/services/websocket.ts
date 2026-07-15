@@ -161,14 +161,14 @@ export class ReconnectingWebSocket {
     if (!this.ws) return;
 
     this.ws.onopen = () => {
-      console.log('[WS] Connected');
+      if (import.meta.env.DEV) console.log('[WS] Connected');
       this.reconnectAttempts = 0;
       this.setStatus('connected');
       this.flushPendingFrames();
     };
 
     this.ws.onclose = (event) => {
-      console.log('[WS] Disconnected:', event.code, event.reason);
+      if (import.meta.env.DEV) console.log('[WS] Disconnected:', event.code, event.reason);
 
       if (!this.manualClose && this.reconnectAttempts < this.options.maxReconnectAttempts) {
         this.scheduleReconnect();
@@ -224,7 +224,9 @@ export class ReconnectingWebSocket {
       this.options.maxReconnectDelay,
     );
 
-    console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts + 1})`);
+    if (import.meta.env.DEV) {
+      console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts + 1})`);
+    }
 
     this.reconnectTimeoutId = setTimeout(() => {
       this.reconnectAttempts++;

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, useParams } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, useParams } from 'react-router-dom';
 import { HomePage } from '@/pages/home_page';
 import { FilteredReportPage } from '@/pages/filtered_report_page';
 import { FilteredReportsPage } from '@/pages/filtered_reports_page';
@@ -34,9 +34,9 @@ export function App() {
             <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
               <div className="flex items-center justify-between py-4">
                 <h1 className="text-xl font-semibold text-gray-900 dark:text-white">
-                  <a href="/" className="hover:text-gray-700 dark:hover:text-gray-300">
+                  <Link to="/" className="hover:text-gray-700 dark:hover:text-gray-300">
                     Mattermost Test System IO
-                  </a>
+                  </Link>
                 </h1>
                 <div className="flex items-center gap-3">
                   <ConnectionStatus />

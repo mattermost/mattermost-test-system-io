@@ -13,6 +13,7 @@ export function StatPill({ label, value, variant, isActive, onClick }: StatPillP
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={isActive}
       className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors ${variants[variant]} ${
         isActive
           ? 'ring-1 ring-blue-500 ring-offset-1 dark:ring-offset-gray-800'

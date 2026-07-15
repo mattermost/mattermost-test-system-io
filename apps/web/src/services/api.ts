@@ -5,6 +5,7 @@ import type {
   ReportListResponse,
   RawReportListResponse,
   TestSuiteListResponse,
+  TestSpecListResponse,
   ReportDetail,
   GroupedReportsResponse,
   ConsolidatedResultsResponse,
@@ -46,6 +47,16 @@ async function handleResponse<T>(response: Response): Promise<T> {
     );
   }
   return response.json();
+}
+
+// Fetch the lazily-loaded specs for a single suite. Shared so callers route
+// through the configured API base (VITE_API_URL) and the common ApiError path.
+export async function fetchSuiteSpecs(
+  reportId: string,
+  suiteId: string | number,
+): Promise<TestSpecListResponse> {
+  const response = await fetch(`${API_URL}/reports/${reportId}/suites/${suiteId}/specs`);
+  return handleResponse<TestSpecListResponse>(response);
 }
 
 // Client config

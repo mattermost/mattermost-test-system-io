@@ -42,14 +42,6 @@ func Middleware(base *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// LoggerFromContext returns the request logger or a no-op.
-func LoggerFromContext(ctx context.Context) *slog.Logger {
-	if l, ok := ctx.Value(loggerKey).(*slog.Logger); ok {
-		return l
-	}
-	return slog.Default()
-}
-
 type statusRecorder struct {
 	http.ResponseWriter
 	status int

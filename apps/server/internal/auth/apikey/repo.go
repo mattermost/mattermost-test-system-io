@@ -20,12 +20,8 @@ const (
 	StatusRevoked  Status = "revoked"
 )
 
-// Errors surfaced by the repo.
-var (
-	ErrNotFound = errors.New("apikey: not found")
-	ErrRevoked  = errors.New("apikey: revoked")
-	ErrInvalid  = errors.New("apikey: invalid credential")
-)
+// ErrNotFound is returned when no api_keys row matches the lookup.
+var ErrNotFound = errors.New("apikey: not found")
 
 // Row is the api_keys table row we need in Go.
 type Row struct {
@@ -94,12 +90,6 @@ func (r *Repo) List(ctx context.Context, statusFilter *Status) ([]Row, error) {
 		out = append(out, row)
 	}
 	return out, rows.Err()
-}
-
-// TouchLastUsed updates the last_used_at column; best-effort (ignores errors at the call site if desired).
-func (r *Repo) TouchLastUsed(ctx context.Context, id uuid.UUID) error {
-	_, err := r.Pool.Exec(ctx, `UPDATE api_keys SET last_used_at = now() WHERE id = $1`, id)
-	return err
 }
 
 // MarkRotating sets status=rotating; no-op if already rotating/revoked.

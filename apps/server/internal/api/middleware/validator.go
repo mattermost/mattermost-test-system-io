@@ -4,7 +4,6 @@ package middleware
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -17,7 +16,7 @@ import (
 )
 
 // OpenAPIValidator validates every request against the supplied OpenAPI 3.1 spec
-// and rejects violations as 400 with RFC 7807 problem+json.
+// and rejects violations as 400 using the shared api.WriteError JSON envelope.
 type OpenAPIValidator struct {
 	router routers.Router
 }
@@ -71,7 +70,3 @@ func (v *OpenAPIValidator) Middleware(next http.Handler) http.Handler {
 func noopAuth(_ context.Context, _ *openapi3filter.AuthenticationInput) error {
 	return nil
 }
-
-// ErrNoRoute is returned when a request path is not in the spec. Exposed so
-// handlers can choose to treat it as 404 if desired.
-var ErrNoRoute = errors.New("no matching openapi route")

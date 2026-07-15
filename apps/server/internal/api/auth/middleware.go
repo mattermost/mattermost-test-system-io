@@ -108,9 +108,43 @@ func resolve(
 	if c, err := r.Cookie(session.CookieName); err == nil && sessions != nil {
 		sess, err := sessions.Verify(r.Context(), c.Value)
 		if err == nil {
-			return Subject{Kind: "session", UserID: sess.UserID, Role: policy.RoleViewer}, true
+			return Subject{Kind: "session", UserID: sess.UserID, Role: sessionRole(r, sessions, sess.UserID)}, true
 		}
 	}
 
 	return Subject{}, false
+}
+
+// sessionRole resolves the persisted authorization role for a signed-in user.
+// Unknown or missing roles fall back to viewer (read-only), never elevating.
+func sessionRole(r *http.Request, sessions *session.Manager, userID uuid.UUID) policy.Role {
+	if sessions == nil || sessions.Pool == nil {
+		return policy.RoleViewer
+	}
+	var role string
+	if err := sessions.Pool.QueryRow(r.Context(),
+		`SELECT role FROM users WHERE id = $1 LIMIT 1`, userID).Scan(&role); err != nil {
+		return policy.RoleViewer
+	}
+	switch policy.Role(role) {
+	case policy.RoleUploader, policy.RoleEditor, policy.RoleAdmin, policy.RoleViewer:
+		return policy.Role(role)
+	default:
+		return policy.RoleViewer
+	}
+}
+
+// RequireWrite rejects authenticated subjects that lack write capability. It
+// MUST run after RequireAuth. Human sessions default to the viewer role and are
+// therefore blocked from mutations; CI credentials (API keys and OIDC tokens
+// granted an uploader/editor/admin role) pass through.
+func RequireWrite(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sub, err := SubjectFromContext(r.Context())
+		if err != nil || !sub.Role.CanWrite() {
+			apiroot.WriteError(w, r, apiroot.ErrForbidden)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(r.Context()))
+	})
 }

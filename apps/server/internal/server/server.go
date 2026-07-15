@@ -197,35 +197,45 @@ func Build(d Deps) chi.Router {
 		}
 		orchapi.RegisterPublic(r, publicOrchH)
 
-		// --- Protected: writes + admin-ish reads ---
+		// --- Protected: authenticated ---
 		r.Group(func(r chi.Router) {
 			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
 
-			// Stateless upload lifecycle: each shard authenticates and registers
-			// itself independently; no controller-side coordination is required.
-			r.Post("/reports/begin", reportsH.Begin)
-			r.Post("/reports/register", reportsH.Register)
-			r.Post("/reports/upload/{rid}/{uid}/json", reportsH.UploadJSON)
-			r.Post("/reports/upload/{rid}/{uid}/screenshots", reportsH.UploadScreenshots)
-
-			// Legacy single-shot bundle upload (returns 410).
-			r.Post("/reports", reportsH.Upload)
-			r.Delete("/reports/{id}", reportsH.Delete)
-
+			// Authenticated read: any signed-in subject (including human
+			// viewers) may resolve an artifact to a presigned download.
 			r.Get("/artifacts/{id}", artifactsH.Get)
 
-			// Test shard orchestration.
-			orchH := &orchapi.Handlers{
-				Pool:               d.Pool,
-				Store:              d.OrchestrationStore,
-				ObjectStore:        d.Store,
-				Publisher:          d.OrchestrationPublisher,
-				ReportsPublisher:   d.Publisher,
-				Logger:             d.Logger,
-				LeaseRetentionMs:   60_000,
-				MaxScreenshotBytes: 10 * 1024 * 1024,
-			}
-			orchapi.Register(r, orchH)
+			// Mutations require write capability. Human sessions default to the
+			// viewer role and are rejected here; CI credentials (API keys and
+			// OIDC tokens with an uploader/editor/admin grant) pass through.
+			r.Group(func(r chi.Router) {
+				r.Use(authapi.RequireWrite)
+
+				// Stateless upload lifecycle: each shard authenticates and
+				// registers itself independently; no controller-side
+				// coordination is required.
+				r.Post("/reports/begin", reportsH.Begin)
+				r.Post("/reports/register", reportsH.Register)
+				r.Post("/reports/upload/{rid}/{uid}/json", reportsH.UploadJSON)
+				r.Post("/reports/upload/{rid}/{uid}/screenshots", reportsH.UploadScreenshots)
+
+				// Legacy single-shot bundle upload (returns 410).
+				r.Post("/reports", reportsH.Upload)
+				r.Delete("/reports/{id}", reportsH.Delete)
+
+				// Test shard orchestration.
+				orchH := &orchapi.Handlers{
+					Pool:               d.Pool,
+					Store:              d.OrchestrationStore,
+					ObjectStore:        d.Store,
+					Publisher:          d.OrchestrationPublisher,
+					ReportsPublisher:   d.Publisher,
+					Logger:             d.Logger,
+					LeaseRetentionMs:   60_000,
+					MaxScreenshotBytes: 10 * 1024 * 1024,
+				}
+				orchapi.Register(r, orchH)
+			})
 		})
 	})
 

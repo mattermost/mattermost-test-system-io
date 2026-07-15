@@ -24,6 +24,18 @@ const (
 	RoleDenied   Role = "denied"
 )
 
+// CanWrite reports whether the role may perform write/mutation operations
+// (uploads, deletes, orchestration begin/checkout/complete). Viewers — the
+// default role for human sessions — and explicitly denied subjects cannot.
+func (r Role) CanWrite() bool {
+	switch r {
+	case RoleUploader, RoleEditor, RoleAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
 // ErrDenied is returned when no matching enabled rule grants access.
 var ErrDenied = errors.New("policy: denied")
 

@@ -1,0 +1,112 @@
+import * as cdk from "aws-cdk-lib";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecs from "aws-cdk-lib/aws-ecs";
+import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import * as rds from "aws-cdk-lib/aws-rds";
+import * as route53 from "aws-cdk-lib/aws-route53";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import { Construct } from "constructs";
+
+import { AppConfig } from "../config";
+import { EcsAppService } from "../constructs/ecs_app_service";
+import { EcsCluster } from "../constructs/ecs_cluster";
+
+export interface ProductionAppStackProps extends cdk.StackProps {
+  readonly config: AppConfig;
+  readonly vpc: ec2.Vpc;
+  readonly alb: elbv2.ApplicationLoadBalancer;
+  readonly httpsListener: elbv2.ApplicationListener;
+  readonly appSecurityGroup: ec2.SecurityGroup;
+  readonly hostedZone: route53.IHostedZone;
+  readonly rdsInstance: rds.DatabaseInstance;
+  readonly rdsSecret: secretsmanager.ISecret;
+  readonly rdsEndpoint: rds.Endpoint;
+  readonly rdsDbName: string;
+  readonly rdsDbUsername: string;
+  readonly bucket: s3.Bucket;
+}
+
+export class ProductionAppStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: ProductionAppStackProps) {
+    super(scope, id, props);
+
+    const { config } = props;
+    const imageTag = this.node.tryGetContext("imageTag");
+    if (!imageTag) {
+      throw new Error("imageTag context variable is required (e.g., -c imageTag=0.1.0)");
+    }
+
+    const ecsCluster = new EcsCluster(this, "EcsCluster", {
+      environment: "production",
+      projectName: config.projectName,
+      vpc: props.vpc,
+      enableServiceDiscovery: false,
+    });
+
+    // Session signing secret. Auto-generated so neither humans nor CI ever
+    // see the material; ECS mounts it as an env var at container start.
+    const sessionSecret = new secretsmanager.Secret(this, "SessionSecret", {
+      secretName: `${config.projectName}-production-session-secret`,
+      description: "TSIO session signing secret (production)",
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: false,
+        includeSpace: false,
+      },
+    });
+
+    // Admin key gates POST /api/v1/auth/oidc-policies (and any future admin-only
+    // HTTP endpoints). Auto-generated; rotate via `aws secretsmanager
+    // put-secret-value ... && aws ecs update-service --force-new-deployment`.
+    const adminKey = new secretsmanager.Secret(this, "AdminKey", {
+      secretName: `${config.projectName}-production-admin-key`,
+      description: "TSIO admin key (X-Admin-Key) — production",
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: true,
+        includeSpace: false,
+      },
+    });
+
+    const appService = new EcsAppService(this, "AppService", {
+      environment: "production",
+      projectName: config.projectName,
+      serviceName: config.production.subdomain,
+      cluster: ecsCluster.cluster,
+      imageTag,
+      desiredCount: config.production.desiredCount,
+      cpu: config.production.cpu,
+      memoryLimitMiB: config.production.memoryLimitMiB,
+      httpsListener: props.httpsListener,
+      alb: props.alb,
+      vpc: props.vpc,
+      appSecurityGroup: props.appSecurityGroup,
+      domainName: config.domainName,
+      hostedZone: props.hostedZone,
+      listenerPriority: 200,
+      minimumHealthyPercent: config.production.minimumHealthyPercent,
+      maximumPercent: config.production.maximumPercent,
+      environmentVariables: {
+        TSIO_ENVIRONMENT: "production",
+        TSIO_DB_HOST: props.rdsEndpoint.hostname,
+        TSIO_DB_PORT: cdk.Token.asString(props.rdsEndpoint.port),
+        TSIO_DB_USER: props.rdsDbUsername,
+        TSIO_DB_NAME: props.rdsDbName,
+        TSIO_DB_SSLMODE: "require",
+        TSIO_S3_BUCKET: props.bucket.bucketName,
+        // Enforce GitHub Actions OIDC `aud` claim. Workflows MUST request this
+        // exact audience or token validation fails.
+        TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE: "mattermost-test-system-io",
+      },
+      secrets: {
+        TSIO_DB_PASSWORD: ecs.Secret.fromSecretsManager(props.rdsSecret, "password"),
+        TSIO_SESSION_SECRET: ecs.Secret.fromSecretsManager(sessionSecret),
+        TSIO_ADMIN_KEY: ecs.Secret.fromSecretsManager(adminKey),
+      },
+      healthCheckGracePeriod: cdk.Duration.seconds(300),
+    });
+
+    props.bucket.grantReadWrite(appService.taskDefinition.taskRole);
+  }
+}

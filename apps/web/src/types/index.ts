@@ -131,6 +131,7 @@ export interface ReportSummary {
   id: string;
   short_id: string;
   name: string;
+  run_group?: string;
   status: ReportStatus;
   framework: Framework;
   test_stats?: TestStats;
@@ -264,6 +265,7 @@ export interface ReportEntry {
 export interface ReportDetail {
   id: string;
   name: string;
+  run_group?: string;
   framework: Framework;
   status: ReportStatus;
   repository: string;

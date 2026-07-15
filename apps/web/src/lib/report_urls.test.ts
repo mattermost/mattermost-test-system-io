@@ -76,14 +76,14 @@ describe('buildConsolidatedReportPath', () => {
         commit: 'abc1234deadbeef',
         name: 'mobile-pr',
       }),
-    ).toBe('/reports/mobile/feat~tsio-mobile-reporting/abc1234/mobile-pr');
+    ).toBe('/reports/mattermost-mobile/feat~tsio-mobile-reporting/abc1234/mobile-pr');
   });
 });
 
 describe('repositoryDisplayName', () => {
-  it('maps repo slugs to display tails', () => {
+  it('uses the repository path tail', () => {
     expect(repositoryDisplayName('mattermost/desktop')).toBe('desktop');
-    expect(repositoryDisplayName('mattermost/mattermost-mobile')).toBe('mobile');
+    expect(repositoryDisplayName('mattermost/mattermost-mobile')).toBe('mattermost-mobile');
   });
 });
 

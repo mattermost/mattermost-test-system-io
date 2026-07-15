@@ -6,58 +6,16 @@ import (
 	"strings"
 )
 
-// runFamilies maps canonical run labels to legacy mobile report_group.name values.
-var runFamilies = map[string][]string{
-	"mobile-pr":   {"mobile-detox-pr", "mobile-maestro-pr"},
-	"mobile-main": {"mobile-detox-main", "mobile-maestro-main", "mobile-master", "mobile-detox-master", "mobile-maestro-master"},
-	"cmt-mobile":  {"mobile-cmt-detox", "mobile-cmt-maestro", "mobile-cmt"},
+// displayRunName is the URL / dashboard label for a report group: the producer
+// declared run_group when set, otherwise the group's own name.
+func displayRunName(name, runGroup string) string {
+	if runGroup != "" {
+		return runGroup
+	}
+	return name
 }
 
-// canonicalRunName returns the unified run label for a stored group name.
-func canonicalRunName(groupName string) string {
-	for canon, members := range runFamilies {
-		if groupName == canon {
-			return canon
-		}
-		for _, m := range members {
-			if m == groupName {
-				return canon
-			}
-		}
-	}
-	return groupName
-}
-
-// expandedGroupNames returns all report_group.name values for the same workflow run.
-func expandedGroupNames(name string) []string {
-	if members, ok := runFamilies[name]; ok {
-		return append([]string{name}, members...)
-	}
-	for canon, members := range runFamilies {
-		for _, m := range members {
-			if m == name {
-				return append([]string{canon}, members...)
-			}
-		}
-	}
-	return []string{name}
-}
-
-func isRunFamily(name string) bool {
-	if _, ok := runFamilies[name]; ok {
-		return true
-	}
-	for _, members := range runFamilies {
-		for _, m := range members {
-			if m == name {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// rewriteGroupedRunURLPath replaces only the final URL segment when canonicalizing a run name.
+// rewriteGroupedRunURLPath replaces only the final URL segment when renaming a run.
 func rewriteGroupedRunURLPath(path, oldName, canon string) string {
 	if oldName == canon || path == "" {
 		return path
@@ -121,7 +79,7 @@ func mergeRunEntryStats(a, b *runEntry) {
 }
 
 func runEntryMergeKey(e runEntry) string {
-	return strings.Join([]string{e.GHRunID, e.GHRunAttempt, e.Branch, e.Commit, canonicalRunName(e.Name)}, "\x00")
+	return strings.Join([]string{e.GHRunID, e.GHRunAttempt, e.Branch, e.Commit, e.RunGroup}, "\x00")
 }
 
 func mergeGroupedRunEntries(runs []runEntry) []runEntry {
@@ -132,7 +90,7 @@ func mergeGroupedRunEntries(runs []runEntry) []runEntry {
 	byKey := map[string]*slot{}
 	order := []string{}
 	for i, e := range runs {
-		if !isRunFamily(e.Name) {
+		if e.RunGroup == "" {
 			k := e.ReportID
 			byKey[k] = &slot{entry: e, order: i}
 			order = append(order, k)
@@ -150,11 +108,10 @@ func mergeGroupedRunEntries(runs []runEntry) []runEntry {
 			continue
 		}
 		oldName := e.Name
-		canon := canonicalRunName(e.Name)
-		if canon != oldName {
-			e.URLPath = rewriteGroupedRunURLPath(e.URLPath, oldName, canon)
+		if e.RunGroup != oldName {
+			e.URLPath = rewriteGroupedRunURLPath(e.URLPath, oldName, e.RunGroup)
+			e.Name = e.RunGroup
 		}
-		e.Name = canon
 		byKey[k] = &slot{entry: e, order: i}
 		order = append(order, k)
 	}

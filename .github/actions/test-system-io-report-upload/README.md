@@ -27,7 +27,7 @@ Use `test-system-io-dispatch-run` when you want the orchestrator to **assign wor
 |---|---|---|---|
 | `use-staging` | no | `false` | When `true`, target staging (`https://staging-test-io.test.mattermost.com`) instead of production (`https://test-io.test.mattermost.com`). |
 | `oidc-audience` | no | `mattermost-test-system-io` | OIDC audience claim. |
-| `composite-identity` | yes | — | JSON: `repository`, `commit_sha`, `gh_run_id`, `gh_run_attempt`, `name`, optional `branch` / `gh_pr_number`. MUST match across every shard's call. |
+| `composite-identity` | yes | — | JSON: `repository`, `commit_sha`, `gh_run_id`, `gh_run_attempt`, `name`, optional `branch` / `gh_pr_number` / `run_group`. MUST match across every shard's call. Use the same `run_group` across frameworks that should consolidate (e.g. Detox + Maestro both send `run_group: "mobile-pr"`). |
 | `total-reports-expected` | yes | — | Number of shards in the matrix. MUST match across every shard's call (mismatch returns 409 `EXPECTED_REPORTS_MISMATCH`). |
 | `framework` | yes | — | Framework label (e.g. `playwright`, `cypress`). Selects the JSON parser. |
 | `github-token` | yes | — | Token with `actions:read` — used to look up the matrix entry's `gh_job_id`. |

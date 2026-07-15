@@ -115,6 +115,7 @@ type reportSummary struct {
 	ID                   string                `json:"id"`
 	ShortID              string                `json:"short_id"`
 	Name                 string                `json:"name"`
+	RunGroup             string                `json:"run_group,omitempty"`
 	Status               string                `json:"status"`
 	Framework            string                `json:"framework"`
 	TestStats            *testStats            `json:"test_stats,omitempty"`
@@ -152,6 +153,7 @@ type runEntry struct {
 	ReportID             string                `json:"report_id"`
 	Framework            string                `json:"framework"`
 	Name                 string                `json:"name"`
+	RunGroup             string                `json:"-"`
 	Status               string                `json:"status"`
 	Branch               string                `json:"branch"`
 	Commit               string                `json:"commit"`
@@ -238,6 +240,7 @@ func toReportSummary(g groupDTO, s groupStats) reportSummary {
 		ID:                   g.ID.String(),
 		ShortID:              shortID(g.ID.String()),
 		Name:                 g.Name,
+		RunGroup:             g.RunGroup,
 		Status:               g.Status,
 		Framework:            g.Framework,
 		TestStats:            statsFromAgg(s),
@@ -286,7 +289,7 @@ func consolidatedRunURLPath(g groupDTO) string {
 		url.PathEscape(repositoryDisplayName(g.Repository)) + "/" +
 		url.PathEscape(reportBranchPathSegment(g.Branch)) + "/" +
 		url.PathEscape(shortSHA(g.CommitSHA)) + "/" +
-		url.PathEscape(canonicalRunName(g.Name))
+		url.PathEscape(displayRunName(g.Name, g.RunGroup))
 }
 
 func toRunEntry(g groupDTO, s groupStats) runEntry {
@@ -295,6 +298,7 @@ func toRunEntry(g groupDTO, s groupStats) runEntry {
 		ReportID:             g.ID.String(),
 		Framework:            g.Framework,
 		Name:                 g.Name,
+		RunGroup:             g.RunGroup,
 		Status:               g.Status,
 		Branch:               branch,
 		Commit:               g.CommitSHA,           // full 40-char SHA, used for filtering
@@ -458,18 +462,10 @@ func (h *Handlers) computeGrouped(ctx context.Context, limit, offset int) ([]byt
 }
 
 func repositoryDisplayName(key string) string {
-	tail := key
 	if i := strings.LastIndex(key, "/"); i >= 0 && i < len(key)-1 {
-		tail = key[i+1:]
+		return key[i+1:]
 	}
-	switch tail {
-	case "mattermost-mobile":
-		return "mobile"
-	case "mattermost-desktop":
-		return "desktop"
-	default:
-		return tail
-	}
+	return key
 }
 
 // Individual serves GET /api/v1/reports/individual?limit=&offset=. Flat per-job
@@ -554,8 +550,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			"repository, branch, commit, and name are all required")
 		return
 	}
-	groupNames := expandedGroupNames(name)
-	displayName := canonicalRunName(name)
+	displayName := name
 	var pinnedAttempt *string
 	if v := q.Get("run_attempt"); v != "" {
 		pinnedAttempt = &v
@@ -602,12 +597,10 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			FROM report_screenshots rs
 			WHERE rs.case_id = tc.id
 		) ss ON TRUE
-		WHERE (g.repository = $1 OR g.repository LIKE '%/' || $1
-		  OR ($1 = 'mobile' AND g.repository LIKE '%/mattermost-mobile')
-		  OR ($1 = 'desktop' AND (g.repository LIKE '%/desktop' OR g.repository LIKE '%/mattermost-desktop')))
+		WHERE (g.repository = $1 OR g.repository LIKE '%/' || $1)
 		  AND (g.branch = $2 OR ($8::int IS NOT NULL AND g.gh_pr_number = $8::int))
 		  AND g.commit_sha LIKE $3 || '%'
-		  AND g.name = ANY($4::text[])
+		  AND (g.run_group = $4 OR g.name = $4)
 		  AND ($5::text IS NULL OR g.gh_run_attempt = $5::text)
 		  AND (
 		    ($6::uuid IS NOT NULL AND g.id = $6::uuid)
@@ -617,18 +610,16 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		      AND (g.gh_run_id, g.gh_run_attempt) = (
 		        SELECT g_pick.gh_run_id, g_pick.gh_run_attempt
 		        FROM report_groups g_pick
-		        WHERE (g_pick.repository = $1 OR g_pick.repository LIKE '%/' || $1
-		          OR ($1 = 'mobile' AND g_pick.repository LIKE '%/mattermost-mobile')
-		          OR ($1 = 'desktop' AND (g_pick.repository LIKE '%/desktop' OR g_pick.repository LIKE '%/mattermost-desktop')))
+		        WHERE (g_pick.repository = $1 OR g_pick.repository LIKE '%/' || $1)
 		          AND (g_pick.branch = $2 OR ($8::int IS NOT NULL AND g_pick.gh_pr_number = $8::int))
 		          AND g_pick.commit_sha LIKE $3 || '%'
-		          AND g_pick.name = ANY($4::text[])
+		          AND (g_pick.run_group = $4 OR g_pick.name = $4)
 		        ORDER BY COALESCE(g_pick.last_upload_at, g_pick.created_at) DESC, g_pick.id DESC
 		        LIMIT 1
 		      )
 		    )
 		  )
-	`, repository, branch, commit, groupNames, pinnedAttempt, pinnedGroup, pinnedGHRunID, prBranchNumber)
+	`, repository, branch, commit, name, pinnedAttempt, pinnedGroup, pinnedGHRunID, prBranchNumber)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return

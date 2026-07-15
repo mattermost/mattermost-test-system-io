@@ -38,10 +38,7 @@ function decodeURIComponentSafe(segment: string): string {
 }
 
 export function repositoryDisplayName(repository: string): string {
-  const tail = repository.split('/').pop() || repository;
-  if (tail === 'mattermost-mobile') return 'mobile';
-  if (tail === 'mattermost-desktop') return 'desktop';
-  return tail;
+  return repository.split('/').pop() || repository;
 }
 
 export function shortSHA(commit: string): string {

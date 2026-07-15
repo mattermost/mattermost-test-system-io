@@ -1,40 +1,22 @@
 import { buildConsolidatedReportPath, ensureRunQueryParams } from '@/lib/report_urls';
 
-const RUN_FAMILIES: Record<string, string[]> = {
-  'mobile-pr': ['mobile-detox-pr', 'mobile-maestro-pr'],
-  // mobile-main is canonical; include legacy mobile-master* names for old uploads.
-  'mobile-main': [
-    'mobile-detox-main',
-    'mobile-maestro-main',
-    'mobile-master',
-    'mobile-detox-master',
-    'mobile-maestro-master',
-  ],
-  'cmt-mobile': ['mobile-cmt-detox', 'mobile-cmt-maestro', 'mobile-cmt'],
-};
-
-export function canonicalRunName(groupName: string): string {
-  for (const [canon, members] of Object.entries(RUN_FAMILIES)) {
-    if (groupName === canon || members.includes(groupName)) return canon;
-  }
-  return groupName;
-}
-
+/** Redirect member report-detail pages to the consolidated run_group URL. */
 export function runConsolidatedHref(report: {
   repository: string;
   branch: string;
   commit: string;
   name: string;
+  run_group?: string | null;
   gh_run_id?: string | null;
   gh_run_attempt?: string | null;
 }): string | null {
-  const canon = canonicalRunName(report.name);
-  if (canon === report.name && !RUN_FAMILIES[report.name]) return null;
+  const runGroup = report.run_group?.trim();
+  if (!runGroup || runGroup === report.name) return null;
   const path = buildConsolidatedReportPath({
     repository: report.repository,
     branch: report.branch,
     commit: report.commit,
-    name: canon,
+    name: runGroup,
   });
   return ensureRunQueryParams(path, report.gh_run_id, report.gh_run_attempt);
 }

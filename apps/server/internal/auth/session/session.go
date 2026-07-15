@@ -88,8 +88,11 @@ func (m *Manager) Verify(ctx context.Context, token string) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	// Best-effort liveness touch.
-	_, _ = m.Pool.Exec(ctx, `UPDATE sessions SET last_seen_at = now() WHERE id = $1`, s.ID)
+	// Best-effort liveness touch, throttled to at most once every 5 minutes so
+	// authenticated read traffic doesn't amplify into a write per request.
+	_, _ = m.Pool.Exec(ctx,
+		`UPDATE sessions SET last_seen_at = now()
+		  WHERE id = $1 AND last_seen_at < now() - interval '5 minutes'`, s.ID)
 	return s, nil
 }
 

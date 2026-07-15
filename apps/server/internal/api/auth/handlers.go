@@ -154,8 +154,9 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"user": user})
 }
 
-// Refresh serves POST /api/v1/auth/refresh. Rotates the refresh token and issues
-// a fresh session cookie.
+// Refresh serves POST /api/v1/auth/refresh. Rotates the single-use refresh
+// token and confirms the underlying session is still live. The opaque session
+// cookie is long-lived and left unchanged; only the refresh cookie is reissued.
 func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 	if h.Refresher == nil || h.Sessions == nil {
 		apiroot.WriteError(w, r, apiroot.ErrSessionExpired)
@@ -172,13 +173,12 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Issue a fresh session token for the same user. We look up the session's
-	// user_id from the existing row so the new session cookie stays bound to
-	// the same principal.
-	var userID string
+	// Confirm the session the refresh token belongs to is still live (not
+	// revoked). A revoked session means the refresh token must not be honored.
+	var exists bool
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT user_id::text FROM sessions WHERE id = $1 AND revoked_at IS NULL LIMIT 1`,
-		sessionID).Scan(&userID); err != nil {
+		`SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1 AND revoked_at IS NULL)`,
+		sessionID).Scan(&exists); err != nil || !exists {
 		apiroot.WriteError(w, r, apiroot.ErrSessionExpired)
 		return
 	}

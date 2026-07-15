@@ -128,6 +128,9 @@ func (r *Reaper) loop(ctx context.Context) {
 // ReportUpdated event so dashboards see the new badge without polling.
 func (r *Reaper) markIncomplete(ctx context.Context) error {
 	thresholdMs := int64(r.Timeout / time.Millisecond)
+	// The per-group reports_count is folded into RETURNING so the event
+	// payload needs no follow-up query per reaped row (avoids an N+1 and the
+	// error it previously discarded).
 	rows, err := r.Pool.Query(ctx, `
 		UPDATE report_groups
 		   SET status = 'incomplete', updated_at = now()
@@ -138,7 +141,8 @@ func (r *Reaper) markIncomplete(ctx context.Context) error {
 		      ORDER BY last_upload_at ASC
 		      LIMIT $2
 		 )
-		RETURNING id, updated_at
+		RETURNING id, updated_at,
+		          (SELECT count(*) FROM reports WHERE report_group_id = report_groups.id)
 	`, thresholdMs, reaperBatchLimit)
 	if err != nil {
 		return err
@@ -148,12 +152,10 @@ func (r *Reaper) markIncomplete(ctx context.Context) error {
 	for rows.Next() {
 		var id uuid.UUID
 		var updatedAt time.Time
-		if err := rows.Scan(&id, &updatedAt); err != nil {
+		var reportsCount int
+		if err := rows.Scan(&id, &updatedAt, &reportsCount); err != nil {
 			return err
 		}
-		var reportsCount int
-		_ = r.Pool.QueryRow(ctx,
-			`SELECT count(*) FROM reports WHERE report_group_id = $1`, id).Scan(&reportsCount)
 		r.Publisher.ReportUpdated(id, "incomplete", reportsCount, nil, updatedAt)
 		r.Logger.Info("report group reaped to incomplete",
 			slog.String("group_id", id.String()),

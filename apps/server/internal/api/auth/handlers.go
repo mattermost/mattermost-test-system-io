@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -110,7 +111,7 @@ func (h *Handlers) Callback(w http.ResponseWriter, r *http.Request) {
 		Value:    cookieVal,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(h.Sessions.TTL),
 	})
@@ -122,7 +123,7 @@ func (h *Handlers) Callback(w http.ResponseWriter, r *http.Request) {
 				Value:    refreshTok,
 				Path:     "/api/v1/auth/",
 				HttpOnly: true,
-				Secure:   r.TLS != nil,
+				Secure:   requestIsHTTPS(r),
 				SameSite: http.SameSiteLaxMode,
 				Expires:  time.Now().Add(h.Refresher.TTL),
 			})
@@ -187,7 +188,7 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 		Value:    newTok,
 		Path:     "/api/v1/auth/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(h.Refresher.TTL),
 	})
@@ -259,8 +260,19 @@ func (h *Handlers) setStateCookie(w http.ResponseWriter, r *http.Request, state 
 		Value:    state,
 		Path:     "/api/v1/auth/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(10 * time.Minute),
 	})
+}
+
+// requestIsHTTPS reports whether the original client request arrived over TLS,
+// accounting for a TLS-terminating reverse proxy (ALB/nginx) that forwards
+// plain HTTP internally but sets X-Forwarded-Proto: https. Without this the
+// session/refresh cookies would omit the Secure attribute in production.
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }

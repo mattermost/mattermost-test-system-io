@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	apiroot "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
 	authoidc "github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oidc"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
@@ -44,7 +45,7 @@ func RequireAuth(
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			sub, ok := resolve(r, apiKeys, sessions, oidcV, pol)
 			if !ok {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				apiroot.WriteError(w, r, apiroot.ErrUnauthorized)
 				return
 			}
 			ctx := context.WithValue(r.Context(), subjectKey, sub)

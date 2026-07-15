@@ -6,6 +6,7 @@ package server
 
 import (
 	"log/slog"
+	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -114,7 +115,7 @@ func Build(d Deps) chi.Router {
 		SearchMinLength:  d.SearchMinLength,
 	}
 	artifactsH := &artifactapi.Handlers{Pool: d.Pool, Store: d.Store, PresignTTL: d.PresignTTL}
-	wsH := &wsapi.Handler{Hub: d.Hub}
+	wsH := &wsapi.Handler{Hub: d.Hub, AllowedOriginHosts: originHosts(d.CORSAllowedOrigins)}
 	authH := &authapi.Handlers{
 		Flow:              d.OAuth,
 		Sessions:          d.Sessions,
@@ -240,4 +241,19 @@ func Build(d Deps) chi.Router {
 	}
 
 	return r
+}
+
+// originHosts extracts the host (host:port) from each configured CORS origin so
+// the WebSocket handler can allow those cross-origin hosts. Entries that fail
+// to parse are skipped; same-origin requests are always accepted regardless.
+func originHosts(origins []string) []string {
+	hosts := make([]string, 0, len(origins))
+	for _, o := range origins {
+		u, err := url.Parse(o)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		hosts = append(hosts, u.Host)
+	}
+	return hosts
 }

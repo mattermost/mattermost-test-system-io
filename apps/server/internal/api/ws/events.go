@@ -40,6 +40,13 @@ type hubAPI interface {
 // Handler upgrades HTTP connections to WebSocket and streams events from the Hub.
 type Handler struct {
 	Hub *events.Hub
+
+	// AllowedOriginHosts is the set of Origin header hosts permitted to open a
+	// WebSocket in addition to the request host (which coder/websocket always
+	// accepts). Same-origin connections need no entry here; cross-origin
+	// browsers (e.g. the Vite dev server) must be listed. Derived from the
+	// configured CORS origins by the server wiring.
+	AllowedOriginHosts []string
 }
 
 // inboundFrame is the JSON envelope for client-to-server control frames.
@@ -58,8 +65,12 @@ const (
 
 // Events serves /api/v1/ws.
 func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
+	// Verify the Origin: coder/websocket accepts same-origin requests by
+	// default and, with OriginPatterns set, the explicitly allowed cross-origin
+	// hosts (the configured CORS origins). This blocks cross-site WebSocket
+	// hijacking from untrusted pages.
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
+		OriginPatterns: h.AllowedOriginHosts,
 	})
 	if err != nil {
 		return

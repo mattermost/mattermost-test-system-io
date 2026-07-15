@@ -2,6 +2,7 @@ package authapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,7 +36,7 @@ const pgErrUniqueViolation = "23505"
 // Role aliases: contributor→uploader; viewer/editor/admin pass through; anything
 // else returns 400.
 func (h *Handlers) CreateOIDCPolicy(w http.ResponseWriter, r *http.Request) {
-	if h.AdminKey == "" || r.Header.Get("X-Admin-Key") != h.AdminKey {
+	if h.AdminKey == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Admin-Key")), []byte(h.AdminKey)) != 1 {
 		apiroot.WriteError(w, r, apiroot.ErrUnauthorized)
 		return
 	}

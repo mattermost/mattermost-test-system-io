@@ -168,6 +168,11 @@ func run() error {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       90 * time.Second,
+		// Cap request headers at 1 MiB to bound memory per connection. Body
+		// read/write timeouts are intentionally left unset: uploads stream up
+		// to TSIO_MAX_UPLOAD_BYTES over slow links and the WebSocket endpoint
+		// is long-lived, both of which a global timeout would sever.
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	go func() {

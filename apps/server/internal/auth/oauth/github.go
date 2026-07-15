@@ -10,10 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"golang.org/x/oauth2"
 	oauthgh "golang.org/x/oauth2/github"
 )
+
+// httpTimeout bounds the token exchange and user-profile calls to GitHub so a
+// hung upstream can never block an OAuth callback indefinitely.
+const httpTimeout = 15 * time.Second
 
 // Config bundles what the GitHub OAuth flow needs.
 type Config struct {
@@ -36,6 +41,7 @@ type GitHubUser struct {
 type Flow struct {
 	cfg      Config
 	oaConfig *oauth2.Config
+	client   *http.Client
 }
 
 // NewFlow builds a Flow. Scopes default to read:user + user:email if nil.
@@ -53,6 +59,7 @@ func NewFlow(cfg Config) *Flow {
 			Scopes:       scopes,
 			Endpoint:     oauthgh.Endpoint,
 		},
+		client: &http.Client{Timeout: httpTimeout},
 	}
 }
 
@@ -68,6 +75,8 @@ func (f *Flow) Start() (authorizeURL, state string, err error) {
 
 // Exchange swaps the authorization code for a token and fetches the user profile.
 func (f *Flow) Exchange(ctx context.Context, code string) (*oauth2.Token, *GitHubUser, error) {
+	// Drive the token exchange through the timeout-bounded client too.
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, f.client)
 	tok, err := f.oaConfig.Exchange(ctx, code)
 	if err != nil {
 		return nil, nil, fmt.Errorf("oauth exchange: %w", err)
@@ -75,7 +84,7 @@ func (f *Flow) Exchange(ctx context.Context, code string) (*oauth2.Token, *GitHu
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := f.client.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetch github user: %w", err)
 	}

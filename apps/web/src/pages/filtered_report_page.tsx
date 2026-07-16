@@ -4,7 +4,6 @@ import { useQueries } from '@tanstack/react-query';
 import {
   useConsolidatedResults,
   useReportDetail,
-  useReportSuites,
   useOrchestrationRun,
   useOrchestrationRuns,
   fetchReportDetail,
@@ -20,6 +19,7 @@ import { isRetestName } from '@/components/report_card_parts';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { OrchestrationTab } from '@/components/orchestration/orchestration_tab';
 import type { CompositeIdentity } from '@/types/orchestration';
+import { encodeBranchPathSegment } from '@/lib/report_urls';
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleString(undefined, {
@@ -31,13 +31,25 @@ function formatDate(dateString: string): string {
   });
 }
 
-export function FilteredReportPage() {
-  const { repo, branch, commit, name } = useParams<{
+export type FilteredReportPageProps = {
+  repo?: string;
+  branch?: string;
+  commit?: string;
+  name?: string;
+};
+
+export function FilteredReportPage(props: FilteredReportPageProps = {}) {
+  const params = useParams<{
     repo: string;
     branch: string;
     commit: string;
     name: string;
   }>();
+
+  const repo = props.repo ?? params.repo;
+  const branch = props.branch ?? params.branch;
+  const commit = props.commit ?? params.commit;
+  const name = props.name ?? params.name;
 
   const [search_params, setSearchParams] = useSearchParams();
   const run_attempt_param = search_params.get('run_attempt');
@@ -46,10 +58,7 @@ export function FilteredReportPage() {
   const gh_run_id_param = search_params.get('gh_run_id') || undefined;
   const gh_run_attempt_param = search_params.get('gh_run_attempt') || undefined;
 
-  // Step 1: Get consolidated results to find contributing report IDs.
-  // gh_run_id is forwarded so two workflow runs that share the same
-  // (repo, branch, commit, name, run_attempt) tuple don't merge into
-  // one view — the URL's run_id wins.
+  // Step 1: consolidated results to find contributing report IDs.
   const { data, isLoading, error } = useConsolidatedResults(
     repo || '',
     branch || '',
@@ -85,7 +94,30 @@ export function FilteredReportPage() {
   }, [allReportQueries, data]);
 
   const { data: report } = useReportDetail(latestReportId);
-  const { data: suitesData, isLoading: isLoadingSuites } = useReportSuites(latestReportId);
+
+  const allSuitesQueries = useQueries({
+    queries: contributingIds.map((id) => ({
+      queryKey: ['report', id, 'suites'],
+      queryFn: () => fetchReportSuites(id),
+      enabled: !!id,
+    })),
+  });
+
+  const mergedSuites = useMemo(() => {
+    const suites: import('@/types').TestSuite[] = [];
+    const reports: import('@/types').ReportEntryInfo[] = [];
+    for (const q of allSuitesQueries) {
+      if (!q.data) continue;
+      if (q.data.suites) suites.push(...q.data.suites);
+      if (q.data.reports) reports.push(...q.data.reports);
+    }
+    return { suites, reports };
+  }, [allSuitesQueries]);
+
+  const isLoadingSuites = allSuitesQueries.some((q) => q.isLoading);
+  const suitesQueryError = allSuitesQueries.find((q) => q.isError)?.error;
+  const hasPartialSuiteData =
+    allSuitesQueries.some((q) => q.isError) && mergedSuites.suites.length > 0;
 
   // Auto-resolve gh_run_id when neither the URL nor the latest contributing
   // report carries one. Hits /orchestration/runs to find every run matching
@@ -174,15 +206,6 @@ export function FilteredReportPage() {
     }
     return { numbered, retest };
   }, [allReportQueries]);
-
-  // Step 3: Fetch suites for ALL contributing reports (for chip status indicators)
-  const allSuitesQueries = useQueries({
-    queries: contributingIds.map((id) => ({
-      queryKey: ['report', id, 'suites'],
-      queryFn: () => fetchReportSuites(id),
-      enabled: !!id,
-    })),
-  });
 
   // Map each per-shard report_id → display_name by flattening every contributing
   // group's reports[] entries. Used to enrich consolidated spec history with
@@ -402,14 +425,49 @@ export function FilteredReportPage() {
         </div>
       ) : (
         latestReportId && (
-          <TestSuitesView
-            reportId={latestReportId}
-            suites={suitesData?.suites || []}
-            title={`${name} — ${branch}/${commit}`}
-            reports={suitesData?.reports}
-            crossShardHistory={crossShardHistory}
-            orchestrationUnits={orchestrationRun?.units}
-          />
+          <>
+            {suitesQueryError && (
+              <div
+                className={`rounded-lg border p-4 mb-4 ${
+                  hasPartialSuiteData
+                    ? 'border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30'
+                    : 'border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30'
+                }`}
+              >
+                <div
+                  className={`flex items-center gap-2 text-sm ${
+                    hasPartialSuiteData
+                      ? 'text-amber-700 dark:text-amber-400'
+                      : 'text-red-700 dark:text-red-400'
+                  }`}
+                >
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  {hasPartialSuiteData
+                    ? `Some report suites failed to load; showing partial results. ${
+                        suitesQueryError instanceof Error
+                          ? suitesQueryError.message
+                          : 'Unknown error'
+                      }`
+                    : `Failed to load test suites: ${
+                        suitesQueryError instanceof Error
+                          ? suitesQueryError.message
+                          : 'Unknown error'
+                      }`}
+                </div>
+              </div>
+            )}
+            {!suitesQueryError || hasPartialSuiteData ? (
+              <TestSuitesView
+                reportId={latestReportId}
+                searchReportIds={contributingIds}
+                suites={mergedSuites.suites}
+                title={`${name} — ${branch}/${commit}`}
+                reports={mergedSuites.reports}
+                crossShardHistory={crossShardHistory}
+                orchestrationUnits={orchestrationRun?.units}
+              />
+            ) : null}
+          </>
         )
       )}
 
@@ -447,11 +505,11 @@ export function FilteredReportPage() {
             { label: repo || '', to: `/reports/${encodeURIComponent(repo || '')}` },
             {
               label: branch || '',
-              to: `/reports/${encodeURIComponent(repo || '')}/${encodeURIComponent(branch || '')}`,
+              to: `/reports/${encodeURIComponent(repo || '')}/${encodeURIComponent(encodeBranchPathSegment(branch || ''))}`,
             },
             {
               label: commit || '',
-              to: `/reports/${encodeURIComponent(repo || '')}/${encodeURIComponent(branch || '')}/${encodeURIComponent(commit || '')}`,
+              to: `/reports/${encodeURIComponent(repo || '')}/${encodeURIComponent(encodeBranchPathSegment(branch || ''))}/${encodeURIComponent(commit || '')}`,
             },
             { label: name || '' },
           ]}

@@ -49,6 +49,7 @@ type beginBody struct {
 	GHRunAttempt         string `json:"gh_run_attempt"`
 	Framework            string `json:"framework"`
 	Name                 string `json:"name"`
+	RunGroup             string `json:"run_group,omitempty"`
 	Branch               string `json:"branch"`
 	GHPRNumber           *int   `json:"gh_pr_number,omitempty"`
 	TotalReportsExpected int    `json:"total_reports_expected"`
@@ -66,6 +67,7 @@ type registerBody struct {
 	GHRunAttempt         string          `json:"gh_run_attempt"`
 	Framework            string          `json:"framework"`
 	Name                 string          `json:"name"`
+	RunGroup             string          `json:"run_group,omitempty"`
 	Branch               string          `json:"branch"`
 	GHPRNumber           *int            `json:"gh_pr_number,omitempty"`
 	TotalReportsExpected *int            `json:"total_reports_expected,omitempty"`
@@ -110,10 +112,15 @@ func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 
 	groupID, created, err := upsertReportGroup(r.Context(), h.Pool,
 		body.Repository, body.Commit, body.GHRunID, runAttempt, body.Framework,
-		body.Name, body.Branch, body.GHPRNumber, &total, nil)
+		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, &total, nil)
 	if err != nil {
 		if errors.Is(err, errExpectedReportsMismatch) {
 			api.WriteErrorCode(w, http.StatusConflict, "EXPECTED_REPORTS_MISMATCH",
+				err.Error())
+			return
+		}
+		if errors.Is(err, errRunGroupMismatch) {
+			api.WriteErrorCode(w, http.StatusConflict, "RUN_GROUP_MISMATCH",
 				err.Error())
 			return
 		}
@@ -162,10 +169,15 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	groupID, created, err := upsertReportGroup(r.Context(), h.Pool,
 		body.Repository, body.Commit, body.GHRunID, runAttempt, body.Framework,
-		body.Name, body.Branch, body.GHPRNumber, body.TotalReportsExpected, env)
+		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, body.TotalReportsExpected, env)
 	if err != nil {
 		if errors.Is(err, errExpectedReportsMismatch) {
 			api.WriteErrorCode(w, http.StatusConflict, "EXPECTED_REPORTS_MISMATCH",
+				err.Error())
+			return
+		}
+		if errors.Is(err, errRunGroupMismatch) {
+			api.WriteErrorCode(w, http.StatusConflict, "RUN_GROUP_MISMATCH",
 				err.Error())
 			return
 		}
@@ -370,6 +382,9 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 // already stores. Surfaced as 409 EXPECTED_REPORTS_MISMATCH.
 var errExpectedReportsMismatch = errors.New("total_reports_expected does not match existing report_group")
 
+// errRunGroupMismatch signals a conflicting run_group on an existing row.
+var errRunGroupMismatch = errors.New("run_group does not match existing report_group")
+
 // bumpGroupLastUpload best-effort marks a report_group as recently active so
 // the staleness reaper won't reap it. Called at the tail of every successful
 // per-shard upload (json or screenshots). Errors are swallowed — a missed
@@ -390,30 +405,40 @@ func bumpGroupLastUpload(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 // existing value wins (frozen-on-insert). When both stored and requested
 // are non-nil and disagree, returns errExpectedReportsMismatch so a
 // mismatched workflow surfaces as 409 instead of silently first-winning.
+//
+// runGroup is optional. First non-empty value wins; a later conflicting
+// run_group returns errRunGroupMismatch.
 func upsertReportGroup(
 	ctx context.Context, pool *pgxpool.Pool,
-	repository, commit, runID, runAttempt, framework, name, branch string,
+	repository, commit, runID, runAttempt, framework, name, runGroup, branch string,
 	prNumber *int, totalReportsExpected *int, env json.RawMessage,
 ) (uuid.UUID, bool, error) {
 	var id uuid.UUID
 	var created bool
 	var storedTotal *int
+	var storedRunGroup *string
+	runGroupArg := strings.TrimSpace(runGroup)
 	err := pool.QueryRow(ctx, `
-		INSERT INTO report_groups (framework, name, repository, branch, commit_sha, gh_run_id, gh_run_attempt, gh_pr_number, total_reports_expected, environment_metadata)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, NULLIF($10::text,'')::jsonb)
+		INSERT INTO report_groups (framework, name, run_group, repository, branch, commit_sha, gh_run_id, gh_run_attempt, gh_pr_number, total_reports_expected, environment_metadata)
+		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,$10, NULLIF($11::text,'')::jsonb)
 		ON CONFLICT (repository, commit_sha, gh_run_id, name, gh_run_attempt)
 		  DO UPDATE SET updated_at = now(),
 		                branch = CASE WHEN report_groups.branch = '' THEN EXCLUDED.branch ELSE report_groups.branch END,
 		                gh_pr_number = COALESCE(report_groups.gh_pr_number, EXCLUDED.gh_pr_number),
-		                environment_metadata = COALESCE(report_groups.environment_metadata, EXCLUDED.environment_metadata)
-		RETURNING id, (xmax = 0) AS created, total_reports_expected
-	`, framework, name, repository, branch, commit, runID, runAttempt, prNumber, totalReportsExpected, string(env)).Scan(&id, &created, &storedTotal)
+		                environment_metadata = COALESCE(report_groups.environment_metadata, EXCLUDED.environment_metadata),
+		                run_group = COALESCE(report_groups.run_group, EXCLUDED.run_group)
+		RETURNING id, (xmax = 0) AS created, total_reports_expected, run_group
+	`, framework, name, runGroupArg, repository, branch, commit, runID, runAttempt, prNumber, totalReportsExpected, string(env)).Scan(&id, &created, &storedTotal, &storedRunGroup)
 	if err != nil {
 		return uuid.Nil, false, fmt.Errorf("upsert report_group: %w", err)
 	}
 	if !created && totalReportsExpected != nil && storedTotal != nil && *storedTotal != *totalReportsExpected {
 		return uuid.Nil, false, fmt.Errorf("%w: requested=%d stored=%d",
 			errExpectedReportsMismatch, *totalReportsExpected, *storedTotal)
+	}
+	if !created && runGroupArg != "" && storedRunGroup != nil && *storedRunGroup != "" && *storedRunGroup != runGroupArg {
+		return uuid.Nil, false, fmt.Errorf("%w: requested=%s stored=%s",
+			errRunGroupMismatch, runGroupArg, *storedRunGroup)
 	}
 	return id, created, nil
 }
@@ -491,6 +516,9 @@ func (h *Handlers) extractReport(ctx context.Context, groupID, reportID uuid.UUI
 			continue
 		}
 		suites, ps, pe := ingest.Extract(framework, body, &seq)
+		if len(suites) == 0 {
+			suites, ps, pe = ingest.Extract("", body, &seq)
+		}
 		allSuites = append(allSuites, suites...)
 		reportStart = earlier(reportStart, ps)
 		reportEnd = later(reportEnd, pe)
@@ -693,9 +721,9 @@ func validateGroupKey(repository, commit, runID, framework, name, _ string) erro
 		return fmt.Errorf("%w: repository, commit, gh_run_id, and name are required", api.ErrBadRequest)
 	}
 	switch framework {
-	case "playwright", "cypress", "detox":
+	case "playwright", "cypress", "detox", "maestro":
 	default:
-		return fmt.Errorf("%w: framework must be playwright|cypress|detox", api.ErrBadRequest)
+		return fmt.Errorf("%w: framework must be playwright|cypress|detox|maestro", api.ErrBadRequest)
 	}
 	return nil
 }

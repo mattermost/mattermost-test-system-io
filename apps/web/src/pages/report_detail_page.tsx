@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, Navigate } from 'react-router-dom';
 import { useReportDetail, useReportSuites } from '@/services/api';
 import { TestSuitesView } from '@/components/test_suites_view';
 import { Loader2, AlertCircle } from 'lucide-react';
@@ -8,6 +8,13 @@ import { ReportSummary } from '@/components/report_summary';
 import { isRetestName } from '@/components/report_card_parts';
 import { EnvironmentMetadataDisplay } from '@/components/report_card_parts/environment_metadata';
 import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
+import { runConsolidatedHref } from '@/components/run_families';
+import {
+  buildConsolidatedReportPath,
+  encodeBranchPathSegment,
+  repositoryDisplayName,
+  shortSHA,
+} from '@/lib/report_urls';
 
 export function ReportDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -64,20 +71,37 @@ export function ReportDetailPage() {
     return { passed, failed, skipped, flaky, total, durationMs };
   }, [filteredSuites]);
 
+  // Group-level duration: the numbered + retest wall-clock spans the backend
+  // already computes (min start → max end per shard batch), not a sum of
+  // every shard's test durations — shards run in parallel, so summing them
+  // (testStats.durationMs above) overstates elapsed time by roughly the
+  // shard count (e.g. 5 parallel ~11m shards reads as "55m" instead of the
+  // actual ~21m wall-clock). Only meaningful for the whole-group view;
+  // an individual shard has no separate wall-clock field, so it keeps using
+  // the summed per-suite duration as a reasonable single-shard proxy.
+  const groupDurationMs =
+    (report?.test_stats?.wall_clock_ms ?? 0) + (report?.test_stats?.retest_wall_clock_ms ?? 0);
+
   // Build URL segments from report data for breadcrumb and name link
   const urlParts = useMemo(() => {
     if (!report?.repository || !report?.branch || !report?.commit || !report?.name) return null;
-    const repoName = report.repository.split('/').pop() || report.repository;
-    const shortBranch = report.branch.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
-    const prMatch = shortBranch.match(/^pr-(\d+)/i) || report.branch.match(/^refs\/pull\/(\d+)\//);
-    const branchSegment = prMatch ? `pr-${prMatch[1]}` : shortBranch;
-    const shortSha = report.commit.slice(0, 7);
-    return { repoName, branchSegment, shortSha, name: report.name };
+    return {
+      repoName: repositoryDisplayName(report.repository),
+      branchSegment: encodeBranchPathSegment(report.branch),
+      shortSha: shortSHA(report.commit),
+      name: report.name,
+    };
   }, [report]);
 
-  const nameHref = urlParts
-    ? `/reports/${encodeURIComponent(urlParts.repoName)}/${encodeURIComponent(urlParts.branchSegment)}/${urlParts.shortSha}/${encodeURIComponent(urlParts.name)}`
-    : undefined;
+  const nameHref =
+    report && urlParts
+      ? buildConsolidatedReportPath({
+          repository: report.repository,
+          branch: report.branch,
+          commit: report.commit,
+          name: report.name,
+        })
+      : undefined;
 
   if (isLoading) {
     return (
@@ -100,6 +124,11 @@ export function ReportDetailPage() {
         </Link>
       </div>
     );
+  }
+
+  const consolidatedHref = runConsolidatedHref(report);
+  if (consolidatedHref) {
+    return <Navigate to={consolidatedHref} replace />;
   }
 
   return (
@@ -145,7 +174,13 @@ export function ReportDetailPage() {
         flaky={testStats.flaky}
         skipped={testStats.skipped}
         total={testStats.total}
-        durationMs={testStats.durationMs > 0 ? testStats.durationMs : undefined}
+        durationMs={
+          !isIndividualReport && groupDurationMs > 0
+            ? groupDurationMs
+            : testStats.durationMs > 0
+              ? testStats.durationMs
+              : undefined
+        }
         beginAt={report.orchestration?.durations?.begin_at}
         firstTestAt={report.orchestration?.durations?.first_test_at}
         firstRetestAt={report.orchestration?.durations?.first_retest_at}

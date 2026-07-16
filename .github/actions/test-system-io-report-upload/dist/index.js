@@ -24711,6 +24711,7 @@ function identityForReports(c, framework, totalReportsExpected) {
     branch: c.branch,
     total_reports_expected: totalReportsExpected
   };
+  if (c.run_group) body.run_group = c.run_group;
   if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;
   return body;
 }

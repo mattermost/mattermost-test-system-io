@@ -21,6 +21,7 @@ import {
 } from '@/components/report_card_parts';
 import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
 import { resolveEffectiveReportStatus } from '@/components/report_summary';
+import { ensureRunQueryParams } from '@/lib/report_urls';
 
 function status_icon(entry: RunEntry) {
   const effective = resolveEffectiveReportStatus(
@@ -368,39 +369,16 @@ interface RepoGroupCardProps {
 }
 
 export function RepoGroupCard({ group, startNumber = 1 }: RepoGroupCardProps) {
-  // Find the latest entry per unique consolidated key (url_path without query)
-  // so non-latest entries get a `gh_run_id` query param. Disambiguating by
-  // gh_run_id (rather than the report-group UUID via `gid`) keeps the URL
-  // human-readable and matches the GitHub Actions run id surfaced elsewhere
-  // in the UI; the orchestration tab and the consolidated view both pick up
-  // this query param at page-load time.
-  const latestByKey = new Map<string, string>();
-  for (const entry of group.runs) {
-    const key = entry.url_path;
-    const existing = latestByKey.get(key);
-    if (!existing || entry.created_at > existing) {
-      latestByKey.set(key, entry.created_at);
-    }
-  }
-
   return (
     <div className="rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800/50">
       <div className="divide-y divide-gray-50 dark:divide-gray-700/50">
         {group.runs.map((entry, idx) => {
-          const isLatest = entry.created_at === latestByKey.get(entry.url_path);
-          // Latest entry keeps the bare URL; older entries with the same
-          // (repo, branch, commit, name) get a `gh_run_id` disambiguator.
-          // Fall back to `gid` when gh_run_id is missing (older rows).
-          const disambiguator = entry.gh_run_id
-            ? `gh_run_id=${encodeURIComponent(entry.gh_run_id)}`
-            : `gid=${entry.report_id}`;
-          const urlPath = isLatest ? entry.url_path : `${entry.url_path}?${disambiguator}`;
+          // Always stamp gh_run_id so same-SHA rows open the correct Actions run
+          // (bare consolidated URLs otherwise resolve to the latest run).
+          const urlPath = entry.gh_run_id
+            ? ensureRunQueryParams(entry.url_path, entry.gh_run_id, entry.gh_run_attempt)
+            : `${entry.url_path}${entry.url_path.includes('?') ? '&' : '?'}gid=${entry.report_id}`;
           const decoratedEntry = { ...entry, url_path: urlPath };
-          // Background + hover live on the wrapper so they cover both the
-          // link row AND the orchestration progress strip below it. With
-          // them on the link, hovering past the bottom edge of the link
-          // would lose the highlight while the cursor was still over the
-          // same logical card.
           const stats = resolveDisplayStats(decoratedEntry);
           const hasFailed = !!stats && stats.total > 0 && stats.failed > 0;
           const wrapperClass = `rounded-md transition-colors ${

@@ -268,7 +268,7 @@ paths:
           required: false
         - in: header
           name: X-Report-Framework
-          schema: { type: string, enum: [playwright, cypress, detox] }
+          schema: { type: string, enum: [playwright, cypress, detox, maestro] }
           required: false
         - in: header
           name: X-Report-Repository
@@ -1185,7 +1185,7 @@ components:
         short_id: { type: string }
         name: { type: string }
         status: { type: string, enum: [in_progress, completed] }
-        framework: { type: string, enum: [playwright, cypress, detox] }
+        framework: { type: string, enum: [playwright, cypress, detox, maestro] }
         test_stats: { $ref: '#/components/schemas/TestStats' }
         orchestration: { $ref: '#/components/schemas/OrchestrationSummary' }
         repository: { type: string }
@@ -1229,7 +1229,7 @@ components:
         id: { type: string, format: uuid }
         report_group_id: { type: string, format: uuid }
         source: { type: string }
-        framework: { type: string, enum: [playwright, cypress, detox] }
+        framework: { type: string, enum: [playwright, cypress, detox, maestro] }
         repository: { type: string, nullable: true }
         branch: { type: string, nullable: true }
         commit_sha: { type: string, nullable: true }

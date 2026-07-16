@@ -131,6 +131,7 @@ export interface ReportSummary {
   id: string;
   short_id: string;
   name: string;
+  run_group?: string;
   status: ReportStatus;
   framework: Framework;
   test_stats?: TestStats;
@@ -240,7 +241,7 @@ export interface TestSpecListResponse {
 // Report types
 export type ProcessingStatus = 'pending' | 'processing' | 'complete' | 'failed';
 export type ReportStatus = 'in_progress' | 'completed' | 'incomplete';
-export type Framework = 'playwright' | 'cypress' | 'detox';
+export type Framework = 'playwright' | 'cypress' | 'detox' | 'maestro';
 
 export interface ReportEnvironment {
   os?: string;
@@ -264,6 +265,7 @@ export interface ReportEntry {
 export interface ReportDetail {
   id: string;
   name: string;
+  run_group?: string;
   framework: Framework;
   status: ReportStatus;
   repository: string;
@@ -273,6 +275,7 @@ export interface ReportDetail {
   gh_pr_number?: number;
   gh_run_attempt: string;
   environment_metadata?: ReportEnvironmentMetadata;
+  test_stats?: TestStats;
   orchestration?: OrchestrationSummary;
   created_at: string;
   updated_at: string;

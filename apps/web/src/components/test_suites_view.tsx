@@ -37,6 +37,8 @@ import {
   calcPassRate,
   formatDuration,
   workerSlot,
+  dedupeSuitesByReportAndPath,
+  isFlakyTestSpec,
   type StatusFilter,
 } from './test_suites';
 
@@ -46,6 +48,8 @@ const PAGE_SIZE = 100;
 
 interface TestSuitesViewProps {
   reportId: string;
+  /** When set, search spans every contributing group (consolidated view). */
+  searchReportIds?: string[];
   suites: TestSuite[];
   stats?: ReportStats;
   title?: string;
@@ -73,6 +77,7 @@ interface TestSuitesViewProps {
 
 export function TestSuitesView({
   reportId,
+  searchReportIds,
   suites,
   stats,
   title,
@@ -128,7 +133,7 @@ export function TestSuitesView({
 
   // Search API - only calls when search query meets min length
   const { data: searchData, isLoading: isSearching } = useSearchTestCases(
-    reportId,
+    searchReportIds?.length ? searchReportIds : reportId,
     debouncedSearch,
     minSearchLength,
     500, // Get more results for better grouping
@@ -243,20 +248,10 @@ export function TestSuitesView({
         return 0;
       });
 
-    // Deduplicate by file_path: keep the latest entry (last created wins)
+    // Deduplicate by (report_name, file_path) — see dedupeSuitesByReportAndPath
+    // for why report_name must be part of the key, not just file_path.
     if (reports && reports.length > 1) {
-      const seen = new Map<string, number>();
-      // Walk in reverse so later entries (latest) overwrite earlier ones
-      for (let i = sorted.length - 1; i >= 0; i--) {
-        const fp = sorted[i]!.file_path;
-        if (fp && !seen.has(fp)) {
-          seen.set(fp, i);
-        }
-      }
-      return sorted.filter((suite, i) => {
-        if (!suite.file_path) return true;
-        return seen.get(suite.file_path) === i;
-      });
+      return dedupeSuitesByReportAndPath(sorted);
     }
 
     return sorted;
@@ -356,6 +351,7 @@ export function TestSuitesView({
 
   // Build map: file_path -> list of report badge info (ordered by created_at) for all reports that tested this file
   type ReportBadge = {
+    report_key: string;
     report_number: number;
     report_name: string;
     passed: boolean;
@@ -366,19 +362,37 @@ export function TestSuitesView({
     const map = new Map<string, ReportBadge[]>();
     for (const suite of suites) {
       if (!suite.file_path || suite.tests_count === 0) continue;
-      const entry: ReportBadge = {
-        report_number: suite.report_number ?? 0,
-        report_name: suite.report_name || '',
-        passed: suite.failed_count === 0,
-        created_at: suite.created_at || '',
-      };
+      const reportKey = suite.report_id || `${suite.report_name ?? ''}:${suite.report_number ?? 0}`;
+      const reportNumber = suite.report_number ?? 0;
       const existing = map.get(suite.file_path);
+      // A spec file can emit multiple suite rows sharing file_path (a
+      // top-level describe alongside file-level tests). A file is "passed"
+      // for a report only when NONE of its suites failed — a passing
+      // describe must not mask a file-level failure for the same shard.
+      const failed = suite.failed_count !== 0;
       if (existing) {
-        if (!existing.some((e) => e.report_number === entry.report_number)) {
-          existing.push(entry);
+        const e = existing.find((x) => x.report_key === reportKey);
+        if (e) {
+          if (failed) e.passed = false;
+        } else {
+          existing.push({
+            report_key: reportKey,
+            report_number: reportNumber,
+            report_name: suite.report_name || '',
+            passed: !failed,
+            created_at: suite.created_at || '',
+          });
         }
       } else {
-        map.set(suite.file_path, [entry]);
+        map.set(suite.file_path, [
+          {
+            report_key: reportKey,
+            report_number: reportNumber,
+            report_name: suite.report_name || '',
+            passed: !failed,
+            created_at: suite.created_at || '',
+          },
+        ]);
       }
     }
     // Sort each entry by created_at (chronological order)
@@ -646,33 +660,36 @@ export function TestSuitesView({
                         All Reports
                       </button>
                       <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-                      {[...reports]
-                        .sort(
-                          (a, b) =>
-                            workerSlot(a.report_name, a.report_number) -
-                            workerSlot(b.report_name, b.report_number),
-                        )
-                        .map((entry) => (
-                          <button
-                            key={entry.report_id}
-                            type="button"
-                            onClick={() => toggleReport(entry.report_id)}
-                            className={`w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
-                              selectedReports.has(entry.report_id)
-                                ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                                : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700'
-                            }`}
-                          >
-                            <span className="flex items-center gap-2 min-w-0">
-                              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-gray-200 px-1 text-[10px] font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-300">
-                                {workerSlot(entry.report_name, entry.report_number)}
+                      {(() => {
+                        const reportNames = reports.map((r) => r.report_name);
+                        return [...reports]
+                          .sort(
+                            (a, b) =>
+                              workerSlot(a.report_name, a.report_number, reportNames) -
+                              workerSlot(b.report_name, b.report_number, reportNames),
+                          )
+                          .map((entry) => (
+                            <button
+                              key={entry.report_id}
+                              type="button"
+                              onClick={() => toggleReport(entry.report_id)}
+                              className={`w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
+                                selectedReports.has(entry.report_id)
+                                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700'
+                              }`}
+                            >
+                              <span className="flex items-center gap-2 min-w-0">
+                                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-gray-200 px-1 text-[10px] font-semibold text-gray-600 dark:bg-gray-600 dark:text-gray-300">
+                                  {workerSlot(entry.report_name, entry.report_number, reportNames)}
+                                </span>
+                                <span className="truncate" title={entry.report_name}>
+                                  {entry.report_name}
+                                </span>
                               </span>
-                              <span className="truncate" title={entry.report_name}>
-                                {entry.report_name}
-                              </span>
-                            </span>
-                          </button>
-                        ))}
+                            </button>
+                          ));
+                      })()}
                     </div>
                   </div>
                 )}
@@ -941,10 +958,7 @@ const SuiteRow = memo(function SuiteRow({
       if (statusFilter === 'all') return true;
       if (spec.results.length === 0) return false;
 
-      // Check for flaky: passed eventually but had at least one failure
-      const hasFailure = spec.results.some((r) => r.status === 'failed');
-      const hasPassed = spec.results.some((r) => r.status === 'passed');
-      const isFlaky = spec.ok && hasFailure && hasPassed;
+      const isFlaky = isFlakyTestSpec(spec.ok, spec.results);
 
       // Get the final result (highest retry number)
       const finalResult = spec.results.reduce((latest, r) =>
@@ -1009,25 +1023,28 @@ const SuiteRow = memo(function SuiteRow({
                 </span>
                 {hasMultipleReports && allReportsForFile.length > 0 && (
                   <span className="ml-1 inline-flex items-center gap-0.5 flex-shrink-0">
-                    {allReportsForFile.map((j) => {
-                      const isCurrent = j.report_number === suite.report_number;
-                      const colorClass = j.passed
-                        ? isCurrent
-                          ? 'bg-green-200 text-green-700 dark:bg-green-800 dark:text-green-200'
-                          : 'bg-green-100 text-green-400 dark:bg-green-900/40 dark:text-green-500'
-                        : isCurrent
-                          ? 'bg-red-200 text-red-700 dark:bg-red-800 dark:text-red-200'
-                          : 'bg-red-100 text-red-400 dark:bg-red-900/40 dark:text-red-500';
-                      return (
-                        <span
-                          key={j.report_number}
-                          className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${colorClass}`}
-                          title={j.report_name || `Report ${j.report_number}`}
-                        >
-                          {workerSlot(j.report_name, j.report_number)}
-                        </span>
-                      );
-                    })}
+                    {(() => {
+                      const siblingNames = allReportsForFile.map((r) => r.report_name);
+                      return allReportsForFile.map((j) => {
+                        const isCurrent = j.report_number === suite.report_number;
+                        const colorClass = j.passed
+                          ? isCurrent
+                            ? 'bg-green-200 text-green-700 dark:bg-green-800 dark:text-green-200'
+                            : 'bg-green-100 text-green-400 dark:bg-green-900/40 dark:text-green-500'
+                          : isCurrent
+                            ? 'bg-red-200 text-red-700 dark:bg-red-800 dark:text-red-200'
+                            : 'bg-red-100 text-red-400 dark:bg-red-900/40 dark:text-red-500';
+                        return (
+                          <span
+                            key={j.report_number}
+                            className={`inline-flex h-4 min-w-4 items-center justify-center rounded px-0.5 text-[10px] font-semibold ${colorClass}`}
+                            title={j.report_name || `Report ${j.report_number}`}
+                          >
+                            {workerSlot(j.report_name, j.report_number, siblingNames)}
+                          </span>
+                        );
+                      });
+                    })()}
                   </span>
                 )}
               </p>

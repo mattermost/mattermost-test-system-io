@@ -10,6 +10,8 @@ export interface CompositeIdentity {
   gh_run_id: string;
   gh_run_attempt: string;
   name: string;
+  /** Shared family label for multi-framework consolidation (e.g. detox+maestro → mobile-pr). */
+  run_group?: string;
   branch?: string;
   gh_pr_number?: number | string;
 }
@@ -21,6 +23,7 @@ export interface ReportsBeginBody {
   gh_run_attempt: string;
   framework: string;
   name: string;
+  run_group?: string;
   branch?: string;
   gh_pr_number?: number | string;
   total_reports_expected: number;

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,6 +115,7 @@ type reportSummary struct {
 	ID                   string                `json:"id"`
 	ShortID              string                `json:"short_id"`
 	Name                 string                `json:"name"`
+	RunGroup             string                `json:"run_group,omitempty"`
 	Status               string                `json:"status"`
 	Framework            string                `json:"framework"`
 	TestStats            *testStats            `json:"test_stats,omitempty"`
@@ -151,6 +153,7 @@ type runEntry struct {
 	ReportID             string                `json:"report_id"`
 	Framework            string                `json:"framework"`
 	Name                 string                `json:"name"`
+	RunGroup             string                `json:"-"`
 	Status               string                `json:"status"`
 	Branch               string                `json:"branch"`
 	Commit               string                `json:"commit"`
@@ -237,6 +240,7 @@ func toReportSummary(g groupDTO, s groupStats) reportSummary {
 		ID:                   g.ID.String(),
 		ShortID:              shortID(g.ID.String()),
 		Name:                 g.Name,
+		RunGroup:             g.RunGroup,
 		Status:               g.Status,
 		Framework:            g.Framework,
 		TestStats:            statsFromAgg(s),
@@ -276,12 +280,25 @@ func toReportDetail(g groupDTO, entries []reportEntryDTO, s groupStats) reportDe
 	return out
 }
 
+func reportBranchPathSegment(branch string) string {
+	return strings.ReplaceAll(stripRefPrefix(branch), "/", "~")
+}
+
+func consolidatedRunURLPath(g groupDTO) string {
+	return "/reports/" +
+		url.PathEscape(repositoryDisplayName(g.Repository)) + "/" +
+		url.PathEscape(reportBranchPathSegment(g.Branch)) + "/" +
+		url.PathEscape(shortSHA(g.CommitSHA)) + "/" +
+		url.PathEscape(displayRunName(g.Name, g.RunGroup))
+}
+
 func toRunEntry(g groupDTO, s groupStats) runEntry {
 	branch := stripRefPrefix(g.Branch)
 	return runEntry{
 		ReportID:             g.ID.String(),
 		Framework:            g.Framework,
 		Name:                 g.Name,
+		RunGroup:             g.RunGroup,
 		Status:               g.Status,
 		Branch:               branch,
 		Commit:               g.CommitSHA,           // full 40-char SHA, used for filtering
@@ -294,16 +311,7 @@ func toRunEntry(g groupDTO, s groupStats) runEntry {
 		LastUploadAt:         fmtTime(g.LastUploadAt),
 		TotalReportsExpected: derefIntOrZero(g.TotalReportsExpected),
 		ReportsCount:         s.ReportsCount,
-		// Consolidated-view URL shape: {repo-slug}/{branch}/{short-sha}/{name}.
-		// Each segment is URL-encoded so names containing spaces or slashes
-		// stay as one path segment. Short SHA keeps the URL compact; any
-		// prefix length resolves because the filter matches against the
-		// full commit.
-		URLPath: "/reports/" +
-			url.PathEscape(repositoryDisplayName(g.Repository)) + "/" +
-			url.PathEscape(branch) + "/" +
-			url.PathEscape(shortSHA(g.CommitSHA)) + "/" +
-			url.PathEscape(g.Name),
+		URLPath:              consolidatedRunURLPath(g),
 	}
 }
 
@@ -316,6 +324,18 @@ func stripRefPrefix(b string) string {
 		}
 	}
 	return b
+}
+
+// parsePRBranch extracts a PR number from URL branch segments like "pr-3891".
+func parsePRBranch(branch string) (int, bool) {
+	if !strings.HasPrefix(strings.ToLower(branch), "pr-") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(branch[3:])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 func toIndividualSummary(g groupDTO, e reportEntryDTO, stats groupStats) individualReportSummary {
@@ -425,6 +445,10 @@ func (h *Handlers) computeGrouped(ctx context.Context, limit, offset int) ([]byt
 		return nil, err
 	}
 
+	for _, bucket := range byRepo {
+		bucket.Runs = mergeGroupedRunEntries(bucket.Runs)
+	}
+
 	groups := make([]repoGroup, 0, len(order))
 	for _, k := range order {
 		groups = append(groups, *byRepo[k])
@@ -526,6 +550,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			"repository, branch, commit, and name are all required")
 		return
 	}
+	displayName := name
 	var pinnedAttempt *string
 	if v := q.Get("run_attempt"); v != "" {
 		pinnedAttempt = &v
@@ -534,15 +559,14 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("gid"); v != "" {
 		pinnedGroup = &v
 	}
-	// gh_run_id narrows to a single Actions workflow run when present.
-	// Without it, two distinct runs sharing a (repo, branch, commit, name,
-	// run_attempt) tuple — e.g. a re-trigger of the same workflow against
-	// an unchanged commit — get merged into one consolidated view, and
-	// whichever finished /reports/upload first claims the badges. Optional
-	// to preserve the cross-run aggregate behavior callers may rely on.
+	// gid/gh_run_id pin a run; otherwise the latest upload for this SHA wins.
 	var pinnedGHRunID *string
 	if v := q.Get("gh_run_id"); v != "" {
 		pinnedGHRunID = &v
+	}
+	var prBranchNumber *int
+	if n, ok := parsePRBranch(branch); ok {
+		prBranchNumber = &n
 	}
 
 	// The URL carries the repository slug (e.g. "mattermost"); the DB stores
@@ -574,13 +598,28 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			WHERE rs.case_id = tc.id
 		) ss ON TRUE
 		WHERE (g.repository = $1 OR g.repository LIKE '%/' || $1)
-		  AND g.branch = $2
+		  AND (g.branch = $2 OR ($8::int IS NOT NULL AND g.gh_pr_number = $8::int))
 		  AND g.commit_sha LIKE $3 || '%'
-		  AND g.name = $4
+		  AND (g.run_group = $4 OR g.name = $4)
 		  AND ($5::text IS NULL OR g.gh_run_attempt = $5::text)
-		  AND ($6::uuid IS NULL OR g.id = $6::uuid)
-		  AND ($7::text IS NULL OR g.gh_run_id = $7::text)
-	`, repository, branch, commit, name, pinnedAttempt, pinnedGroup, pinnedGHRunID)
+		  AND (
+		    ($6::uuid IS NOT NULL AND g.id = $6::uuid)
+		    OR ($7::text IS NOT NULL AND g.gh_run_id = $7::text)
+		    OR (
+		      $6::uuid IS NULL AND $7::text IS NULL
+		      AND (g.gh_run_id, g.gh_run_attempt) = (
+		        SELECT g_pick.gh_run_id, g_pick.gh_run_attempt
+		        FROM report_groups g_pick
+		        WHERE (g_pick.repository = $1 OR g_pick.repository LIKE '%/' || $1)
+		          AND (g_pick.branch = $2 OR ($8::int IS NOT NULL AND g_pick.gh_pr_number = $8::int))
+		          AND g_pick.commit_sha LIKE $3 || '%'
+		          AND (g_pick.run_group = $4 OR g_pick.name = $4)
+		        ORDER BY COALESCE(g_pick.last_upload_at, g_pick.created_at) DESC, g_pick.id DESC
+		        LIMIT 1
+		      )
+		    )
+		  )
+	`, repository, branch, commit, name, pinnedAttempt, pinnedGroup, pinnedGHRunID, prBranchNumber)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -628,7 +667,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 
 	filters := map[string]any{
 		"repository":  repository,
-		"target_name": name,
+		"target_name": displayName,
 		"commit_sha":  commit,
 		"tool_name":   "",
 	}

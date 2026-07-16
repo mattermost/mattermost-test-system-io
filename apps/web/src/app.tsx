@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, useParams } from 'react-router-dom';
 import { HomePage } from '@/pages/home_page';
-import { FilteredReportPage } from '@/pages/filtered_report_page';
+import { ReportPathRouter } from '@/pages/report_path_router';
 import { FilteredReportsPage } from '@/pages/filtered_reports_page';
 import { CommitReportsPage } from '@/pages/commit_reports_page';
 import { ReportDetailPage } from '@/pages/report_detail_page';
@@ -54,11 +54,8 @@ export function App() {
               <Route path="/reports/r/:id" element={<ReportDetailPage />} />
               <Route path="/reports/g/:id" element={<ReportDetailPage />} />
               <Route path="/reports/c/:sha" element={<CommitReportsPage />} />
-              {/* Consolidated report view */}
-              <Route path="/reports/:repo/:branch/:commit/:name" element={<FilteredReportPage />} />
-              {/* Filtered views by repo/branch/commit */}
-              <Route path="/reports/:repo/:branch/:commit" element={<FilteredReportsPage />} />
-              <Route path="/reports/:repo/:branch" element={<FilteredReportsPage />} />
+              {/* Consolidated + filtered views (branch may contain slashes) */}
+              <Route path="/reports/:repo/*" element={<ReportPathRouter />} />
               {/* Single segment: SHA → commit lookup, otherwise → repo filter */}
               <Route path="/reports/:param" element={<RepoOrShaResolver />} />
             </Routes>

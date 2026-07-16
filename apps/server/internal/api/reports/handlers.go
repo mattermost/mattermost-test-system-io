@@ -64,6 +64,7 @@ type groupDTO struct {
 	ID                   uuid.UUID
 	Framework            string
 	Name                 string
+	RunGroup             string
 	Status               string
 	TotalReportsExpected *int
 	Repository           string
@@ -90,14 +91,14 @@ type reportEntryDTO struct {
 }
 
 const reportGroupSelectCols = `
-	id, framework, name, status, total_reports_expected,
+	id, framework, name, run_group, status, total_reports_expected,
 	repository, branch, commit_sha,
 	gh_run_id, gh_run_attempt, gh_pr_number, environment_metadata,
 	created_at, updated_at, last_upload_at
 `
 
 const reportGroupSelectColsPrefixed = `
-	g.id, g.framework, g.name, g.status, g.total_reports_expected,
+	g.id, g.framework, g.name, g.run_group, g.status, g.total_reports_expected,
 	g.repository, g.branch, g.commit_sha,
 	g.gh_run_id, g.gh_run_attempt, g.gh_pr_number, g.environment_metadata,
 	g.created_at, g.updated_at, g.last_upload_at
@@ -105,14 +106,18 @@ const reportGroupSelectColsPrefixed = `
 
 func scanGroup(s interface{ Scan(dst ...any) error }) (groupDTO, error) {
 	var g groupDTO
+	var runGroup *string
 	var env []byte
 	if err := s.Scan(
-		&g.ID, &g.Framework, &g.Name, &g.Status, &g.TotalReportsExpected,
+		&g.ID, &g.Framework, &g.Name, &runGroup, &g.Status, &g.TotalReportsExpected,
 		&g.Repository, &g.Branch, &g.CommitSHA,
 		&g.GHRunID, &g.GHRunAttempt, &g.GHPRNumber, &env,
 		&g.CreatedAt, &g.UpdatedAt, &g.LastUploadAt,
 	); err != nil {
 		return groupDTO{}, err
+	}
+	if runGroup != nil {
+		g.RunGroup = *runGroup
 	}
 	if len(env) > 0 {
 		raw := json.RawMessage(env)

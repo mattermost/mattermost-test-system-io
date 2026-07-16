@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   ClientConfig,
   ServerInfo,
@@ -314,17 +314,56 @@ export async function searchTestCases(
 // Search React Query hook
 // Note: Debouncing should be done in the component before calling this hook
 export function useSearchTestCases(
-  reportId: string,
+  reportIds: string | readonly string[],
   query: string,
   minSearchLength: number,
   limit = 100,
 ) {
-  return useQuery({
-    queryKey: ['search-test-cases', reportId, query, limit],
-    queryFn: () => searchTestCases(reportId, query, limit),
-    enabled: !!reportId && query.length >= minSearchLength,
-    staleTime: 60 * 1000, // 1 minute cache
+  const ids = (Array.isArray(reportIds) ? reportIds : [reportIds]).filter(Boolean);
+  const enabled = ids.length > 0 && query.length >= minSearchLength;
+
+  const multi = useQueries({
+    queries: ids.map((id) => ({
+      queryKey: ['search-test-cases', id, query, limit],
+      queryFn: () => searchTestCases(id, query, limit),
+      enabled: enabled && ids.length > 1,
+      staleTime: 60 * 1000,
+    })),
   });
+
+  const single = useQuery({
+    queryKey: ['search-test-cases', ids[0], query, limit],
+    queryFn: () => searchTestCases(ids[0]!, query, limit),
+    enabled: enabled && ids.length === 1,
+    staleTime: 60 * 1000,
+  });
+
+  if (ids.length <= 1) {
+    return single;
+  }
+
+  const isLoading = multi.some((q) => q.isLoading);
+  const isError = multi.some((q) => q.isError);
+  const error = multi.find((q) => q.error)?.error;
+  const results = multi.flatMap((q) => q.data?.results ?? []);
+  const totalMatches = results.reduce((sum, r) => sum + r.matches.length, 0);
+
+  return {
+    data:
+      enabled && !isLoading
+        ? {
+            query,
+            search_min_length: minSearchLength,
+            total_matches: totalMatches,
+            results,
+          }
+        : undefined,
+    isLoading,
+    isError,
+    error,
+    isFetching: multi.some((q) => q.isFetching),
+    status: isLoading ? 'pending' : isError ? 'error' : 'success',
+  } as typeof single;
 }
 
 // ─── Orchestration ─────────────────────────────────────────────────────────

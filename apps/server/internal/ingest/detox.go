@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -114,16 +115,33 @@ func detoxStatus(s string) string {
 	}
 }
 
-// relativeDetoxPath strips the host-specific prefix up to (and including)
-// "/e2e/" so the stored file path is project-relative. Falls back to the
-// absolute path when the marker is absent.
+// relativeDetoxPath normalizes a Detox/Jest suite path to a stable
+// repo-relative form. Layout-agnostic: does not assume detox/e2e vs e2e/detox.
+//
+//   - Already-relative paths are returned unchanged.
+//   - Absolute CI paths (.../work/<repo>/<repo>/<rel>) have the workspace
+//     prefix stripped when recognizable; otherwise the input is returned.
 func relativeDetoxPath(p string) string {
 	if p == "" {
 		return ""
 	}
-	const marker = "/e2e/"
-	if i := strings.LastIndex(p, marker); i >= 0 {
-		return p[i+len(marker):]
+	normalized := filepath.ToSlash(p)
+	normalized = strings.TrimPrefix(normalized, "./")
+
+	// Repo-relative already — keep identity stable across folder moves.
+	if !filepath.IsAbs(p) && !strings.HasPrefix(normalized, "/") {
+		return normalized
 	}
-	return p
+
+	// GitHub Actions / common nested workspaces: .../work/<repo>/<repo>/<relative>
+	if i := strings.Index(normalized, "/work/"); i >= 0 {
+		rest := normalized[i+len("/work/"):]
+		// rest = "<repo>/<repo>/<relative...>"
+		parts := strings.SplitN(rest, "/", 3)
+		if len(parts) == 3 && parts[2] != "" {
+			return parts[2]
+		}
+	}
+
+	return normalized
 }

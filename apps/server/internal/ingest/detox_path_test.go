@@ -10,6 +10,8 @@ func TestRelativeDetoxPath_KeepsRelativeLayouts(t *testing.T) {
 		{"e2e/detox/test/foo.e2e.ts", "e2e/detox/test/foo.e2e.ts"},
 		{"e2e/maestro/flows/calls/mute.yml", "e2e/maestro/flows/calls/mute.yml"},
 		{"./e2e/detox/test/foo.e2e.ts", "e2e/detox/test/foo.e2e.ts"},
+		{`e2e\detox\test\foo.e2e.ts`, "e2e/detox/test/foo.e2e.ts"},
+		{`./e2e\detox\test\foo.e2e.ts`, "e2e/detox/test/foo.e2e.ts"},
 		{"", ""},
 	}
 	for _, tc := range cases {
@@ -31,5 +33,11 @@ func TestRelativeDetoxPath_StripsGitHubActionsWorkspace(t *testing.T) {
 	wantLegacy := "detox/e2e/test/foo.e2e.ts"
 	if got := relativeDetoxPath(legacy); got != wantLegacy {
 		t.Errorf("relativeDetoxPath(%q) = %q, want %q", legacy, got, wantLegacy)
+	}
+
+	// Unrelated /work/<a>/<b>/... must not be truncated when a != b.
+	unrelated := "/var/work/owner/other-repo/e2e/detox/test/foo.e2e.ts"
+	if got := relativeDetoxPath(unrelated); got != unrelated {
+		t.Errorf("relativeDetoxPath(%q) = %q, want unchanged", unrelated, got)
 	}
 }

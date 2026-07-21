@@ -125,7 +125,10 @@ func relativeDetoxPath(p string) string {
 	if p == "" {
 		return ""
 	}
+	// filepath.ToSlash only rewrites the host OS separator; force '\' → '/' so
+	// Windows-style paths normalize identically on Linux ingest hosts.
 	normalized := filepath.ToSlash(p)
+	normalized = strings.ReplaceAll(normalized, `\`, "/")
 	normalized = strings.TrimPrefix(normalized, "./")
 
 	// Repo-relative already — keep identity stable across folder moves.
@@ -138,7 +141,7 @@ func relativeDetoxPath(p string) string {
 		rest := normalized[i+len("/work/"):]
 		// rest = "<repo>/<repo>/<relative...>"
 		parts := strings.SplitN(rest, "/", 3)
-		if len(parts) == 3 && parts[2] != "" {
+		if len(parts) == 3 && parts[0] == parts[1] && parts[2] != "" {
 			return parts[2]
 		}
 	}

@@ -40,4 +40,15 @@ func TestRelativeDetoxPath_StripsGitHubActionsWorkspace(t *testing.T) {
 	if got := relativeDetoxPath(unrelated); got != unrelated {
 		t.Errorf("relativeDetoxPath(%q) = %q, want unchanged", unrelated, got)
 	}
+
+	// Windows absolute paths must still strip the GHA workspace on Linux hosts.
+	win := `C:\Users\runner\work\mattermost-mobile\mattermost-mobile\e2e\detox\test\foo.e2e.ts`
+	if got := relativeDetoxPath(win); got != want {
+		t.Errorf("relativeDetoxPath(%q) = %q, want %q", win, got, want)
+	}
+
+	unc := `\\runner\work\mattermost-mobile\mattermost-mobile\e2e\detox\test\foo.e2e.ts`
+	if got := relativeDetoxPath(unc); got != want {
+		t.Errorf("relativeDetoxPath(%q) = %q, want %q", unc, got, want)
+	}
 }

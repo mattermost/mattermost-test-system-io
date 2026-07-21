@@ -132,7 +132,7 @@ func relativeDetoxPath(p string) string {
 	normalized = strings.TrimPrefix(normalized, "./")
 
 	// Repo-relative already — keep identity stable across folder moves.
-	if !filepath.IsAbs(p) && !strings.HasPrefix(normalized, "/") {
+	if !isNormalizedAbs(p, normalized) {
 		return normalized
 	}
 
@@ -147,4 +147,19 @@ func relativeDetoxPath(p string) string {
 	}
 
 	return normalized
+}
+
+// isNormalizedAbs reports whether the path is absolute on any common platform.
+// filepath.IsAbs is host-OS-specific, so Windows drive-letter and UNC forms
+// (already slash-normalized) must be detected when ingesting on Linux.
+func isNormalizedAbs(original, normalized string) bool {
+	if filepath.IsAbs(original) || strings.HasPrefix(normalized, "/") {
+		return true
+	}
+	// Drive letter: C:/...
+	if len(normalized) >= 3 && normalized[1] == ':' && normalized[2] == '/' {
+		c := normalized[0]
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	}
+	return false
 }

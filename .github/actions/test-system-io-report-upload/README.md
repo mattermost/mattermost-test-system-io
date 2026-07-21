@@ -8,8 +8,10 @@ This action does only the upload pipeline:
 
 1. `POST /api/v1/reports/begin` (idempotent on composite identity).
 2. `POST /api/v1/reports/register` declaring the JSON + screenshot manifest for this shard.
-3. Multipart `POST /api/v1/reports/upload/<group>/<upload>/json`.
-4. Multipart `POST /api/v1/reports/upload/<group>/<upload>/screenshots` (only when `screenshots-dir` is provided).
+3. Multipart `POST /api/v1/reports/upload/<group>/<upload>/screenshots` when `screenshots-dir` is set — split into batches (≤25 files / ≤15 MiB) so a gateway timeout does not redo the whole set. Screenshots upload **before** JSON so the server cannot auto-finalize mid-batch.
+4. Multipart `POST /api/v1/reports/upload/<group>/<upload>/json`.
+
+Transient network errors and HTTP 408/429/502/503/504 are retried with exponential backoff (FormData rebuilt per attempt).
 
 The report group auto-finalizes server-side once `total_reports_expected` shards have completed their uploads.
 

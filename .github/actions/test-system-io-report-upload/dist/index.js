@@ -24648,9 +24648,7 @@ async function uploadShard(cfg, jsonPath, screenshotsDir) {
   const uploadID = regRes.body.upload_id;
   if (screenshotParts.length > 0) {
     const batches = chunkScreenshotParts(screenshotParts);
-    info(
-      `uploading ${screenshotParts.length} screenshot(s) in ${batches.length} batch(es)`
-    );
+    info(`uploading ${screenshotParts.length} screenshot(s) in ${batches.length} batch(es)`);
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
       info(

@@ -97,9 +97,7 @@ export async function uploadShard(
   // so chunked screenshot uploads stay safe without a server API change.
   if (screenshotParts.length > 0) {
     const batches = chunkScreenshotParts(screenshotParts);
-    core.info(
-      `uploading ${screenshotParts.length} screenshot(s) in ${batches.length} batch(es)`,
-    );
+    core.info(`uploading ${screenshotParts.length} screenshot(s) in ${batches.length} batch(es)`);
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i]!;
       core.info(

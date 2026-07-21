@@ -24540,6 +24540,7 @@ var path = __toESM(require("path"));
 
 // src/auth.ts
 var TOKEN_REFRESH_AGE_MS = 5 * 60 * 1e3;
+var TRANSIENT_HTTP_STATUS = /* @__PURE__ */ new Set([408, 429, 502, 503, 504]);
 var cachedToken = null;
 var cachedTokenMintedAt = 0;
 function invalidateToken() {
@@ -24562,9 +24563,18 @@ function sleep(ms) {
 }
 async function fetchWithRetry(makeRequest, attempts = 4) {
   let lastErr;
+  let lastRes;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await makeRequest();
+      const res = await makeRequest();
+      if (!TRANSIENT_HTTP_STATUS.has(res.status) || i === attempts - 1) {
+        return res;
+      }
+      lastRes = res;
+      await res.text().catch(() => void 0);
+      const delayMs = 500 * 2 ** i;
+      info(`HTTP ${res.status} from upstream; retrying in ${delayMs}ms`);
+      await sleep(delayMs);
     } catch (err) {
       lastErr = err;
       const e = err;
@@ -24576,6 +24586,7 @@ async function fetchWithRetry(makeRequest, attempts = 4) {
       await sleep(delayMs);
     }
   }
+  if (lastRes) return lastRes;
   throw lastErr;
 }
 async function fetchWithAuthRetry(makeRequest) {
@@ -24589,6 +24600,8 @@ async function fetchWithAuthRetry(makeRequest) {
 }
 
 // src/upload.ts
+var SCREENSHOT_BATCH_MAX_FILES = 25;
+var SCREENSHOT_BATCH_MAX_BYTES = 15 * 1024 * 1024;
 async function uploadShard(cfg, jsonPath, screenshotsDir) {
   if (!fs2.existsSync(jsonPath)) {
     throw new Error(`json-path does not exist: ${jsonPath}`);
@@ -24633,22 +24646,52 @@ async function uploadShard(cfg, jsonPath, screenshotsDir) {
     throw new Error(`reports/register failed: ${regRes.status} ${JSON.stringify(regRes.body)}`);
   }
   const uploadID = regRes.body.upload_id;
+  if (screenshotParts.length > 0) {
+    const batches = chunkScreenshotParts(screenshotParts);
+    info(
+      `uploading ${screenshotParts.length} screenshot(s) in ${batches.length} batch(es)`
+    );
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      info(
+        `screenshot batch ${i + 1}/${batches.length}: ${batch.length} file(s), ${batch.reduce((n, p) => n + p.size, 0)} bytes`
+      );
+      await uploadMultipart(
+        cfg,
+        `/api/v1/reports/upload/${reportGroupID}/${uploadID}/screenshots`,
+        batch
+      );
+    }
+  }
   await uploadMultipart(
     cfg,
     `/api/v1/reports/upload/${reportGroupID}/${uploadID}/json`,
     jsonParts,
     "application/json"
   );
-  if (screenshotParts.length > 0) {
-    await uploadMultipart(
-      cfg,
-      `/api/v1/reports/upload/${reportGroupID}/${uploadID}/screenshots`,
-      screenshotParts
-    );
-  }
   info(
     `shard uploaded: 1 json + ${screenshotParts.length} screenshot(s) (group=${reportGroupID}, upload=${uploadID})`
   );
+}
+function chunkScreenshotParts(parts, maxFiles = SCREENSHOT_BATCH_MAX_FILES, maxBytes = SCREENSHOT_BATCH_MAX_BYTES) {
+  const batches = [];
+  let current = [];
+  let currentBytes = 0;
+  for (const part of parts) {
+    const wouldExceedFiles = current.length >= maxFiles;
+    const wouldExceedBytes = current.length > 0 && currentBytes + part.size > maxBytes;
+    if (wouldExceedFiles || wouldExceedBytes) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(part);
+    currentBytes += part.size;
+  }
+  if (current.length > 0) {
+    batches.push(current);
+  }
+  return batches;
 }
 async function uploadMultipart(cfg, urlPath, parts, defaultType) {
   const res = await fetchWithAuthRetry(async () => {

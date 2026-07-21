@@ -5,12 +5,16 @@
  * (begin → register → upload×2) can take longer than that on slow CI
  * runners or large screenshot uploads, so we mint on demand, cache for a
  * few minutes, and on a 401 we invalidate and retry once. Pure transient
- * network failures get an exponential backoff on top.
+ * network failures and gateway timeouts (502/503/504) get exponential
+ * backoff on top.
  */
 
 import * as core from "@actions/core";
 
 const TOKEN_REFRESH_AGE_MS = 5 * 60 * 1000;
+
+/** HTTP statuses that are safe to retry (gateway blips / rate limits). */
+const TRANSIENT_HTTP_STATUS = new Set([408, 429, 502, 503, 504]);
 
 let cachedToken: string | null = null;
 let cachedTokenMintedAt = 0;
@@ -40,19 +44,31 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Retry transient network failures (idle keep-alive sockets closed by a
- * load balancer during a long upload, brief DNS hiccups, etc.). Only
- * retries on connection-level errors thrown by fetch — HTTP non-2xx
- * responses are returned to the caller verbatim so business errors
- * aren't silently masked.
+ * load balancer during a long upload, brief DNS hiccups, etc.) and
+ * transient HTTP statuses (notably 504 gateway timeouts on large
+ * screenshot multipart uploads). Other HTTP non-2xx responses are
+ * returned to the caller verbatim so business errors aren't silently
+ * masked.
  */
 async function fetchWithRetry(
   makeRequest: () => Promise<Response>,
   attempts = 4,
 ): Promise<Response> {
   let lastErr: unknown;
+  let lastRes: Response | undefined;
+
   for (let i = 0; i < attempts; i++) {
     try {
-      return await makeRequest();
+      const res = await makeRequest();
+      if (!TRANSIENT_HTTP_STATUS.has(res.status) || i === attempts - 1) {
+        return res;
+      }
+      lastRes = res;
+      // Drain so the connection can be reused on the next attempt.
+      await res.text().catch(() => undefined);
+      const delayMs = 500 * 2 ** i;
+      core.info(`HTTP ${res.status} from upstream; retrying in ${delayMs}ms`);
+      await sleep(delayMs);
     } catch (err) {
       lastErr = err;
       const e = err as { name?: string; code?: string; cause?: { code?: string } };
@@ -70,6 +86,8 @@ async function fetchWithRetry(
       await sleep(delayMs);
     }
   }
+
+  if (lastRes) return lastRes;
   throw lastErr;
 }
 

@@ -1,8 +1,10 @@
 /**
  * Single-shard upload pipeline: /reports/begin (idempotent) →
- * /reports/register → multipart /reports/upload/.../json and
- * .../screenshots. Mirrors the orchestrated worker's upload tail without
- * any drain-loop coupling.
+ * /reports/register → multipart /reports/upload/.../screenshots (chunked)
+ * → .../json. Screenshots go first so a mid-batch
+ * `screenshots_upload_status=completed` cannot auto-finalize the report
+ * before the JSON lands (server finalize requires json completed +
+ * screenshots completed-or-null).
  */
 
 import * as fs from "node:fs";
@@ -26,6 +28,10 @@ export interface UploadConfig {
   totalReportsExpected: number;
   compositeIdentity: CompositeIdentity;
 }
+
+/** Soft caps so one gateway timeout does not redo a huge multipart body. */
+const SCREENSHOT_BATCH_MAX_FILES = 25;
+const SCREENSHOT_BATCH_MAX_BYTES = 15 * 1024 * 1024; // 15 MiB
 
 export async function uploadShard(
   cfg: UploadConfig,
@@ -85,23 +91,69 @@ export async function uploadShard(
   }
   const uploadID = regRes.body!.upload_id;
 
+  // Screenshots before JSON: each successful screenshots POST marks
+  // screenshots_upload_status=completed server-side. Doing that before JSON
+  // completes means tryAutoFinalize cannot flip the report until JSON lands,
+  // so chunked screenshot uploads stay safe without a server API change.
+  if (screenshotParts.length > 0) {
+    const batches = chunkScreenshotParts(screenshotParts);
+    core.info(
+      `uploading ${screenshotParts.length} screenshot(s) in ${batches.length} batch(es)`,
+    );
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i]!;
+      core.info(
+        `screenshot batch ${i + 1}/${batches.length}: ${batch.length} file(s), ` +
+          `${batch.reduce((n, p) => n + p.size, 0)} bytes`,
+      );
+      await uploadMultipart(
+        cfg,
+        `/api/v1/reports/upload/${reportGroupID}/${uploadID}/screenshots`,
+        batch,
+      );
+    }
+  }
+
   await uploadMultipart(
     cfg,
     `/api/v1/reports/upload/${reportGroupID}/${uploadID}/json`,
     jsonParts,
     "application/json",
   );
-  if (screenshotParts.length > 0) {
-    await uploadMultipart(
-      cfg,
-      `/api/v1/reports/upload/${reportGroupID}/${uploadID}/screenshots`,
-      screenshotParts,
-    );
-  }
 
   core.info(
     `shard uploaded: 1 json + ${screenshotParts.length} screenshot(s) (group=${reportGroupID}, upload=${uploadID})`,
   );
+}
+
+/**
+ * Split screenshots into batches capped by file count and total bytes.
+ * A single oversized file still goes alone (server MaxArtifactBytes applies).
+ */
+export function chunkScreenshotParts(
+  parts: UploadPart[],
+  maxFiles = SCREENSHOT_BATCH_MAX_FILES,
+  maxBytes = SCREENSHOT_BATCH_MAX_BYTES,
+): UploadPart[][] {
+  const batches: UploadPart[][] = [];
+  let current: UploadPart[] = [];
+  let currentBytes = 0;
+
+  for (const part of parts) {
+    const wouldExceedFiles = current.length >= maxFiles;
+    const wouldExceedBytes = current.length > 0 && currentBytes + part.size > maxBytes;
+    if (wouldExceedFiles || wouldExceedBytes) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(part);
+    currentBytes += part.size;
+  }
+  if (current.length > 0) {
+    batches.push(current);
+  }
+  return batches;
 }
 
 async function uploadMultipart(

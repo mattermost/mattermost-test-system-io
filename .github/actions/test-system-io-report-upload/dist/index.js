@@ -24561,6 +24561,21 @@ async function getBearer(audience) {
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
+function parseRetryAfterMs(res) {
+  const raw = res.headers.get("retry-after");
+  if (!raw) {
+    return 0;
+  }
+  const asSeconds = Number(raw);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+    return asSeconds * 1e3;
+  }
+  const asDate = Date.parse(raw);
+  if (!Number.isNaN(asDate)) {
+    return Math.max(0, asDate - Date.now());
+  }
+  return 0;
+}
 async function fetchWithRetry(makeRequest, attempts = 4) {
   let lastErr;
   let lastRes;
@@ -24571,8 +24586,9 @@ async function fetchWithRetry(makeRequest, attempts = 4) {
         return res;
       }
       lastRes = res;
+      const backoffMs = 500 * 2 ** i;
+      const delayMs = Math.max(backoffMs, parseRetryAfterMs(res));
       await res.text().catch(() => void 0);
-      const delayMs = 500 * 2 ** i;
       info(`HTTP ${res.status} from upstream; retrying in ${delayMs}ms`);
       await sleep(delayMs);
     } catch (err) {

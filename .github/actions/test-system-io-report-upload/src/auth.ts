@@ -43,6 +43,26 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Parse Retry-After (delay-seconds or HTTP-date) into milliseconds.
+ * Returns 0 when absent or unparseable.
+ */
+function parseRetryAfterMs(res: Response): number {
+  const raw = res.headers.get("retry-after");
+  if (!raw) {
+    return 0;
+  }
+  const asSeconds = Number(raw);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+    return asSeconds * 1000;
+  }
+  const asDate = Date.parse(raw);
+  if (!Number.isNaN(asDate)) {
+    return Math.max(0, asDate - Date.now());
+  }
+  return 0;
+}
+
+/**
  * Retry transient network failures (idle keep-alive sockets closed by a
  * load balancer during a long upload, brief DNS hiccups, etc.) and
  * transient HTTP statuses (notably 504 gateway timeouts on large
@@ -64,9 +84,10 @@ async function fetchWithRetry(
         return res;
       }
       lastRes = res;
+      const backoffMs = 500 * 2 ** i;
+      const delayMs = Math.max(backoffMs, parseRetryAfterMs(res));
       // Drain so the connection can be reused on the next attempt.
       await res.text().catch(() => undefined);
-      const delayMs = 500 * 2 ** i;
       core.info(`HTTP ${res.status} from upstream; retrying in ${delayMs}ms`);
       await sleep(delayMs);
     } catch (err) {

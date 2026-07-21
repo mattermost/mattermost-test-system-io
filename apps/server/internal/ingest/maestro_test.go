@@ -524,3 +524,55 @@ Timeout waiting for delete button after 30 seconds
 		// This is just informational - our parser correctly extracts all cases
 	}
 }
+
+func TestExtractMaestro_FileAttributeSetsFilePath(t *testing.T) {
+	xml := `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="Test Suite" tests="2" failures="0" errors="0" skipped="0" time="10.0">
+    <testcase name="mute_unmute" classname="mute_unmute" file="detox/maestro/flows/calls/mute_unmute.yml" time="5.0"/>
+    <testcase name="leave_call" classname="leave_call" file="detox/maestro/flows/calls/leave_call.yml" time="5.0"/>
+  </testsuite>
+</testsuites>`
+
+	seq := 0
+	suites := extractMaestro([]byte(xml), &seq)
+
+	if len(suites) != 2 {
+		t.Fatalf("expected 2 suites (one per file), got %d", len(suites))
+	}
+
+	if suites[0].FilePath == nil || *suites[0].FilePath != "detox/maestro/flows/calls/mute_unmute.yml" {
+		t.Errorf("suite 0 FilePath = %v, want detox/maestro/flows/calls/mute_unmute.yml", suites[0].FilePath)
+	}
+	if suites[0].Title != "mute_unmute" {
+		t.Errorf("suite 0 Title = %q, want mute_unmute", suites[0].Title)
+	}
+	if len(suites[0].Cases) != 1 || suites[0].Cases[0].Title != "mute_unmute" {
+		t.Errorf("suite 0 cases = %+v", suites[0].Cases)
+	}
+
+	if suites[1].FilePath == nil || *suites[1].FilePath != "detox/maestro/flows/calls/leave_call.yml" {
+		t.Errorf("suite 1 FilePath = %v, want detox/maestro/flows/calls/leave_call.yml", suites[1].FilePath)
+	}
+	if suites[1].Title != "leave_call" {
+		t.Errorf("suite 1 Title = %q, want leave_call", suites[1].Title)
+	}
+}
+
+func TestExtractMaestro_NoFileAttributeKeepsNilFilePath(t *testing.T) {
+	xml := `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="Test Run" tests="1" failures="0" errors="0" time="0.5">
+  <testsuite name="Login Tests" tests="1" failures="0" errors="0" time="0.5">
+    <testcase classname="Login Tests" name="should login successfully" time="0.5"/>
+  </testsuite>
+</testsuites>`
+
+	seq := 0
+	suites := extractMaestro([]byte(xml), &seq)
+	if len(suites) != 1 {
+		t.Fatalf("expected 1 suite, got %d", len(suites))
+	}
+	if suites[0].FilePath != nil {
+		t.Errorf("expected nil FilePath for plain JUnit, got %q", *suites[0].FilePath)
+	}
+}

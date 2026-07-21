@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"encoding/xml"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ type junitTestSuite struct {
 type junitTestCase struct {
 	ClassName string        `xml:"classname,attr"`
 	Name      string        `xml:"name,attr"`
+	File      string        `xml:"file,attr"` // Maestro / mobile JUnit: flow path
 	Time      string        `xml:"time,attr"`
 	Failure   *junitFailure `xml:"failure"`
 	Error     *junitFailure `xml:"error"`
@@ -48,12 +50,22 @@ type junitSkipped struct {
 	Message string `xml:"message,attr"`
 }
 
+type junitPendingCase struct {
+	name string
+	file string
+	c    ExtractedCase
+}
+
 const junitRootSuiteTitle = "Root"
 
 // extractMaestro parses a Maestro (or any standard JUnit XML) report and
 // returns ExtractedSuite objects. JUnit XML is organized hierarchically by
 // testsuites; we flatten nested suites into the parent-child structure
 // expected by the consolidator.
+//
+// When testcases carry a `file` attribute (Mattermost mobile Maestro reports),
+// suites are split per file and FilePath is populated so the web UI can show
+// the flow path instead of "Missing file path".
 func extractMaestro(body []byte, seq *int) []ExtractedSuite {
 	// Try to unmarshal as root testsuites
 	var root junitTestSuites
@@ -99,8 +111,7 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 		suiteStart = inheritedStart
 	}
 
-	// Extract test cases from this suite
-	var cases []ExtractedCase
+	var pending []junitPendingCase
 	for _, tc := range suite.TestCases {
 		status := StatusPassed
 		var errMsg *string
@@ -139,7 +150,6 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 			}
 		}
 
-		// Parse test duration (in seconds)
 		var durationMs int64
 		if tc.Time != "" {
 			if d, err := strconv.ParseFloat(tc.Time, 64); err == nil {
@@ -147,7 +157,6 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 			}
 		}
 
-		// Build full test title (suite hierarchy + test name)
 		fullTitle := tc.Name
 		if len(fullPath) > 0 && suiteTitle != junitRootSuiteTitle {
 			fullTitle = suiteTitle + " > " + tc.Name
@@ -163,23 +172,91 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 			StartTime:    suiteStart,
 		}
 		*seq++
-		cases = append(cases, c)
-	}
-
-	// Create a suite entry for the testcases at this level
-	if len(cases) > 0 {
-		out = append(out, ExtractedSuite{
-			Title:     suiteTitle,
-			StartTime: suiteStart,
-			Cases:     cases,
+		pending = append(pending, junitPendingCase{
+			name: tc.Name,
+			file: strings.TrimSpace(tc.File),
+			c:    c,
 		})
 	}
 
-	// Recursively process nested suites (passing current path as ancestors)
+	if len(pending) > 0 {
+		out = append(out, groupJUnitCasesByFile(pending, suiteTitle, suiteStart)...)
+	}
+
 	for _, nested := range suite.TestSuites {
-		nested := nested // copy to avoid reference issues
+		nested := nested
 		out = append(out, extractTestSuite(&nested, seq, fullPath, suiteStart)...)
 	}
 
 	return out
+}
+
+// groupJUnitCasesByFile splits cases that declare a `file` attribute into one
+// ExtractedSuite per file (FilePath set). Cases without `file` stay under the
+// parent suite title with FilePath nil — preserving plain JUnit behavior.
+func groupJUnitCasesByFile(pending []junitPendingCase, suiteTitle string, suiteStart *time.Time) []ExtractedSuite {
+	type bucket struct {
+		file  string
+		title string
+		cases []ExtractedCase
+	}
+
+	var (
+		order  []string
+		byKey  = map[string]*bucket{}
+		noFile []ExtractedCase
+	)
+
+	for _, p := range pending {
+		if p.file == "" {
+			noFile = append(noFile, p.c)
+			continue
+		}
+		if _, ok := byKey[p.file]; !ok {
+			order = append(order, p.file)
+			byKey[p.file] = &bucket{
+				file:  p.file,
+				title: flowTitleFromFile(p.file, p.name),
+			}
+		}
+		byKey[p.file].cases = append(byKey[p.file].cases, p.c)
+	}
+
+	var out []ExtractedSuite
+	if len(noFile) > 0 {
+		out = append(out, ExtractedSuite{
+			Title:     suiteTitle,
+			StartTime: suiteStart,
+			Cases:     noFile,
+		})
+	}
+	for _, key := range order {
+		b := byKey[key]
+		fp := b.file
+		title := b.title
+		if len(b.cases) > 1 {
+			title = suiteTitle
+		}
+		out = append(out, ExtractedSuite{
+			Title:     title,
+			FilePath:  &fp,
+			StartTime: suiteStart,
+			Cases:     b.cases,
+		})
+	}
+	return out
+}
+
+// flowTitleFromFile prefers the flow basename (sans extension); falls back to
+// the testcase name when the path has no useful base.
+func flowTitleFromFile(filePath, testName string) string {
+	base := path.Base(filePath)
+	base = strings.TrimSuffix(base, path.Ext(base))
+	if base != "" && base != "." && base != "/" {
+		return base
+	}
+	if testName != "" {
+		return testName
+	}
+	return filePath
 }

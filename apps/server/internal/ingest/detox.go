@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -114,16 +115,51 @@ func detoxStatus(s string) string {
 	}
 }
 
-// relativeDetoxPath strips the host-specific prefix up to (and including)
-// "/e2e/" so the stored file path is project-relative. Falls back to the
-// absolute path when the marker is absent.
+// relativeDetoxPath normalizes a Detox/Jest suite path to a stable
+// repo-relative form. Layout-agnostic: does not assume detox/e2e vs e2e/detox.
+//
+//   - Already-relative paths are returned unchanged.
+//   - Absolute CI paths (.../work/<repo>/<repo>/<rel>) have the workspace
+//     prefix stripped when recognizable; otherwise the input is returned.
 func relativeDetoxPath(p string) string {
 	if p == "" {
 		return ""
 	}
-	const marker = "/e2e/"
-	if i := strings.LastIndex(p, marker); i >= 0 {
-		return p[i+len(marker):]
+	// filepath.ToSlash only rewrites the host OS separator; force '\' → '/' so
+	// Windows-style paths normalize identically on Linux ingest hosts.
+	normalized := filepath.ToSlash(p)
+	normalized = strings.ReplaceAll(normalized, `\`, "/")
+	normalized = strings.TrimPrefix(normalized, "./")
+
+	// Repo-relative already — keep identity stable across folder moves.
+	if !isNormalizedAbs(p, normalized) {
+		return normalized
 	}
-	return p
+
+	// GitHub Actions / common nested workspaces: .../work/<repo>/<repo>/<relative>
+	if i := strings.Index(normalized, "/work/"); i >= 0 {
+		rest := normalized[i+len("/work/"):]
+		// rest = "<repo>/<repo>/<relative...>"
+		parts := strings.SplitN(rest, "/", 3)
+		if len(parts) == 3 && parts[0] == parts[1] && parts[2] != "" {
+			return parts[2]
+		}
+	}
+
+	return normalized
+}
+
+// isNormalizedAbs reports whether the path is absolute on any common platform.
+// filepath.IsAbs is host-OS-specific, so Windows drive-letter and UNC forms
+// (already slash-normalized) must be detected when ingesting on Linux.
+func isNormalizedAbs(original, normalized string) bool {
+	if filepath.IsAbs(original) || strings.HasPrefix(normalized, "/") {
+		return true
+	}
+	// Drive letter: C:/...
+	if len(normalized) >= 3 && normalized[1] == ':' && normalized[2] == '/' {
+		c := normalized[0]
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	}
+	return false
 }

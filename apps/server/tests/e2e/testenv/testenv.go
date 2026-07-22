@@ -50,11 +50,32 @@ type Env struct {
 	Orchestrator *orchestration.Store
 }
 
+// Option configures Start. Most tests don't need any.
+type Option func(*startConfig)
+
+type startConfig struct {
+	store storage.ObjectStore
+}
+
+// WithStore swaps in a caller-supplied ObjectStore instead of the default
+// FakeStore — e.g. a store that wraps FakeStore with an artificial delay, to
+// make a background pipeline's duration observable in a test. When set,
+// Env.Store is left nil since it's typed *FakeStore; the test already holds
+// its own reference to whatever it passed in.
+func WithStore(s storage.ObjectStore) Option {
+	return func(c *startConfig) { c.store = s }
+}
+
 // Start boots Postgres + migrations + the real HTTP handler. When the OIDC
 // argument is nil, no OIDC verifier is wired — tests that don't need it avoid
 // the ~1 s mock-provider bootstrap.
-func Start(t *testing.T) *Env {
+func Start(t *testing.T, opts ...Option) *Env {
 	t.Helper()
+
+	cfg := &startConfig{}
+	for _, o := range opts {
+		o(cfg)
+	}
 
 	ctx := context.Background()
 	pgC, err := tcpostgres.Run(ctx,
@@ -100,7 +121,12 @@ func Start(t *testing.T) *Env {
 		t.Fatalf("oidc verifier: %v", err)
 	}
 
-	store := NewFakeStore()
+	var fakeStore *FakeStore
+	var store storage.ObjectStore = cfg.store
+	if store == nil {
+		fakeStore = NewFakeStore()
+		store = fakeStore
+	}
 
 	hub := events.NewHub()
 	var logOut = io.Discard
@@ -164,7 +190,7 @@ func Start(t *testing.T) *Env {
 		Pool:         pool,
 		ServerURL:    srv.URL,
 		Mock:         mockProv,
-		Store:        store,
+		Store:        fakeStore,
 		Orchestrator: orchStore,
 	}
 }

@@ -295,30 +295,42 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 		`UPDATE reports SET json_upload_status='completed', updated_at=now() WHERE id=$1`, reportID)
 	bumpGroupLastUpload(r.Context(), h.Pool, groupID)
 
-	// Extract the uploaded JSON into suites + test_cases and update the
-	// report's aggregate counts. Fire suites_available if anything parsed;
-	// ReportEntryUpdated("processing") even on zero-suite JSON so the UI's
-	// status icon still ticks forward.
-	suiteCount, extractErr := h.extractReport(r.Context(), groupID, reportID)
+	// Respond once files are durably stored; extraction re-fetches and
+	// parses every file sequentially and can take arbitrarily long as more
+	// accumulate, so it must not hold the response open.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"files_uploaded": uploaded,
+		"files_total":    total,
+	})
+
+	go h.finalizeJSONUpload(groupID, reportID)
+}
+
+// finalizeJSONUpload extracts suites + test_cases from the JSON just
+// uploaded, auto-finalizes the report/group, and refreshes the group
+// summary. Runs after UploadJSON has responded, so it uses its own bounded
+// context rather than r.Context(), which is canceled once the handler
+// returns.
+func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Fire suites_available if anything parsed; ReportEntryUpdated("processing")
+	// even on zero-suite JSON so the UI's status icon still ticks forward.
+	suiteCount, extractErr := h.extractReport(ctx, groupID, reportID)
 	if extractErr != nil && h.Logger != nil {
 		h.Logger.Warn("json extraction failed",
 			slog.String("report_id", reportID.String()),
 			slog.String("error", extractErr.Error()))
 	}
-	autoCompleted := h.tryAutoFinalize(r.Context(), groupID, reportID, "json")
+	autoCompleted := h.tryAutoFinalize(ctx, groupID, reportID, "json")
 	if !autoCompleted {
 		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 	}
 	if suiteCount > 0 {
 		h.Publisher.SuitesAvailable(reportID, suiteCount)
 	}
-	h.refreshGroupSummaryBestEffort(r.Context(), groupID)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"files_uploaded": uploaded,
-		"files_total":    total,
-		"suites_parsed":  suiteCount,
-	})
+	h.refreshGroupSummaryBestEffort(ctx, groupID)
 }
 
 // UploadScreenshots serves POST /api/v1/reports/upload/{rid}/{uid}/screenshots.

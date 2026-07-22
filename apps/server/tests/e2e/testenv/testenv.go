@@ -122,7 +122,7 @@ func Start(t *testing.T, opts ...Option) *Env {
 	}
 
 	var fakeStore *FakeStore
-	var store storage.ObjectStore = cfg.store
+	store := cfg.store
 	if store == nil {
 		fakeStore = NewFakeStore()
 		store = fakeStore

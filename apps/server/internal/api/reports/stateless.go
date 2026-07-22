@@ -303,6 +303,7 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 		"files_total":    total,
 	})
 
+	//nolint:gosec // G118: detached by design — r.Context() is canceled once this handler returns.
 	go h.finalizeJSONUpload(groupID, reportID)
 }
 
@@ -312,6 +313,16 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 // context rather than r.Context(), which is canceled once the handler
 // returns.
 func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
+	// No caller frame above this goroutine to recover a panic; an unrecovered
+	// one here would crash the whole process.
+	defer func() {
+		if p := recover(); p != nil && h.Logger != nil {
+			h.Logger.Error("panic in json upload finalization",
+				slog.String("report_id", reportID.String()),
+				slog.Any("panic", p))
+		}
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 

@@ -53,6 +53,27 @@ func TestDeriveTestNameFromPath(t *testing.T) {
 	}
 }
 
+func TestFullTitleMatchesCandidate(t *testing.T) {
+	cases := []struct {
+		full string
+		cand string
+		want bool
+	}{
+		{"Suite > Test", "Suite > Test", true},
+		{"Suite > Test [chromium]", "Suite > Test", true},
+		{"detox/maestro/flows/account/attach_logs.yml > attach_logs", "attach_logs", true},
+		{"attach_logs", "attach_logs", true},
+		{"detox/maestro/flows/account/attach_logs.yml > attach_logs", "mute_unmute", false},
+		{"Suite > Test", "", false},
+	}
+	for _, tc := range cases {
+		got := fullTitleMatchesCandidate(tc.full, tc.cand)
+		if got != tc.want {
+			t.Fatalf("fullTitleMatchesCandidate(%q, %q) = %v, want %v", tc.full, tc.cand, got, tc.want)
+		}
+	}
+}
+
 func TestCandidateTestNames(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -83,6 +104,11 @@ func TestCandidateTestNames(t *testing.T) {
 			name:     "detox fullName from DeriveTestNameFromPath",
 			input:    "Search - Search Messages MM-T5294_3 - should be able to search messages in a specific channel",
 			contains: []string{"Search - Search Messages MM-T5294_3 - should be able to search messages in a specific channel"},
+		},
+		{
+			name:     "maestro per-flow screenshot dir",
+			input:    "attach_logs/report-problem-dismissed",
+			contains: []string{"attach_logs", "report-problem-dismissed", "attach_logs > report-problem-dismissed"},
 		},
 	}
 

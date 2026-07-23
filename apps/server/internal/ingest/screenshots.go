@@ -113,7 +113,7 @@ func LinkScreenshots(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 		matched := false
 		for _, c := range cases {
 			for _, cand := range candidates {
-				if c.fullTitle == cand || strings.HasPrefix(c.fullTitle, cand+" [") {
+				if fullTitleMatchesCandidate(c.fullTitle, cand) {
 					if _, err := pool.Exec(ctx,
 						`UPDATE report_screenshots SET case_id = $1 WHERE id = $2 AND case_id IS NULL`,
 						c.id, s.id); err != nil {
@@ -132,6 +132,23 @@ func LinkScreenshots(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 	return linked, nil
 }
 
+// fullTitleMatchesCandidate reports whether a test_cases.full_title refers to
+// the same logical case as a screenshot-derived candidate name.
+func fullTitleMatchesCandidate(fullTitle, cand string) bool {
+	if cand == "" {
+		return false
+	}
+	if fullTitle == cand || strings.HasPrefix(fullTitle, cand+" [") {
+		return true
+	}
+	// Maestro/JUnit: "<flow-path.yml> > <flowName>" — screenshots staged under
+	// "<flowName>/<shot>.png" derive cand=<flowName>.
+	if strings.HasSuffix(fullTitle, " > "+cand) {
+		return true
+	}
+	return false
+}
+
 // candidateTestNames produces the alternate forms the screenshot's derived
 // test_name may take in test_cases.full_title. Covers:
 //   - exact match (Playwright "Suite > Test")
@@ -141,6 +158,8 @@ func LinkScreenshots(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 //     "<spec-file>/<Suite> -- <Test> (failed).png"; Mochawesome's fullTitle
 //     concatenates describe/it titles with a single space, so the two only
 //     align after both transforms.
+//   - parent folder basename (Detox <fullName>/testFnFailure.png after
+//     DeriveTestNameFromPath, and Maestro <flowName>/<shot>.png layouts).
 func candidateTestNames(testName string) []string {
 	out := []string{testName, strings.ReplaceAll(testName, "/", " > ")}
 	if i := strings.LastIndex(testName, "/"); i >= 0 {
@@ -149,6 +168,14 @@ func candidateTestNames(testName string) []string {
 			out = append(out, tail)
 			if strings.Contains(tail, " -- ") {
 				out = append(out, strings.ReplaceAll(tail, " -- ", " "))
+			}
+		}
+		parent := testName[:i]
+		if parent != "" && parent != "screenshots" {
+			if j := strings.LastIndex(parent, "/"); j >= 0 {
+				out = append(out, parent[j+1:])
+			} else {
+				out = append(out, parent)
 			}
 		}
 	} else if strings.Contains(testName, " -- ") {

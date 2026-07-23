@@ -570,9 +570,12 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The URL carries the repository slug (e.g. "mattermost"); the DB stores
-	// the full "owner/repo". Match on suffix so "mattermost" hits
-	// "mattermost/mattermost". The commit comparator supports prefix matching
-	// so short SHAs in the URL still find the record.
+	// the full "owner/repo". Match on the trailing segment so "mattermost"
+	// hits "mattermost/mattermost" — via split_part rather than a leading-
+	// wildcard LIKE, so report_groups_repo_suffix_idx can serve it as a
+	// plain indexed equality lookup instead of a table scan. The commit
+	// comparator supports prefix matching so short SHAs in the URL still
+	// find the record.
 	//
 	// The LATERAL subquery attaches each test_case's linked screenshots as a
 	// JSON array so the web can render per-attempt galleries without a
@@ -597,7 +600,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			FROM report_screenshots rs
 			WHERE rs.case_id = tc.id
 		) ss ON TRUE
-		WHERE (g.repository = $1 OR g.repository LIKE '%/' || $1)
+		WHERE (g.repository = $1 OR split_part(g.repository, '/', 2) = $1)
 		  AND (g.branch = $2 OR ($8::int IS NOT NULL AND g.gh_pr_number = $8::int))
 		  AND g.commit_sha LIKE $3 || '%'
 		  AND (g.run_group = $4 OR g.name = $4)
@@ -610,7 +613,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		      AND (g.gh_run_id, g.gh_run_attempt) = (
 		        SELECT g_pick.gh_run_id, g_pick.gh_run_attempt
 		        FROM report_groups g_pick
-		        WHERE (g_pick.repository = $1 OR g_pick.repository LIKE '%/' || $1)
+		        WHERE (g_pick.repository = $1 OR split_part(g_pick.repository, '/', 2) = $1)
 		          AND (g_pick.branch = $2 OR ($8::int IS NOT NULL AND g_pick.gh_pr_number = $8::int))
 		          AND g_pick.commit_sha LIKE $3 || '%'
 		          AND (g_pick.run_group = $4 OR g_pick.name = $4)

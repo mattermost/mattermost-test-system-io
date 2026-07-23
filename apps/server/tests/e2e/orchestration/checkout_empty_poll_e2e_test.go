@@ -75,6 +75,43 @@ func TestCheckoutEmptyPollDoesNotWriteLeases(t *testing.T) {
 	}
 }
 
+// TestCheckoutEmptyPollStillDetectsActiveLease is a regression test for the
+// empty fast path added alongside TestCheckoutEmptyPollDoesNotWriteLeases:
+// that fast path skips insertLeaseTx, which is where WORKER_HAS_ACTIVE_LEASE
+// was previously always detected via a unique-index conflict — regardless
+// of whether any units were pending. A worker that leases the run's last
+// unit (pending drops to 0) and calls checkout again without completing
+// must still get 409 WORKER_HAS_ACTIVE_LEASE, not a silent queue_empty.
+func TestCheckoutEmptyPollStillDetectsActiveLease(t *testing.T) {
+	env, tok := startEnv(t)
+
+	beginResp := postJSON(t, env, tok, "/api/v1/orchestration/begin",
+		beginRunBody([]string{"tests/only.spec.ts"}, nil))
+	expectStatus(t, beginResp, http.StatusCreated)
+
+	// Worker A takes the only unit — pending drops to 0, run stays
+	// in_progress, worker A's lease stays unreleased (no /complete call).
+	first := postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+		checkoutBody("playwright-shard-A", "job-active-empty-A", 1))
+	firstBody := expectStatus(t, first, http.StatusOK)
+	if len(firstBody["units"].([]any)) != 1 {
+		t.Fatalf("first checkout: expected 1 unit")
+	}
+
+	// Same worker checks out again while still holding that lease, on a
+	// queue that is now empty — must hit the active-lease guard, not the
+	// empty fast path.
+	second := postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+		checkoutBody("playwright-shard-A", "job-active-empty-A", 1))
+	if second.StatusCode != http.StatusConflict {
+		t.Fatalf("second checkout on empty queue while leased: status = %d, want 409; body=%s",
+			second.StatusCode, readBodyString(second))
+	}
+	if code := errorCode(t, second); code != "WORKER_HAS_ACTIVE_LEASE" {
+		t.Fatalf("error code = %q, want WORKER_HAS_ACTIVE_LEASE", code)
+	}
+}
+
 func leasesWriteCounters(t *testing.T, env *testenv.Env) (inserts, deletes int64) {
 	t.Helper()
 	err := env.Pool.QueryRow(context.Background(), `

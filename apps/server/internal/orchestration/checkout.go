@@ -66,8 +66,21 @@ func (s *Store) AtomicCheckout(
 	// read before the lazy expiration above, so add back whatever that just
 	// reclaimed — otherwise a unit reclaimed this call would be invisible to
 	// this check. Skips the insert-then-maybe-delete leases churn below
-	// entirely; no extra query needed since both counts are already in hand.
+	// entirely; no extra query needed for the pending count itself.
+	//
+	// Still must preserve the WORKER_HAS_ACTIVE_LEASE contract: previously
+	// that conflict was detected unconditionally via insertLeaseTx's unique
+	// constraint, regardless of whether any units were pending. A worker
+	// that leases the last unit(s) and then calls checkout again without
+	// completing must still get that error here, not a silent queue_empty.
 	if run.Counts.Pending+reclaimed == 0 {
+		hasActive, err := s.workerHasActiveLease(ctx, run.ID, worker.GHJobID)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		if hasActive {
+			return nil, nil, false, ErrWorkerHasActiveLease
+		}
 		logEvent(ctx, s.Logger, "orchestration.checkout.empty", "orchestration checkout empty", run,
 			slog.String("gh_job_id", worker.GHJobID),
 			slog.String("gh_job_name", worker.GHJobName),
@@ -376,6 +389,25 @@ func dispatchRetestUnitsTx(
 		return nil, err
 	}
 	return out, nil
+}
+
+// workerHasActiveLease reports whether the given worker already holds an
+// unreleased lease on this run, via the same leases_active_worker_uq index
+// insertLeaseTx's conflict check relies on. Used by AtomicCheckout's empty
+// fast path, which bypasses that INSERT and so needs its own check to
+// preserve the WORKER_HAS_ACTIVE_LEASE contract.
+func (s *Store) workerHasActiveLease(ctx context.Context, runID uuid.UUID, ghJobID string) (bool, error) {
+	var exists bool
+	err := s.Pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM leases
+			 WHERE run_id = $1 AND gh_job_id = $2 AND released_at IS NULL
+		)
+	`, runID, ghJobID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check active lease: %w", err)
+	}
+	return exists, nil
 }
 
 // insertLeaseTx inserts a leases row for the given run + worker with deadline

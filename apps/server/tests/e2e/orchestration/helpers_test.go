@@ -40,10 +40,12 @@ const (
 
 // startEnv boots the test harness and installs an OIDC policy that grants the
 // uploader role to anything from defaultRepoOwner. It returns the env plus a
-// minted OIDC token usable as `Authorization: Bearer <tok>`.
-func startEnv(t *testing.T) (*testenv.Env, string) {
+// minted OIDC token usable as `Authorization: Bearer <tok>`. Accepts optional
+// testenv.Option values (e.g. testenv.WithReaperDisabled()) for tests that
+// need to alter the harness beyond the defaults.
+func startEnv(t *testing.T, opts ...testenv.Option) (*testenv.Env, string) {
 	t.Helper()
-	env := testenv.Start(t)
+	env := testenv.Start(t, opts...)
 	env.InsertPolicy(t, "allow-orch-e2e", 1, string(policy.RoleUploader), map[string]string{
 		"repository_owner": defaultRepoOwner,
 	})

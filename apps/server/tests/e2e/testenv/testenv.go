@@ -54,7 +54,8 @@ type Env struct {
 type Option func(*startConfig)
 
 type startConfig struct {
-	store storage.ObjectStore
+	store          storage.ObjectStore
+	reaperDisabled bool
 }
 
 // WithStore swaps in a caller-supplied ObjectStore instead of the default
@@ -64,6 +65,16 @@ type startConfig struct {
 // its own reference to whatever it passed in.
 func WithStore(s storage.ObjectStore) Option {
 	return func(c *startConfig) { c.store = s }
+}
+
+// WithReaperDisabled skips starting the background orchestration reaper.
+// The reaper ticks every 500ms in tests and independently reclaims overdue
+// leases — that races against (and can preempt) the inline lazy-expiration
+// path inside AtomicCheckout itself. Tests asserting on that inline path's
+// own behavior (as opposed to eventual reclaim via the reaper) need the
+// background sweep out of the way to avoid a nondeterministic race.
+func WithReaperDisabled() Option {
+	return func(c *startConfig) { c.reaperDisabled = true }
 }
 
 // Start boots Postgres + migrations + the real HTTP handler. When the OIDC
@@ -140,20 +151,24 @@ func Start(t *testing.T, opts ...Option) *Env {
 
 	// Start a fast-ticking reaper so run-timeout / lease-timeout E2E tests do
 	// not have to wait for the production 5 s default. Stops in t.Cleanup.
-	reaperCtx, reaperCancel := context.WithCancel(context.Background())
-	reaper := &orchestration.Reaper{
-		Store:     orchStore,
-		Publisher: orchPublisher,
-		Logger:    logger,
-		Interval:  500 * time.Millisecond,
+	// Skippable via WithReaperDisabled for tests asserting on the inline
+	// lazy-expiration path in AtomicCheckout specifically.
+	if !cfg.reaperDisabled {
+		reaperCtx, reaperCancel := context.WithCancel(context.Background())
+		reaper := &orchestration.Reaper{
+			Store:     orchStore,
+			Publisher: orchPublisher,
+			Logger:    logger,
+			Interval:  500 * time.Millisecond,
+		}
+		if err := reaper.Start(reaperCtx); err != nil {
+			t.Fatalf("start reaper: %v", err)
+		}
+		t.Cleanup(func() {
+			reaperCancel()
+			reaper.Stop()
+		})
 	}
-	if err := reaper.Start(reaperCtx); err != nil {
-		t.Fatalf("start reaper: %v", err)
-	}
-	t.Cleanup(func() {
-		reaperCancel()
-		reaper.Stop()
-	})
 
 	handler := server.Build(server.Deps{
 		Logger:                 logger,

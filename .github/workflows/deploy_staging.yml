@@ -15,10 +15,8 @@ on:
         default: ""
 
 permissions:
-  id-token: write    # GitHub OIDC for AWS
-  contents: write    # Create Git tags and GitHub prereleases (main/.beta only)
-  actions: read      # Check for concurrent workflow runs
-  pull-requests: read # Resolve PR head SHA when pr_number is set
+  contents: read     # shared default for checkout / metadata
+  actions: read      # check-concurrent (and callers that inspect runs)
 
 concurrency:
   group: deploy-staging
@@ -37,6 +35,9 @@ jobs:
   # ---------------------------------------------------------------------------
   check-concurrent:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Check for in-progress runs
         env:
@@ -59,6 +60,9 @@ jobs:
   resolve:
     needs: check-concurrent
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       commit_sha: ${{ steps.meta.outputs.commit_sha }}
       image_tag: ${{ steps.meta.outputs.image_tag }}
@@ -141,6 +145,8 @@ jobs:
   build-and-tag:
     needs: [check-concurrent, resolve, ci]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create for main/.beta prereleases
     # Gate the Docker Hub push behind the `staging` environment so secret
     # access (DOCKERHUB_DEV_*) is governed by the same review / branch-
     # protection rules configured on that environment, matching the gate
@@ -154,6 +160,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.resolve.outputs.commit_sha }}
+          persist-credentials: false
 
       - name: Set build metadata
         id: meta
@@ -222,6 +229,9 @@ jobs:
   deploy:
     needs: build-and-tag
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # AWS OIDC
+      contents: read
     environment: staging
     env:
       IMAGE_TAG: ${{ needs.build-and-tag.outputs.image_tag }}
@@ -232,6 +242,7 @@ jobs:
         with:
           ref: ${{ needs.build-and-tag.outputs.commit_sha }}
           fetch-depth: 0   # full history needed for the infra-changed diff below
+          persist-credentials: false
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0

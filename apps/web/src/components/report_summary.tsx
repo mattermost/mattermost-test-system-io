@@ -271,10 +271,10 @@ export function ReportSummary(props: ReportSummaryProps) {
 
   const passRate = calculatePassRate({ passed, failed, flaky });
   const passRateColorClass = getPassRateColorClass(passRate);
-  const failedLabel = uniqueTitleCounts ? 'unique failed' : 'failed';
-  const totalLabel = uniqueTitleCounts ? 'unique tests' : 'total';
+  const failedLabel = uniqueTitleCounts ? `unique test${failed === 1 ? '' : 's'} failed` : 'failed';
+  const totalLabel = uniqueTitleCounts ? `unique test${total === 1 ? '' : 's'}` : 'total';
   const statsTitle = uniqueTitleCounts
-    ? `${passed} passed${failed > 0 ? `, ${failed} unique tests failed` : ''}${flaky > 0 ? `, ${flaky} flaky` : ''}${skipped > 0 ? `, ${skipped} skipped` : ''} — ${total} unique tests (cross-shard / cross-platform titles rolled up)`
+    ? `${passed} passed${failed > 0 ? `, ${failed} unique test${failed === 1 ? '' : 's'} failed` : ''}${flaky > 0 ? `, ${flaky} flaky` : ''}${skipped > 0 ? `, ${skipped} skipped` : ''} — ${total} unique test${total === 1 ? '' : 's'} (cross-shard / cross-platform titles rolled up)`
     : `${passed} passed${failed > 0 ? `, ${failed} failed` : ''}${flaky > 0 ? `, ${flaky} flaky` : ''}${skipped > 0 ? `, ${skipped} skipped` : ''} — ${total} total`;
 
   const hasMetadata =

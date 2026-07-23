@@ -337,8 +337,15 @@ export function TestSuitesView({
 
   // Multi-shard / multi-platform groups keep per-report suite rows, so the
   // test failed chip can exceed the header's unique-title count. Label that
-  // sum so it is not read as the same metric.
-  const multiShard = !!reports && reports.length > 1;
+  // sum so it is not read as the same metric. Derive from suites actually
+  // shown (respects the report filter), not the full reports[] list.
+  const multiShard = useMemo(() => {
+    const ids = new Set<string>();
+    for (const suite of deduplicatedSuites) {
+      if (suite.report_id) ids.add(suite.report_id);
+    }
+    return ids.size > 1;
+  }, [deduplicatedSuites]);
 
   // Suite-file-level pass/fail counts for the title-bar chips. A suite is
   // considered passed when none of its tests failed (flaky still counts

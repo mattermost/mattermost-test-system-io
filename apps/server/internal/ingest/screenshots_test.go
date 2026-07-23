@@ -101,8 +101,10 @@ func TestCandidateTestNames(t *testing.T) {
 			contains: []string{"Suite > Test"},
 		},
 		{
-			name:     "detox fullName from DeriveTestNameFromPath",
-			input:    "Search - Search Messages MM-T5294_3 - should be able to search messages in a specific channel",
+			name: "detox fullName from DeriveTestNameFromPath",
+			input: DeriveTestNameFromPath(
+				"ios.sim.debug.2026-07-22 23-45-52Z/Search - Search Messages MM-T5294_3 - should be able to search messages in a specific channel/testFnFailure.png",
+			),
 			contains: []string{"Search - Search Messages MM-T5294_3 - should be able to search messages in a specific channel"},
 		},
 		{

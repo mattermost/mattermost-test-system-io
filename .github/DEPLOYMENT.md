@@ -29,56 +29,76 @@ Developer opens PR → CI runs on PR (auto)
 
 | Environment | URL | Trigger |
 |-------------|-----|---------|
-| Staging | `https://staging-test-io.test.mattermost.com` | Manual (`workflow_dispatch`, no input) |
+| Staging | `https://staging-test-io.test.mattermost.com` | Manual (`workflow_dispatch`; optional `pr_number`) |
 | Production | `https://test-io.test.mattermost.com` | Manual (`workflow_dispatch`, input: beta tag) |
 
 ## Deploy to Staging
 
 ### When to deploy
 
-After a PR is merged to `main` and CI passes on the merge commit.
+- **From `main`:** after a PR is merged and you want a promotable beta on staging.
+- **From a PR:** to try an unmerged branch on staging without a GitHub prerelease (not promotable to production).
 
 ### How to deploy
 
 1. Go to **Actions** → **Deploy Staging**
 2. Click **Run workflow**
-3. No input needed — deploys the current `main` branch
+3. Inputs:
+   - Leave **pr_number** empty → deploy current `main` as `{version}-{sha}.beta` and publish a GitHub **prerelease**
+   - Set **pr_number** (e.g. `83`) and set **confirm_pr_deploy** to the same number → deploy that open same-repo PR's head as `{version}-{sha}.pr-83` and **do not** create a GitHub release/prerelease
+   - Fork PRs are rejected (staging secrets must not build untrusted heads)
 
 ### What happens
 
-```
+```text
 1. check-concurrent    → Rejects if another staging deploy is running
-2. build-and-tag       → Reads version from apps/server/VERSION
-                        → Computes beta tag: {version}-{short_sha}.beta
-                        → Builds Docker image and pushes to Docker Hub
-                        → Creates GitHub prerelease with the beta tag
-3. deploy              → Restarts PostgreSQL container (fresh database)
+2. resolve             → main → .beta + prerelease; PR → .pr-<n>, no release
+3. ci                  → Runs checks on the resolved commit
+4. build-and-tag       → Builds/pushes Docker image with the resolved tag
+                        → Creates GitHub prerelease only for .beta (main)
+5. deploy              → Restarts PostgreSQL container (fresh database)
                         → If a previous release exists:
                             → Deploys latest release version first
                             → Waits for stable
-                            → Then deploys beta version (exercises migrations)
+                            → Then deploys the new image (exercises migrations)
                         → If no previous release:
-                            → Deploys beta directly
+                            → Deploys the new image directly
                         → Waits for ECS service to stabilize
                         → Health check: curl $APP_URL/ready
 ```
 
 ### Version tag format
 
-```
+**Main (promotable):**
+
+```text
 {version}-{short_sha}.beta
 Example: 0.1.0-abcdefg.beta
+```
+
+**PR (staging-only, not promotable):**
+
+```text
+{version}-{short_sha}.pr-{number}
+Example: 0.1.0-abcdefg.pr-83
 ```
 
 - Version is read from `apps/server/VERSION`
 - Short SHA is the first 7 characters of the commit hash
 - No `v` prefix
+- Production deploy still requires a `.beta` GitHub prerelease, so `.pr-*` images cannot be promoted by mistake
 
 ### What is created
 
+**Main:**
+
 - Docker Hub image: `mattermostdevelopment/mattermost-test-system-io:0.1.0-abcdefg.beta`
-- GitHub prerelease: `0.1.0-abcdefg.beta`
-- Git tag: `0.1.0-abcdefg.beta`
+- GitHub prerelease + git tag: `0.1.0-abcdefg.beta`
+
+**PR:**
+
+- Docker Hub image: `mattermostdevelopment/mattermost-test-system-io:0.1.0-abcdefg.pr-83`
+- No GitHub release/prerelease
 
 ## Promote to Production
 

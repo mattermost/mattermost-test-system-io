@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: ""
+      confirm_pr_deploy:
+        description: "Required for PR deploys: re-type the same PR number to confirm (same-repo PRs only; forks rejected)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   id-token: write    # GitHub OIDC for AWS
@@ -65,12 +70,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          CONFIRM_PR_DEPLOY: ${{ inputs.confirm_pr_deploy }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           PR_NUMBER="$(echo "${PR_NUMBER:-}" | tr -d '[:space:]')"
+          CONFIRM_PR_DEPLOY="$(echo "${CONFIRM_PR_DEPLOY:-}" | tr -d '[:space:]')"
 
           if [ -z "$PR_NUMBER" ]; then
-            COMMIT_SHA=$(gh api "repos/${{ github.repository }}/commits/main" --jq '.sha')
+            COMMIT_SHA=$(gh api "repos/${REPO}/commits/main" --jq '.sha')
             PUBLISH_PRERELEASE=true
             SUFFIX="beta"
             echo "Deploying main @ ${COMMIT_SHA}"
@@ -79,10 +87,20 @@ jobs:
               echo "::error::pr_number must be a positive integer (got: ${PR_NUMBER})"
               exit 1
             fi
-            PR_JSON=$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}")
+            if [ "$CONFIRM_PR_DEPLOY" != "$PR_NUMBER" ]; then
+              echo "::error::PR deploy requires confirm_pr_deploy to match pr_number (got confirm_pr_deploy='${CONFIRM_PR_DEPLOY}')."
+              exit 1
+            fi
+            PR_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")
             STATE=$(echo "$PR_JSON" | jq -r '.state')
             if [ "$STATE" != "open" ]; then
               echo "::error::PR #${PR_NUMBER} is not open (state=${STATE})"
+              exit 1
+            fi
+            HEAD_REPO=$(echo "$PR_JSON" | jq -r '.head.repo.full_name // empty')
+            IS_FORK=$(echo "$PR_JSON" | jq -r '(.head.repo.fork // false) or (.head.repo.full_name != .base.repo.full_name)')
+            if [ "$IS_FORK" = "true" ] || [ "$HEAD_REPO" != "$REPO" ]; then
+              echo "::error::Refusing to deploy fork PR #${PR_NUMBER} (head=${HEAD_REPO:-unknown}). Only same-repository PRs are allowed."
               exit 1
             fi
             COMMIT_SHA=$(echo "$PR_JSON" | jq -r '.head.sha')
@@ -93,7 +111,7 @@ jobs:
           fi
 
           # VERSION file lives on the commit we will build.
-          VERSION=$(gh api "repos/${{ github.repository }}/contents/apps/server/VERSION?ref=${COMMIT_SHA}" \
+          VERSION=$(gh api "repos/${REPO}/contents/apps/server/VERSION?ref=${COMMIT_SHA}" \
             --jq '.content' | base64 -d | tr -d '[:space:]')
           SHORT_SHA="${COMMIT_SHA::7}"
           IMAGE_TAG="${VERSION}-${SHORT_SHA}.${SUFFIX}"

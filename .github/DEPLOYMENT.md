@@ -45,11 +45,12 @@ Developer opens PR → CI runs on PR (auto)
 2. Click **Run workflow**
 3. Inputs:
    - Leave **pr_number** empty → deploy current `main` as `{version}-{sha}.beta` and publish a GitHub **prerelease**
-   - Set **pr_number** (e.g. `83`) → deploy that open PR's head as `{version}-{sha}.pr-83` and **do not** create a GitHub release/prerelease
+   - Set **pr_number** (e.g. `83`) and set **confirm_pr_deploy** to the same number → deploy that open same-repo PR's head as `{version}-{sha}.pr-83` and **do not** create a GitHub release/prerelease
+   - Fork PRs are rejected (staging secrets must not build untrusted heads)
 
 ### What happens
 
-```
+```text
 1. check-concurrent    → Rejects if another staging deploy is running
 2. resolve             → main → .beta + prerelease; PR → .pr-<n>, no release
 3. ci                  → Runs checks on the resolved commit
@@ -70,14 +71,14 @@ Developer opens PR → CI runs on PR (auto)
 
 **Main (promotable):**
 
-```
+```text
 {version}-{short_sha}.beta
 Example: 0.1.0-abcdefg.beta
 ```
 
 **PR (staging-only, not promotable):**
 
-```
+```text
 {version}-{short_sha}.pr-{number}
 Example: 0.1.0-abcdefg.pr-83
 ```

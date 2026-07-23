@@ -19,7 +19,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow_ref }}-${{ github.ref }}-${{ inputs.ref || github.sha }}
+  # workflow_call: pin to the explicit ref SHA so staging PR deploys isolate.
+  # push/pull_request: use github.ref so superseded runs on the same branch/PR
+  # share a group and cancel-in-progress can drop stale work.
+  group: ci-${{ github.workflow_ref }}-${{ inputs.ref != '' && inputs.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:

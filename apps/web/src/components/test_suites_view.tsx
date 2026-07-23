@@ -1235,7 +1235,10 @@ const SpecRow = memo(function SpecRow({
     const crossShardDivergence = summaries.length > 1 && finalStatuses.size > 1;
     const failedShards = summaries.filter((s) => s.final_status === 'failed').length;
 
-    const flaky = flakyFromRetries || crossShardDivergence;
+    // Peer-platform divergence (ios fail + android pass) is a hard failure,
+    // not flaky. Flaky is only in-shard retries or same-platform recovery.
+    const flaky = flakyFromRetries || (crossShardDivergence && failedShards === 0);
+    const hardFailed = failedShards > 0 || (!spec.ok && !flaky);
 
     let Icon = CheckCircle2;
     let color = 'text-green-500';
@@ -1243,12 +1246,12 @@ const SpecRow = memo(function SpecRow({
     if (skipped) {
       Icon = MinusCircle;
       color = 'text-gray-400';
+    } else if (hardFailed) {
+      Icon = XCircle;
+      color = 'text-red-500';
     } else if (flaky) {
       Icon = AlertTriangle;
       color = 'text-yellow-500';
-    } else if (!spec.ok) {
-      Icon = XCircle;
-      color = 'text-red-500';
     }
 
     const multipleAttempts = spec.results.length > 1;
@@ -1261,7 +1264,7 @@ const SpecRow = memo(function SpecRow({
       singleHasContent ||
       (spec.screenshots && spec.screenshots.length > 0) ||
       crossShardDivergence;
-    const expandable = hasExpandable && (!spec.ok || flaky || skipped);
+    const expandable = hasExpandable && (!spec.ok || flaky || hardFailed || skipped);
 
     return {
       latestResult: latest,

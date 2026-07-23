@@ -214,17 +214,24 @@ func loadTestCases(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID) 
 }
 
 // DeriveTestNameFromPath pulls the folder-level identity out of a screenshot
-// filepath the way Cypress/Playwright emit them. Expected shapes:
+// filepath the way Cypress/Playwright/Detox emit them. Expected shapes:
 //
 //	"<spec-file>/<Suite> -- <Test> (failed).png"         Cypress
 //	"<Suite>/<Test>-<retry-index>.png"                   Cypress (older)
 //	"<Suite-chain-joined-by-">>>">/<leaf>.png"           Playwright
+//	"<session>/<fullName>/testFnFailure.png"             Detox
+//	"<session>/<fullName>/DETOX_VISIBILITY_…__SCREEN.png" Detox
 //
 // We strip the extension + any trailing "-N" / " (failed)" markers and
 // return the result; the screenshot linker then normalizes "/" to " > " and
 // matches against test_cases.full_title. The path-parsing is intentionally
 // lenient — a match that fails here still lets the file stay in S3 for
 // later manual linking.
+//
+// Detox puts the Jest fullName in the parent folder and uses fixed leaf
+// names (testStart / testFnFailure / testDone / DETOX_VISIBILITY_*). For
+// those leaves we return the parent folder basename so LinkScreenshots can
+// exact-match full_title.
 func DeriveTestNameFromPath(relativePath string) string {
 	p := relativePath
 	if i := strings.LastIndex(p, "."); i >= 0 {
@@ -239,7 +246,28 @@ func DeriveTestNameFromPath(relativePath string) string {
 			p = p[:i]
 		}
 	}
+
+	leaf := basename(p)
+	if isDetoxArtifactLeaf(leaf) {
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			parent := p[:i]
+			if j := strings.LastIndex(parent, "/"); j >= 0 {
+				return parent[j+1:]
+			}
+			return parent
+		}
+	}
 	return p
+}
+
+func isDetoxArtifactLeaf(name string) bool {
+	switch name {
+	case "testStart", "testFnFailure", "testDone",
+		"beforeAllFailure", "afterAllFailure",
+		"beforeEachFailure", "afterEachFailure":
+		return true
+	}
+	return strings.HasPrefix(name, "DETOX_VISIBILITY_")
 }
 
 // DeriveScreenshotType labels Detox's three well-known screenshot kinds so

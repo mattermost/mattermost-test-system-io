@@ -355,8 +355,12 @@ func (s *Store) attachAttempts(ctx context.Context, runID uuid.UUID, units []Uni
 //
 // repository accepts the full slug ("owner/repo") OR the trailing segment
 // alone ("repo"). The full slug is what CI inserts (from the OIDC token);
-// the trailing segment is what the dashboard URL carries. Mirrors the
-// suffix-match in aggregations.go for /reports/consolidated.
+// the trailing segment is what the dashboard URL carries. Matches via
+// split_part rather than a leading-wildcard LIKE — the latter can't use a
+// plain btree index, and this query runs on every orchestration checkout,
+// the hottest path in the system. orchestration_runs_repo_suffix_idx serves
+// the trailing-segment branch as a plain indexed equality lookup. Mirrors
+// the same fix in aggregations.go for /reports/consolidated.
 const runSelectByIdentity = `
 	SELECT id, repository, commit_sha, gh_run_id, name, gh_run_attempt,
 	       framework, branch, gh_pr_number, playwright_project,
@@ -368,7 +372,7 @@ const runSelectByIdentity = `
 	       dispatch_units_hash, started_at, last_activity_at, terminal_at,
 	       owner_oidc_subject, owner_api_key_id, created_at, updated_at
 	  FROM orchestration_runs
-	 WHERE (repository = $1 OR repository LIKE '%/' || $1)
+	 WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
 	   AND (commit_sha = $2 OR substr(commit_sha, 1, 7) = $2)
 	   AND gh_run_id = $3
 	   AND name = $4 AND gh_run_attempt = $5
@@ -391,7 +395,7 @@ const runListByDisplayIdentity = `
 	       dispatch_units_hash, started_at, last_activity_at, terminal_at,
 	       owner_oidc_subject, owner_api_key_id, created_at, updated_at
 	  FROM orchestration_runs
-	 WHERE (repository = $1 OR repository LIKE '%/' || $1)
+	 WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
 	   AND (commit_sha = $2 OR substr(commit_sha, 1, 7) = $2)
 	   AND name = $3
 	   AND ($4 = '' OR branch = $4)

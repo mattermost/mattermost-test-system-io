@@ -335,6 +335,11 @@ export function TestSuitesView({
     };
   }, [deduplicatedSuites]);
 
+  // Multi-shard / multi-platform groups keep per-report suite rows, so the
+  // test failed chip can exceed the header's unique-title count. Label that
+  // sum so it is not read as the same metric.
+  const multiShard = !!reports && reports.length > 1;
+
   // Suite-file-level pass/fail counts for the title-bar chips. A suite is
   // considered passed when none of its tests failed (flaky still counts
   // as passed, mirroring the run-level rule). Used by the chips next to
@@ -531,13 +536,18 @@ export function TestSuitesView({
                 onClick={() =>
                   setStatusFilter(statusFilter === 'spec_failed' ? 'all' : 'spec_failed')
                 }
-                title="Filter failed suites"
+                title={
+                  multiShard
+                    ? 'Spec files with ≥1 failure (each shard/platform kept separate)'
+                    : 'Filter failed suites'
+                }
                 className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 ${
                   statusFilter === 'spec_failed' ? 'bg-red-100 dark:bg-red-900/40' : ''
                 }`}
               >
                 <XCircle className="h-3 w-3" />
                 {specFailed}
+                {multiShard ? <span className="font-normal opacity-70">with failures</span> : null}
               </button>
             )}
           </h3>
@@ -578,6 +588,11 @@ export function TestSuitesView({
                 <button
                   type="button"
                   onClick={() => setStatusFilter('test_failed')}
+                  title={
+                    multiShard
+                      ? 'Failed test results summed across shards (same title can count more than once)'
+                      : 'Filter failed tests'
+                  }
                   className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
                     statusFilter === 'test_failed'
                       ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
@@ -587,6 +602,9 @@ export function TestSuitesView({
                   <span className="inline-flex items-center gap-1">
                     <XCircle className="h-3 w-3" />
                     {totals.failed}
+                    {multiShard ? (
+                      <span className="font-normal opacity-70">across shards</span>
+                    ) : null}
                   </span>
                 </button>
               )}

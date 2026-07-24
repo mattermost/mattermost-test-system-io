@@ -1,6 +1,6 @@
 /// <reference types="vitest" />
 import * as cdk from "aws-cdk-lib";
-import { Template } from "aws-cdk-lib/assertions";
+import { Match, Template } from "aws-cdk-lib/assertions";
 import { NetworkingStack } from "../lib/stacks/networking_stack";
 import { ProductionDataStack } from "../lib/stacks/production_data_stack";
 import { StagingAppStack } from "../lib/stacks/staging_app_stack";
@@ -80,6 +80,14 @@ describe("Infrastructure", () => {
 
     test("creates 1 ALB", () => {
       templates.networking.resourceCountIs("AWS::ElasticLoadBalancingV2::LoadBalancer", 1);
+    });
+
+    test("ALB idle timeout is raised above the 60s default", () => {
+      templates.networking.hasResourceProperties("AWS::ElasticLoadBalancingV2::LoadBalancer", {
+        LoadBalancerAttributes: Match.arrayWith([
+          { Key: "idle_timeout.timeout_seconds", Value: "120" },
+        ]),
+      });
     });
 
     test("imports ACM certificate by ARN (no in-stack cert resource)", () => {

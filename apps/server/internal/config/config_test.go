@@ -72,6 +72,38 @@ func TestLoad_readsEnv(t *testing.T) {
 	if !cfg.DBAutoMigrate {
 		t.Error("DBAutoMigrate should default to true")
 	}
+	if cfg.DBMaxConns != 20 {
+		t.Errorf("DBMaxConns default = %d, want 20", cfg.DBMaxConns)
+	}
+	if cfg.DBStatementTimeoutMs != 30000 {
+		t.Errorf("DBStatementTimeoutMs default = %d, want 30000", cfg.DBStatementTimeoutMs)
+	}
+	if cfg.ReadRequestTimeout != 30*time.Second {
+		t.Errorf("ReadRequestTimeout default = %v, want 30s", cfg.ReadRequestTimeout)
+	}
+}
+
+func TestLoad_readsGuardrailOverrides(t *testing.T) {
+	t.Setenv("TSIO_DATABASE_URL", "postgres://user:pass@localhost/db?sslmode=disable")
+	t.Setenv("TSIO_S3_BUCKET", "reports")
+	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
+	t.Setenv("TSIO_DB_MAX_CONNS", "40")
+	t.Setenv("TSIO_DB_STATEMENT_TIMEOUT_MS", "15000")
+	t.Setenv("TSIO_READ_REQUEST_TIMEOUT", "10s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DBMaxConns != 40 {
+		t.Errorf("DBMaxConns = %d, want 40", cfg.DBMaxConns)
+	}
+	if cfg.DBStatementTimeoutMs != 15000 {
+		t.Errorf("DBStatementTimeoutMs = %d, want 15000", cfg.DBStatementTimeoutMs)
+	}
+	if cfg.ReadRequestTimeout != 10*time.Second {
+		t.Errorf("ReadRequestTimeout = %v, want 10s", cfg.ReadRequestTimeout)
+	}
 }
 
 func TestLoad_assemblesDatabaseURLFromParts(t *testing.T) {

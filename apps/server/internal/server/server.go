@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apiroot "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
@@ -75,6 +76,10 @@ type Deps struct {
 	MaxUploadBytes   int64
 	MaxArtifactBytes int64
 	PresignTTL       time.Duration
+
+	// ReadRequestTimeout bounds public read (GET) handlers. Zero disables the
+	// per-request timeout. Upload, write, and WebSocket routes are exempt.
+	ReadRequestTimeout time.Duration
 }
 
 // Build constructs the chi router with the full feature set and returns it as
@@ -165,25 +170,11 @@ func Build(d Deps) chi.Router {
 		// Admin-key-gated bootstrap endpoint (X-Admin-Key header).
 		r.Post("/auth/oidc-policies", authH.CreateOIDCPolicy)
 
-		// --- Public: report reads ---
-		r.Get("/reports", reportsH.List)
-		r.Get("/reports/grouped", reportsH.Grouped)
-		r.Get("/reports/individual", reportsH.Individual)
-		r.Get("/reports/consolidated", reportsH.Consolidated)
-		r.Get("/reports/{id}", reportsH.Detail)
-		r.Get("/reports/{id}/suites", reportsH.Suites)
-		r.Get("/reports/{id}/suites/{suiteID}/specs", reportsH.SuiteSpecs)
-		r.Get("/reports/{id}/cases", reportsH.Cases)
-		r.Get("/reports/{id}/json", reportsH.JSONFile)
-		r.Get("/reports/{id}/search", reportsH.Search)
-
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
+		// Registered outside the read-timeout group below: the connection is
+		// long-lived and must not be canceled by a per-request deadline.
 		r.Get("/ws", wsH.Events)
 
-		// --- Public: orchestration status snapshot ---
-		// The dashboard fetches this without credentials, alongside the public
-		// report-reads above. Mutations (begin/checkout/complete/screenshots)
-		// stay in the protected group below.
 		publicOrchH := &orchapi.Handlers{
 			Pool:               d.Pool,
 			Store:              d.OrchestrationStore,
@@ -194,7 +185,31 @@ func Build(d Deps) chi.Router {
 			LeaseRetentionMs:   60_000,
 			MaxScreenshotBytes: 10 * 1024 * 1024,
 		}
-		orchapi.RegisterPublic(r, publicOrchH)
+
+		// --- Public reads: report views + orchestration status snapshot ---
+		// Grouped under a per-request timeout so a slow read query is canceled
+		// (freeing its pool connection) instead of hanging until the load
+		// balancer 504s it. WebSocket and write/upload routes are exempt.
+		r.Group(func(r chi.Router) {
+			if d.ReadRequestTimeout > 0 {
+				r.Use(chimw.Timeout(d.ReadRequestTimeout))
+			}
+			r.Get("/reports", reportsH.List)
+			r.Get("/reports/grouped", reportsH.Grouped)
+			r.Get("/reports/individual", reportsH.Individual)
+			r.Get("/reports/consolidated", reportsH.Consolidated)
+			r.Get("/reports/{id}", reportsH.Detail)
+			r.Get("/reports/{id}/suites", reportsH.Suites)
+			r.Get("/reports/{id}/suites/{suiteID}/specs", reportsH.SuiteSpecs)
+			r.Get("/reports/{id}/cases", reportsH.Cases)
+			r.Get("/reports/{id}/json", reportsH.JSONFile)
+			r.Get("/reports/{id}/search", reportsH.Search)
+
+			// The dashboard fetches this without credentials, alongside the
+			// public report-reads above. Mutations (begin/checkout/complete/
+			// screenshots) stay in the protected group below.
+			orchapi.RegisterPublic(r, publicOrchH)
+		})
 
 		// --- Protected: writes + admin-ish reads ---
 		r.Group(func(r chi.Router) {

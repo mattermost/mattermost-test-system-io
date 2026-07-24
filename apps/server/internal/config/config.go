@@ -31,6 +31,15 @@ type Config struct {
 	DBSSLMode     string `env:"TSIO_DB_SSLMODE" envDefault:"require"`
 	DBAutoMigrate bool   `env:"TSIO_DB_AUTO_MIGRATE" envDefault:"true"`
 
+	// DBMaxConns caps the pgx pool size per process. With multiple app tasks
+	// pointing at one Postgres, keep the aggregate (tasks × this value) under
+	// the server's max_connections.
+	DBMaxConns int `env:"TSIO_DB_MAX_CONNS" envDefault:"20"`
+	// DBStatementTimeoutMs bounds any single SQL statement server-side so a
+	// slow query cannot hold a pool connection until the load balancer times
+	// the request out. 0 disables the timeout.
+	DBStatementTimeoutMs int `env:"TSIO_DB_STATEMENT_TIMEOUT_MS" envDefault:"30000"`
+
 	// S3 credentials are optional: when running in ECS/EC2, the AWS SDK picks
 	// up credentials from the task role automatically. Explicit keys are used
 	// for local dev against MinIO or for S3 accounts that don't match the
@@ -79,6 +88,13 @@ type Config struct {
 	LogFormat string `env:"TSIO_LOG_FORMAT" envDefault:"json"` // json | text
 
 	CORSAllowedOrigins []string `env:"TSIO_CORS_ALLOWED_ORIGINS" envSeparator:","`
+
+	// ReadRequestTimeout bounds how long a public read request (report and
+	// orchestration-status GETs) may run before its context is canceled and
+	// the in-flight DB query aborted. Write, upload, and WebSocket routes are
+	// intentionally exempt. Keep it comfortably below the load balancer idle
+	// timeout so slow reads surface as a fast error instead of a 504.
+	ReadRequestTimeout time.Duration `env:"TSIO_READ_REQUEST_TIMEOUT" envDefault:"30s"`
 
 	// Client-facing tunables surfaced via GET /api/v1/config.
 	UploadTimeoutMs int  `env:"TSIO_UPLOAD_TIMEOUT_MS" envDefault:"3600000"` // 1h

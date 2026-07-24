@@ -64,7 +64,10 @@ func run() error {
 		}
 	}
 
-	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
+	pool, err := db.NewPool(ctx, cfg.DatabaseURL,
+		db.WithMaxConns(cfg.DBMaxConns),
+		db.WithStatementTimeout(cfg.DBStatementTimeoutMs),
+	)
 	if err != nil {
 		return err
 	}
@@ -161,6 +164,7 @@ func run() error {
 		MaxUploadBytes:         cfg.MaxUploadBytes,
 		MaxArtifactBytes:       cfg.MaxArtifactBytes,
 		PresignTTL:             5 * time.Minute,
+		ReadRequestTimeout:     cfg.ReadRequestTimeout,
 	})
 
 	srv := &http.Server{

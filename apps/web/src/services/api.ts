@@ -1,4 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef } from 'react';
 import type {
   ClientConfig,
   ServerInfo,
@@ -412,15 +413,24 @@ const ORCHESTRATION_POLL_MS = 5000;
  *  refetches and polling resumes. ~1 minute at the poll interval. */
 const ORCHESTRATION_NULL_POLL_LIMIT = 12;
 
+/** Advance the consecutive-null streak: reset to 0 on any run snapshot, else
+ *  increment. Tracked separately from React Query's cumulative dataUpdateCount
+ *  (which counts every successful fetch, so it can't distinguish a first null
+ *  from a null after many good snapshots). Exported for testing. */
+export function nextNullStreak(prev: number, data: RunSnapshot | null | undefined): number {
+  return data ? 0 : prev + 1;
+}
+
 /** Decide the next poll interval for the orchestration run snapshot.
  *  Returns `false` (stop polling) when the run is terminal, or when no run has
- *  been found after ORCHESTRATION_NULL_POLL_LIMIT polls. Exported for testing. */
+ *  been found for ORCHESTRATION_NULL_POLL_LIMIT consecutive polls. Exported for
+ *  testing. */
 export function orchestrationRefetchInterval(
   data: RunSnapshot | null | undefined,
-  dataUpdateCount: number,
+  consecutiveNulls: number,
 ): number | false {
   if (!data) {
-    return dataUpdateCount < ORCHESTRATION_NULL_POLL_LIMIT ? ORCHESTRATION_POLL_MS : false;
+    return consecutiveNulls < ORCHESTRATION_NULL_POLL_LIMIT ? ORCHESTRATION_POLL_MS : false;
   }
   return data.status === 'in_progress' ? ORCHESTRATION_POLL_MS : false;
 }
@@ -435,13 +445,19 @@ export function orchestrationRefetchInterval(
  * "no run found" polls so non-orchestration pages don't poll a 404 forever.
  */
 export function useOrchestrationRun(identity: CompositeIdentity) {
+  // Consecutive "no run found" polls, reset whenever a snapshot is returned.
+  // A ref (not React state) so updating it never triggers a re-render.
+  const nullStreak = useRef(0);
   return useQuery<RunSnapshot | null>({
     queryKey: ['orchestration', 'run', compositeIdentityKey(identity)],
-    queryFn: () => fetchOrchestrationRun(identity),
+    queryFn: async () => {
+      const run = await fetchOrchestrationRun(identity);
+      nullStreak.current = nextNullStreak(nullStreak.current, run);
+      return run;
+    },
     enabled:
       !!identity.repository && !!identity.commit_sha && !!identity.gh_run_id && !!identity.name,
-    refetchInterval: (query) =>
-      orchestrationRefetchInterval(query.state.data, query.state.dataUpdateCount),
+    refetchInterval: (query) => orchestrationRefetchInterval(query.state.data, nullStreak.current),
     refetchIntervalInBackground: false,
   });
 }

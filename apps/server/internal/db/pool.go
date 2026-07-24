@@ -29,12 +29,14 @@ func WithMaxConns(n int) PoolOption {
 // WithStatementTimeout sets a per-statement timeout (in milliseconds) on every
 // connection in the pool. This bounds any single query so a slow read cannot
 // hold a connection indefinitely and starve the pool — the query is aborted
-// server-side and the connection returns to the pool. Non-positive values are
-// ignored (no timeout). Applies per-statement, so it does not affect long
+// server-side and the connection returns to the pool. A value of 0 explicitly
+// disables the timeout (Postgres statement_timeout=0), overriding any value
+// inherited from the connection string; a negative value leaves the connection
+// default untouched. Applies per-statement, so it does not affect long
 // multi-statement work like the background JSON extractor.
 func WithStatementTimeout(ms int) PoolOption {
 	return func(cfg *pgxpool.Config) {
-		if ms > 0 {
+		if ms >= 0 {
 			cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.Itoa(ms)
 		}
 	}

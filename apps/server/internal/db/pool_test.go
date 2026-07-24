@@ -43,13 +43,27 @@ func TestWithStatementTimeout(t *testing.T) {
 	}
 }
 
-func TestWithStatementTimeout_ignoresNonPositive(t *testing.T) {
+func TestWithStatementTimeout_zeroDisablesExplicitly(t *testing.T) {
 	cfg, err := pgxpool.ParseConfig(testDSN)
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
+	// Seed an inherited value to prove 0 overrides it with an explicit disable.
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "5000"
 	WithStatementTimeout(0)(cfg)
-	if _, ok := cfg.ConnConfig.RuntimeParams["statement_timeout"]; ok {
-		t.Error("statement_timeout should not be set for non-positive value")
+	if got := cfg.ConnConfig.RuntimeParams["statement_timeout"]; got != "0" {
+		t.Errorf("statement_timeout = %q, want \"0\" (explicit disable)", got)
+	}
+}
+
+func TestWithStatementTimeout_negativeLeavesInherited(t *testing.T) {
+	cfg, err := pgxpool.ParseConfig(testDSN)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "5000"
+	WithStatementTimeout(-1)(cfg)
+	if got := cfg.ConnConfig.RuntimeParams["statement_timeout"]; got != "5000" {
+		t.Errorf("statement_timeout = %q, want inherited \"5000\" unchanged", got)
 	}
 }

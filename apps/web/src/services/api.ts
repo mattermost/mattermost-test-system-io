@@ -399,13 +399,40 @@ export async function fetchOrchestrationRun(
   return handleResponse<RunSnapshot>(response);
 }
 
+/** Poll interval (ms) for an in-progress run, and while waiting for a run to
+ *  first appear. */
+const ORCHESTRATION_POLL_MS = 5000;
+
+/** Cap on consecutive "no run yet" (null) polls before giving up. A run row is
+ *  created at `begin` — before workers start — so an orchestrated run is found
+ *  almost immediately; this window only covers the brief begin race. Without a
+ *  cap, a page whose identity has no orchestration run at all (a plain report
+ *  upload, which 404s forever) would poll /orchestration/status indefinitely.
+ *  If a run later appears, the WebSocket subscription / cache invalidation
+ *  refetches and polling resumes. ~1 minute at the poll interval. */
+const ORCHESTRATION_NULL_POLL_LIMIT = 12;
+
+/** Decide the next poll interval for the orchestration run snapshot.
+ *  Returns `false` (stop polling) when the run is terminal, or when no run has
+ *  been found after ORCHESTRATION_NULL_POLL_LIMIT polls. Exported for testing. */
+export function orchestrationRefetchInterval(
+  data: RunSnapshot | null | undefined,
+  dataUpdateCount: number,
+): number | false {
+  if (!data) {
+    return dataUpdateCount < ORCHESTRATION_NULL_POLL_LIMIT ? ORCHESTRATION_POLL_MS : false;
+  }
+  return data.status === 'in_progress' ? ORCHESTRATION_POLL_MS : false;
+}
+
 /** React Query hook for the orchestration run snapshot.
  *
  * Live updates normally arrive via the orchestration WebSocket subscription
  * which invalidates this query. The poll below is a safety net: if the WS
  * drops a frame or reconnects mid-event, we still catch up within a few
  * seconds without forcing the user to reload. The interval is disabled
- * once the run reaches a terminal state.
+ * once the run reaches a terminal state, and stops after a bounded number of
+ * "no run found" polls so non-orchestration pages don't poll a 404 forever.
  */
 export function useOrchestrationRun(identity: CompositeIdentity) {
   return useQuery<RunSnapshot | null>({
@@ -413,11 +440,9 @@ export function useOrchestrationRun(identity: CompositeIdentity) {
     queryFn: () => fetchOrchestrationRun(identity),
     enabled:
       !!identity.repository && !!identity.commit_sha && !!identity.gh_run_id && !!identity.name,
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      if (!data) return 5000; // first-fetch retry until the run is found
-      return data.status === 'in_progress' ? 5000 : false;
-    },
+    refetchInterval: (query) =>
+      orchestrationRefetchInterval(query.state.data, query.state.dataUpdateCount),
+    refetchIntervalInBackground: false,
   });
 }
 

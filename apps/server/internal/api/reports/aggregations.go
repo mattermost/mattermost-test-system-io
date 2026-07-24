@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/cache"
 )
 
 // Test-case status strings — mirror the CHECK constraint on test_cases.status
@@ -533,12 +534,9 @@ func (h *Handlers) Individual(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Consolidated serves GET /api/v1/reports/consolidated.
-//
-// Splitting it out mechanically hides the request-shape contract across helpers;
-// the flow is linear and each stage is self-contained.
-//
-//nolint:gocyclo // Single top-down handler: query → fetch → aggregate → shape → write.
+// Consolidated serves GET /api/v1/reports/consolidated. It parses and
+// validates the request, then serves the response body through the read cache
+// (see computeConsolidated for the query + shaping pipeline).
 func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	repository := strings.TrimSpace(q.Get("repository"))
@@ -569,6 +567,44 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		prBranchNumber = &n
 	}
 
+	// Served through a short-TTL read cache so concurrent viewers of the same
+	// (completed) run collapse onto one execution of the expensive query +
+	// aggregation. Keyed by the response-affecting query params.
+	key := consolidatedCacheKey(repository, branch, commit, name, pinnedAttempt, pinnedGroup, pinnedGHRunID)
+	body, err := h.cachedRead(r.Context(), key, func(ctx context.Context) ([]byte, error) {
+		return h.computeConsolidated(ctx, repository, branch, commit, name, displayName,
+			pinnedAttempt, pinnedGroup, pinnedGHRunID, prBranchNumber)
+	})
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=3, stale-while-revalidate=10")
+	_, _ = w.Write(body) //nolint:gosec // G705 — JSON response, not HTML
+}
+
+// consolidatedCacheKey builds the read-cache key from the response-affecting
+// query params. Uses cache.Key's length-prefixed encoding so values with
+// embedded separators/NUL bytes can't collapse distinct requests onto one
+// entry.
+func consolidatedCacheKey(repository, branch, commit, name string, attempt, gid, ghRunID *string) string {
+	return cache.Key(
+		"consolidated", repository, branch, commit, name,
+		derefOr(attempt, ""), derefOr(gid, ""), derefOr(ghRunID, ""),
+	)
+}
+
+// computeConsolidated runs the consolidated-report query and shapes the JSON
+// response body. Extracted from the handler so it can be served through the
+// read cache.
+//
+//nolint:gocyclo // Single top-down pipeline: query → fetch → aggregate → shape.
+func (h *Handlers) computeConsolidated(
+	ctx context.Context,
+	repository, branch, commit, name, displayName string,
+	pinnedAttempt, pinnedGroup, pinnedGHRunID *string, prBranchNumber *int,
+) ([]byte, error) {
 	// The URL carries the repository slug (e.g. "mattermost"); the DB stores
 	// the full "owner/repo". Match on the trailing segment so "mattermost"
 	// hits "mattermost/mattermost" — via split_part rather than a leading-
@@ -580,7 +616,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 	// The LATERAL subquery attaches each test_case's linked screenshots as a
 	// JSON array so the web can render per-attempt galleries without a
 	// follow-up request per failed attempt.
-	rows, err := h.Pool.Query(r.Context(), `
+	rows, err := h.Pool.Query(ctx, `
 		SELECT r.id, g.commit_sha, g.gh_run_attempt, r.created_at, g.id,
 		       COALESCE(s.title, '') || ' › ' || tc.title AS full_title,
 		       tc.status, COALESCE(tc.duration_ms, 0), tc.error_message, tc.error_stack,
@@ -624,8 +660,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		  )
 	`, repository, branch, commit, name, pinnedAttempt, pinnedGroup, pinnedGHRunID, prBranchNumber)
 	if err != nil {
-		api.WriteError(w, r, err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -655,8 +690,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			&ci.FullTitle, &ci.Status, &ci.DurationMs, &ci.ErrorMessage, &ci.ErrorStack,
 			&shotsJSON,
 		); err != nil {
-			api.WriteError(w, r, err)
-			return
+			return nil, err
 		}
 		if len(shotsJSON) > 0 {
 			_ = json.Unmarshal(shotsJSON, &ci.Screenshots)
@@ -664,8 +698,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		inputs = append(inputs, ci)
 	}
 	if err := rows.Err(); err != nil {
-		api.WriteError(w, r, err)
-		return
+		return nil, err
 	}
 
 	filters := map[string]any{
@@ -675,7 +708,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		"tool_name":   "",
 	}
 	if len(inputs) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{
+		return json.Marshal(map[string]any{
 			"filters":                filters,
 			"overall_status":         statusPassed,
 			"total_specs":            0,
@@ -689,7 +722,6 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			"available_run_attempts": []int{1},
 			"specs":                  []any{},
 		})
-		return
 	}
 
 	seenReport := map[uuid.UUID]bool{}
@@ -858,10 +890,9 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 	// Single-attempt views degrade to that group's spans.
 	var wallClockMs, retestWallClockMs *int64
 	for _, gid := range contributingIDs {
-		numbered, retest, err := aggregateWallClockSpans(r.Context(), h.Pool, gid)
+		numbered, retest, err := aggregateWallClockSpans(ctx, h.Pool, gid)
 		if err != nil {
-			api.WriteError(w, r, err)
-			return
+			return nil, err
 		}
 		if numbered != nil && (wallClockMs == nil || *numbered > *wallClockMs) {
 			v := *numbered
@@ -894,7 +925,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 	if retestWallClockMs != nil {
 		resp["retest_wall_clock_ms"] = *retestWallClockMs
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return json.Marshal(resp)
 }
 
 // SuiteSpecs serves GET /api/v1/reports/{id}/suites/{suiteID}/specs. The {id}

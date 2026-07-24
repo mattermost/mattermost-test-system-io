@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -14,11 +15,12 @@ import (
 // defaults while the server can thread through operator-tunable knobs.
 type PoolOption func(*pgxpool.Config)
 
-// WithMaxConns overrides the pool's maximum connection count. Non-positive
-// values are ignored so a missing/invalid env knob falls back to the default.
+// WithMaxConns overrides the pool's maximum connection count. Values outside
+// (0, math.MaxInt32] are ignored so a missing/invalid env knob falls back to
+// the default (and the int->int32 conversion is provably in range).
 func WithMaxConns(n int) PoolOption {
 	return func(cfg *pgxpool.Config) {
-		if n > 0 {
+		if n > 0 && n <= math.MaxInt32 {
 			cfg.MaxConns = int32(n)
 		}
 	}

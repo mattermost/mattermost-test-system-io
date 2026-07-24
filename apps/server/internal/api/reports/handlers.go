@@ -443,7 +443,7 @@ func (h *Handlers) Suites(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrBadRequest)
 		return
 	}
-	body, err := h.cachedRead(r.Context(), "suites\x00"+id.String(), func(ctx context.Context) ([]byte, error) {
+	body, err := h.cachedRead(r.Context(), cache.Key("suites", id.String()), func(ctx context.Context) ([]byte, error) {
 		return h.computeSuites(ctx, id)
 	})
 	if err != nil {

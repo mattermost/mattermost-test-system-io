@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/cache"
 )
 
 // Test-case status strings — mirror the CHECK constraint on test_cases.status
@@ -584,12 +585,14 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 }
 
 // consolidatedCacheKey builds the read-cache key from the response-affecting
-// query params.
+// query params. Uses cache.Key's length-prefixed encoding so values with
+// embedded separators/NUL bytes can't collapse distinct requests onto one
+// entry.
 func consolidatedCacheKey(repository, branch, commit, name string, attempt, gid, ghRunID *string) string {
-	return strings.Join([]string{
-		repository, branch, commit, name,
+	return cache.Key(
+		"consolidated", repository, branch, commit, name,
 		derefOr(attempt, ""), derefOr(gid, ""), derefOr(ghRunID, ""),
-	}, "\x00")
+	)
 }
 
 // computeConsolidated runs the consolidated-report query and shapes the JSON

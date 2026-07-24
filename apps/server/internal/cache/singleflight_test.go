@@ -85,6 +85,46 @@ func TestTTLCache_recomputesAfterTTL(t *testing.T) {
 	}
 }
 
+func TestKey_unambiguous(t *testing.T) {
+	// Different part splits that would collide under naive separator joins must
+	// produce distinct keys.
+	if Key("a", "bc") == Key("ab", "c") {
+		t.Error("Key collided on different part boundaries")
+	}
+	// Embedded NUL / separator bytes must not collapse distinct identities.
+	if Key("x\x00y", "z") == Key("x", "y\x00z") {
+		t.Error("Key collided on embedded NUL bytes")
+	}
+	if Key("1", "2") == Key("12") {
+		t.Error("Key collided on concatenation")
+	}
+	// Stable for identical inputs.
+	parts := []string{"repo", "sha", "run"}
+	if Key(parts...) != Key(append([]string{}, parts...)...) {
+		t.Error("Key not stable for identical inputs")
+	}
+}
+
+func TestTTLCache_detachedFromCallerContext(t *testing.T) {
+	c := New(time.Minute)
+	// An already-canceled caller context must not prevent the shared compute
+	// from running or poison the entry with context.Canceled.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	body, err := c.Get(ctx, "k", func(ctx context.Context) ([]byte, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err // would fail if we inherited the canceled ctx
+		}
+		return []byte("v"), nil
+	})
+	if err != nil {
+		t.Fatalf("Get with canceled caller ctx: %v", err)
+	}
+	if string(body) != "v" {
+		t.Fatalf("body = %q, want \"v\"", string(body))
+	}
+}
+
 func TestTTLCache_doesNotCacheErrors(t *testing.T) {
 	c := New(time.Minute)
 	var computes atomic.Int32

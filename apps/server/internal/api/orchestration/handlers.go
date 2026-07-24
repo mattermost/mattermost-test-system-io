@@ -569,16 +569,18 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body) //nolint:gosec // G705 — JSON response, not HTML
 }
 
-// statusCacheKey builds the per-(identity, view) cache key.
+// statusCacheKey builds the per-(identity, view) cache key. Uses cache.Key's
+// length-prefixed encoding so query values containing embedded separators/NUL
+// bytes cannot collapse distinct identities onto one entry.
 func statusCacheKey(identity orchestration.CompositeIdentity, summary bool) string {
 	view := "full"
 	if summary {
 		view = "summary"
 	}
-	return strings.Join([]string{
+	return cache.Key(
 		view, identity.Repository, identity.CommitSHA, identity.GHRunID,
 		identity.Name, identity.GHRunAttempt,
-	}, "\x00")
+	)
 }
 
 // computeStatus runs the DB reads for a status snapshot and marshals the

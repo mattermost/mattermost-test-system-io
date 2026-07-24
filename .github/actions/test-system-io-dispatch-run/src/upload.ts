@@ -11,7 +11,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
-import { fetchWithAuthRetry, getBearer } from "./auth";
+import {
+  JSON_REQUEST_TIMEOUT_MS,
+  UPLOAD_REQUEST_TIMEOUT_MS,
+  fetchWithAuthRetry,
+  getBearer,
+  timeoutSignal,
+} from "./auth";
 import type {
   CompositeIdentity,
   InvocationRecord,
@@ -121,6 +127,7 @@ async function uploadMultipart(
       method: "POST",
       headers: { Authorization: `Bearer ${bearer}` },
       body: form,
+      signal: timeoutSignal(UPLOAD_REQUEST_TIMEOUT_MS),
     });
   });
   if (res.status !== 200) {
@@ -191,6 +198,7 @@ async function postJSON<T>(
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
       body: JSON.stringify(body),
+      signal: timeoutSignal(JSON_REQUEST_TIMEOUT_MS),
     });
   });
   const text = await res.text();

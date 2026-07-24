@@ -13,7 +13,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { fetchWithAuthRetry, getBearer } from "./auth";
+import {
+  JSON_REQUEST_TIMEOUT_MS,
+  fetchWithAuthRetry,
+  getBearer,
+  isTransientHTTPStatus,
+  timeoutSignal,
+} from "./auth";
 import { runUnit as runPlaywrightUnit } from "./playwright";
 import { runUnit as runCypressUnit } from "./cypress";
 import { uploadShard, type UploadConfig } from "./upload";
@@ -353,10 +359,20 @@ async function postJSON<T>(
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
         body: JSON.stringify(body),
+        signal: timeoutSignal(JSON_REQUEST_TIMEOUT_MS),
       });
     });
     const text = await res.text();
-    if (res.status >= 500 && res.status < 600 && attempt < delays.length) {
+    // fetchWithAuthRetry already backs off on transient gateway statuses
+    // (408/429/502/503/504); only re-loop here for the other 5xx (500/501/…)
+    // so an idempotent /checkout or /complete still survives a backend blip
+    // without double-retrying the statuses the auth layer just exhausted.
+    if (
+      res.status >= 500 &&
+      res.status < 600 &&
+      !isTransientHTTPStatus(res.status) &&
+      attempt < delays.length
+    ) {
       const ms = delays[attempt]! + Math.floor(Math.random() * 250);
       core.warning(
         `${urlPath}: HTTP ${res.status} (attempt ${attempt + 1}/${delays.length + 1}); ` +

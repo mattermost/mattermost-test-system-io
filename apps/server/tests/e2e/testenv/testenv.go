@@ -88,6 +88,9 @@ func Start(t *testing.T, opts ...Option) *Env {
 	// collapses concurrent dashboard polls). Value mirrors the orchestration
 	// api package's TSIO_ORCH_STATUS_CACHE_TTL_MS knob.
 	t.Setenv("TSIO_ORCH_STATUS_CACHE_TTL_MS", "0")
+	// Likewise disable the consolidated/suites read cache so tests observe
+	// fresh data immediately after uploads.
+	t.Setenv("TSIO_REPORTS_READ_CACHE_TTL_MS", "0")
 
 	cfg := &startConfig{}
 	for _, o := range opts {

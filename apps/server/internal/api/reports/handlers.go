@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/cache"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 )
@@ -41,6 +44,53 @@ type Handlers struct {
 	// Initialized lazily on first /reports/grouped request.
 	groupedCacheOnce sync.Once
 	groupedCache     *groupedCache
+
+	// readCache memoizes the large read responses (/reports/consolidated and
+	// /reports/{id}/suites) for a short TTL so concurrent viewers of the same
+	// completed report collapse onto one DB read per window. Lazily
+	// initialized; nil when disabled (TTL <= 0).
+	readCacheOnce sync.Once
+	readCache     *cache.TTLCache
+}
+
+// defaultReadCacheTTLMs bounds staleness of the cached consolidated/suites
+// responses. Overridable via TSIO_REPORTS_READ_CACHE_TTL_MS; a value <= 0
+// disables the cache (used by tests that assert read-after-write).
+const defaultReadCacheTTLMs = 3000
+
+const readCacheTTLEnvVar = "TSIO_REPORTS_READ_CACHE_TTL_MS"
+
+func resolveReadCacheTTL() time.Duration {
+	raw := os.Getenv(readCacheTTLEnvVar)
+	if raw == "" {
+		return defaultReadCacheTTLMs * time.Millisecond
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultReadCacheTTLMs * time.Millisecond
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func (h *Handlers) initReadCache() {
+	h.readCacheOnce.Do(func() {
+		if ttl := resolveReadCacheTTL(); ttl > 0 {
+			h.readCache = cache.New(ttl)
+		}
+	})
+}
+
+// cachedRead serves body from the read cache when enabled, computing it via
+// compute() on a miss; when the cache is disabled it computes inline. The
+// key must fully capture the response inputs.
+func (h *Handlers) cachedRead(
+	ctx context.Context, key string, compute func(context.Context) ([]byte, error),
+) ([]byte, error) {
+	h.initReadCache()
+	if h.readCache == nil {
+		return compute(ctx)
+	}
+	return h.readCache.Get(ctx, key, compute)
 }
 
 // initGroupedCache lazily initializes the response cache. Called from
@@ -393,14 +443,27 @@ func (h *Handlers) Suites(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrBadRequest)
 		return
 	}
-	entries, err := fetchGroupReports(r.Context(), h.Pool, id)
+	body, err := h.cachedRead(r.Context(), "suites\x00"+id.String(), func(ctx context.Context) ([]byte, error) {
+		return h.computeSuites(ctx, id)
+	})
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=3, stale-while-revalidate=10")
+	_, _ = w.Write(body) //nolint:gosec // G705 — JSON response, not HTML
+}
+
+// computeSuites builds the /reports/{id}/suites response body: the flat suite
+// list across every report entry under the group plus the `reports` sidebar.
+func (h *Handlers) computeSuites(ctx context.Context, id uuid.UUID) ([]byte, error) {
+	entries, err := fetchGroupReports(ctx, h.Pool, id)
+	if err != nil {
+		return nil, err
+	}
 	if len(entries) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"suites": []any{}})
-		return
+		return json.Marshal(map[string]any{"suites": []any{}})
 	}
 	entryIDs := make([]uuid.UUID, len(entries))
 	entryNames := make(map[uuid.UUID]string, len(entries))
@@ -411,15 +474,14 @@ func (h *Handlers) Suites(w http.ResponseWriter, r *http.Request) {
 		entryNumber[e.ID] = i + 1
 	}
 
-	rows, err := h.Pool.Query(r.Context(),
+	rows, err := h.Pool.Query(ctx,
 		`SELECT id, report_id, parent_suite_id, title, file, line, col, duration_ms,
 		        total_count, passed_count, failed_count, skipped_count, flaky_count,
 		        start_time, ordinal
 		 FROM suites WHERE report_id = ANY($1)
 		 ORDER BY parent_suite_id NULLS FIRST, ordinal`, entryIDs)
 	if err != nil {
-		api.WriteError(w, r, err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -436,8 +498,7 @@ func (h *Handlers) Suites(w http.ResponseWriter, r *http.Request) {
 		var ordinal int
 		if err := rows.Scan(&sid, &rid, &parent, &title, &file, &line, &col, &dur,
 			&total, &passed, &failed, &skipped, &flaky, &startTime, &ordinal); err != nil {
-			api.WriteError(w, r, err)
-			return
+			return nil, err
 		}
 		m := map[string]any{
 			"id":            sid,
@@ -466,6 +527,9 @@ func (h *Handlers) Suites(w http.ResponseWriter, r *http.Request) {
 		}
 		suites = append(suites, m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	reportsSidebar := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
@@ -476,7 +540,7 @@ func (h *Handlers) Suites(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return json.Marshal(map[string]any{
 		"suites":  suites,
 		"reports": reportsSidebar,
 	})

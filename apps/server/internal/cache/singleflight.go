@@ -15,9 +15,29 @@ package cache
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
+
+// computeTimeout bounds a shared compute run on its detached context so a
+// wedged backing query can't pin a cache entry (and its waiters) forever.
+const computeTimeout = 30 * time.Second
+
+// Key builds an unambiguous cache key from parts using a length prefix per
+// part. Unlike joining with a separator (e.g. "\x00"), no combination of
+// attacker-controlled field contents — including embedded separators or NUL
+// bytes — can collapse two distinct part lists onto the same key.
+func Key(parts ...string) string {
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(strconv.Itoa(len(p)))
+		b.WriteByte(':')
+		b.WriteString(p)
+	}
+	return b.String()
+}
 
 // TTLCache memoizes []byte bodies per string key for a fixed TTL, with
 // single-flight semantics per key.
@@ -77,7 +97,14 @@ func (c *TTLCache) Get(
 	c.entries[key] = e
 	c.mu.Unlock()
 
-	body, err := compute(ctx)
+	// Run the shared compute on a context detached from this caller's ctx: the
+	// result is shared with every waiter on this key, so if the caller that
+	// won the race disconnects, its cancellation must not poison the entry for
+	// the others. A dedicated timeout keeps a wedged compute from pinning the
+	// entry indefinitely. Waiters still honor their own ctx in the wait path.
+	computeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), computeTimeout)
+	defer cancel()
+	body, err := compute(computeCtx)
 	e.body = body
 	e.err = err
 	e.expiresAt = time.Now().Add(c.ttl)

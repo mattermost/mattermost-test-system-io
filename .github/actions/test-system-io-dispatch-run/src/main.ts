@@ -15,6 +15,8 @@ import * as core from "@actions/core";
 import * as github from "@actions/github";
 import {
   JSON_REQUEST_TIMEOUT_MS,
+  UPLOAD_REQUEST_TIMEOUT_MS,
+  fetchTextWithAuthRetry,
   fetchWithAuthRetry,
   getBearer,
   isTransientHTTPStatus,
@@ -353,7 +355,9 @@ async function postJSON<T>(
 ): Promise<PostResponse<T>> {
   const delays = [500, 1500, 4000];
   for (let attempt = 0; attempt <= delays.length; attempt++) {
-    const res = await fetchWithAuthRetry(async () => {
+    // fetchTextWithAuthRetry reads the body inside the retry scope, so a stall
+    // mid-body is retried rather than escaping this loop as a hard failure.
+    const { status, text } = await fetchTextWithAuthRetry(async () => {
       const bearer = await getBearer(cfg.audience);
       return fetch(`${cfg.baseURL}${urlPath}`, {
         method: "POST",
@@ -362,20 +366,19 @@ async function postJSON<T>(
         signal: timeoutSignal(JSON_REQUEST_TIMEOUT_MS),
       });
     });
-    const text = await res.text();
-    // fetchWithAuthRetry already backs off on transient gateway statuses
+    // fetchTextWithAuthRetry already backs off on transient gateway statuses
     // (408/429/502/503/504); only re-loop here for the other 5xx (500/501/…)
     // so an idempotent /checkout or /complete still survives a backend blip
     // without double-retrying the statuses the auth layer just exhausted.
     if (
-      res.status >= 500 &&
-      res.status < 600 &&
-      !isTransientHTTPStatus(res.status) &&
+      status >= 500 &&
+      status < 600 &&
+      !isTransientHTTPStatus(status) &&
       attempt < delays.length
     ) {
       const ms = delays[attempt]! + Math.floor(Math.random() * 250);
       core.warning(
-        `${urlPath}: HTTP ${res.status} (attempt ${attempt + 1}/${delays.length + 1}); ` +
+        `${urlPath}: HTTP ${status} (attempt ${attempt + 1}/${delays.length + 1}); ` +
           `retrying in ${ms}ms. body=${text.slice(0, 200)}`,
       );
       await sleep(ms);
@@ -389,7 +392,7 @@ async function postJSON<T>(
         // tolerate non-JSON body
       }
     }
-    return { status: res.status, body: parsed };
+    return { status, body: parsed };
   }
   // Unreachable: the loop above either returns or continues with `attempt < delays.length`.
   return { status: 0, body: null };
@@ -480,6 +483,7 @@ async function uploadOrchScreenshot(
         method: "POST",
         headers: { Authorization: `Bearer ${bearer}` },
         body: form,
+        signal: timeoutSignal(UPLOAD_REQUEST_TIMEOUT_MS),
       });
     });
   } catch (err) {

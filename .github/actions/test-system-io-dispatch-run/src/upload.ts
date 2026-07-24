@@ -14,6 +14,7 @@ import * as core from "@actions/core";
 import {
   JSON_REQUEST_TIMEOUT_MS,
   UPLOAD_REQUEST_TIMEOUT_MS,
+  fetchTextWithAuthRetry,
   fetchWithAuthRetry,
   getBearer,
   timeoutSignal,
@@ -192,7 +193,8 @@ async function postJSON<T>(
   urlPath: string,
   body: Record<string, unknown>,
 ): Promise<PostResponse<T>> {
-  const res = await fetchWithAuthRetry(async () => {
+  // Body consumed inside the retry scope so a stall mid-body is retried.
+  const { status, text } = await fetchTextWithAuthRetry(async () => {
     const bearer = await getBearer(cfg.audience);
     return fetch(`${cfg.baseURL}${urlPath}`, {
       method: "POST",
@@ -201,7 +203,6 @@ async function postJSON<T>(
       signal: timeoutSignal(JSON_REQUEST_TIMEOUT_MS),
     });
   });
-  const text = await res.text();
   let parsed: T | null = null;
   if (text.length) {
     try {
@@ -210,5 +211,5 @@ async function postJSON<T>(
       // tolerate non-JSON body
     }
   }
-  return { status: res.status, body: parsed };
+  return { status, body: parsed };
 }

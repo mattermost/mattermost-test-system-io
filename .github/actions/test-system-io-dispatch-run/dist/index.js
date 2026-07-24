@@ -24543,6 +24543,7 @@ var TOKEN_REFRESH_AGE_MS = 5 * 60 * 1e3;
 var TRANSIENT_HTTP_STATUS = /* @__PURE__ */ new Set([408, 429, 502, 503, 504]);
 var JSON_REQUEST_TIMEOUT_MS = 3e4;
 var UPLOAD_REQUEST_TIMEOUT_MS = 12e4;
+var MAX_RETRY_AFTER_MS = 3e4;
 function isTransientHTTPStatus(status) {
   return TRANSIENT_HTTP_STATUS.has(status);
 }
@@ -24576,13 +24577,18 @@ function parseRetryAfterMs(res) {
   }
   const asSeconds = Number(raw);
   if (Number.isFinite(asSeconds) && asSeconds >= 0) {
-    return asSeconds * 1e3;
+    return Math.min(asSeconds * 1e3, MAX_RETRY_AFTER_MS);
   }
   const asDate = Date.parse(raw);
   if (!Number.isNaN(asDate)) {
-    return Math.max(0, asDate - Date.now());
+    return Math.min(MAX_RETRY_AFTER_MS, Math.max(0, asDate - Date.now()));
   }
   return 0;
+}
+function isRetryableFetchError(err) {
+  const e = err;
+  const code = e?.cause?.code ?? e?.code;
+  return e?.name === "TypeError" || e?.name === "TimeoutError" || e?.name === "AbortError" || code === "UND_ERR_SOCKET" || code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT" || code === "ECONNRESET" || code === "ETIMEDOUT" || code === "EAI_AGAIN" || code === "ENOTFOUND";
 }
 async function fetchWithRetry(makeRequest, attempts = 4) {
   let lastErr;
@@ -24601,12 +24607,9 @@ async function fetchWithRetry(makeRequest, attempts = 4) {
       await sleep(delayMs);
     } catch (err) {
       lastErr = err;
-      const e = err;
-      const code = e?.cause?.code ?? e?.code;
-      const retryable = e?.name === "TypeError" || e?.name === "TimeoutError" || e?.name === "AbortError" || code === "UND_ERR_SOCKET" || code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT" || code === "ECONNRESET" || code === "ETIMEDOUT" || code === "EAI_AGAIN" || code === "ENOTFOUND";
-      if (!retryable || i === attempts - 1) throw err;
+      if (!isRetryableFetchError(err) || i === attempts - 1) throw err;
       const delayMs = 500 * 2 ** i;
-      info(`fetch transient failure (${code ?? e.name}); retrying in ${delayMs}ms`);
+      info(`fetch transient failure; retrying in ${delayMs}ms`);
       await sleep(delayMs);
     }
   }
@@ -24619,6 +24622,42 @@ async function fetchWithAuthRetry(makeRequest) {
     info("401 \u2014 invalidating cached OIDC token and retrying once");
     invalidateToken();
     res = await fetchWithRetry(makeRequest);
+  }
+  return res;
+}
+async function requestTextWithRetry(makeRequest, attempts = 4) {
+  let lastErr;
+  let lastRes;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await makeRequest();
+      if (TRANSIENT_HTTP_STATUS.has(res.status) && i < attempts - 1) {
+        lastRes = { status: res.status, text: "" };
+        const delayMs = Math.max(500 * 2 ** i, parseRetryAfterMs(res));
+        await res.text().catch(() => void 0);
+        info(`HTTP ${res.status} from upstream; retrying in ${delayMs}ms`);
+        await sleep(delayMs);
+        continue;
+      }
+      const text = await res.text();
+      return { status: res.status, text };
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableFetchError(err) || i === attempts - 1) throw err;
+      const delayMs = 500 * 2 ** i;
+      info(`fetch transient failure; retrying in ${delayMs}ms`);
+      await sleep(delayMs);
+    }
+  }
+  if (lastRes) return lastRes;
+  throw lastErr;
+}
+async function fetchTextWithAuthRetry(makeRequest) {
+  let res = await requestTextWithRetry(makeRequest);
+  if (res.status === 401) {
+    info("401 \u2014 invalidating cached OIDC token and retrying once");
+    invalidateToken();
+    res = await requestTextWithRetry(makeRequest);
   }
   return res;
 }
@@ -25041,7 +25080,7 @@ function identityFields(c) {
   return body;
 }
 async function postJSON(cfg, urlPath, body) {
-  const res = await fetchWithAuthRetry(async () => {
+  const { status, text } = await fetchTextWithAuthRetry(async () => {
     const bearer = await getBearer(cfg.audience);
     return fetch(`${cfg.baseURL}${urlPath}`, {
       method: "POST",
@@ -25050,7 +25089,6 @@ async function postJSON(cfg, urlPath, body) {
       signal: timeoutSignal(JSON_REQUEST_TIMEOUT_MS)
     });
   });
-  const text = await res.text();
   let parsed = null;
   if (text.length) {
     try {
@@ -25058,7 +25096,7 @@ async function postJSON(cfg, urlPath, body) {
     } catch {
     }
   }
-  return { status: res.status, body: parsed };
+  return { status, body: parsed };
 }
 
 // src/main.ts
@@ -25276,7 +25314,7 @@ async function resolveJobId(token, ghJobName) {
 async function postJSON2(cfg, urlPath, body) {
   const delays = [500, 1500, 4e3];
   for (let attempt = 0; attempt <= delays.length; attempt++) {
-    const res = await fetchWithAuthRetry(async () => {
+    const { status, text } = await fetchTextWithAuthRetry(async () => {
       const bearer = await getBearer(cfg.audience);
       return fetch(`${cfg.baseURL}${urlPath}`, {
         method: "POST",
@@ -25285,11 +25323,10 @@ async function postJSON2(cfg, urlPath, body) {
         signal: timeoutSignal(JSON_REQUEST_TIMEOUT_MS)
       });
     });
-    const text = await res.text();
-    if (res.status >= 500 && res.status < 600 && !isTransientHTTPStatus(res.status) && attempt < delays.length) {
+    if (status >= 500 && status < 600 && !isTransientHTTPStatus(status) && attempt < delays.length) {
       const ms = delays[attempt] + Math.floor(Math.random() * 250);
       warning(
-        `${urlPath}: HTTP ${res.status} (attempt ${attempt + 1}/${delays.length + 1}); retrying in ${ms}ms. body=${text.slice(0, 200)}`
+        `${urlPath}: HTTP ${status} (attempt ${attempt + 1}/${delays.length + 1}); retrying in ${ms}ms. body=${text.slice(0, 200)}`
       );
       await sleep2(ms);
       continue;
@@ -25301,7 +25338,7 @@ async function postJSON2(cfg, urlPath, body) {
       } catch {
       }
     }
-    return { status: res.status, body: parsed };
+    return { status, body: parsed };
   }
   return { status: 0, body: null };
 }
@@ -25354,7 +25391,8 @@ async function uploadOrchScreenshot(cfg, specPath, absPath) {
       return fetch(`${cfg.baseURL}/api/v1/orchestration/screenshots`, {
         method: "POST",
         headers: { Authorization: `Bearer ${bearer}` },
-        body: form
+        body: form,
+        signal: timeoutSignal(UPLOAD_REQUEST_TIMEOUT_MS)
       });
     });
   } catch (err) {

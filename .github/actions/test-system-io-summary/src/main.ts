@@ -99,6 +99,10 @@ export async function run(): Promise<void> {
     gh_run_id: compositeIdentity.gh_run_id,
     name: compositeIdentity.name,
     gh_run_attempt: compositeIdentity.gh_run_attempt,
+    // We render only status/counts/tests/durations — never the per-unit
+    // detail — so request the lightweight snapshot to avoid downloading the
+    // full (potentially multi-MB) units[] array.
+    view: "summary",
   });
   const status = await fetchOrchestrationStatus(
     `${baseURL}/api/v1/orchestration/status`,

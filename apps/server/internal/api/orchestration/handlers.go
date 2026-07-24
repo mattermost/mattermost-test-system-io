@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/cache"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
@@ -44,6 +46,32 @@ const maxSpecsPerRunEnvVar = "TSIO_ORCH_MAX_SPECS_PER_RUN"
 // (other workers leased, retest pool non-empty). The worker is expected to
 // sleep this long and re-poll, instead of exiting on queue_empty.
 const checkoutRetryAfterMs = 5000
+
+// defaultStatusCacheTTLMs bounds staleness of the /orchestration/status
+// snapshot. It sits below the dashboard's ~5s poll cadence so hundreds of
+// concurrent viewers of one live run collapse onto a single backing query per
+// window, while remaining fresh enough that the poll (a WebSocket safety net)
+// still reflects progress promptly. Override via TSIO_ORCH_STATUS_CACHE_TTL_MS;
+// a value <= 0 disables caching (used by tests that assert read-after-write).
+const defaultStatusCacheTTLMs = 2000
+
+// statusCacheTTLEnvVar is the override knob for defaultStatusCacheTTLMs.
+const statusCacheTTLEnvVar = "TSIO_ORCH_STATUS_CACHE_TTL_MS"
+
+// resolveStatusCacheTTL reads TSIO_ORCH_STATUS_CACHE_TTL_MS. Missing/invalid
+// falls back to the default; an explicit non-positive value disables caching
+// and returns a non-positive duration.
+func resolveStatusCacheTTL() time.Duration {
+	raw := os.Getenv(statusCacheTTLEnvVar)
+	if raw == "" {
+		return defaultStatusCacheTTLMs * time.Millisecond
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultStatusCacheTTLMs * time.Millisecond
+	}
+	return time.Duration(ms) * time.Millisecond
+}
 
 // Handlers bundles the orchestration HTTP handlers. All fields are populated
 // by server.Build; nil-checks are the responsibility of individual handler
@@ -68,6 +96,21 @@ type Handlers struct {
 	// MaxScreenshotBytes caps the size of a single multipart screenshot
 	// upload. Default 10 * 1024 * 1024.
 	MaxScreenshotBytes int64
+
+	// statusCache memoizes /orchestration/status response bodies per
+	// (identity, view) for a short TTL so concurrent polling dashboards
+	// collapse onto one DB read per window. Lazily initialized; nil when
+	// caching is disabled (TTL <= 0).
+	statusCacheOnce sync.Once
+	statusCache     *cache.TTLCache
+}
+
+func (h *Handlers) initStatusCache() {
+	h.statusCacheOnce.Do(func() {
+		if ttl := resolveStatusCacheTTL(); ttl > 0 {
+			h.statusCache = cache.New(ttl)
+		}
+	})
 }
 
 // ---------- request/response bodies ----------
@@ -476,6 +519,7 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 // can fetch the snapshot. The composite identity is required as input, so
 // no enumeration of unrelated runs is possible without already knowing it.
 func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
+	h.initStatusCache()
 	q := r.URL.Query()
 	fields := identityFields{
 		Repository:   q.Get("repository"),
@@ -491,8 +535,27 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", ierr.Error())
 		return
 	}
+	// view=summary omits the (potentially multi-MB) per-unit + per-attempt
+	// detail, returning only the run snapshot, counts, tests, and durations.
+	// CI consumers and live progress indicators that just track counts should
+	// prefer it; the default keeps the full units[] for the dashboard's grid.
+	summary := q.Get("view") == "summary"
 
-	snap, err := h.Store.GetRunWithUnits(r.Context(), identity)
+	// Cache key: identity tuple + view. Collapses concurrent polls of the
+	// same run onto one backing query per TTL window. When caching is
+	// disabled (TTL <= 0) the compute runs inline for a fresh read.
+	var (
+		body []byte
+		err  error
+	)
+	if h.statusCache != nil {
+		key := statusCacheKey(identity, summary)
+		body, err = h.statusCache.Get(r.Context(), key, func(ctx context.Context) ([]byte, error) {
+			return h.computeStatus(ctx, identity, summary)
+		})
+	} else {
+		body, err = h.computeStatus(r.Context(), identity, summary)
+	}
 	if err != nil {
 		if errors.Is(err, orchestration.ErrNotFound) {
 			api.WriteError(w, r, api.ErrNotFound)
@@ -501,9 +564,49 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, err)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=2, stale-while-revalidate=5")
+	_, _ = w.Write(body) //nolint:gosec // G705 — JSON response, not HTML
+}
 
-	out := runSnapshotPayload(snap.Run)
-	out["units"] = unitsPayload(snap.Units)
+// statusCacheKey builds the per-(identity, view) cache key.
+func statusCacheKey(identity orchestration.CompositeIdentity, summary bool) string {
+	view := "full"
+	if summary {
+		view = "summary"
+	}
+	return strings.Join([]string{
+		view, identity.Repository, identity.CommitSHA, identity.GHRunID,
+		identity.Name, identity.GHRunAttempt,
+	}, "\x00")
+}
+
+// computeStatus runs the DB reads for a status snapshot and marshals the
+// response body. The `units` relation (and its per-attempt test_cases JSONB,
+// which dominates the payload and query cost on large runs) is fetched only
+// for the full view. Returns orchestration.ErrNotFound when the run does not
+// exist so the caller can map it to 404 without the error being cached.
+func (h *Handlers) computeStatus(
+	ctx context.Context, identity orchestration.CompositeIdentity, summary bool,
+) ([]byte, error) {
+	var run *orchestration.Run
+	var out map[string]any
+	if summary {
+		r, err := h.Store.FindRunByIdentity(ctx, identity)
+		if err != nil {
+			return nil, err
+		}
+		run = r
+		out = runSnapshotPayload(run)
+	} else {
+		snap, err := h.Store.GetRunWithUnits(ctx, identity)
+		if err != nil {
+			return nil, err
+		}
+		run = snap.Run
+		out = runSnapshotPayload(run)
+		out["units"] = unitsPayload(snap.Units)
+	}
 
 	// Best-effort enrichment with the test-case rollup. CI consumers
 	// (test-system-io-summary action → commit-status description) want
@@ -512,11 +615,11 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 	// just omits the field in that case, matching the listing endpoints'
 	// `tests` shape. A failure here doesn't fail the request: status is
 	// the load-bearing field and was already produced above.
-	if t, terr := aggregateTestCounts(r.Context(), h.Pool, snap.Run.ID); terr == nil && t != nil {
+	if t, terr := aggregateTestCounts(ctx, h.Pool, run.ID); terr == nil && t != nil {
 		out["tests"] = t
 	} else if terr != nil {
 		h.Logger.Warn("status: aggregateTestCounts failed",
-			slog.String("run_id", snap.Run.ID.String()),
+			slog.String("run_id", run.ID.String()),
 			slog.Any("err", terr))
 	}
 
@@ -524,15 +627,15 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 	// to render `first-pass + retest` durations in the commit-status
 	// description. Best-effort: surface 0 / null when computation fails
 	// rather than failing the request.
-	if d, derr := aggregateDurations(r.Context(), h.Pool, snap.Run.ID, snap.Run.StartedAt); derr == nil && d != nil {
+	if d, derr := aggregateDurations(ctx, h.Pool, run.ID, run.StartedAt); derr == nil && d != nil {
 		out["durations"] = d
 	} else if derr != nil {
 		h.Logger.Warn("status: aggregateDurations failed",
-			slog.String("run_id", snap.Run.ID.String()),
+			slog.String("run_id", run.ID.String()),
 			slog.Any("err", derr))
 	}
 
-	writeJSON(w, http.StatusOK, out)
+	return json.Marshal(out)
 }
 
 // testCounts is the test-case-level rollup the /status endpoint exposes

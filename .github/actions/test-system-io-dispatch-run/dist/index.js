@@ -25356,6 +25356,7 @@ async function uploadOrchScreenshot(cfg, specPath, absPath) {
   }
   form.append("gh_job_id", cfg.ghJobId);
   form.append("gh_job_name", cfg.ghJobName);
+  form.append("framework", cfg.framework);
   form.append("spec_path", specPath);
   form.append("relative_path", relPath);
   form.append("file", new Blob([new Uint8Array(buf)], { type: "image/png" }), relPath);

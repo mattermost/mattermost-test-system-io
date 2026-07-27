@@ -483,6 +483,7 @@ async function attachCypressScreenshots(
     compositeIdentity: CompositeIdentity;
     ghJobId: string;
     ghJobName: string;
+    framework: string;
   },
   results: SpecResult[],
   screenshotsBySpec: Record<string, string[]>,
@@ -523,6 +524,7 @@ async function uploadOrchScreenshot(
     compositeIdentity: CompositeIdentity;
     ghJobId: string;
     ghJobName: string;
+    framework: string;
   },
   specPath: string,
   absPath: string,
@@ -541,6 +543,7 @@ async function uploadOrchScreenshot(
   }
   form.append("gh_job_id", cfg.ghJobId);
   form.append("gh_job_name", cfg.ghJobName);
+  form.append("framework", cfg.framework);
   form.append("spec_path", specPath);
   form.append("relative_path", relPath);
   // Wrap Node's Buffer in Uint8Array — same trick upload.ts uses to bridge

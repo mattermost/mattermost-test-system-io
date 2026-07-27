@@ -21,8 +21,11 @@ import type {
   CheckoutResponseBody,
   CompleteResponseBody,
   CompositeIdentity,
+  DbPoolStats,
   InvocationRecord,
+  QueueCounts,
   SpecResult,
+  WorkerCounts,
 } from "./types";
 
 const PRODUCTION_URL = "https://test-io.test.mattermost.com";
@@ -49,6 +52,10 @@ export async function run(): Promise<void> {
   const playwrightDirInput = core.getInput("playwright-dir") || "e2e-tests/playwright";
   const resultsDirInput = core.getInput("results-dir") || "results";
   const cypressDirInput = core.getInput("cypress-dir") || "e2e-tests/cypress";
+  // 0 disables the cap; see drain()'s idlePolls.
+  const maxIdlePolls = intInput("max-idle-polls", 5);
+  // Longer than the server's retry_after_ms ceiling (~7s); see drain().
+  const postFailureDelayMs = intInput("post-failure-delay-ms", 10000);
 
   let compositeIdentity: CompositeIdentity;
   try {
@@ -58,13 +65,9 @@ export async function run(): Promise<void> {
   }
   normalizeCompositeIdentity(compositeIdentity);
 
-  // The action input is the bare child name (e.g. `dispatch-run-1`),
-  // but for nested workflow_call chains the GitHub Jobs API reports the
-  // composed display name (e.g. `e2e-cypress / cypress-full-v2 /
-  // dispatch-run-1`). Persist the composed name on the server so the
-  // dashboard / orchestration data carry the framework + intermediate
-  // chain that produced the worker. The flat-workflow case (where the
-  // composed name equals the input) is unchanged.
+  // resolved.name is the GitHub Jobs API's composed display name (may
+  // differ from ghJobName for nested workflow_call chains) — persist it,
+  // not the raw input.
   const resolved = await resolveJobId(githubToken, ghJobName);
   const ghJobId = resolved.id;
   const resolvedJobName = resolved.name;
@@ -97,6 +100,8 @@ export async function run(): Promise<void> {
       workerArtifacts,
       playwrightRetries,
       playwrightProject,
+      maxIdlePolls,
+      postFailureDelayMs,
       invocations,
       nextIterationSeq: () => iterationSeq++,
     });
@@ -125,6 +130,39 @@ export async function run(): Promise<void> {
   if (drainErr) throw drainErr;
 }
 
+/**
+ * Renders the optional counts/db_pool/workers fields (present on both
+ * /checkout and /complete) as a compact log suffix. All best-effort —
+ * degrades to "" if absent.
+ */
+function formatDiagnostics(body: {
+  counts?: QueueCounts;
+  db_pool?: DbPoolStats;
+  workers?: WorkerCounts;
+}): string {
+  const parts: string[] = [];
+  const c = body.counts;
+  if (c) {
+    parts.push(
+      `queue: pending=${c.pending} leased=${c.leased} pass=${c.completed_pass} ` +
+        `fail=${c.completed_fail} skip=${c.completed_skipped} retest_eligible=${c.retest_eligible} ` +
+        `total=${c.total}`,
+    );
+  }
+  const w = body.workers;
+  if (w) {
+    parts.push(`workers: active=${w.active} seen_total=${w.seen_total}`);
+  }
+  const p = body.db_pool;
+  if (p) {
+    parts.push(
+      `db_pool: acquired=${p.acquired_conns} idle=${p.idle_conns} total=${p.total_conns}/${p.max_conns} ` +
+        `empty_acquires=${p.empty_acquire_count}`,
+    );
+  }
+  return parts.length > 0 ? ` [${parts.join(" | ")}]` : "";
+}
+
 interface DrainConfig {
   baseURL: string;
   audience: string;
@@ -138,12 +176,19 @@ interface DrainConfig {
   workerArtifacts: string;
   playwrightRetries: number;
   playwrightProject: string;
+  // 0 disables the cap. See idlePolls in drain().
+  maxIdlePolls: number;
+  // Extra sleep after reporting a retest-eligible failure, before this
+  // worker's next /checkout.
+  postFailureDelayMs: number;
   invocations: InvocationRecord[];
   nextIterationSeq: () => number;
 }
 
 async function drain(cfg: DrainConfig): Promise<void> {
   let leasesHeld = 0;
+  // Consecutive empty-poll count; reset to 0 whenever a unit is leased.
+  let idlePolls = 0;
   while (true) {
     const checkout = await postJSON<CheckoutResponseBody>(cfg, "/api/v1/orchestration/checkout", {
       ...(cfg.compositeIdentity as unknown as Record<string, unknown>),
@@ -168,26 +213,38 @@ async function drain(cfg: DrainConfig): Promise<void> {
     }
 
     const body = checkout.body!;
+    const diag = formatDiagnostics(body);
     if (body.queue_empty) {
       const retryAfterMs = Number(body.retry_after_ms);
       if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-        // Other workers in flight or retest pool non-empty — stay alive so
-        // we can pick up retest units the moment another worker reports a
-        // fresh-pass result. Sleeping clients add no extra load on the
-        // orchestrator (single read query) and let the retest pool fan out
-        // across workers instead of serializing on the slowest.
-        core.info(`queue empty; sleeping ${retryAfterMs}ms before re-polling`);
+        idlePolls += 1;
+        if (cfg.maxIdlePolls > 0 && idlePolls >= cfg.maxIdlePolls) {
+          // Self-imposed: server would still have us poll, but we've waited
+          // long enough. Other active workers can cover what remains.
+          core.info(
+            `queue empty after ${leasesHeld} unit(s); giving up after ${idlePolls} consecutive idle poll(s) ` +
+              `(max-idle-polls=${cfg.maxIdlePolls})${diag}`,
+          );
+          break;
+        }
+        core.info(
+          `queue empty; sleeping ${retryAfterMs}ms before re-polling ` +
+            `(idle poll ${idlePolls}${cfg.maxIdlePolls > 0 ? `/${cfg.maxIdlePolls}` : ""})${diag}`,
+        );
         await sleep(retryAfterMs);
         continue;
       }
-      core.info(`queue empty after ${leasesHeld} unit(s); exiting cleanly`);
+      core.info(`queue empty after ${leasesHeld} unit(s); exiting cleanly${diag}`);
       break;
     }
 
     leasesHeld += 1;
+    idlePolls = 0; // got real work; no longer in an idle stretch
     const isRetest = !!body.is_retest;
     const specPaths = (body.units || []).map((u) => u.spec_path);
-    core.info(`leased (${isRetest ? "retest" : "fresh"}): ${specPaths.join(", ")}`);
+    // Prefix with dispatch_seq (the run's FIFO order key) for log visibility.
+    const specLabels = (body.units || []).map((u) => `${u.dispatch_seq} ${u.spec_path}`);
+    core.info(`leased (${isRetest ? "retest" : "fresh"}): ${specLabels.join(", ")}${diag}`);
 
     let results: SpecResult[];
     try {
@@ -252,10 +309,31 @@ async function drain(cfg: DrainConfig): Promise<void> {
       .map((c) => c.new_state)
       .join(",");
     core.info(
-      `reported (${results.map((r) => r.status).join(",")}) → ${transitions || "(no transition)"}`,
+      `reported (${results.map((r) => r.status).join(",")}) → ${transitions || "(no transition)"}` +
+        formatDiagnostics(completeRes.body || {}),
     );
+
+    // Client-side only: delay this worker's next /checkout so another
+    // worker's poll gets a chance at the retest first. Only once pending
+    // fresh units are 0, since the server gates all retest dispatch on that.
+    const pendingElsewhere = completeRes.body?.counts?.pending;
+    if (results.some((r) => RETEST_ELIGIBLE_STATUSES.has(r.status)) && pendingElsewhere === 0) {
+      core.info(
+        `failed result reported; waiting ${cfg.postFailureDelayMs}ms before next checkout ` +
+          "so another worker's poll can pick up the retest",
+      );
+      await sleep(cfg.postFailureDelayMs);
+    }
   }
 }
+
+// Statuses the server's mapStatusesToUnitState (complete.go) treats as a
+// unit failure — any of these makes the unit retest-eligible.
+const RETEST_ELIGIBLE_STATUSES: ReadonlySet<string> = new Set([
+  "failed",
+  "timedOut",
+  "interrupted",
+]);
 
 /**
  * Resolve the runner's gh_job_id from the workflow's rendered job name.
@@ -399,7 +477,13 @@ function sleep(ms: number): Promise<void> {
  * screenshot than to fail the orchestration step.
  */
 async function attachCypressScreenshots(
-  cfg: { baseURL: string; audience: string; compositeIdentity: CompositeIdentity; ghJobId: string },
+  cfg: {
+    baseURL: string;
+    audience: string;
+    compositeIdentity: CompositeIdentity;
+    ghJobId: string;
+    ghJobName: string;
+  },
   results: SpecResult[],
   screenshotsBySpec: Record<string, string[]>,
 ): Promise<void> {
@@ -433,7 +517,13 @@ async function attachCypressScreenshots(
 }
 
 async function uploadOrchScreenshot(
-  cfg: { baseURL: string; audience: string; compositeIdentity: CompositeIdentity; ghJobId: string },
+  cfg: {
+    baseURL: string;
+    audience: string;
+    compositeIdentity: CompositeIdentity;
+    ghJobId: string;
+    ghJobName: string;
+  },
   specPath: string,
   absPath: string,
 ): Promise<{ key: string; relative_path: string } | null> {
@@ -450,6 +540,7 @@ async function uploadOrchScreenshot(
     if (v !== undefined && v !== null) form.append(k, String(v));
   }
   form.append("gh_job_id", cfg.ghJobId);
+  form.append("gh_job_name", cfg.ghJobName);
   form.append("spec_path", specPath);
   form.append("relative_path", relPath);
   // Wrap Node's Buffer in Uint8Array — same trick upload.ts uses to bridge
@@ -470,7 +561,7 @@ async function uploadOrchScreenshot(
     core.warning(`screenshot upload error (${relPath}): ${(err as Error).message}`);
     return null;
   }
-  if (res.status !== 200) {
+  if (!res.ok) {
     const text = await res.text().catch(() => "");
     core.warning(`screenshot upload ${relPath} failed: ${res.status} ${text}`);
     return null;

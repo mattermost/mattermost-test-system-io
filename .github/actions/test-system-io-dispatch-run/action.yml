@@ -59,6 +59,24 @@ inputs:
       reporter-config.json prescribes via reportDir + reportFilename).
     required: false
     default: "playwright"
+  max-idle-polls:
+    description: >
+      Maximum number of consecutive empty-queue /checkout polls before this
+      worker gives up and exits on its own. Resets to 0 whenever the worker
+      leases a unit. Purely client-side; other active workers can cover
+      whatever remains. Set to "0" to disable and poll until the server
+      says stop.
+    required: false
+    default: "5"
+  post-failure-delay-ms:
+    description: >
+      Extra sleep, in milliseconds, after this worker reports a
+      retest-eligible result (failed / timedOut / interrupted), before its
+      next /checkout call. Gives another worker's poll a chance to pick up
+      the retest first. Set to "0" to disable and call /checkout again
+      immediately.
+    required: false
+    default: "10000"
 
   # ── Playwright-specific ──────────────────────────────────────────────
   playwright-dir:

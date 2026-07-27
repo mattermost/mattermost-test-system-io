@@ -25045,6 +25045,8 @@ async function run() {
   const playwrightDirInput = getInput("playwright-dir") || "e2e-tests/playwright";
   const resultsDirInput = getInput("results-dir") || "results";
   const cypressDirInput = getInput("cypress-dir") || "e2e-tests/cypress";
+  const maxIdlePolls = intInput("max-idle-polls", 5);
+  const postFailureDelayMs = intInput("post-failure-delay-ms", 1e4);
   let compositeIdentity;
   try {
     compositeIdentity = JSON.parse(compositeIdentityRaw);
@@ -25078,6 +25080,8 @@ async function run() {
       workerArtifacts,
       playwrightRetries,
       playwrightProject,
+      maxIdlePolls,
+      postFailureDelayMs,
       invocations,
       nextIterationSeq: () => iterationSeq++
     });
@@ -25103,8 +25107,29 @@ async function run() {
   }
   if (drainErr) throw drainErr;
 }
+function formatDiagnostics(body) {
+  const parts = [];
+  const c = body.counts;
+  if (c) {
+    parts.push(
+      `queue: pending=${c.pending} leased=${c.leased} pass=${c.completed_pass} fail=${c.completed_fail} skip=${c.completed_skipped} retest_eligible=${c.retest_eligible} total=${c.total}`
+    );
+  }
+  const w = body.workers;
+  if (w) {
+    parts.push(`workers: active=${w.active} seen_total=${w.seen_total}`);
+  }
+  const p = body.db_pool;
+  if (p) {
+    parts.push(
+      `db_pool: acquired=${p.acquired_conns} idle=${p.idle_conns} total=${p.total_conns}/${p.max_conns} empty_acquires=${p.empty_acquire_count}`
+    );
+  }
+  return parts.length > 0 ? ` [${parts.join(" | ")}]` : "";
+}
 async function drain(cfg) {
   let leasesHeld = 0;
+  let idlePolls = 0;
   while (true) {
     const checkout = await postJSON2(cfg, "/api/v1/orchestration/checkout", {
       ...cfg.compositeIdentity,
@@ -25125,20 +25150,32 @@ async function drain(cfg) {
       throw new Error(`checkout failed: ${checkout.status} ${JSON.stringify(checkout.body)}`);
     }
     const body = checkout.body;
+    const diag = formatDiagnostics(body);
     if (body.queue_empty) {
       const retryAfterMs = Number(body.retry_after_ms);
       if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-        info(`queue empty; sleeping ${retryAfterMs}ms before re-polling`);
+        idlePolls += 1;
+        if (cfg.maxIdlePolls > 0 && idlePolls >= cfg.maxIdlePolls) {
+          info(
+            `queue empty after ${leasesHeld} unit(s); giving up after ${idlePolls} consecutive idle poll(s) (max-idle-polls=${cfg.maxIdlePolls})${diag}`
+          );
+          break;
+        }
+        info(
+          `queue empty; sleeping ${retryAfterMs}ms before re-polling (idle poll ${idlePolls}${cfg.maxIdlePolls > 0 ? `/${cfg.maxIdlePolls}` : ""})${diag}`
+        );
         await sleep2(retryAfterMs);
         continue;
       }
-      info(`queue empty after ${leasesHeld} unit(s); exiting cleanly`);
+      info(`queue empty after ${leasesHeld} unit(s); exiting cleanly${diag}`);
       break;
     }
     leasesHeld += 1;
+    idlePolls = 0;
     const isRetest = !!body.is_retest;
     const specPaths = (body.units || []).map((u) => u.spec_path);
-    info(`leased (${isRetest ? "retest" : "fresh"}): ${specPaths.join(", ")}`);
+    const specLabels = (body.units || []).map((u) => `${u.dispatch_seq} ${u.spec_path}`);
+    info(`leased (${isRetest ? "retest" : "fresh"}): ${specLabels.join(", ")}${diag}`);
     let results;
     try {
       if (cfg.framework === "cypress") {
@@ -25195,10 +25232,22 @@ async function drain(cfg) {
     }
     const transitions = (completeRes.body?.unit_states_changed || []).map((c) => c.new_state).join(",");
     info(
-      `reported (${results.map((r) => r.status).join(",")}) \u2192 ${transitions || "(no transition)"}`
+      `reported (${results.map((r) => r.status).join(",")}) \u2192 ${transitions || "(no transition)"}` + formatDiagnostics(completeRes.body || {})
     );
+    const pendingElsewhere = completeRes.body?.counts?.pending;
+    if (results.some((r) => RETEST_ELIGIBLE_STATUSES.has(r.status)) && pendingElsewhere === 0) {
+      info(
+        `failed result reported; waiting ${cfg.postFailureDelayMs}ms before next checkout so another worker's poll can pick up the retest`
+      );
+      await sleep2(cfg.postFailureDelayMs);
+    }
   }
 }
+var RETEST_ELIGIBLE_STATUSES = /* @__PURE__ */ new Set([
+  "failed",
+  "timedOut",
+  "interrupted"
+]);
 async function resolveJobId(token, ghJobName) {
   const octokit = getOctokit(token);
   const { owner, repo } = context2.repo;
@@ -25306,6 +25355,7 @@ async function uploadOrchScreenshot(cfg, specPath, absPath) {
     if (v !== void 0 && v !== null) form.append(k, String(v));
   }
   form.append("gh_job_id", cfg.ghJobId);
+  form.append("gh_job_name", cfg.ghJobName);
   form.append("spec_path", specPath);
   form.append("relative_path", relPath);
   form.append("file", new Blob([new Uint8Array(buf)], { type: "image/png" }), relPath);
@@ -25323,7 +25373,7 @@ async function uploadOrchScreenshot(cfg, specPath, absPath) {
     warning(`screenshot upload error (${relPath}): ${err.message}`);
     return null;
   }
-  if (res.status !== 200) {
+  if (!res.ok) {
     const text = await res.text().catch(() => "");
     warning(`screenshot upload ${relPath} failed: ${res.status} ${text}`);
     return null;

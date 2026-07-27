@@ -39,6 +39,37 @@ export interface SpecResult {
 
 export interface CheckoutUnit {
   spec_path: string;
+  // FIFO dispatch order (0-indexed), for log visibility.
+  dispatch_seq: number;
+}
+
+// Mirrors /status's "counts" object. Present on every /checkout response.
+export interface QueueCounts {
+  pending: number;
+  leased: number;
+  completed_pass: number;
+  completed_fail: number;
+  completed_skipped: number;
+  abandoned: number;
+  retest_eligible: number;
+  total: number;
+}
+
+// Snapshot of the server's shared pgxpool.Pool counters (server-wide, not
+// scoped to this run).
+export interface DbPoolStats {
+  total_conns: number;
+  acquired_conns: number;
+  idle_conns: number;
+  max_conns: number;
+  empty_acquire_count: number;
+}
+
+// Worker-presence snapshot for this run. `active` holds an unreleased
+// lease; `seen_total` has ever held one, active or released.
+export interface WorkerCounts {
+  active: number;
+  seen_total: number;
 }
 
 export interface CheckoutResponseBody {
@@ -46,12 +77,20 @@ export interface CheckoutResponseBody {
   is_retest?: boolean;
   retry_after_ms?: number;
   units?: CheckoutUnit[];
+  counts?: QueueCounts;
+  db_pool?: DbPoolStats;
+  workers?: WorkerCounts;
   error?: string;
   message?: string;
 }
 
 export interface CompleteResponseBody {
   unit_states_changed?: { new_state: string }[];
+  // Same fields as CheckoutResponseBody — present on pass, fail, and
+  // idempotent replays alike.
+  counts?: QueueCounts;
+  db_pool?: DbPoolStats;
+  workers?: WorkerCounts;
 }
 
 export interface ReportsRegisterResponseBody {

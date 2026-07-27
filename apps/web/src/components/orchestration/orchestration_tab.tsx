@@ -392,9 +392,16 @@ interface SpecListRowProps {
   rowNumber: number;
   /** Active normalized (lowercased) search string to highlight in matched text. */
   searchQuery: string;
+  /**
+   * Every gh_job_name in the run, not just this row's attempts.
+   * workerSlot() only trusts a trailing number once another name shares
+   * its prefix — scoped to a single-attempt row, that never matches, so
+   * the badge always fell back to "1" instead of the real worker slot.
+   */
+  allJobNames: ReadonlyArray<string | null | undefined>;
 }
 
-function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
+function SpecListRow({ row, rowNumber, searchQuery, allJobNames }: SpecListRowProps) {
   const [expanded, setExpanded] = useState(false);
   // A leased unit that already has a prior attempt is a retest in flight
   // — a worker is currently re-running this spec because an earlier lease
@@ -482,9 +489,8 @@ function SpecListRow({ row, rowNumber, searchQuery }: SpecListRowProps) {
                 {row.attempts.length > 0 && (
                   <span className="ml-1 inline-flex flex-shrink-0 items-center gap-0.5">
                     {(() => {
-                      const siblingJobNames = row.attempts.map((att) => att.gh_job_name);
                       return row.attempts.map((a, i) => {
-                        const slot = workerSlot(a.gh_job_name, i + 1, siblingJobNames);
+                        const slot = workerSlot(a.gh_job_name, i + 1, allJobNames);
                         const inFlight = !a.status && !a.expired;
                         const passed = a.status === 'passed' || a.status === 'flaky';
                         const failed =
@@ -898,6 +904,12 @@ function SpecList({ run }: { run: RunSnapshot }) {
   const units = run.units ?? [];
   const allRows = useMemo(() => buildSpecRows(units), [units]);
   const tcCounts = useMemo(() => computeTestCaseCounts(units), [units]);
+  // Run-wide, not per-unit — see the allJobNames doc comment on
+  // SpecListRowProps for why the sibling set must span the whole run.
+  const allJobNames = useMemo(
+    () => units.flatMap((u) => u.attempts.map((a) => a.gh_job_name)),
+    [units],
+  );
 
   const [statusFilter, setStatusFilter] = useState<SpecListFilter>('all');
   // Three-stage search pipeline mirroring the Reports tab:
@@ -1266,6 +1278,7 @@ function SpecList({ run }: { run: RunSnapshot }) {
                 row={row}
                 rowNumber={originalIdx + 1}
                 searchQuery={normalizedSearch}
+                allJobNames={allJobNames}
               />
             );
           })

@@ -24616,10 +24616,17 @@ function runUnit(cfg, iterationSeq, specPaths) {
     throw new Error(`playwright results.json missing: ${playwrightJsonPath}`);
   }
   const json = JSON.parse(fs2.readFileSync(playwrightJsonPath, "utf8"));
-  const results = specPaths.map((p) => aggregateSpec(json, p, durationMs));
+  const results = [];
+  const screenshots = [];
+  for (const p of specPaths) {
+    const { result, screenshots: specScreenshots } = aggregateSpec(json, p, durationMs);
+    results.push(result);
+    for (const s of specScreenshots) screenshots.push({ specPath: p, ...s });
+  }
   return {
     invocation: { specPath: specPaths[0], iterDir: archivedResults, playwrightJsonPath },
-    results
+    results,
+    screenshots
   };
 }
 var RANKS = {
@@ -24632,6 +24639,7 @@ var RANKS = {
 };
 function aggregateSpec(json, specPath, fallbackDurationMs) {
   const cases = [];
+  const screenshots = [];
   let totalMs = 0;
   let worst = "skipped";
   function fileMatches(file) {
@@ -24671,6 +24679,11 @@ function aggregateSpec(json, specPath, fallbackDurationMs) {
             const err = r.errors && r.errors[0] || r.error;
             if (err?.message) tc.error_message = err.message;
             if (err?.stack) tc.error_stack = err.stack;
+            for (const a of r.attachments || []) {
+              if (a.name === "screenshot" && a.path) {
+                screenshots.push({ ordinal: tc.ordinal, absPath: a.path });
+              }
+            }
             cases.push(tc);
             totalMs += tc.duration_ms;
           }
@@ -24690,7 +24703,10 @@ function aggregateSpec(json, specPath, fallbackDurationMs) {
   }
   for (const s of json.suites || []) visit(s, [], "");
   if (cases.length === 0) {
-    return { spec_path: specPath, status: "skipped", actual_duration_ms: 0, test_cases: [] };
+    return {
+      result: { spec_path: specPath, status: "skipped", actual_duration_ms: 0, test_cases: [] },
+      screenshots: []
+    };
   }
   const out = {
     spec_path: specPath,
@@ -24703,7 +24719,7 @@ function aggregateSpec(json, specPath, fallbackDurationMs) {
   );
   if (firstFail?.error_message) out.error_message = firstFail.error_message;
   if (firstFail?.error_stack) out.error_stack = firstFail.error_stack;
-  return out;
+  return { result: out, screenshots };
 }
 function mapStatus(s) {
   switch (s) {
@@ -25205,6 +25221,7 @@ async function drain(cfg) {
         );
         cfg.invocations.push(out.invocation);
         results = out.results;
+        await attachPlaywrightScreenshots(cfg, results, out.screenshots);
       }
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
@@ -25319,17 +25336,22 @@ async function postJSON2(cfg, urlPath, body) {
 function sleep2(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
+var CYPRESS_INVALID_FILENAME_CHARS_RE = /[/\\:*?"<>|]/g;
+function stripCypressInvalidFilenameChars(title) {
+  return title.replace(CYPRESS_INVALID_FILENAME_CHARS_RE, "");
+}
 async function attachCypressScreenshots(cfg, results, screenshotsBySpec) {
   for (const spec of results) {
     const files = screenshotsBySpec[spec.spec_path];
     if (!files || files.length === 0) continue;
     const candidates = spec.test_cases.filter(
       (tc) => tc.status === "failed" || tc.status === "timedOut" || tc.status === "interrupted"
-    ).slice().sort((a, b) => b.title.length - a.title.length);
+    ).map((tc) => ({ tc, sanitizedTitle: stripCypressInvalidFilenameChars(tc.title) })).sort((a, b) => b.sanitizedTitle.length - a.sanitizedTitle.length);
     if (candidates.length === 0) continue;
     for (const absPath of files) {
       const base = path4.basename(absPath);
-      const tc = candidates.find((c) => c.title && base.includes(c.title));
+      const match = candidates.find((c) => c.sanitizedTitle && base.includes(c.sanitizedTitle));
+      const tc = match?.tc;
       if (!tc) {
         warning(`no test_case match for screenshot ${base}; skipping`);
         continue;
@@ -25339,6 +25361,21 @@ async function attachCypressScreenshots(cfg, results, screenshotsBySpec) {
       tc.attachments ??= { screenshots: [] };
       tc.attachments.screenshots.push(uploaded);
     }
+  }
+}
+async function attachPlaywrightScreenshots(cfg, results, screenshots) {
+  const bySpecPath = new Map(results.map((r) => [r.spec_path, r]));
+  for (const shot of screenshots) {
+    const spec = bySpecPath.get(shot.specPath);
+    const tc = spec?.test_cases.find((c) => c.ordinal === shot.ordinal);
+    if (!tc) {
+      warning(`no test_case match for screenshot ${path4.basename(shot.absPath)}; skipping`);
+      continue;
+    }
+    const uploaded = await uploadOrchScreenshot(cfg, shot.specPath, shot.absPath);
+    if (!uploaded) continue;
+    tc.attachments ??= { screenshots: [] };
+    tc.attachments.screenshots.push(uploaded);
   }
 }
 async function uploadOrchScreenshot(cfg, specPath, absPath) {

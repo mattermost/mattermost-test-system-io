@@ -11,7 +11,10 @@
  * `--retries` is "flaky" (counts as passed), not a hard failure. The
  * spec's overall status is the worst per-test outcome — so a spec
  * that recovers across retries reports `flaky` to the orchestrator
- * instead of `failed`, keeping it out of the retest queue.
+ * instead of `failed`, keeping it out of the retest queue. It also lifts
+ * each result's `attachments[]` (Playwright links screenshots directly
+ * to the result that produced them) into a flat `{ ordinal, absPath }`
+ * list; main.ts uploads these the same way it does for Cypress.
  */
 
 import * as fs from "node:fs";
@@ -28,11 +31,19 @@ export interface RunUnitConfig {
   playwrightProject: string;
 }
 
+export interface PlaywrightUnitResult {
+  invocation: InvocationRecord;
+  results: SpecResult[];
+  // Failure screenshot paths, tagged with the (spec_path, ordinal) of the
+  // TestCaseResult that produced them. main.ts uploads and attaches these.
+  screenshots: { specPath: string; ordinal: number; absPath: string }[];
+}
+
 export function runUnit(
   cfg: RunUnitConfig,
   iterationSeq: number,
   specPaths: string[],
-): { invocation: InvocationRecord; results: SpecResult[] } {
+): PlaywrightUnitResult {
   const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs.mkdirSync(iterDir, { recursive: true });
 
@@ -70,10 +81,17 @@ export function runUnit(
   }
 
   const json = JSON.parse(fs.readFileSync(playwrightJsonPath, "utf8")) as PlaywrightJson;
-  const results = specPaths.map((p) => aggregateSpec(json, p, durationMs));
+  const results: SpecResult[] = [];
+  const screenshots: { specPath: string; ordinal: number; absPath: string }[] = [];
+  for (const p of specPaths) {
+    const { result, screenshots: specScreenshots } = aggregateSpec(json, p, durationMs);
+    results.push(result);
+    for (const s of specScreenshots) screenshots.push({ specPath: p, ...s });
+  }
   return {
     invocation: { specPath: specPaths[0]!, iterDir: archivedResults, playwrightJsonPath },
     results,
+    screenshots,
   };
 }
 
@@ -90,12 +108,18 @@ interface PlaywrightSpec {
 interface PlaywrightTest {
   results?: PlaywrightResult[];
 }
+interface PlaywrightAttachment {
+  name?: string;
+  contentType?: string;
+  path?: string;
+}
 interface PlaywrightResult {
   status?: string;
   retry?: number;
   duration?: number;
   errors?: { message?: string; stack?: string }[];
   error?: { message?: string; stack?: string };
+  attachments?: PlaywrightAttachment[];
 }
 interface PlaywrightJson {
   suites?: PlaywrightSuite[];
@@ -114,8 +138,9 @@ export function aggregateSpec(
   json: PlaywrightJson,
   specPath: string,
   fallbackDurationMs: number,
-): SpecResult {
+): { result: SpecResult; screenshots: { ordinal: number; absPath: string }[] } {
   const cases: TestCaseResult[] = [];
+  const screenshots: { ordinal: number; absPath: string }[] = [];
   let totalMs = 0;
   let worst: TestStatus = "skipped";
 
@@ -162,6 +187,11 @@ export function aggregateSpec(
             const err = (r.errors && r.errors[0]) || r.error;
             if (err?.message) tc.error_message = err.message;
             if (err?.stack) tc.error_stack = err.stack;
+            for (const a of r.attachments || []) {
+              if (a.name === "screenshot" && a.path) {
+                screenshots.push({ ordinal: tc.ordinal, absPath: a.path });
+              }
+            }
             cases.push(tc);
             totalMs += tc.duration_ms;
           }
@@ -183,7 +213,10 @@ export function aggregateSpec(
   for (const s of json.suites || []) visit(s, [], "");
 
   if (cases.length === 0) {
-    return { spec_path: specPath, status: "skipped", actual_duration_ms: 0, test_cases: [] };
+    return {
+      result: { spec_path: specPath, status: "skipped", actual_duration_ms: 0, test_cases: [] },
+      screenshots: [],
+    };
   }
 
   const out: SpecResult = {
@@ -197,7 +230,7 @@ export function aggregateSpec(
   );
   if (firstFail?.error_message) out.error_message = firstFail.error_message;
   if (firstFail?.error_stack) out.error_stack = firstFail.error_stack;
-  return out;
+  return { result: out, screenshots };
 }
 
 function mapStatus(s: string | undefined): TestStatus {

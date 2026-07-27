@@ -87,6 +87,15 @@ async function completeOnce(cfg, identity, results) {
   return resp.body;
 }
 
+// Mirrors main.ts's stripCypressInvalidFilenameChars: Cypress strips these
+// filesystem-invalid characters from the test title when writing the
+// screenshot filename, so we strip them from tc.title before matching.
+const CYPRESS_INVALID_FILENAME_CHARS_RE = /[/\\:*?"<>|]/g;
+
+function stripCypressInvalidFilenameChars(title) {
+  return title.replace(CYPRESS_INVALID_FILENAME_CHARS_RE, '');
+}
+
 // attachCypressScreenshots uploads each recorded screenshot for this
 // leased batch (lease must still be held — server 400s otherwise) and
 // attaches the result onto the longest-title-matching failed test_case.
@@ -97,13 +106,14 @@ async function attachCypressScreenshots(cfg, picks) {
 
     const candidates = result.test_cases
       .filter((tc) => tc.status === 'failed' || tc.status === 'timedOut' || tc.status === 'interrupted')
-      .slice()
-      .sort((a, b) => b.title.length - a.title.length);
+      .map((tc) => ({ tc, sanitizedTitle: stripCypressInvalidFilenameChars(tc.title) }))
+      .sort((a, b) => b.sanitizedTitle.length - a.sanitizedTitle.length);
     if (candidates.length === 0) continue;
 
     for (const absPath of files) {
       const base = path.basename(absPath);
-      const tc = candidates.find((c) => c.title && base.includes(c.title));
+      const match = candidates.find((c) => c.sanitizedTitle && base.includes(c.sanitizedTitle));
+      const tc = match && match.tc;
       if (!tc) {
         cfg.log(`no test_case match for screenshot ${base}; skipping`);
         continue;

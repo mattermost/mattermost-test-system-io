@@ -260,10 +260,10 @@ async function drain(cfg: DrainConfig): Promise<void> {
         );
         cfg.invocations.push(out.invocation);
         results = out.results;
-        // Cypress's Mochawesome JSON doesn't carry attachment paths the way
-        // Playwright's reporter does, so failure screenshots have to be
-        // uploaded out-of-band and stitched onto the matching test_cases
-        // before /complete sees them.
+        // Cypress only writes a bare (title-derived) filename to disk, with
+        // no link back to the test that produced it, so failure screenshots
+        // have to be matched by filename and uploaded out-of-band before
+        // /complete sees them.
         await attachCypressScreenshots(cfg, results, out.screenshotsBySpec);
       } else {
         const out = runPlaywrightUnit(
@@ -279,6 +279,10 @@ async function drain(cfg: DrainConfig): Promise<void> {
         );
         cfg.invocations.push(out.invocation);
         results = out.results;
+        // Playwright's JSON reporter links each screenshot directly to the
+        // test result that produced it, so no filename matching is needed —
+        // just upload and attach to the (spec_path, ordinal) it names.
+        await attachPlaywrightScreenshots(cfg, results, out.screenshots);
       }
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
@@ -467,15 +471,23 @@ function sleep(ms: number): Promise<void> {
  *
  * Filename → test_case match: Cypress writes
  * `<Suite chain joined by " -- "> -- <test title> (failed)[ (attempt N)].png`,
- * so a screenshot whose basename includes `tc.title` belongs to that
- * test. When multiple tests in a spec share a title prefix, the longest
- * matching title wins (so "MM-T4417_1 ..." doesn't accidentally claim a
- * "MM-T4417_10 ..." shot).
+ * stripping filesystem-invalid characters (`/\:*?"<>|`) from the title in
+ * the process, so we strip the same characters from `tc.title` before
+ * checking whether a screenshot's basename includes it. When multiple
+ * tests in a spec share a title prefix, the longest matching title wins
+ * (so "MM-T4417_1 ..." doesn't accidentally claim a "MM-T4417_10 ..."
+ * shot).
  *
  * Best-effort: a screenshot upload error logs a warning and drops the
  * single file. The /complete payload still goes out — better to lose a
  * screenshot than to fail the orchestration step.
  */
+const CYPRESS_INVALID_FILENAME_CHARS_RE = /[/\\:*?"<>|]/g;
+
+function stripCypressInvalidFilenameChars(title: string): string {
+  return title.replace(CYPRESS_INVALID_FILENAME_CHARS_RE, "");
+}
+
 async function attachCypressScreenshots(
   cfg: {
     baseURL: string;
@@ -492,19 +504,20 @@ async function attachCypressScreenshots(
     const files = screenshotsBySpec[spec.spec_path];
     if (!files || files.length === 0) continue;
 
-    // Sort failing-eligible test_cases by descending title length so longer
-    // titles match before shorter prefixes of theirs.
+    // Sort failing-eligible test_cases by descending sanitized-title length
+    // so longer titles match before shorter prefixes of theirs.
     const candidates = spec.test_cases
       .filter(
         (tc) => tc.status === "failed" || tc.status === "timedOut" || tc.status === "interrupted",
       )
-      .slice()
-      .sort((a, b) => b.title.length - a.title.length);
+      .map((tc) => ({ tc, sanitizedTitle: stripCypressInvalidFilenameChars(tc.title) }))
+      .sort((a, b) => b.sanitizedTitle.length - a.sanitizedTitle.length);
     if (candidates.length === 0) continue;
 
     for (const absPath of files) {
       const base = path.basename(absPath);
-      const tc = candidates.find((c) => c.title && base.includes(c.title));
+      const match = candidates.find((c) => c.sanitizedTitle && base.includes(c.sanitizedTitle));
+      const tc = match?.tc;
       if (!tc) {
         core.warning(`no test_case match for screenshot ${base}; skipping`);
         continue;
@@ -514,6 +527,39 @@ async function attachCypressScreenshots(
       tc.attachments ??= { screenshots: [] };
       tc.attachments.screenshots.push(uploaded);
     }
+  }
+}
+
+/**
+ * Upload each spec's Playwright failure screenshots and attach the
+ * returned keys to the (spec_path, ordinal)-identified test_case —
+ * Playwright's reporter links attachments to results directly, so no
+ * filename-matching heuristic is needed here (unlike Cypress).
+ */
+async function attachPlaywrightScreenshots(
+  cfg: {
+    baseURL: string;
+    audience: string;
+    compositeIdentity: CompositeIdentity;
+    ghJobId: string;
+    ghJobName: string;
+    framework: string;
+  },
+  results: SpecResult[],
+  screenshots: { specPath: string; ordinal: number; absPath: string }[],
+): Promise<void> {
+  const bySpecPath = new Map(results.map((r) => [r.spec_path, r]));
+  for (const shot of screenshots) {
+    const spec = bySpecPath.get(shot.specPath);
+    const tc = spec?.test_cases.find((c) => c.ordinal === shot.ordinal);
+    if (!tc) {
+      core.warning(`no test_case match for screenshot ${path.basename(shot.absPath)}; skipping`);
+      continue;
+    }
+    const uploaded = await uploadOrchScreenshot(cfg, shot.specPath, shot.absPath);
+    if (!uploaded) continue;
+    tc.attachments ??= { screenshots: [] };
+    tc.attachments.screenshots.push(uploaded);
   }
 }
 

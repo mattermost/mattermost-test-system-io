@@ -65,14 +65,22 @@ if (!GROUP) {
   process.exit(2);
 }
 
-const SPEED = Math.max(0.001, parseFloat(process.env.SPEED || '1'));
+// Coerces an env var to a finite number, falling back on empty/non-numeric
+// input instead of propagating NaN (e.g. a typo'd SPEED=fast would otherwise
+// make every replayed spec finish instantly via durationMs / NaN).
+const num = (raw, fallback) => {
+  const v = Number(raw);
+  return Number.isFinite(v) ? v : fallback;
+};
+
+const SPEED = Math.max(0.001, num(process.env.SPEED, 1));
 const RETEST = process.env.RETEST !== '0' && process.env.RETEST !== 'false';
-const RETEST_BUDGET = Math.max(0, parseInt(process.env.RETEST_BUDGET || '1', 10));
-const MAX_IDLE_POLLS = Math.max(0, parseInt(process.env.MAX_IDLE_POLLS || '5', 10));
-const POST_FAILURE_DELAY_MS = Math.max(0, parseInt(process.env.POST_FAILURE_DELAY_MS || '10000', 10));
-const INJECT_LEASE_TIMEOUT_RATE = Math.min(1, Math.max(0, parseFloat(process.env.INJECT_LEASE_TIMEOUT_RATE || '0')));
+const RETEST_BUDGET = Math.max(0, Math.trunc(num(process.env.RETEST_BUDGET, 1)));
+const MAX_IDLE_POLLS = Math.max(0, Math.trunc(num(process.env.MAX_IDLE_POLLS, 5)));
+const POST_FAILURE_DELAY_MS = Math.max(0, Math.trunc(num(process.env.POST_FAILURE_DELAY_MS, 10000)));
+const INJECT_LEASE_TIMEOUT_RATE = Math.min(1, Math.max(0, num(process.env.INJECT_LEASE_TIMEOUT_RATE, 0)));
 const UPLOAD_SHARDS = process.env.UPLOAD_SHARDS === '1' || process.env.UPLOAD_SHARDS === 'true';
-const VERIFY_TIMEOUT_MS = Math.max(0, parseInt(process.env.VERIFY_TIMEOUT_MS || '120000', 10));
+const VERIFY_TIMEOUT_MS = Math.max(0, Math.trunc(num(process.env.VERIFY_TIMEOUT_MS, 120000)));
 
 const post = (p, body) => request(API_BASE, API_KEY, 'POST', p, body);
 const get = (p) => request(API_BASE, API_KEY, 'GET', p, null);

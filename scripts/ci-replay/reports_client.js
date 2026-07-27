@@ -141,8 +141,29 @@ async function uploadShardForWorker(apiBase, apiKey, identity, ghJobId, ghJobNam
     contentType: 'application/json',
   }));
 
-  const distinctIterDirs = [...new Set(distinctInvocations.map((inv) => inv.iterDir))];
+  // Cypress: each invocation already knows its own leased spec's screenshots
+  // (corpus.js pre-scopes them) — use those directly rather than walking the
+  // whole iterDir/output, which can hold sibling specs this worker never leased.
   const screenshotParts = [];
+  const withoutScreenshotFiles = [];
+  for (const inv of distinctInvocations) {
+    if (!inv.screenshotFiles || inv.screenshotFiles.length === 0) {
+      withoutScreenshotFiles.push(inv);
+      continue;
+    }
+    const outputRoot = path.join(inv.iterDir, 'output');
+    for (const absPath of inv.screenshotFiles) {
+      screenshotParts.push({
+        absPath,
+        relPath: path.relative(outputRoot, absPath).split(path.sep).join('/'),
+        size: fs.statSync(absPath).size,
+        contentType: contentTypeFor(absPath),
+      });
+    }
+  }
+
+  // Playwright: no per-sample scoping — walk each distinct iterDir/output once.
+  const distinctIterDirs = [...new Set(withoutScreenshotFiles.map((inv) => inv.iterDir))];
   distinctIterDirs.forEach((iterDir, i) => {
     const images = listImages(path.join(iterDir, 'output'));
     for (const img of images) {

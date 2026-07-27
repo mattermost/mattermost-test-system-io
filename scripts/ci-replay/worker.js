@@ -119,7 +119,8 @@ async function attachCypressScreenshots(cfg, picks) {
         cfg.log,
       );
       if (!uploaded) continue;
-      tc.attachments = tc.attachments || { screenshots: [] };
+      tc.attachments = tc.attachments || {};
+      tc.attachments.screenshots = tc.attachments.screenshots || [];
       tc.attachments.screenshots.push(uploaded);
     }
   }
@@ -197,7 +198,9 @@ async function runWorker(cfg) {
           spec_path: u.spec_path,
           status: sample.status,
           actual_duration_ms: sample.actual_duration_ms,
-          test_cases: sample.test_cases,
+          // Deep-copy: samples are pooled and shared across workers/retests,
+          // and attachCypressScreenshots mutates test_cases in place.
+          test_cases: structuredClone(sample.test_cases),
         },
       };
     });
@@ -205,7 +208,12 @@ async function runWorker(cfg) {
     if (cfg.uploadShards) {
       for (const { unit, sample } of picks) {
         if (sample && sample.sourcePath && sample.iterDir) {
-          invocations.push({ specPath: unit.spec_path, iterDir: sample.iterDir, sourcePath: sample.sourcePath });
+          invocations.push({
+            specPath: unit.spec_path,
+            iterDir: sample.iterDir,
+            sourcePath: sample.sourcePath,
+            screenshotFiles: sample.screenshotFiles,
+          });
         }
       }
       if (cfg.framework === 'cypress') {

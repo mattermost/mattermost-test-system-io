@@ -126,7 +126,10 @@ function loadCypressIter(iterDir) {
       continue;
     }
     const top = (parsed.results || [])[0];
-    const rawFile = top && (top.file || top.fullFile);
+    // top.file only — top.fullFile is absolute and normalizeCypressSpecPath
+    // just swaps separators, so falling back to it would produce a
+    // spec_path that doesn't match production's repo-relative convention.
+    const rawFile = top && top.file;
     if (!rawFile) continue;
     const specPath = normalizeCypressSpecPath(rawFile);
     const { aggregateStatus, testCases } = parseMochawesomeJson(parsed);

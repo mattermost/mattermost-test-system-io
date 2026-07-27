@@ -357,7 +357,7 @@ func dispatchRetestUnitsTx(
 		     ORDER BY (du.last_lease_gh_job_name IS NOT DISTINCT FROM $4),
 		              du.dispatch_seq
 		     LIMIT $2
-		     FOR UPDATE SKIP LOCKED
+		     FOR UPDATE OF du SKIP LOCKED
 		)
 		UPDATE dispatch_units du
 		   SET state = 'leased',

@@ -157,6 +157,14 @@ jobs:
           BETA_TAG: ${{ inputs.beta_tag }}
           GH_RUN_ID: ${{ github.run_id }}
         run: |
+          # Require the exact {version}-{7-hex-sha}.beta shape produced by
+          # deploy_staging.yml before extraction. Without this, a malformed
+          # tag would silently pass through sed below and be promoted as-is.
+          if ! [[ "$BETA_TAG" =~ ^.+-[0-9a-f]{7}\.beta$ ]]; then
+            echo "::error::Beta tag '${BETA_TAG}' does not match expected format '{version}-{7-hex-sha}.beta'"
+            exit 1
+          fi
+
           # Extract base version by stripping -{sha}.beta suffix
           BASE_VERSION=$(echo "$BETA_TAG" | sed 's/-[a-f0-9]*\.beta$//')
 

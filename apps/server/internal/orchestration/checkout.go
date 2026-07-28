@@ -357,7 +357,7 @@ func dispatchRetestUnitsTx(
 		     ORDER BY (du.last_lease_gh_job_name IS NOT DISTINCT FROM $4),
 		              du.dispatch_seq
 		     LIMIT $2
-		     FOR UPDATE SKIP LOCKED
+		     FOR UPDATE OF du SKIP LOCKED
 		)
 		UPDATE dispatch_units du
 		   SET state = 'leased',
@@ -408,6 +408,32 @@ func (s *Store) workerHasActiveLease(ctx context.Context, runID uuid.UUID, ghJob
 		return false, fmt.Errorf("check active lease: %w", err)
 	}
 	return exists, nil
+}
+
+// WorkerCounts is a run-scoped worker-presence snapshot, distinct from the
+// unit-level RunCounts. Active is workers currently holding an unreleased
+// lease. SeenTotal is every worker that has ever held one, active or
+// released — a worker that crashed before its first checkout never appears
+// in either.
+type WorkerCounts struct {
+	Active    int
+	SeenTotal int
+}
+
+// CountWorkers computes WorkerCounts with a single aggregate query over
+// leases_run_idx.
+func (s *Store) CountWorkers(ctx context.Context, runID uuid.UUID) (WorkerCounts, error) {
+	var c WorkerCounts
+	err := s.Pool.QueryRow(ctx, `
+		SELECT COUNT(*) FILTER (WHERE released_at IS NULL),
+		       COUNT(DISTINCT gh_job_id)
+		  FROM leases
+		 WHERE run_id = $1
+	`, runID).Scan(&c.Active, &c.SeenTotal)
+	if err != nil {
+		return WorkerCounts{}, fmt.Errorf("count workers: %w", err)
+	}
+	return c, nil
 }
 
 // insertLeaseTx inserts a leases row for the given run + worker with deadline

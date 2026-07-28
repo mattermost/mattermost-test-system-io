@@ -92,6 +92,12 @@ export interface ReportSummaryProps {
   skipped: number;
   total: number;
   /**
+   * When true, counts are unique test titles after cross-shard rollup
+   * (consolidated report page). Labels say "unique" so they are not
+   * confused with the table's per-shard failure sum.
+   */
+  uniqueTitleCounts?: boolean;
+  /**
    * Wall-clock span between run begin and the first worker checkout —
    * cloud-init / start-server / playwright prepare, before any spec was
    * leased. Renders before `durationMs` as `(N setup) + ...`. Optional;
@@ -238,6 +244,7 @@ export function ReportSummary(props: ReportSummaryProps) {
     flaky,
     skipped,
     total,
+    uniqueTitleCounts,
     setupDurationMs,
     durationMs,
     retestDurationMs,
@@ -264,7 +271,11 @@ export function ReportSummary(props: ReportSummaryProps) {
 
   const passRate = calculatePassRate({ passed, failed, flaky });
   const passRateColorClass = getPassRateColorClass(passRate);
-  const statsTitle = `${passed} passed${failed > 0 ? `, ${failed} failed` : ''}${flaky > 0 ? `, ${flaky} flaky` : ''}${skipped > 0 ? `, ${skipped} skipped` : ''} — ${total} total`;
+  const failedLabel = uniqueTitleCounts ? `unique test${failed === 1 ? '' : 's'} failed` : 'failed';
+  const totalLabel = uniqueTitleCounts ? `unique test${total === 1 ? '' : 's'}` : 'total';
+  const statsTitle = uniqueTitleCounts
+    ? `${passed} passed${failed > 0 ? `, ${failed} unique test${failed === 1 ? '' : 's'} failed` : ''}${flaky > 0 ? `, ${flaky} flaky` : ''}${skipped > 0 ? `, ${skipped} skipped` : ''} — ${total} unique test${total === 1 ? '' : 's'} (cross-shard / cross-platform titles rolled up)`
+    : `${passed} passed${failed > 0 ? `, ${failed} failed` : ''}${flaky > 0 ? `, ${flaky} flaky` : ''}${skipped > 0 ? `, ${skipped} skipped` : ''} — ${total} total`;
 
   const hasMetadata =
     createdAt || framework || reportCount != null || totalSpecs != null || progressStatus;
@@ -335,8 +346,15 @@ export function ReportSummary(props: ReportSummaryProps) {
             {failed > 0 && (
               <>
                 {' / '}
-                <span className="font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300">
-                  {failed} failed
+                <span
+                  className="font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300"
+                  title={
+                    uniqueTitleCounts
+                      ? 'Unique test titles still failing after cross-shard rollup'
+                      : undefined
+                  }
+                >
+                  {failed} {failedLabel}
                 </span>
               </>
             )}
@@ -355,7 +373,7 @@ export function ReportSummary(props: ReportSummaryProps) {
               </>
             )}
             {' / '}
-            <span className="font-medium">{total}</span> total
+            <span className="font-medium">{total}</span> {totalLabel}
           </span>
           {durationMs != null &&
             (() => {

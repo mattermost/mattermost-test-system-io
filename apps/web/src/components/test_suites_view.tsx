@@ -335,6 +335,18 @@ export function TestSuitesView({
     };
   }, [deduplicatedSuites]);
 
+  // Multi-shard / multi-platform groups keep per-report suite rows, so the
+  // test failed chip can exceed the header's unique-title count. Label that
+  // sum so it is not read as the same metric. Derive from suites actually
+  // shown (respects the report filter), not the full reports[] list.
+  const multiShard = useMemo(() => {
+    const ids = new Set<string>();
+    for (const suite of deduplicatedSuites) {
+      if (suite.report_id) ids.add(suite.report_id);
+    }
+    return ids.size > 1;
+  }, [deduplicatedSuites]);
+
   // Suite-file-level pass/fail counts for the title-bar chips. A suite is
   // considered passed when none of its tests failed (flaky still counts
   // as passed, mirroring the run-level rule). Used by the chips next to
@@ -531,13 +543,18 @@ export function TestSuitesView({
                 onClick={() =>
                   setStatusFilter(statusFilter === 'spec_failed' ? 'all' : 'spec_failed')
                 }
-                title="Filter failed suites"
+                title={
+                  multiShard
+                    ? 'Spec files with ≥1 failure (each shard/platform kept separate)'
+                    : 'Filter failed suites'
+                }
                 className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 ${
                   statusFilter === 'spec_failed' ? 'bg-red-100 dark:bg-red-900/40' : ''
                 }`}
               >
                 <XCircle className="h-3 w-3" />
                 {specFailed}
+                {multiShard ? <span className="font-normal opacity-70">with failures</span> : null}
               </button>
             )}
           </h3>
@@ -578,6 +595,11 @@ export function TestSuitesView({
                 <button
                   type="button"
                   onClick={() => setStatusFilter('test_failed')}
+                  title={
+                    multiShard
+                      ? 'Failed test results summed across shards (same title can count more than once)'
+                      : 'Filter failed tests'
+                  }
                   className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
                     statusFilter === 'test_failed'
                       ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
@@ -587,6 +609,9 @@ export function TestSuitesView({
                   <span className="inline-flex items-center gap-1">
                     <XCircle className="h-3 w-3" />
                     {totals.failed}
+                    {multiShard ? (
+                      <span className="font-normal opacity-70">across shards</span>
+                    ) : null}
                   </span>
                 </button>
               )}
@@ -1210,7 +1235,10 @@ const SpecRow = memo(function SpecRow({
     const crossShardDivergence = summaries.length > 1 && finalStatuses.size > 1;
     const failedShards = summaries.filter((s) => s.final_status === 'failed').length;
 
-    const flaky = flakyFromRetries || crossShardDivergence;
+    // Peer-platform divergence (ios fail + android pass) is a hard failure,
+    // not flaky. Flaky is only in-shard retries or same-platform recovery.
+    const flaky = flakyFromRetries || (crossShardDivergence && failedShards === 0);
+    const hardFailed = failedShards > 0 || (!spec.ok && !flaky);
 
     let Icon = CheckCircle2;
     let color = 'text-green-500';
@@ -1218,12 +1246,12 @@ const SpecRow = memo(function SpecRow({
     if (skipped) {
       Icon = MinusCircle;
       color = 'text-gray-400';
+    } else if (hardFailed) {
+      Icon = XCircle;
+      color = 'text-red-500';
     } else if (flaky) {
       Icon = AlertTriangle;
       color = 'text-yellow-500';
-    } else if (!spec.ok) {
-      Icon = XCircle;
-      color = 'text-red-500';
     }
 
     const multipleAttempts = spec.results.length > 1;
@@ -1236,7 +1264,7 @@ const SpecRow = memo(function SpecRow({
       singleHasContent ||
       (spec.screenshots && spec.screenshots.length > 0) ||
       crossShardDivergence;
-    const expandable = hasExpandable && (!spec.ok || flaky || skipped);
+    const expandable = hasExpandable && (!spec.ok || flaky || hardFailed || skipped);
 
     return {
       latestResult: latest,

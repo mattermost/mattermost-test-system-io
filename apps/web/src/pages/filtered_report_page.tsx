@@ -391,6 +391,7 @@ export function FilteredReportPage(props: FilteredReportPageProps = {}) {
           flaky={data?.flaky ?? 0}
           skipped={data?.skipped ?? 0}
           total={data?.total_specs ?? 0}
+          uniqueTitleCounts
           durationMs={data?.wall_clock_ms ?? data?.duration_ms ?? null}
           retestDurationMs={data?.retest_wall_clock_ms}
           beginAt={report.orchestration?.durations?.begin_at}

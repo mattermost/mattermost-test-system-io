@@ -119,7 +119,8 @@ After validating the staging deployment (checking the staging URL, running tests
 1. check-concurrent    → Rejects if another production deploy is running
 2. validate-and-retag  → Validates beta tag exists as GitHub prerelease
                         → Validates beta Docker image exists in Docker Hub
-                        → Extracts release version (strips -{sha}.beta suffix)
+                        → Extracts release version (strips -{sha}.beta suffix,
+                          appends this workflow run's ID)
                         → Retags image as release version + latest (NO rebuild)
                         → Creates GitHub release (not prerelease) with release tag
 3. deploy              → Updates ECS service with release version image
@@ -128,24 +129,37 @@ After validating the staging deployment (checking the staging URL, running tests
                         → Health check: curl $APP_URL/ready
 ```
 
+### Version tag format
+
+```text
+{version}.{run_id}
+Example: 0.13.0.30331189149
+```
+
+- `{version}` is the semver `major.minor.patch` from `apps/server/VERSION` at the time the beta was built (the `-{sha}.beta` suffix is stripped off the beta tag)
+- `{run_id}` is the `deploy_production.yml` workflow run's own `github.run_id`
+- The run ID makes each fresh production workflow run's Docker tag / GitHub release unique, even when re-promoting without bumping `VERSION` first (e.g. promoting a follow-up beta of the same version). This removes the requirement to bump `VERSION` before every production deploy — you still bump it for real semver-significant changes (see below), but a same-version re-promotion from a new run no longer collides with or overwrites the previous release's tag.
+- `VERSION` still follows [semver](https://semver.org/): bump `patch` for fixes, `minor` for backwards-compatible features, `major` for breaking changes. The run ID is a uniqueness suffix on top of that, not a replacement for semver discipline.
+- **Caveat:** `run_id` stays the same across "Re-run failed jobs." If a promotion fails partway, trigger a fresh **Deploy Production** run instead — reruns can collide on the same tag.
+
 ### Key: No rebuild
 
 The production deployment does **not** rebuild the Docker image. It retags the exact same image that was tested in staging:
 
 ```
 docker buildx imagetools create \
-  --tag mattermostdevelopment/mattermost-test-system-io:0.1.0 \
+  --tag mattermostdevelopment/mattermost-test-system-io:0.13.0.30331189149 \
   --tag mattermostdevelopment/mattermost-test-system-io:latest \
-  mattermostdevelopment/mattermost-test-system-io:0.1.0-abcdefg.beta
+  mattermostdevelopment/mattermost-test-system-io:0.13.0-abcdefg.beta
 ```
 
 This guarantees 100% artifact parity between staging and production.
 
 ### What is created
 
-- Docker Hub image: `mattermostdevelopment/mattermost-test-system-io:0.1.0` + `:latest`
-- GitHub release: `0.1.0`
-- Git tag: `0.1.0`
+- Docker Hub image: `mattermostdevelopment/mattermost-test-system-io:0.13.0.30331189149` + `:latest`
+- GitHub release: `0.13.0.30331189149`
+- Git tag: `release-0.13.0.30331189149`
 
 ## Deployment Flow Example
 
@@ -164,7 +178,7 @@ curl https://staging-test-io.test.mattermost.com/ready
 #    Actions → Deploy Production → Run workflow
 #    Input: 0.1.0-abc1234.beta
 #    Approve in GitHub Environment review
-#    Creates: 0.1.0 (release)
+#    Creates: 0.1.0.<run_id> (release)
 ```
 
 ## Rollback
@@ -179,6 +193,8 @@ Re-promote the previous beta tag:
 
 1. Go to **Actions** → **Deploy Production**
 2. Enter the **previous** beta tag (find it in GitHub Releases under prereleases)
+
+This re-promotion gets its own `run_id` suffix, so it produces a new Docker tag / GitHub release distinct from the one being rolled back from — no manual version bump needed.
 
 ### Staging
 

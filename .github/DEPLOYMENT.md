@@ -138,9 +138,9 @@ Example: 0.13.0.30331189149
 
 - `{version}` is the semver `major.minor.patch` from `apps/server/VERSION` at the time the beta was built (the `-{sha}.beta` suffix is stripped off the beta tag)
 - `{run_id}` is the `deploy_production.yml` workflow run's own `github.run_id`
-- The run ID makes every promotion's Docker tag / GitHub release unique, even when re-promoting without bumping `VERSION` first (e.g. promoting a follow-up beta of the same version). This removes the requirement to bump `VERSION` before every production deploy — you still bump it for real semver-significant changes (see below), but a same-version re-promotion no longer collides with or overwrites the previous release's tag.
+- The run ID makes each fresh production workflow run's Docker tag / GitHub release unique, even when re-promoting without bumping `VERSION` first (e.g. promoting a follow-up beta of the same version). This removes the requirement to bump `VERSION` before every production deploy — you still bump it for real semver-significant changes (see below), but a same-version re-promotion from a new run no longer collides with or overwrites the previous release's tag.
 - `VERSION` still follows [semver](https://semver.org/): bump `patch` for fixes, `minor` for backwards-compatible features, `major` for breaking changes. The run ID is a uniqueness suffix on top of that, not a replacement for semver discipline.
-- **Caveat:** `run_id` is stable across reruns of the *same* run. If a promotion fails partway (e.g. after creating the release but before ECS deploy succeeds) and you use GitHub's "Re-run failed jobs" on that same run, it recomputes the identical `RELEASE_VERSION` and the retag/release-create step will collide with what the first attempt already created. Trigger a fresh **Deploy Production** run (new `workflow_dispatch`) instead of re-running a failed one — a new run gets a new `run_id` and lets it fail cleanly if it does collide, rather than silently retrying into the same tag.
+- **Caveat:** `run_id` stays the same across "Re-run failed jobs." If a promotion fails partway, trigger a fresh **Deploy Production** run instead — reruns can collide on the same tag.
 
 ### Key: No rebuild
 

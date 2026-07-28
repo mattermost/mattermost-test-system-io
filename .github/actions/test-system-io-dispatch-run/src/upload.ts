@@ -11,7 +11,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
-import { fetchWithAuthRetry, getBearer } from "./auth";
+import {
+  JSON_REQUEST_TIMEOUT_MS,
+  UPLOAD_REQUEST_TIMEOUT_MS,
+  fetchTextWithAuthRetry,
+  fetchWithAuthRetry,
+  getBearer,
+  timeoutSignal,
+} from "./auth";
 import type {
   CompositeIdentity,
   InvocationRecord,
@@ -121,6 +128,7 @@ async function uploadMultipart(
       method: "POST",
       headers: { Authorization: `Bearer ${bearer}` },
       body: form,
+      signal: timeoutSignal(UPLOAD_REQUEST_TIMEOUT_MS),
     });
   });
   if (res.status !== 200) {
@@ -185,15 +193,16 @@ async function postJSON<T>(
   urlPath: string,
   body: Record<string, unknown>,
 ): Promise<PostResponse<T>> {
-  const res = await fetchWithAuthRetry(async () => {
+  // Body consumed inside the retry scope so a stall mid-body is retried.
+  const { status, text } = await fetchTextWithAuthRetry(async () => {
     const bearer = await getBearer(cfg.audience);
     return fetch(`${cfg.baseURL}${urlPath}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
       body: JSON.stringify(body),
+      signal: timeoutSignal(JSON_REQUEST_TIMEOUT_MS),
     });
   });
-  const text = await res.text();
   let parsed: T | null = null;
   if (text.length) {
     try {
@@ -202,5 +211,5 @@ async function postJSON<T>(
       // tolerate non-JSON body
     }
   }
-  return { status: res.status, body: parsed };
+  return { status, body: parsed };
 }

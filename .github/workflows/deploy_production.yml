@@ -155,9 +155,14 @@ jobs:
         id: retag
         env:
           BETA_TAG: ${{ inputs.beta_tag }}
+          GH_RUN_ID: ${{ github.run_id }}
         run: |
-          # Extract release version by stripping -{sha}.beta suffix
-          RELEASE_VERSION=$(echo "$BETA_TAG" | sed 's/-[a-f0-9]*\.beta$//')
+          # Extract base version by stripping -{sha}.beta suffix
+          BASE_VERSION=$(echo "$BETA_TAG" | sed 's/-[a-f0-9]*\.beta$//')
+
+          # Suffix with this workflow run's ID so every production promotion
+          # gets a unique Docker tag / GitHub release.
+          RELEASE_VERSION="${BASE_VERSION}.${GH_RUN_ID}"
 
           RELEASE_TAG="release-${RELEASE_VERSION}"
 

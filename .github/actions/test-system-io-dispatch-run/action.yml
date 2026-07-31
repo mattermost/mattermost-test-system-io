@@ -18,7 +18,8 @@ inputs:
       (e.g. mattermost/mattermost). The e2e stack must already be up;
       the worker dispatches `npx playwright test` inside
       `<repo-dir>/<playwright-dir>` (or `cypress run` inside
-      `<repo-dir>/<cypress-dir>` when `framework: cypress`).
+      `<repo-dir>/<cypress-dir>` when `framework: cypress`, or
+      `detox test` inside `<repo-dir>/<detox-dir>` when `framework: detox`).
     required: true
   artifacts-root:
     description: Writable directory for per-iteration archived results
@@ -48,8 +49,8 @@ inputs:
     default: mattermost-test-system-io
   framework:
     description: >
-      Test framework this worker drives. One of `playwright` or
-      `cypress`. Defaults to `playwright` for backward compatibility
+      Test framework this worker drives. One of `playwright`, `cypress`,
+      or `detox`. Defaults to `playwright` for backward compatibility
       with existing consumers. When `cypress`, the action invokes
       `npx cypress run --reporter cypress-multi-reporters
       --reporter-options configFile=reporter-config.json --spec <leased>`
@@ -57,6 +58,11 @@ inputs:
       Mochawesome JSON from
       `results/mochawesome-report/json/tests/[name].json` (the path
       reporter-config.json prescribes via reportDir + reportFilename).
+      When `detox`, the action invokes `npx detox test <leased> -c
+      <detox-config> --record-logs failing --take-screenshots failing
+      --artifacts-location <iter-dir>/artifacts -- --json --outputFile
+      <iter-dir>/jest-results.json` from `<repo-dir>/<detox-dir>` and
+      reads Jest's native `--json` output.
     required: false
     default: "playwright"
   max-idle-polls:
@@ -120,6 +126,24 @@ inputs:
       Only consulted when `framework: cypress`.
     required: false
     default: e2e-tests/cypress
+
+  # ── Detox-specific ───────────────────────────────────────────────────
+  detox-dir:
+    description: >
+      Path to the Detox project, relative to `repo-dir`. Defaults to
+      `detox` (the layout used by mattermost/mattermost-mobile). Only
+      consulted when `framework: detox`.
+    required: false
+    default: detox
+  detox-config:
+    description: >
+      Detox configuration name passed to each per-spec invocation as
+      `-c` (e.g. `ios.sim.debug`, `android.emu.debug`, `ios.ipad.debug`).
+      The simulator/emulator + Metro must already be up and matching this
+      configuration before the worker starts leasing — the action does not
+      own that setup. Detox only.
+    required: false
+    default: ios.sim.debug
 
 runs:
   using: node24

@@ -16,6 +16,7 @@ import * as github from "@actions/github";
 import { fetchWithAuthRetry, getBearer } from "./auth";
 import { runUnit as runPlaywrightUnit } from "./playwright";
 import { runUnit as runCypressUnit } from "./cypress";
+import { runUnit as runDetoxUnit } from "./detox";
 import { uploadShard, type UploadConfig } from "./upload";
 import type {
   CheckoutResponseBody,
@@ -44,14 +45,16 @@ export async function run(): Promise<void> {
   core.setSecret(githubToken);
   const ghJobName = core.getInput("gh-job-name", { required: true });
   const framework = (core.getInput("framework") || "playwright").trim().toLowerCase();
-  if (framework !== "playwright" && framework !== "cypress") {
-    throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
+  if (framework !== "playwright" && framework !== "cypress" && framework !== "detox") {
+    throw new Error(`framework must be "playwright", "cypress", or "detox", got "${framework}"`);
   }
   const playwrightRetries = intInput("playwright-retries", 1);
   const playwrightProject = core.getInput("playwright-project") || "chrome";
   const playwrightDirInput = core.getInput("playwright-dir") || "e2e-tests/playwright";
   const resultsDirInput = core.getInput("results-dir") || "results";
   const cypressDirInput = core.getInput("cypress-dir") || "e2e-tests/cypress";
+  const detoxDirInput = core.getInput("detox-dir") || "detox";
+  const detoxConfig = core.getInput("detox-config") || "ios.sim.debug";
   // 0 disables the cap; see drain()'s idlePolls.
   const maxIdlePolls = intInput("max-idle-polls", 5);
   // Longer than the server's retry_after_ms ceiling (~7s); see drain().
@@ -76,6 +79,7 @@ export async function run(): Promise<void> {
   const playwrightDir = path.resolve(repoDir, playwrightDirInput);
   const resultsDir = path.resolve(playwrightDir, resultsDirInput);
   const cypressDir = path.resolve(repoDir, cypressDirInput);
+  const detoxDir = path.resolve(repoDir, detoxDirInput);
   const workerArtifacts = path.join(artifactsRoot, ghJobId);
   fs.mkdirSync(workerArtifacts, { recursive: true });
 
@@ -97,6 +101,8 @@ export async function run(): Promise<void> {
       playwrightDir,
       resultsDir,
       cypressDir,
+      detoxDir,
+      detoxConfig,
       workerArtifacts,
       playwrightRetries,
       playwrightProject,
@@ -116,6 +122,7 @@ export async function run(): Promise<void> {
       audience,
       ghJobId,
       ghJobName: resolvedJobName,
+      framework,
       compositeIdentity,
     };
     try {
@@ -173,6 +180,8 @@ interface DrainConfig {
   playwrightDir: string;
   resultsDir: string;
   cypressDir: string;
+  detoxDir: string;
+  detoxConfig: string;
   workerArtifacts: string;
   playwrightRetries: number;
   playwrightProject: string;
@@ -265,6 +274,21 @@ async function drain(cfg: DrainConfig): Promise<void> {
         // have to be matched by filename and uploaded out-of-band before
         // /complete sees them.
         await attachCypressScreenshots(cfg, results, out.screenshotsBySpec);
+      } else if (cfg.framework === "detox") {
+        const out = runDetoxUnit(
+          {
+            detoxDir: cfg.detoxDir,
+            detoxConfig: cfg.detoxConfig,
+            workerArtifacts: cfg.workerArtifacts,
+          },
+          cfg.nextIterationSeq(),
+          specPaths,
+        );
+        cfg.invocations.push(out.invocation);
+        results = out.results;
+        // Detox screenshots live under a folder named after the test's
+        // fullName, so match on that instead of a filename substring.
+        await attachDetoxScreenshots(cfg, results, out.screenshotsBySpec);
       } else {
         const out = runPlaywrightUnit(
           {
@@ -560,6 +584,44 @@ async function attachPlaywrightScreenshots(
     if (!uploaded) continue;
     tc.attachments ??= { screenshots: [] };
     tc.attachments.screenshots.push(uploaded);
+  }
+}
+
+/** Matches each screenshot's parent folder name against a test_case's full_title (Detox's fullName). */
+async function attachDetoxScreenshots(
+  cfg: {
+    baseURL: string;
+    audience: string;
+    compositeIdentity: CompositeIdentity;
+    ghJobId: string;
+    ghJobName: string;
+    framework: string;
+  },
+  results: SpecResult[],
+  screenshotsBySpec: Record<string, string[]>,
+): Promise<void> {
+  for (const spec of results) {
+    const files = screenshotsBySpec[spec.spec_path];
+    if (!files || files.length === 0) continue;
+
+    for (const absPath of files) {
+      const folderName = path.basename(path.dirname(absPath));
+      // Hook failures (beforeAll/afterAll) write directly under the
+      // session folder, not a per-test folder, so there's no full_title
+      // to match — fall back to the spec's first failed test_case rather
+      // than dropping a screenshot that's still useful for debugging.
+      const tc =
+        spec.test_cases.find((c) => c.full_title === folderName) ??
+        spec.test_cases.find((c) => c.status === "failed");
+      if (!tc) {
+        core.warning(`no test_case match for screenshot folder ${folderName}; skipping`);
+        continue;
+      }
+      const uploaded = await uploadOrchScreenshot(cfg, spec.spec_path, absPath);
+      if (!uploaded) continue;
+      tc.attachments ??= { screenshots: [] };
+      tc.attachments.screenshots.push(uploaded);
+    }
   }
 }
 

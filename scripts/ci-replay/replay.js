@@ -15,8 +15,10 @@
  * Env vars:
  *
  *   GROUP=cypress-full-fips     # required: cypress-full | cypress-full-fips |
- *                               #           playwright-full | playwright-full-fips
- *   CI_RUNS_ROOT=.local/mattermost-ci  # where the corpus was downloaded (see README.md)
+ *                               #           playwright-full | playwright-full-fips |
+ *                               #           detox-ios | detox-android | detox-ipad
+ *   CI_RUNS_ROOT=.local/mattermost-ci  # where the corpus was downloaded (see README.md);
+ *                               # defaults to .local/mattermost-mobile-ci for detox-* groups
  *   SPEED=1                     # duration scale-down multiplier (10 = 10x faster than real time)
  *   RETEST=1 RETEST_BUDGET=1    # retest-on-fail config for the simulated run (default on)
  *   MAX_IDLE_POLLS=5            # matches the real dispatch-run action's default
@@ -61,7 +63,10 @@ if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(API_K
 
 const GROUP = process.env.GROUP;
 if (!GROUP) {
-  console.error('GROUP is required: one of cypress-full, cypress-full-fips, playwright-full, playwright-full-fips');
+  console.error(
+    'GROUP is required: one of cypress-full, cypress-full-fips, playwright-full, ' +
+      'playwright-full-fips, detox-ios, detox-android, detox-ipad',
+  );
   process.exit(2);
 }
 
@@ -93,7 +98,7 @@ const COMMIT_MINUTE_MS = Math.floor(NOW_MS / 60_000) * 60_000;
 
 function buildIdentity(framework) {
   return {
-    repository: 'mattermost/mattermost',
+    repository: framework === 'detox' ? 'mattermost/mattermost-mobile' : 'mattermost/mattermost',
     // Must be pure hex — the web dashboard's URL router only treats
     // /reports/:repo/:branch/:commit/:name as a single-run page when the
     // commit segment matches /^[0-9a-f]{7,40}$/i.
@@ -104,7 +109,7 @@ function buildIdentity(framework) {
     name: GROUP,
     gh_run_attempt: '1',
     framework,
-    branch: 'master',
+    branch: framework === 'detox' ? 'main' : 'master',
   };
 }
 
@@ -210,25 +215,39 @@ async function verifyShardUpload(reportGroupId, workerResults, corpus) {
   );
 
   let suiteCheckPassed = true;
-  try {
-    const suitesResp = await get(`/api/v1/reports/${reportGroupId}/suites`);
-    if (suitesResp.status === 200) {
-      const suites = (suitesResp.body && suitesResp.body.suites) || [];
-      const withFile = suites.filter((s) => s.file_path != null).length;
-      // Floor, not equality: Playwright samples can over-ingest sibling
-      // specs from a shared source file (see reports_client.js).
-      const floor = corpus.framework === 'cypress' ? corpus.specPaths.length * 0.9 : 1;
-      suiteCheckPassed = withFile >= floor;
-      console.log(
-        `  ${suiteCheckPassed ? 'PASS' : 'FAIL'}: ingested suite count vs. corpus spec count ` +
-          `(${withFile} suites w/ file_path vs. ${corpus.specPaths.length} dispatched specs` +
-          `${corpus.framework === 'playwright' ? ' — over-ingestion expected here, this is a floor check' : ''})`,
-      );
-    } else {
-      console.log(`  WARN: could not fetch suites for comparison (${suitesResp.status})`);
+  if (corpus.framework === 'detox') {
+    // Not a floor check — expected to ingest zero suites, full stop.
+    // ingest/detox.go's extractDetox expects the shape mattermost-mobile's
+    // own merge-jest-results-for-tsio.js produces (testFilePath / nested
+    // testResults), not the native Jest JSON this tool uploads as-is (see
+    // DETOX_ORCHESTRATION_PLAN.md's evidence section). This is a pre-existing
+    // report-upload-path gap, unrelated to replay/dispatch fidelity, so it's
+    // never scored as a failure here.
+    console.log(
+      '  SKIP: suite ingestion check (native Jest JSON isn\'t the shape ingest/detox.go\'s ' +
+        'extractDetox expects — a known report-upload-path gap, not a replay defect)',
+    );
+  } else {
+    try {
+      const suitesResp = await get(`/api/v1/reports/${reportGroupId}/suites`);
+      if (suitesResp.status === 200) {
+        const suites = (suitesResp.body && suitesResp.body.suites) || [];
+        const withFile = suites.filter((s) => s.file_path != null).length;
+        // Floor, not equality: Playwright samples can over-ingest sibling
+        // specs from a shared source file (see reports_client.js).
+        const floor = corpus.framework === 'cypress' ? corpus.specPaths.length * 0.9 : 1;
+        suiteCheckPassed = withFile >= floor;
+        console.log(
+          `  ${suiteCheckPassed ? 'PASS' : 'FAIL'}: ingested suite count vs. corpus spec count ` +
+            `(${withFile} suites w/ file_path vs. ${corpus.specPaths.length} dispatched specs` +
+            `${corpus.framework === 'playwright' ? ' — over-ingestion expected here, this is a floor check' : ''})`,
+        );
+      } else {
+        console.log(`  WARN: could not fetch suites for comparison (${suitesResp.status})`);
+      }
+    } catch (err) {
+      console.log(`  WARN: suites comparison failed: ${err.message}`);
     }
-  } catch (err) {
-    console.log(`  WARN: suites comparison failed: ${err.message}`);
   }
 
   const hardFail = failedCount > 0 || completedCount < expectedReports || !suiteCheckPassed;

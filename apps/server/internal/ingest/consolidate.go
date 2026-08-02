@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/testreport"
 )
 
 // Totals summarizes what Consolidate wrote to the DB, so the caller can
@@ -114,11 +116,12 @@ func Consolidate(
 			var caseID uuid.UUID
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, duration_ms,
-				                        error_message, attachments, ordinal)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+				                        error_message, attachments, ordinal, external_test_id)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 				RETURNING id
 			`, suiteID, c.Title, c.FullTitle, c.Status, c.RetryCount, c.DurationMs,
-				c.ErrorMessage, attachmentsJSON, c.Sequence).Scan(&caseID); err != nil {
+				c.ErrorMessage, attachmentsJSON, c.Sequence,
+				testreport.ExternalTestID(c.Title, c.FullTitle)).Scan(&caseID); err != nil {
 				return Totals{}, fmt.Errorf("insert test_case %q: %w", c.Title, err)
 			}
 			for _, sid := range perCaseLinks {

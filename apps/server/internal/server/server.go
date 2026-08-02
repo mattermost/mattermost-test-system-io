@@ -20,6 +20,8 @@ import (
 	apimw "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/middleware"
 	orchapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	testhistoryapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/testhistory"
+	triageapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/triage"
 	wsapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/ws"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
@@ -177,6 +179,20 @@ func Build(d Deps) chi.Router {
 		r.Get("/reports/{id}/json", reportsH.JSONFile)
 		r.Get("/reports/{id}/search", reportsH.Search)
 
+		// --- Public: per-test history + triage ledger reads ---
+		// Read-only and non-identifying, same posture as the report reads above.
+		// Automated triage runs these on every failing E2E run, so keeping them
+		// unauthenticated avoids handing a token to a read-only consumer.
+		testsH := &testhistoryapi.Handlers{Pool: d.Pool, Logger: d.Logger}
+		r.Get("/tests/history", testsH.History)
+		r.Get("/tests/flakiness", testsH.Flakiness)
+		r.Get("/tests/failing-elsewhere", testsH.FailingElsewhere)
+
+		triageH := &triageapi.Handlers{Pool: d.Pool, Logger: d.Logger}
+		r.Get("/triage/verdicts", triageH.ListVerdicts)
+		r.Get("/triage/amnesty", triageH.Amnesty)
+		r.Get("/triage/accuracy", triageH.Accuracy)
+
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
 
@@ -210,6 +226,12 @@ func Build(d Deps) chi.Router {
 			// Legacy single-shot bundle upload (returns 410).
 			r.Post("/reports", reportsH.Upload)
 			r.Delete("/reports/{id}", reportsH.Delete)
+
+			// Triage ledger writes. Authenticated because a forged waiver record
+			// would corrupt both the amnesty counter and the false-green metric —
+			// the two things that keep automated greens accountable.
+			r.Post("/triage/verdicts", triageH.CreateVerdicts)
+			r.Post("/triage/verdicts/{id}/correction", triageH.Correct)
 
 			r.Get("/artifacts/{id}", artifactsH.Get)
 

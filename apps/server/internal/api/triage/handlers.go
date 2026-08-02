@@ -322,7 +322,7 @@ func (h *Handlers) Amnesty(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Pool.QueryRow(r.Context(), `
-		SELECT count(*), min(created_at), max(created_at)
+		SELECT count(*)::int, min(created_at), max(created_at)
 		FROM triage_verdicts
 		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
 		  AND external_test_id = $2

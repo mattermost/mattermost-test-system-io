@@ -42,8 +42,9 @@ const (
 // groupRollupSQL is the shared CTE: every report group that ran the requested
 // test, with the test's per-shard rows collapsed to a single outcome.
 //
-// Args, in order: $1 external_test_id, $2 repository, $3 branch (”=any),
-// $4 framework (”=any), $5 run_group (”=any), $6 since (zero time = no bound).
+// Args, in order: $1 external_test_id, $2 repository, $3 branch, $4 framework,
+// $5 run_group, $6 since. The three filter args treat an empty string as "any";
+// since treats NULL as unbounded.
 const groupRollupSQL = `
 	WITH matched AS (
 		SELECT g.id, g.commit_sha, g.gh_run_id, g.gh_pr_number, g.branch,
@@ -61,8 +62,14 @@ const groupRollupSQL = `
 	),
 	rolled AS (
 		SELECT id, commit_sha, gh_run_id, gh_pr_number, branch, name, run_group, created_at,
-		       count(*)                                                        AS shard_rows,
-		       sum(coalesce(duration_ms, 0))                                   AS duration_ms,
+		       -- count() returns bigint and sum(bigint) returns numeric. Both
+		       -- casts are cosmetic, not load-bearing: pgx v5 scans either into
+		       -- the Go int/int64 these land in without them (verified against
+		       -- PG 18.4), which is why the flakiness aggregate below leaves its
+		       -- own count()s uncast. Kept only so the column types read as what
+		       -- the Go struct declares.
+		       count(*)::int                                                   AS shard_rows,
+		       sum(coalesce(duration_ms, 0))::bigint                           AS duration_ms,
 		       bool_or(status IN ('passed', 'flaky'))                          AS ever_passed,
 		       bool_or(status IN ('failed', 'timedOut', 'interrupted'))        AS ever_failed
 		FROM matched

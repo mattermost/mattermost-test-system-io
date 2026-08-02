@@ -73,7 +73,7 @@ CREATE TABLE triage_verdicts (
     waived            boolean     NOT NULL DEFAULT FALSE,
     model             text,
     -- Human correction, written by the override command. A non-null value means
-    -- the original verdict was wrong and is a labelled training example.
+    -- the original verdict was wrong and is a labeled training example.
     corrected_verdict text        CHECK (corrected_verdict IS NULL OR corrected_verdict IN (
                                       'PR_REGRESSION','MAIN_REGRESSION','FLAKY_TEST',
                                       'FLAKY_INFRA','FLAKY_SERVER','BUILD_OR_ENV_ERROR',

@@ -7,7 +7,7 @@
 //
 //   - Amnesty: a test cannot be waived indefinitely. Past waivers are counted,
 //     and past a threshold the test loses amnesty and goes hard red.
-//   - Accuracy: every human correction of a verdict is a labelled example, and
+//   - Accuracy: every human correction of a verdict is a labeled example, and
 //     the false-green count (a waived verdict a human later reclassified as a
 //     real bug) is the one metric that can disqualify the whole system.
 //   - Audit: every AI-granted green is queryable after the fact.

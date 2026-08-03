@@ -1302,11 +1302,18 @@ paths:
           application/json:
             schema:
               type: object
-              required: [corrected_verdict, corrected_by]
+              required: [corrected_verdict]
               properties:
                 corrected_verdict: { $ref: '#/components/schemas/TriageVerdictType' }
-                corrected_by: { type: string }
                 corrected_reason: { type: string }
+              # corrected_by is deliberately absent, and additional properties are
+              # not accepted in its place: attribution comes from the
+              # authenticated principal, never from the body. Leaving it required
+              # here would have rejected every correction the toolkit sends —
+              # request validation runs before the handler derives identity — so
+              # the schema and the handler have to agree that the caller does not
+              # supply it.
+              additionalProperties: false
       responses:
         '200':
           description: Correction recorded

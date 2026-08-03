@@ -50,14 +50,20 @@ export function runUnit(
     jestOutputPath,
   ];
 
+  const nodeOptions = [process.env.NODE_OPTIONS, DETOX_NODE_OPTIONS].filter(Boolean).join(" ");
+
   const startedAt = Date.now();
   const child = spawnSync("npx", args, {
     cwd: cfg.detoxDir,
-    env: { ...process.env, NODE_OPTIONS: DETOX_NODE_OPTIONS },
+    env: { ...process.env, NODE_OPTIONS: nodeOptions },
     stdio: "inherit",
   });
   const durationMs = Date.now() - startedAt;
-  core.info(`detox exit ${child.status} in ${Math.round(durationMs / 1000)}s`);
+  core.info(
+    `detox exit ${child.status} in ${Math.round(durationMs / 1000)}s` +
+      (child.error ? ` error=${child.error.message}` : "") +
+      (child.signal ? ` signal=${child.signal}` : ""),
+  );
 
   let parsed: JestReport | null = null;
   if (!fs.existsSync(jestOutputPath)) {

@@ -12,7 +12,7 @@
         vet vet-server \
         fmt fmt-server fmt-check-server fmt-web fmt-check-web \
         typecheck typecheck-web \
-        ci ensure-docker \
+        ci ensure-docker actions-dist-check \
         db-migrate db-status db-reset seed \
         docker-up docker-down docker-logs docker-build \
         clean clean-server clean-web clean-all \
@@ -38,6 +38,9 @@ WEB_DIR     := $(ROOT_DIR)/apps/web
 INFRA_DIR   := $(ROOT_DIR)/infra
 SERVER_PORT := 8080
 WEB_PORT    := 3000
+# GH Actions under .github/actions/ that ship a committed dist/index.js bundle;
+# keep in sync with the `actions-checks` matrix in .github/workflows/ci.yml.
+ACTIONS_DIRS := test-system-io-dispatch-begin test-system-io-dispatch-run test-system-io-summary test-system-io-report-upload
 # macOS default open-file limit (256) breaks testcontainers; bump for test targets.
 ULIMIT_N    := 4096
 
@@ -222,7 +225,22 @@ typecheck-infra: ## Type-check CDK infra TypeScript (tsc --noEmit)
 
 ##@ CI
 
-ci: vet fmt-check lint typecheck test test-server-e2e build ## Full CI gate (vet, fmt-check, lint, typecheck, test, e2e, build). Mirrors `.github/workflows/ci.yml`; needs Docker for e2e.
+ci: vet fmt-check lint typecheck test test-server-e2e build actions-dist-check ## Full CI gate (vet, fmt-check, lint, typecheck, test, e2e, build, actions dist check). Mirrors `.github/workflows/ci.yml`; needs Docker for e2e.
+
+actions-dist-check: ## Rebuild each GH Action's dist/ bundle and fail if it drifts from the committed output (mirrors CI's actions-checks job)
+	@for a in $(ACTIONS_DIRS); do \
+		dir=.github/actions/$$a; \
+		echo "$(CYAN)Checking dist/ for $$a...$(RESET)"; \
+		if [ ! -d "$$dir/node_modules" ]; then \
+			(cd $$dir && npm ci) || exit 1; \
+		fi; \
+		(cd $$dir && npm run build) || exit 1; \
+		if ! git diff --exit-code -- $$dir/dist/ > /dev/null; then \
+			echo "$(RED)dist/ is stale for $$a — run 'npm run build' in $$dir and commit the result$(RESET)"; \
+			git --no-pager diff -- $$dir/dist/; \
+			exit 1; \
+		fi; \
+	done
 
 # Internal: precheck that Docker is reachable before any testcontainers target.
 ensure-docker:

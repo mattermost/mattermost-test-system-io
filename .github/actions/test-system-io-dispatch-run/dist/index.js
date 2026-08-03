@@ -24921,14 +24921,17 @@ function runUnit3(cfg, iterationSeq, specPaths) {
     "--outputFile",
     jestOutputPath
   ];
+  const nodeOptions = [process.env.NODE_OPTIONS, DETOX_NODE_OPTIONS].filter(Boolean).join(" ");
   const startedAt = Date.now();
   const child = (0, import_node_child_process3.spawnSync)("npx", args, {
     cwd: cfg.detoxDir,
-    env: { ...process.env, NODE_OPTIONS: DETOX_NODE_OPTIONS },
+    env: { ...process.env, NODE_OPTIONS: nodeOptions },
     stdio: "inherit"
   });
   const durationMs = Date.now() - startedAt;
-  info(`detox exit ${child.status} in ${Math.round(durationMs / 1e3)}s`);
+  info(
+    `detox exit ${child.status} in ${Math.round(durationMs / 1e3)}s` + (child.error ? ` error=${child.error.message}` : "") + (child.signal ? ` signal=${child.signal}` : "")
+  );
   let parsed = null;
   if (!fs4.existsSync(jestOutputPath)) {
     warning(`detox jest json missing: ${jestOutputPath}`);

@@ -176,6 +176,31 @@ func TestDetoxCompleteAcceptsJestDerivedTestCases(t *testing.T) {
 	if c["completed_fail"] != 1 {
 		t.Fatalf("counts.completed_fail = %d, want 1; body=%v", c["completed_fail"], statusBody)
 	}
+
+	units, ok := statusBody["units"].([]any)
+	if !ok || len(units) != 1 {
+		t.Fatalf("units = %v, want 1 unit", statusBody["units"])
+	}
+	attempts, ok := units[0].(map[string]any)["attempts"].([]any)
+	if !ok || len(attempts) != 1 {
+		t.Fatalf("attempts = %v, want 1 attempt", units[0].(map[string]any)["attempts"])
+	}
+	tcs, ok := attempts[0].(map[string]any)["test_cases"].([]any)
+	if !ok || len(tcs) != len(jestTestCases) {
+		t.Fatalf("test_cases = %v, want %d entries", attempts[0].(map[string]any)["test_cases"], len(jestTestCases))
+	}
+	for i, want := range jestTestCases {
+		got, ok := tcs[i].(map[string]any)
+		if !ok {
+			t.Fatalf("test_cases[%d] = %v, want object", i, tcs[i])
+		}
+		if got["title"] != want["title"] {
+			t.Fatalf("test_cases[%d].title = %v, want %v", i, got["title"], want["title"])
+		}
+		if got["status"] != want["status"] {
+			t.Fatalf("test_cases[%d].status = %v, want %v", i, got["status"], want["status"])
+		}
+	}
 }
 
 // TestDetoxRetestExercisesFrameworkAgnosticPath confirms the retest engine

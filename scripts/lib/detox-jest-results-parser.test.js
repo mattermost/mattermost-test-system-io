@@ -115,7 +115,7 @@ test('normalizeSpecPath falls back to basename when no e2e/test/ marker is prese
   assert.equal(normalizeSpecPath('some/other/path/x.e2e.ts'), 'x.e2e.ts');
 });
 
-test('collectSpecFiles returns every distinct testResults[].name', () => {
+test('collectSpecFiles returns every testResults[].name', () => {
   const files = collectSpecFiles({
     testResults: [{ name: '/a.e2e.ts' }, { name: '/b.e2e.ts' }],
   });

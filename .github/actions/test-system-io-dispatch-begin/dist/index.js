@@ -26172,7 +26172,14 @@ var path2 = __toESM(require("path"));
 var DETOX_SPEC_RE = /\.e2e\.ts$/;
 function discoverDetoxSpecs(detoxDir, opts) {
   const target = path2.join(detoxDir, opts.searchPath);
-  const stat2 = fs4.statSync(target);
+  let stat2;
+  try {
+    stat2 = fs4.statSync(target);
+  } catch (e) {
+    throw new Error(
+      `detox spec discovery could not find "${target}" \u2014 check detoxDir/detox-search-path (detoxDir="${detoxDir}", detox-search-path="${opts.searchPath}"): ${e.message}`
+    );
+  }
   if (stat2.isFile()) {
     if (!DETOX_SPEC_RE.test(target)) {
       throw new Error(

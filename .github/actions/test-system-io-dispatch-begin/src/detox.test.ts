@@ -57,8 +57,8 @@ test("discoverDetoxSpecs: empty excludeDir disables exclusion (iPad-only run)", 
 test("discoverDetoxSpecs: ignores non-.e2e.ts files (support/helper modules)", () => {
   withTmpDir((dir) => {
     writeSpec(dir, "e2e/test/products/channels/messaging/message_post.e2e.ts");
-    fs.mkdirSync(path.join(dir, "e2e/support"), { recursive: true });
-    fs.writeFileSync(path.join(dir, "e2e/support/server_api.ts"), "export const Setup = {};");
+    fs.mkdirSync(path.join(dir, "e2e/test/support"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "e2e/test/support/server_api.ts"), "export const Setup = {};");
     const specs = discoverDetoxSpecs(dir, { searchPath: "e2e/test", excludeDir: "ipad" });
     assert.deepEqual(specs, ["e2e/test/products/channels/messaging/message_post.e2e.ts"]);
   });

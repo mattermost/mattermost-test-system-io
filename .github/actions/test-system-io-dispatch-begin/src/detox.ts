@@ -15,7 +15,15 @@ export interface DetoxDiscoveryOptions {
 /** Returns sorted spec paths relative to detoxDir. A file searchPath returns just that file. */
 export function discoverDetoxSpecs(detoxDir: string, opts: DetoxDiscoveryOptions): string[] {
   const target = path.join(detoxDir, opts.searchPath);
-  const stat = fs.statSync(target);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(target);
+  } catch (e) {
+    throw new Error(
+      `detox spec discovery could not find "${target}" — check detoxDir/detox-search-path ` +
+        `(detoxDir="${detoxDir}", detox-search-path="${opts.searchPath}"): ${(e as Error).message}`,
+    );
+  }
 
   if (stat.isFile()) {
     if (!DETOX_SPEC_RE.test(target)) {

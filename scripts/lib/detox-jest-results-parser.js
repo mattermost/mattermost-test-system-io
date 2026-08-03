@@ -94,7 +94,7 @@ function normalizeSpecPath(rawName) {
   return rawName.slice(idx + marker.length);
 }
 
-// collectSpecFiles returns every distinct testResults[].name in a Jest run.
+// collectSpecFiles returns every testResults[].name in a Jest run.
 function collectSpecFiles(jestJson) {
   return ((jestJson && jestJson.testResults) || []).map((f) => f.name).filter(Boolean);
 }

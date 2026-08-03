@@ -207,7 +207,12 @@ func summarize(entries []historyEntry) historySummary {
 			prevStable = stable
 		}
 	}
-	s.Runs = len(entries)
+	// Runs excludes skipped groups, matching /tests/flakiness (whose aggregate
+	// filters them out) and the amnesty failure rate. The two endpoints used
+	// different denominators for the same word, so a test skipped half the time
+	// reported two different failure_rates depending on which one you asked —
+	// and the diluted one was the one gating waivers.
+	s.Runs = len(entries) - s.Skipped
 	if s.Runs > 0 {
 		s.FailureRate = float64(s.Failed+s.Flaky) / float64(s.Runs)
 		s.FlakeRate = float64(s.Flaky) / float64(s.Runs)
@@ -439,20 +444,12 @@ func (h *Handlers) FailingElsewhere(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	out := make([]elsewhereRow, 0, 16)
-	prs := map[int]struct{}{}
-	branches := map[string]struct{}{}
 	for rows.Next() {
 		var er elsewhereRow
 		if err := rows.Scan(&er.Branch, &er.GHPRNumber, &er.Commit, &er.Outcome, &er.CreatedAt); err != nil {
 			h.logError("tests failing-elsewhere scan", err)
 			api.WriteError(w, r, api.ErrInternal)
 			return
-		}
-		if er.GHPRNumber != nil {
-			prs[*er.GHPRNumber] = struct{}{}
-		}
-		if er.Branch != "" {
-			branches[er.Branch] = struct{}{}
 		}
 		out = append(out, er)
 	}
@@ -462,11 +459,31 @@ func (h *Handlers) FailingElsewhere(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Counted over every matching occurrence, not over the 50 returned above.
+	// Derived from the capped page, "this test is failing on 50 other PRs" was
+	// the most it could ever say, however widespread the failure — and these two
+	// numbers are exactly the signal that separates a main regression from
+	// something the PR under test broke. Undercounting them biases triage toward
+	// blaming the PR author.
+	var distinctPRs, distinctBranches int
+	if err := h.Pool.QueryRow(r.Context(), groupRollupSQL+`
+		SELECT count(DISTINCT gh_pr_number)::int,
+		       count(DISTINCT nullif(branch, ''))::int
+		FROM outcomes
+		WHERE outcome IN ('failed', 'flaky')
+		  AND (gh_pr_number IS NULL OR gh_pr_number <> $7)
+	`, testID, repo, q.Get("branch"), q.Get("framework"), q.Get("run_group"), since, excludePR).
+		Scan(&distinctPRs, &distinctBranches); err != nil {
+		h.logError("tests failing-elsewhere distinct counts", err)
+		api.WriteError(w, r, api.ErrInternal)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"test_id":         testID,
 		"repo":            repo,
-		"distinct_prs":    len(prs),
-		"distinct_branch": len(branches),
+		"distinct_prs":    distinctPRs,
+		"distinct_branch": distinctBranches,
 		"occurrences":     out,
 	})
 }
@@ -508,6 +525,10 @@ func defaultWindow(v, dflt string) string {
 
 // parseSince turns a window like "30d", "24h" or "90m" into an absolute lower
 // bound. Empty means unbounded (nil), which the queries treat as "no time filter".
+// maxWindow bounds every history/ledger lookback. Long windows are expensive and
+// nobody makes a merge decision on six-month-old flake data.
+const maxWindow = 180 * 24 * time.Hour
+
 func parseSince(window string) (*time.Time, error) {
 	if window == "" {
 		return nil, nil
@@ -531,8 +552,12 @@ func parseSince(window string) (*time.Time, error) {
 		return nil, fmt.Errorf("%w: window unit must be d, h or m", api.ErrBadRequest)
 	}
 	// Cap the lookback so a typo cannot turn into a full-table scan.
-	if d > 180*24*time.Hour {
-		d = 180 * 24 * time.Hour
+	// Reject rather than silently clamp. The caller echoes the window it asked
+	// for back into the response (waiver_window, rate_window, the accuracy
+	// "window" field), so a silent clamp made the response claim a 365d window
+	// over 180d of data — a wrong answer that reads as a correct one.
+	if d > maxWindow {
+		return nil, fmt.Errorf("%w: window may not exceed 180d", api.ErrBadRequest)
 	}
 	t := time.Now().Add(-d)
 	return &t, nil

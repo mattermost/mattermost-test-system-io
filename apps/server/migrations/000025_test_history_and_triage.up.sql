@@ -23,8 +23,14 @@ ALTER TABLE test_cases ADD COLUMN external_test_id text;
 -- regex is cheap. If test_cases has grown past the point where a single UPDATE is
 -- acceptable, run this in batches out-of-band and ship the migration with the
 -- ALTER + index only.
+-- \y is Postgres's word boundary, matching the \b that internal/testreport's Go
+-- extractor anchors on. Without it this backfill would extract "MM-T123" from
+-- "XMM-T123" while the Go path — which populates every row written after this
+-- migration — would not, so backfilled and live rows would disagree about the
+-- same title. The group stays non-capturing: substring() returns the captured
+-- group when the pattern has one, which would truncate the "_N" sub-case.
 UPDATE test_cases
-SET external_test_id = substring(coalesce(nullif(full_title, ''), title) from 'MM-T[0-9]+(?:_[0-9]+)?')
+SET external_test_id = substring(coalesce(nullif(full_title, ''), title) from '\yMM-T[0-9]+(?:_[0-9]+)?')
 WHERE external_test_id IS NULL;
 
 -- History lookups are always (external_test_id → recent rows), joined back up to

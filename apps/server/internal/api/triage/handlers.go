@@ -28,7 +28,30 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
+	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 )
+
+// subjectLabel renders the authenticated principal for the corrected_by column.
+//
+// This records the credential that wrote the correction, which is the only
+// identity the server can verify. It is deliberately not the maintainer who
+// typed the override command: that person is already recorded, by GitHub and
+// under GitHub's own authentication, in the PR comment the override workflow
+// posts ("Triage override applied by @someone") — and that workflow only runs
+// for an OWNER, MEMBER, or COLLABORATOR. The verdict row carries the PR number
+// and run id needed to find it.
+func subjectLabel(s authapi.Subject) string {
+	switch {
+	case s.OIDCSubject != "":
+		return "oidc:" + s.OIDCSubject
+	case s.APIKeyID != uuid.Nil:
+		return "apikey:" + s.APIKeyID.String()
+	case s.UserID != uuid.Nil:
+		return "user:" + s.UserID.String()
+	default:
+		return s.Kind
+	}
+}
 
 // Handlers bundles the triage-ledger handlers.
 type Handlers struct {
@@ -207,8 +230,10 @@ func (h *Handlers) CreateVerdicts(w http.ResponseWriter, r *http.Request) {
 
 type correctionInput struct {
 	CorrectedVerdict string `json:"corrected_verdict"`
-	CorrectedBy      string `json:"corrected_by"`
 	CorrectedReason  string `json:"corrected_reason"`
+
+	// CorrectedBy is deliberately absent. Attribution comes from the
+	// authenticated principal, never from the body — see Correct below.
 }
 
 // Correct serves POST /api/v1/triage/verdicts/{id}/correction — records that a
@@ -231,10 +256,20 @@ func (h *Handlers) Correct(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, fmt.Errorf("%w: corrected_verdict %q is not a known verdict", api.ErrBadRequest, in.CorrectedVerdict))
 		return
 	}
-	if in.CorrectedBy == "" {
-		api.WriteError(w, r, fmt.Errorf("%w: corrected_by is required", api.ErrBadRequest))
+	// Attribution is taken from the authenticated principal, not from the body.
+	// A correction is the only ground truth this system has — accuracy and the
+	// false-green count are computed from corrections — so "who overruled the
+	// model" has to be a fact the caller cannot choose. A body-supplied
+	// corrected_by let any holder of a write credential sign a correction with
+	// someone else's name.
+	subject, err := authapi.SubjectFromContext(r.Context())
+	if err != nil {
+		// Unreachable behind RequireAuth, but a route left unprotected by a
+		// future edit must fail closed rather than write an unattributed row.
+		api.WriteError(w, r, api.ErrUnauthorized)
 		return
 	}
+	correctedBy := subjectLabel(subject)
 
 	tag, err := h.Pool.Exec(r.Context(), `
 		UPDATE triage_verdicts
@@ -243,7 +278,7 @@ func (h *Handlers) Correct(w http.ResponseWriter, r *http.Request) {
 		    corrected_reason  = nullif($4, ''),
 		    corrected_at      = now()
 		WHERE id = $1
-	`, id, in.CorrectedVerdict, in.CorrectedBy, in.CorrectedReason)
+	`, id, in.CorrectedVerdict, correctedBy, in.CorrectedReason)
 	if err != nil {
 		h.logError("triage correction update", err)
 		api.WriteError(w, r, api.ErrInternal)
@@ -361,22 +396,33 @@ func (h *Handlers) Amnesty(w http.ResponseWriter, r *http.Request) {
 		           count(*) FILTER (WHERE ever_failed)::float
 		               / nullif(count(*), 0)::float,
 		           0)
+		-- Groups where the test neither passed nor failed were skipped, and a
+		-- skip says nothing about stability. Counting them would dilute the
+		-- denominator, and dilution here is the dangerous direction: it lowers
+		-- the apparent failure rate and so makes amnesty easier to grant. This
+		-- is the same population /tests/flakiness aggregates over.
 		FROM rolled
+		WHERE ever_passed OR ever_failed
 	`, repo, testID, baselineBranch, rateSince).Scan(&resp.Runs, &resp.FailureRate); err != nil {
 		h.logError("triage amnesty failure rate", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
 
+	// Both limits are inclusive: reaching max_waivers or max_failure_rate denies
+	// amnesty, it does not sit just inside it. The two were inconsistent (>= and
+	// >), which meant a test exactly at the rate limit was waivable while one
+	// exactly at the waiver limit was not. Inclusive on both is the fail-closed
+	// reading, and waiving is the direction that costs more to get wrong.
 	switch {
 	case resp.WaiversInWindow >= maxWaivers:
 		resp.Granted = false
 		resp.Reason = fmt.Sprintf("waived %d times in %s (limit %d) — fix or quarantine explicitly",
 			resp.WaiversInWindow, waiverWindow, maxWaivers)
-	case resp.Runs > 0 && resp.FailureRate > maxFailureRate:
+	case resp.Runs > 0 && resp.FailureRate >= maxFailureRate:
 		resp.Granted = false
-		resp.Reason = fmt.Sprintf("fails %.0f%% of %s runs on %s over %s (limit %.0f%%)",
-			resp.FailureRate*100, baselineBranch, baselineBranch, rateWindow, maxFailureRate*100)
+		resp.Reason = fmt.Sprintf("fails %.0f%% of runs on %s over %s (limit %.0f%%)",
+			resp.FailureRate*100, baselineBranch, rateWindow, maxFailureRate*100)
 	default:
 		resp.Granted = true
 		resp.Reason = "within flake tolerance"
@@ -626,6 +672,10 @@ func parseFloat(v string, dflt float64) float64 {
 
 // parseSince mirrors the window parsing in the testhistory package: "30d", "24h",
 // "90m" → an absolute lower bound, capped at 180 days.
+// maxWindow bounds every history/ledger lookback. Long windows are expensive and
+// nobody makes a merge decision on six-month-old flake data.
+const maxWindow = 180 * 24 * time.Hour
+
 func parseSince(window string) (*time.Time, error) {
 	if window == "" {
 		return nil, nil
@@ -648,8 +698,12 @@ func parseSince(window string) (*time.Time, error) {
 	default:
 		return nil, fmt.Errorf("%w: window unit must be d, h or m", api.ErrBadRequest)
 	}
-	if d > 180*24*time.Hour {
-		d = 180 * 24 * time.Hour
+	// Reject rather than silently clamp. The caller echoes the window it asked
+	// for back into the response (waiver_window, rate_window, the accuracy
+	// "window" field), so a silent clamp made the response claim a 365d window
+	// over 180d of data — a wrong answer that reads as a correct one.
+	if d > maxWindow {
+		return nil, fmt.Errorf("%w: window may not exceed 180d", api.ErrBadRequest)
 	}
 	t := time.Now().Add(-d)
 	return &t, nil

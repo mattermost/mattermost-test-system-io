@@ -1178,6 +1178,12 @@ paths:
         The cheapest high-value "not your fault" signal available: if a test is
         failing on five unrelated PRs right now, it is not the sixth PR's change.
         No rerun, no model call, one indexed query.
+
+        `occurrences` is capped at the 50 most recent matches and there is no
+        paging; it is evidence to cite, not an exhaustive list. `distinct_prs`
+        and `distinct_branch` are counted over *every* match in the window, not
+        over the returned page, so they stay correct when a failure is more
+        widespread than 50 occurrences.
       security: []
       parameters:
         - in: query
@@ -1337,12 +1343,19 @@ paths:
           schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '14d' }
         - in: query
           name: max_waivers
+          description: >-
+            Inclusive: reaching this many waivers in waiver_window denies
+            amnesty.
           schema: { type: integer, minimum: 0, default: 3 }
         - in: query
           name: rate_window
           schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '30d' }
         - in: query
           name: max_failure_rate
+          description: >-
+            Inclusive, matching max_waivers: a failure rate equal to this denies
+            amnesty. Computed over runs where the test actually executed —
+            skipped runs are not in the denominator.
           schema: { type: number, minimum: 0, maximum: 1, default: 0.1 }
       responses:
         '200':
@@ -2479,11 +2492,20 @@ components:
       type: object
       required: [runs, passed, failed, flaky, skipped, flips, failure_rate, flake_rate, series]
       properties:
-        runs: { type: integer }
+        runs:
+          type: integer
+          description: >-
+            Report groups in which this test actually executed. Skipped runs are
+            excluded, so runs = passed + failed + flaky, and failure_rate is the
+            share of runs that did not cleanly pass. The same definition is used
+            by /tests/flakiness and by the amnesty failure rate, so all three
+            agree for a given test.
         passed: { type: integer }
         failed: { type: integer }
         flaky: { type: integer }
-        skipped: { type: integer }
+        skipped:
+          type: integer
+          description: Counted and reported, but not part of runs.
         flips:
           type: integer
           description: |
@@ -2521,7 +2543,14 @@ components:
       required: [test_id, runs, passed, failed, flaky, flips, failure_rate, flake_rate, titles]
       properties:
         test_id: { type: string }
-        runs: { type: integer }
+        runs:
+          type: integer
+          description: >-
+            Report groups in which this test actually executed. Skipped runs are
+            excluded, so runs = passed + failed + flaky, and failure_rate is the
+            share of runs that did not cleanly pass. The same definition is used
+            by /tests/flakiness and by the amnesty failure rate, so all three
+            agree for a given test.
         passed: { type: integer }
         failed: { type: integer }
         flaky: { type: integer }

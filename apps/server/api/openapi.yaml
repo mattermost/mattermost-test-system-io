@@ -1221,7 +1221,10 @@ paths:
     get:
       tags: [triage]
       summary: Triage verdict audit trail
-      security: []
+      description: >-
+        Authenticated, unlike the aggregate triage reads. Each row names the
+        principal that recorded the verdict and carries the free-text reason a
+        maintainer gave when overruling it.
       parameters:
         - in: query
           name: repo

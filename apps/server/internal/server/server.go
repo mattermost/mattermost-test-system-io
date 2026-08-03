@@ -188,8 +188,12 @@ func Build(d Deps) chi.Router {
 		r.Get("/tests/flakiness", testsH.Flakiness)
 		r.Get("/tests/failing-elsewhere", testsH.FailingElsewhere)
 
+		// amnesty and accuracy stay public: both answer questions about a test or
+		// a repo in aggregate, and triage calls them on every failing run. The
+		// verdict list is the exception and lives in the protected group below —
+		// it is the audit trail, so each row carries the principal that wrote it
+		// and the free-text reason a human gave for overruling it.
 		triageH := &triageapi.Handlers{Pool: d.Pool, Logger: d.Logger}
-		r.Get("/triage/verdicts", triageH.ListVerdicts)
 		r.Get("/triage/amnesty", triageH.Amnesty)
 		r.Get("/triage/accuracy", triageH.Accuracy)
 
@@ -232,6 +236,13 @@ func Build(d Deps) chi.Router {
 			// the two things that keep automated greens accountable.
 			r.Post("/triage/verdicts", triageH.CreateVerdicts)
 			r.Post("/triage/verdicts/{id}/correction", triageH.Correct)
+
+			// Reading the ledger is authenticated too. Unlike the aggregate reads
+			// it returns rows, and each row names the credential that recorded the
+			// verdict plus whatever free text a maintainer wrote when overruling
+			// it — an audit trail of who did what, which is not the same kind of
+			// data as "how flaky is this test".
+			r.Get("/triage/verdicts", triageH.ListVerdicts)
 
 			r.Get("/artifacts/{id}", artifactsH.Get)
 

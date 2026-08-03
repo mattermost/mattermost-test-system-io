@@ -231,9 +231,7 @@ actions-dist-check: ## Rebuild each GH Action's dist/ bundle and fail if it drif
 	@for a in $(ACTIONS_DIRS); do \
 		dir=.github/actions/$$a; \
 		echo "$(CYAN)Checking dist/ for $$a...$(RESET)"; \
-		if [ ! -d "$$dir/node_modules" ]; then \
-			(cd $$dir && npm ci) || exit 1; \
-		fi; \
+		(cd $$dir && npm ci) || exit 1; \
 		(cd $$dir && npm run build) || exit 1; \
 		if ! git diff --exit-code -- $$dir/dist/ > /dev/null; then \
 			echo "$(RED)dist/ is stale for $$a — run 'npm run build' in $$dir and commit the result$(RESET)"; \

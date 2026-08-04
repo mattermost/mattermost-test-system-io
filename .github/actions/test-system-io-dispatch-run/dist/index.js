@@ -29101,6 +29101,9 @@ function runUnit4(cfg, iterationSeq, specPaths) {
   const args = ["test"];
   if (cfg.maestroDevice) args.push("--device", cfg.maestroDevice);
   if (cfg.maestroPlatform) args.push("--platform", cfg.maestroPlatform);
+  for (const [key, value] of Object.entries(cfg.maestroEnv)) {
+    args.push("--env", `${key}=${value}`);
+  }
   args.push(
     "--format",
     "junit",
@@ -29143,6 +29146,17 @@ function runUnit4(cfg, iterationSeq, specPaths) {
     results: [result],
     screenshotsBySpec
   };
+}
+function parseMaestroEnv(raw) {
+  const out = {};
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    out[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
+  }
+  return out;
 }
 function collectMaestroScreenshots(artifactsDir, specPath) {
   if (!fs5.existsSync(artifactsDir)) return {};
@@ -29420,6 +29434,7 @@ async function run() {
   const maestroDirInput = getInput("maestro-dir") || "detox/maestro";
   const maestroDevice = getInput("maestro-device");
   const maestroPlatform = getInput("maestro-platform");
+  const maestroEnv = parseMaestroEnv(getInput("maestro-env"));
   const maxIdlePolls = intInput("max-idle-polls", 5);
   const postFailureDelayMs = intInput("post-failure-delay-ms", 1e4);
   let compositeIdentity;
@@ -29459,6 +29474,7 @@ async function run() {
       maestroDir,
       maestroDevice,
       maestroPlatform,
+      maestroEnv,
       workerArtifacts,
       playwrightRetries,
       playwrightProject,
@@ -29593,6 +29609,7 @@ async function drain(cfg) {
             maestroDir: cfg.maestroDir,
             maestroDevice: cfg.maestroDevice,
             maestroPlatform: cfg.maestroPlatform,
+            maestroEnv: cfg.maestroEnv,
             workerArtifacts: cfg.workerArtifacts
           },
           cfg.nextIterationSeq(),

@@ -3,7 +3,12 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { aggregateMaestroReport, collectMaestroScreenshots, maestroStatus } from "./maestro.ts";
+import {
+  aggregateMaestroReport,
+  collectMaestroScreenshots,
+  maestroStatus,
+  parseMaestroEnv,
+} from "./maestro.ts";
 
 function withTmpDir(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "maestro-run-"));
@@ -109,4 +114,23 @@ test("collectMaestroScreenshots: missing artifacts directory returns empty map",
     );
     assert.deepEqual(bySpec, {});
   });
+});
+
+test("parseMaestroEnv: parses one KEY=VALUE pair per line", () => {
+  const env = parseMaestroEnv("SITE_1_URL=https://example.com\nTEST_USER_EMAIL=a@b.com\n");
+  assert.deepEqual(env, { SITE_1_URL: "https://example.com", TEST_USER_EMAIL: "a@b.com" });
+});
+
+test("parseMaestroEnv: ignores blank lines and lines without =", () => {
+  const env = parseMaestroEnv("SITE_1_URL=https://example.com\n\nnotakeyvalue\n  \n");
+  assert.deepEqual(env, { SITE_1_URL: "https://example.com" });
+});
+
+test("parseMaestroEnv: only the first = splits key from value", () => {
+  const env = parseMaestroEnv("ADMIN_TOKEN=abc=def==");
+  assert.deepEqual(env, { ADMIN_TOKEN: "abc=def==" });
+});
+
+test("parseMaestroEnv: empty input returns empty object", () => {
+  assert.deepEqual(parseMaestroEnv(""), {});
 });

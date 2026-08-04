@@ -163,6 +163,16 @@ inputs:
       connected device). Maestro only.
     required: false
     default: ""
+  maestro-env:
+    description: >
+      One `KEY=VALUE` pair per line, forwarded as `--env KEY=VALUE` to each
+      per-spec invocation. Maestro flows template `${SITE_1_URL}`,
+      `${TEST_USER_EMAIL}`, etc. — the CLI only resolves those from
+      explicit --env flags, not this action's own process environment, so
+      set this to whatever the consumer's flows reference. Empty omits all
+      --env flags. Maestro only.
+    required: false
+    default: ""
 
 runs:
   using: node24

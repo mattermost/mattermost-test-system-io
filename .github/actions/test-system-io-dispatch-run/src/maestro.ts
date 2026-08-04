@@ -11,6 +11,11 @@ export interface RunUnitConfig {
   maestroDir: string;
   maestroDevice: string;
   maestroPlatform: string;
+  // Forwarded as `--env KEY=VALUE` per entry. Maestro flows template
+  // `${SITE_1_URL}`, `${TEST_USER_EMAIL}`, etc. — the CLI only resolves
+  // those from explicit --env flags, not the invoking process's ambient
+  // environment, so this is required whenever a flow references a variable.
+  maestroEnv: Record<string, string>;
   workerArtifacts: string;
 }
 
@@ -45,6 +50,9 @@ export function runUnit(
   const args = ["test"];
   if (cfg.maestroDevice) args.push("--device", cfg.maestroDevice);
   if (cfg.maestroPlatform) args.push("--platform", cfg.maestroPlatform);
+  for (const [key, value] of Object.entries(cfg.maestroEnv)) {
+    args.push("--env", `${key}=${value}`);
+  }
   args.push(
     "--format",
     "junit",
@@ -96,6 +104,23 @@ export function runUnit(
     results: [result],
     screenshotsBySpec,
   };
+}
+
+/**
+ * Parses a `maestro-env` action input: one `KEY=VALUE` pair per line.
+ * Blank lines and lines without `=` are ignored; a value may itself
+ * contain `=` (only the first splits key from value).
+ */
+export function parseMaestroEnv(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    out[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
+  }
+  return out;
 }
 
 export function collectMaestroScreenshots(

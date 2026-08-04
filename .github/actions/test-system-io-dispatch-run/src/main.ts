@@ -17,7 +17,7 @@ import { fetchWithAuthRetry, getBearer } from "./auth";
 import { runUnit as runPlaywrightUnit } from "./playwright";
 import { runUnit as runCypressUnit } from "./cypress";
 import { runUnit as runDetoxUnit } from "./detox";
-import { runUnit as runMaestroUnit } from "./maestro";
+import { runUnit as runMaestroUnit, parseMaestroEnv } from "./maestro";
 import { uploadShard, type UploadConfig } from "./upload";
 import type {
   CheckoutResponseBody,
@@ -66,6 +66,7 @@ export async function run(): Promise<void> {
   const maestroDirInput = core.getInput("maestro-dir") || "detox/maestro";
   const maestroDevice = core.getInput("maestro-device");
   const maestroPlatform = core.getInput("maestro-platform");
+  const maestroEnv = parseMaestroEnv(core.getInput("maestro-env"));
   // 0 disables the cap; see drain()'s idlePolls.
   const maxIdlePolls = intInput("max-idle-polls", 5);
   // Longer than the server's retry_after_ms ceiling (~7s); see drain().
@@ -118,6 +119,7 @@ export async function run(): Promise<void> {
       maestroDir,
       maestroDevice,
       maestroPlatform,
+      maestroEnv,
       workerArtifacts,
       playwrightRetries,
       playwrightProject,
@@ -200,6 +202,7 @@ interface DrainConfig {
   maestroDir: string;
   maestroDevice: string;
   maestroPlatform: string;
+  maestroEnv: Record<string, string>;
   workerArtifacts: string;
   playwrightRetries: number;
   playwrightProject: string;
@@ -313,6 +316,7 @@ async function drain(cfg: DrainConfig): Promise<void> {
             maestroDir: cfg.maestroDir,
             maestroDevice: cfg.maestroDevice,
             maestroPlatform: cfg.maestroPlatform,
+            maestroEnv: cfg.maestroEnv,
             workerArtifacts: cfg.workerArtifacts,
           },
           cfg.nextIterationSeq(),

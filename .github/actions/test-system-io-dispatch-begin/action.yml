@@ -2,7 +2,7 @@ name: Test System IO — dispatch begin
 description: >
   Walk the test-suite spec directory and POST /api/v1/orchestration/begin
   to create the dispatch queue for this composite identity. Supports
-  Playwright (default) and Cypress via the `framework` input.
+  Playwright (default), Cypress, and Detox via the `framework` input.
   Authenticates to Test System IO via the calling workflow's GitHub
   Actions OIDC token, so the workflow MUST grant
   `permissions: id-token: write`. When `post-pending-commit-status: "true"`
@@ -48,12 +48,16 @@ inputs:
     default: mattermost-test-system-io
   framework:
     description: >
-      Test framework this run dispatches. One of `playwright` or
-      `cypress`. Defaults to `playwright` for backward compatibility
+      Test framework this run dispatches. One of `playwright`, `cypress`,
+      or `detox`. Defaults to `playwright` for backward compatibility
       with existing consumers. When `cypress`, the action enumerates
       `*_spec.{ts,js}` files under `<repo-dir>/<cypress-dir>/tests/integration/`
       and submits them as dispatch units; the orchestration_runs row is
-      created with `framework: "cypress"`.
+      created with `framework: "cypress"`. When `detox`, the action
+      enumerates `*.e2e.ts` files under
+      `<repo-dir>/<detox-dir>/<detox-search-path>/` and submits them as
+      dispatch units; the orchestration_runs row is created with
+      `framework: "detox"`.
     required: false
     default: "playwright"
   retest-on-fail:
@@ -195,6 +199,32 @@ inputs:
       back of the queue. Cypress only.
     required: false
     default: "@known_issue"
+
+  # ── Detox-specific ───────────────────────────────────────────────────
+  detox-dir:
+    description: >
+      Path to the Detox project, relative to `repo-dir`. Defaults to
+      `detox` (the layout used by mattermost/mattermost-mobile). Only
+      consulted when `framework: detox`.
+    required: false
+    default: detox
+  detox-search-path:
+    description: >
+      Path to search for `*.e2e.ts` specs, relative to `detox-dir`.
+      Defaults to `e2e/test`. May instead name a single spec file to
+      dispatch exactly one unit. Point this at a narrower subtree (e.g.
+      `e2e/test/products/channels/ipad`) for an iPad-only run. Detox only.
+    required: false
+    default: e2e/test
+  detox-exclude-dir:
+    description: >
+      Directory name to skip during the walk (matched by exact directory
+      name at any depth). Defaults to `ipad`, so a non-iPad run doesn't
+      pick up the iPad-only leg's specs. Set to `""` to disable — needed
+      when `detox-search-path` already points inside the excluded
+      directory. Detox only.
+    required: false
+    default: ipad
 
 outputs:
   run-id:

@@ -14,6 +14,7 @@ import * as path from "node:path";
 import * as core from "@actions/core";
 import { setCommitStatus } from "./commit-status";
 import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
+import { discoverDetoxSpecs } from "./detox";
 import { discoverPlaywrightSpecs } from "./playwright";
 import { retryFetch, safeText } from "./retry-fetch";
 
@@ -48,12 +49,16 @@ export async function run(): Promise<void> {
   const idleTimeoutMs = intInput("idle-timeout-ms", 600_000);
   const leaseTimeoutMs = intInput("lease-timeout-ms", 600_000);
   const framework = (core.getInput("framework") || "playwright").trim().toLowerCase();
-  if (framework !== "playwright" && framework !== "cypress") {
-    throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
+  if (framework !== "playwright" && framework !== "cypress" && framework !== "detox") {
+    throw new Error(`framework must be "playwright", "cypress", or "detox", got "${framework}"`);
   }
   const playwrightProject = core.getInput("playwright-project") || "chrome";
   const playwrightDirInput = core.getInput("playwright-dir") || "e2e-tests/playwright";
   const cypressDirInput = core.getInput("cypress-dir") || "e2e-tests/cypress";
+  const detoxDirInput = core.getInput("detox-dir") || "detox";
+  const detoxSearchPath = core.getInput("detox-search-path") || "e2e/test";
+  // "" is a valid value here (disables exclusion), so no JS fallback.
+  const detoxExcludeDir = core.getInput("detox-exclude-dir");
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
     throw new Error("total-reports-expected is required and must be > 0");
@@ -86,6 +91,18 @@ export async function run(): Promise<void> {
           `include=${filters.includeGroup.join(",") || "*"}, ` +
           `exclude=${filters.excludeGroup.join(",") || "none"}, ` +
           `skip-on=${filters.skipOn.join(",") || "none"})`,
+      );
+    }
+  } else if (framework === "detox") {
+    const detoxDir = path.resolve(repoDir, detoxDirInput);
+    specs = discoverDetoxSpecs(detoxDir, {
+      searchPath: detoxSearchPath,
+      excludeDir: detoxExcludeDir,
+    });
+    if (specs.length === 0) {
+      throw new Error(
+        `no Detox specs found under ${path.join(detoxDir, detoxSearchPath)} ` +
+          `(exclude-dir=${detoxExcludeDir || "none"})`,
       );
     }
   } else {

@@ -27,6 +27,7 @@ const (
 	FrameworkPlaywright = "playwright"
 	FrameworkCypress    = "cypress"
 	FrameworkDetox      = "detox"
+	FrameworkMaestro    = "maestro"
 
 	// DefaultFramework is the value used when a request omits framework.
 	// Kept at playwright for backward compatibility with consumers that
@@ -40,6 +41,7 @@ var supportedFrameworks = map[string]struct{}{
 	FrameworkPlaywright: {},
 	FrameworkCypress:    {},
 	FrameworkDetox:      {},
+	FrameworkMaestro:    {},
 }
 
 // IsSupportedFramework reports whether s is one of the orchestration-
@@ -281,7 +283,7 @@ func (ci CompositeIdentity) Validate() error {
 		return errors.New("composite identity: gh_run_attempt is required")
 	}
 	if !IsSupportedFramework(ci.Framework) {
-		return fmt.Errorf("composite identity: framework %q is not supported (must be one of: playwright, cypress, detox)", ci.Framework)
+		return fmt.Errorf("composite identity: framework %q is not supported (must be one of: playwright, cypress, detox, maestro)", ci.Framework)
 	}
 	return nil
 }

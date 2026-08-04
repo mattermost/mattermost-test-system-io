@@ -752,7 +752,7 @@ paths:
                 name: { type: string }
                 gh_run_attempt: { type: string }
                 branch: { type: string, maxLength: 256 }
-                framework: { type: string, enum: [playwright, cypress, detox] }
+                framework: { type: string, enum: [playwright, cypress, detox, maestro] }
                 gh_job_name: { type: string }
                 gh_job_id: { type: string }
                 spec_path:
@@ -1597,7 +1597,7 @@ components:
           type: integer
         framework:
           type: string
-          enum: [playwright, cypress, detox]
+          enum: [playwright, cypress, detox, maestro]
           default: playwright
 
     WorkerIdentity:

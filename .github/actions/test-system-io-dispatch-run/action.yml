@@ -18,8 +18,10 @@ inputs:
       (e.g. mattermost/mattermost). The e2e stack must already be up;
       the worker dispatches `npx playwright test` inside
       `<repo-dir>/<playwright-dir>` (or `cypress run` inside
-      `<repo-dir>/<cypress-dir>` when `framework: cypress`, or
-      `detox test` inside `<repo-dir>/<detox-dir>` when `framework: detox`).
+      `<repo-dir>/<cypress-dir>` when `framework: cypress`, `detox test`
+      inside `<repo-dir>/<detox-dir>` when `framework: detox`, or
+      `maestro test` inside `<repo-dir>/<maestro-dir>` when
+      `framework: maestro`).
     required: true
   artifacts-root:
     description: Writable directory for per-iteration archived results
@@ -48,21 +50,13 @@ inputs:
     required: false
     default: mattermost-test-system-io
   framework:
-    description: >
-      Test framework this worker drives. One of `playwright`, `cypress`,
-      or `detox`. Defaults to `playwright` for backward compatibility
-      with existing consumers. When `cypress`, the action invokes
-      `npx cypress run --reporter cypress-multi-reporters
-      --reporter-options configFile=reporter-config.json --spec <leased>`
-      from `<repo-dir>/<cypress-dir>` and reads each leased spec's
-      Mochawesome JSON from
-      `results/mochawesome-report/json/tests/[name].json` (the path
-      reporter-config.json prescribes via reportDir + reportFilename).
-      When `detox`, the action invokes `npx detox test <leased> -c
-      <detox-config> --record-logs failing --take-screenshots failing
-      --artifacts-location <iter-dir>/artifacts -- --json --outputFile
-      <iter-dir>/jest-results.json` from `<repo-dir>/<detox-dir>` and
-      reads Jest's native `--json` output.
+    description: |
+      Test framework this worker drives. One of `playwright`, `cypress`, `detox`, or `maestro`.
+
+      - `playwright` (default, for backward compatibility with existing consumers): invokes `npx playwright test --project=<playwright-project> --no-deps [--retries=<playwright-retries>] <leased>` from `<repo-dir>/<playwright-dir>` and reads `<results-dir>/reporter/results.json`.
+      - `cypress`: invokes `npx cypress run --reporter cypress-multi-reporters --reporter-options configFile=reporter-config.json --spec <leased>` from `<repo-dir>/<cypress-dir>` and reads each leased spec's Mochawesome JSON from `results/mochawesome-report/json/tests/[name].json` (the path reporter-config.json prescribes via reportDir + reportFilename).
+      - `detox`: invokes `npx detox test <leased> -c <detox-config> --record-logs failing --take-screenshots failing --artifacts-location <iter-dir>/artifacts -- --json --outputFile <iter-dir>/jest-results.json` from `<repo-dir>/<detox-dir>` and reads Jest's native `--json` output.
+      - `maestro`: invokes `maestro test [--device <maestro-device>] [--platform <maestro-platform>] --format junit --output <iter-dir>/maestro-batch.xml --test-output-dir <iter-dir>/artifacts --flatten-debug-output <leased>` from `<repo-dir>/<maestro-dir>` (one flow file per invocation) and reads Maestro's native JUnit output.
     required: false
     default: "playwright"
   max-idle-polls:
@@ -144,6 +138,31 @@ inputs:
       own that setup. Detox only.
     required: false
     default: ios.sim.debug
+
+  # ── Maestro-specific ─────────────────────────────────────────────────
+  maestro-dir:
+    description: >
+      Path to the Maestro flow tree, relative to `repo-dir`. Defaults to
+      `detox/maestro` (the layout used by mattermost/mattermost-mobile).
+      Only consulted when `framework: maestro`.
+    required: false
+    default: detox/maestro
+  maestro-device:
+    description: >
+      Device UDID / AVD name / emulator serial passed to each per-spec
+      invocation as `--device`. The simulator/emulator must already be up
+      before the worker starts leasing — the action does not own that
+      setup. Empty omits `--device` (Maestro picks the sole connected
+      device). Maestro only.
+    required: false
+    default: ""
+  maestro-platform:
+    description: >
+      Platform passed to each per-spec invocation as `--platform` (e.g.
+      `android`). Empty omits `--platform` (Maestro infers it from the
+      connected device). Maestro only.
+    required: false
+    default: ""
 
 runs:
   using: node24

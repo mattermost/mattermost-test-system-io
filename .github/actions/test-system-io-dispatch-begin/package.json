@@ -9,7 +9,7 @@
     "format": "npx oxfmt src --write",
     "format:check": "npx oxfmt src --check",
     "lint": "npx oxlint src",
-    "test": "node --test src/cypress.test.ts src/detox.test.ts src/playwright.test.ts"
+    "test": "node --test src/cypress.test.ts src/detox.test.ts src/maestro.test.ts src/playwright.test.ts"
   },
   "dependencies": {
     "@actions/core": "3.0.1",

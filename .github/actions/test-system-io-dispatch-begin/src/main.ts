@@ -15,6 +15,7 @@ import * as core from "@actions/core";
 import { setCommitStatus } from "./commit-status";
 import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
 import { discoverDetoxSpecs } from "./detox";
+import { discoverMaestroSpecs } from "./maestro";
 import { discoverPlaywrightSpecs } from "./playwright";
 import { retryFetch, safeText } from "./retry-fetch";
 
@@ -49,8 +50,15 @@ export async function run(): Promise<void> {
   const idleTimeoutMs = intInput("idle-timeout-ms", 600_000);
   const leaseTimeoutMs = intInput("lease-timeout-ms", 600_000);
   const framework = (core.getInput("framework") || "playwright").trim().toLowerCase();
-  if (framework !== "playwright" && framework !== "cypress" && framework !== "detox") {
-    throw new Error(`framework must be "playwright", "cypress", or "detox", got "${framework}"`);
+  if (
+    framework !== "playwright" &&
+    framework !== "cypress" &&
+    framework !== "detox" &&
+    framework !== "maestro"
+  ) {
+    throw new Error(
+      `framework must be "playwright", "cypress", "detox", or "maestro", got "${framework}"`,
+    );
   }
   const playwrightProject = core.getInput("playwright-project") || "chrome";
   const playwrightDirInput = core.getInput("playwright-dir") || "e2e-tests/playwright";
@@ -59,6 +67,11 @@ export async function run(): Promise<void> {
   const detoxSearchPath = core.getInput("detox-search-path") || "e2e/test";
   // "" is a valid value here (disables exclusion), so no JS fallback.
   const detoxExcludeDir = core.getInput("detox-exclude-dir");
+  const maestroDirInput = core.getInput("maestro-dir") || "detox/maestro";
+  const maestroFlowPath = core.getInput("maestro-flow-path") || "flows";
+  // "" is a valid value here (disables exclusion), so no JS fallback.
+  const maestroExcludeDir = core.getInput("maestro-exclude-dir");
+  const maestroExcludeTags = parseTagList(core.getInput("maestro-exclude-tags"));
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
     throw new Error("total-reports-expected is required and must be > 0");
@@ -103,6 +116,19 @@ export async function run(): Promise<void> {
       throw new Error(
         `no Detox specs found under ${path.join(detoxDir, detoxSearchPath)} ` +
           `(exclude-dir=${detoxExcludeDir || "none"})`,
+      );
+    }
+  } else if (framework === "maestro") {
+    const maestroDir = path.resolve(repoDir, maestroDirInput);
+    specs = discoverMaestroSpecs(maestroDir, {
+      searchPath: maestroFlowPath,
+      excludeDir: maestroExcludeDir,
+      excludeTags: maestroExcludeTags,
+    });
+    if (specs.length === 0) {
+      throw new Error(
+        `no Maestro flows found under ${path.join(maestroDir, maestroFlowPath)} ` +
+          `(exclude-dir=${maestroExcludeDir || "none"}, exclude-tags=${maestroExcludeTags.join(",") || "none"})`,
       );
     }
   } else {

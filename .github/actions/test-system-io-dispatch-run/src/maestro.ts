@@ -1,0 +1,235 @@
+/** Per-flow Maestro invocation + JUnit XML aggregation. Mirrors detox.ts's runUnit shape. */
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { spawnSync } from "node:child_process";
+import * as core from "@actions/core";
+import { XMLParser } from "fast-xml-parser";
+import type { InvocationRecord, SpecResult, TestCaseResult, TestStatus } from "./types";
+
+export interface RunUnitConfig {
+  maestroDir: string;
+  maestroDevice: string;
+  maestroPlatform: string;
+  workerArtifacts: string;
+}
+
+export interface MaestroUnitResult {
+  invocation: InvocationRecord;
+  results: SpecResult[];
+  // Screenshot absolute paths, grouped by spec_path.
+  screenshotsBySpec: Record<string, string[]>;
+}
+
+// batch_size is always 1 for Maestro (one flow file per invocation, mirroring
+// mattermost-mobile's run_ci_batches.sh loop), so specPaths has exactly one
+// entry; only the first is used defensively if a caller ever leases more.
+export function runUnit(
+  cfg: RunUnitConfig,
+  iterationSeq: number,
+  specPaths: string[],
+): MaestroUnitResult {
+  const specPath = specPaths[0]!;
+  if (specPaths.length > 1) {
+    core.warning(
+      `maestro runUnit leased ${specPaths.length} specs; only running the first (${specPath})`,
+    );
+  }
+
+  const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
+  fs.mkdirSync(iterDir, { recursive: true });
+
+  const artifactsDir = path.join(iterDir, "artifacts");
+  const junitOutputPath = path.join(iterDir, "maestro-batch.xml");
+
+  const args = ["test"];
+  if (cfg.maestroDevice) args.push("--device", cfg.maestroDevice);
+  if (cfg.maestroPlatform) args.push("--platform", cfg.maestroPlatform);
+  args.push(
+    "--format",
+    "junit",
+    "--output",
+    junitOutputPath,
+    "--test-output-dir",
+    artifactsDir,
+    "--flatten-debug-output",
+    specPath,
+  );
+
+  const startedAt = Date.now();
+  const child = spawnSync("maestro", args, {
+    cwd: cfg.maestroDir,
+    stdio: "inherit",
+  });
+  const durationMs = Date.now() - startedAt;
+  core.info(
+    `maestro exit ${child.status} in ${Math.round(durationMs / 1000)}s` +
+      (child.error ? ` error=${child.error.message}` : "") +
+      (child.signal ? ` signal=${child.signal}` : ""),
+  );
+
+  let result: SpecResult;
+  if (!fs.existsSync(junitOutputPath)) {
+    core.warning(`maestro junit xml missing: ${junitOutputPath}`);
+    result = { spec_path: specPath, status: "interrupted", actual_duration_ms: 0, test_cases: [] };
+  } else {
+    try {
+      result = aggregateMaestroReport(fs.readFileSync(junitOutputPath, "utf8"), specPath);
+    } catch (e) {
+      core.warning(`maestro junit xml parse failure: ${(e as Error).message}`);
+      result = {
+        spec_path: specPath,
+        status: "interrupted",
+        actual_duration_ms: 0,
+        test_cases: [],
+      };
+    }
+  }
+
+  // batch_size is always 1, so every screenshot under this invocation's
+  // artifacts dir belongs to the single spec/test_case just run — unlike
+  // Detox, no folder-name/full_title matching heuristic is needed.
+  const screenshotsBySpec = collectMaestroScreenshots(artifactsDir, specPath);
+
+  return {
+    invocation: { specPath, iterDir, playwrightJsonPath: junitOutputPath },
+    results: [result],
+    screenshotsBySpec,
+  };
+}
+
+export function collectMaestroScreenshots(
+  artifactsDir: string,
+  specPath: string,
+): Record<string, string[]> {
+  if (!fs.existsSync(artifactsDir)) return {};
+  const files: string[] = [];
+  walkImages(artifactsDir, files);
+  return files.length > 0 ? { [specPath]: files } : {};
+}
+
+function walkImages(dir: string, out: string[]): void {
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      walkImages(full, out);
+    } else if (ent.isFile() && /\.(png|jpe?g)$/i.test(ent.name)) {
+      out.push(full);
+    }
+  }
+}
+
+const RANKS: Record<TestStatus, number> = {
+  skipped: 0,
+  passed: 1,
+  flaky: 2,
+  interrupted: 3,
+  timedOut: 4,
+  failed: 5,
+};
+
+/** Maps Maestro's JUnit status attribute to the TestStatus union. */
+export function maestroStatus(raw: string | undefined): TestStatus {
+  switch ((raw ?? "").toUpperCase()) {
+    case "SUCCESS":
+    case "PASSED":
+      return "passed";
+    case "FAILED":
+    case "ERROR":
+      return "failed";
+    case "SKIPPED":
+    case "WARNING":
+      return "skipped";
+    default:
+      return "skipped";
+  }
+}
+
+interface MaestroJUnitTestCase {
+  id?: string;
+  name?: string;
+  classname?: string;
+  time?: string | number;
+  status?: string;
+  failure?: unknown;
+  error?: unknown;
+}
+
+interface MaestroJUnitTestSuite {
+  testcase?: MaestroJUnitTestCase | MaestroJUnitTestCase[];
+}
+
+/** Aggregates one `maestro test --format junit` invocation's output into a SpecResult. */
+export function aggregateMaestroReport(xml: string, specPath: string): SpecResult {
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "" });
+  const parsed = parser.parse(xml) as {
+    testsuites?: { testsuite?: MaestroJUnitTestSuite | MaestroJUnitTestSuite[] };
+    testsuite?: MaestroJUnitTestSuite | MaestroJUnitTestSuite[];
+  };
+  const suites = toArray(parsed?.testsuites?.testsuite ?? parsed?.testsuite);
+
+  const cases: TestCaseResult[] = [];
+  let totalMs = 0;
+  let ordinal = 0;
+  for (const suite of suites) {
+    for (const tc of toArray(suite?.testcase)) {
+      const status = maestroStatus(tc?.status);
+      const durationMs = parseDurationMs(tc?.time);
+      const tcResult: TestCaseResult = {
+        title: String(tc?.name ?? tc?.id ?? ""),
+        full_title: String(tc?.classname ?? tc?.name ?? tc?.id ?? ""),
+        status,
+        retry_count: 0,
+        duration_ms: durationMs,
+        ordinal: ordinal++,
+      };
+      const errorText = extractErrorText(tc?.failure ?? tc?.error);
+      if (errorText) {
+        tcResult.error_message = errorText;
+        tcResult.error_stack = errorText;
+      }
+      cases.push(tcResult);
+      totalMs += durationMs;
+    }
+  }
+
+  if (cases.length === 0) {
+    return { spec_path: specPath, status: "skipped", actual_duration_ms: 0, test_cases: [] };
+  }
+
+  let worst: TestStatus = "skipped";
+  for (const c of cases) if (RANKS[c.status] > RANKS[worst]) worst = c.status;
+
+  const out: SpecResult = {
+    spec_path: specPath,
+    status: worst,
+    actual_duration_ms: totalMs,
+    test_cases: cases,
+  };
+  const firstFail = cases.find((c) => c.status === "failed");
+  if (firstFail?.error_message) out.error_message = firstFail.error_message;
+  if (firstFail?.error_stack) out.error_stack = firstFail.error_stack;
+  return out;
+}
+
+function parseDurationMs(raw: string | number | undefined): number {
+  const seconds = typeof raw === "number" ? raw : Number.parseFloat(raw ?? "");
+  return Number.isFinite(seconds) ? Math.round(seconds * 1000) : 0;
+}
+
+/** Reads a JUnit <failure>/<error> element's message attribute or text content. */
+function extractErrorText(node: unknown): string | undefined {
+  if (node == null) return undefined;
+  if (typeof node === "object") {
+    const obj = node as { message?: unknown; "#text"?: unknown };
+    const text = obj.message ?? obj["#text"];
+    return text != null && String(text).length > 0 ? String(text) : undefined;
+  }
+  const s = String(node);
+  return s.length > 0 ? s : undefined;
+}
+
+function toArray<T>(x: T | T[] | undefined): T[] {
+  if (x === undefined || x === null) return [];
+  return Array.isArray(x) ? x : [x];
+}

@@ -16,9 +16,10 @@
  *
  *   GROUP=cypress-full-fips     # required: cypress-full | cypress-full-fips |
  *                               #           playwright-full | playwright-full-fips |
- *                               #           detox-ios | detox-android | detox-ipad
+ *                               #           detox-ios | detox-android | detox-ipad |
+ *                               #           maestro-ios | maestro-android
  *   CI_RUNS_ROOT=.local/mattermost-ci  # where the corpus was downloaded (see README.md);
- *                               # defaults to .local/mattermost-mobile-ci for detox-* groups
+ *                               # defaults to .local/mattermost-mobile-ci for detox-* / maestro-* groups
  *   SPEED=1                     # duration scale-down multiplier (10 = 10x faster than real time)
  *   RETEST=1 RETEST_BUDGET=1    # retest-on-fail config for the simulated run (default on)
  *   MAX_IDLE_POLLS=5            # matches the real dispatch-run action's default
@@ -65,7 +66,7 @@ const GROUP = process.env.GROUP;
 if (!GROUP) {
   console.error(
     'GROUP is required: one of cypress-full, cypress-full-fips, playwright-full, ' +
-      'playwright-full-fips, detox-ios, detox-android, detox-ipad',
+      'playwright-full-fips, detox-ios, detox-android, detox-ipad, maestro-ios, maestro-android',
   );
   process.exit(2);
 }

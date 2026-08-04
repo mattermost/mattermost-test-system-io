@@ -26,8 +26,12 @@ test("maestroStatus: maps Maestro's JUnit status vocabulary to the closed TestSt
   assert.equal(maestroStatus("ERROR"), "failed");
   assert.equal(maestroStatus("SKIPPED"), "skipped");
   assert.equal(maestroStatus("WARNING"), "skipped");
-  assert.equal(maestroStatus(undefined), "skipped");
-  assert.equal(maestroStatus("something-unknown"), "skipped");
+  assert.equal(maestroStatus("CANCELED"), "interrupted");
+  assert.equal(maestroStatus("STOPPED"), "interrupted");
+  assert.equal(maestroStatus("RUNNING"), "interrupted");
+  assert.equal(maestroStatus("PENDING"), "interrupted");
+  assert.equal(maestroStatus(undefined), "interrupted");
+  assert.equal(maestroStatus("something-unknown"), "interrupted");
 });
 
 test("aggregateMaestroReport: a passing flow -> spec status passed, duration from time (seconds -> ms)", () => {

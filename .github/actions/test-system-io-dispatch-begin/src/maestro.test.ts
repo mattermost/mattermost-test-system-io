@@ -121,6 +121,57 @@ test("discoverMaestroSpecs: searchPath pointing at a single file returns just th
   });
 });
 
+test("discoverMaestroSpecs: direct helper/picker paths are excluded", () => {
+  withTmpDir((dir) => {
+    writeFlow(dir, "flows/account/_connect_check.yml");
+    writeFlow(dir, "flows/account/server_picker.yml");
+    assert.deepEqual(
+      discoverMaestroSpecs(dir, {
+        searchPath: "flows/account/_connect_check.yml",
+        excludeDir: "multi_device",
+        excludeTags: [],
+      }),
+      [],
+    );
+    assert.deepEqual(
+      discoverMaestroSpecs(dir, {
+        searchPath: "flows/account/server_picker.yml",
+        excludeDir: "multi_device",
+        excludeTags: [],
+      }),
+      [],
+    );
+  });
+});
+
+test("discoverMaestroSpecs: direct tagged path honors excludeTags", () => {
+  withTmpDir((dir) => {
+    writeFlow(dir, "flows/calls/join_call.yml", "tags:\n  - @known_issue\nappId: x\n");
+    assert.deepEqual(
+      discoverMaestroSpecs(dir, {
+        searchPath: "flows/calls/join_call.yml",
+        excludeDir: "multi_device",
+        excludeTags: ["@known_issue"],
+      }),
+      [],
+    );
+  });
+});
+
+test("discoverMaestroSpecs: excluded directory as search root returns empty", () => {
+  withTmpDir((dir) => {
+    writeFlow(dir, "flows/multi_device/two_device_call.yml");
+    assert.deepEqual(
+      discoverMaestroSpecs(dir, {
+        searchPath: "flows/multi_device",
+        excludeDir: "multi_device",
+        excludeTags: [],
+      }),
+      [],
+    );
+  });
+});
+
 test("discoverMaestroSpecs: searchPath file not matching *.yml/*.yaml throws", () => {
   withTmpDir((dir) => {
     fs.mkdirSync(path.join(dir, "flows"), { recursive: true });

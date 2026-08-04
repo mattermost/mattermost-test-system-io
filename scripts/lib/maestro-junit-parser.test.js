@@ -38,11 +38,17 @@ test('maestroStatus maps FAILED/ERROR to failed', () => {
   assert.equal(maestroStatus('ERROR'), 'failed');
 });
 
-test('maestroStatus maps SKIPPED/WARNING/unknown/undefined to skipped', () => {
+test('maestroStatus maps SKIPPED/WARNING to skipped', () => {
   assert.equal(maestroStatus('SKIPPED'), 'skipped');
   assert.equal(maestroStatus('WARNING'), 'skipped');
-  assert.equal(maestroStatus('something-unknown'), 'skipped');
-  assert.equal(maestroStatus(undefined), 'skipped');
+});
+
+test('maestroStatus maps canceled/stopped/in-progress/unknown to interrupted', () => {
+  assert.equal(maestroStatus('CANCELED'), 'interrupted');
+  assert.equal(maestroStatus('STOPPED'), 'interrupted');
+  assert.equal(maestroStatus('RUNNING'), 'interrupted');
+  assert.equal(maestroStatus('something-unknown'), 'interrupted');
+  assert.equal(maestroStatus(undefined), 'interrupted');
 });
 
 test('parseMaestroReport: single testsuite/testcase, matches the real merged-report shape', () => {
@@ -118,6 +124,22 @@ test('aggregateSpec: empty testcases -> spec-level skipped, no test_cases', () =
   assert.deepEqual(result.test_cases, []);
 });
 
+test('parseMaestroReport: <error> child and mixed suite -> worst status failed', () => {
+  const xml = `<testsuites>
+  <testsuite name="flows/d.yml" time="3.0">
+    <testcase id="d1" name="d1" classname="flows/d.yml" time="1.0" status="SUCCESS"/>
+    <testcase id="d2" name="d2" classname="flows/d.yml" time="2.0" status="ERROR">
+      <error message="driver crashed"/>
+    </testcase>
+  </testsuite>
+</testsuites>`;
+  const parsed = parseMaestroReport(xml);
+  const result = aggregateSpec(parsed.testsuites[0], 'flows/d.yml');
+  assert.equal(result.status, 'failed');
+  assert.equal(result.actual_duration_ms, 3000);
+  assert.equal(result.error_message, 'driver crashed');
+});
+
 test('aggregateSpec: missing time falls back to 0', () => {
   const result = aggregateSpec(
     { testcases: [{ id: 'a', name: 'a', status: 'SUCCESS' }] },
@@ -161,7 +183,7 @@ for (const fixture of REAL_FIXTURES) {
       // Every real fixture is SUCCESS-only today; assert the mapping holds
       // rather than hardcoding a pass count that'd go stale if the fixture changes.
       for (const tc of result.test_cases) {
-        assert.ok(['passed', 'failed', 'skipped'].includes(tc.status));
+        assert.ok(['passed', 'failed', 'skipped', 'interrupted'].includes(tc.status));
       }
     }
     assert.equal(parsedTestcaseCount, rawTestcaseCount, 'every <testcase> in the file was parsed exactly once');

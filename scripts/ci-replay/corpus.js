@@ -28,7 +28,6 @@ const {
 const {
   parseMaestroReport,
   aggregateSpec: aggregateMaestroSpec,
-  collectSpecFiles: collectMaestroSpecFiles,
   normalizeSpecPath: normalizeMaestroSpecPath,
 } = require('../lib/maestro-junit-parser');
 
@@ -271,9 +270,9 @@ function loadMaestroShard(shardDir) {
     return [];
   }
   const out = [];
-  for (const rawName of collectMaestroSpecFiles(parsed)) {
-    const specPath = normalizeMaestroSpecPath(rawName);
-    const testsuiteEntry = parsed.testsuites.find((ts) => ts.name === rawName);
+  for (const testsuiteEntry of parsed.testsuites) {
+    if (!testsuiteEntry.name) continue;
+    const specPath = normalizeMaestroSpecPath(testsuiteEntry.name);
     const result = aggregateMaestroSpec(testsuiteEntry, specPath);
     out.push({
       specPath,

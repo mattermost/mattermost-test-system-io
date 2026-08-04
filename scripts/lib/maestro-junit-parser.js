@@ -38,8 +38,14 @@ function maestroStatus(raw) {
     case 'SKIPPED':
     case 'WARNING':
       return 'skipped';
+    case 'CANCELED':
+    case 'STOPPED':
+    case 'PENDING':
+    case 'PREPARING':
+    case 'INSTALLING':
+    case 'RUNNING':
     default:
-      return 'skipped';
+      return 'interrupted';
   }
 }
 

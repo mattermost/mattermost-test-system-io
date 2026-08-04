@@ -18,6 +18,7 @@ import { runUnit as runPlaywrightUnit } from "./playwright";
 import { runUnit as runCypressUnit } from "./cypress";
 import { runUnit as runDetoxUnit } from "./detox";
 import { runUnit as runMaestroUnit, parseMaestroEnv } from "./maestro";
+import { screenshotContentType } from "./mime";
 import { uploadShard, type UploadConfig } from "./upload";
 import type {
   CheckoutResponseBody,
@@ -67,6 +68,11 @@ export async function run(): Promise<void> {
   const maestroDevice = core.getInput("maestro-device");
   const maestroPlatform = core.getInput("maestro-platform");
   const maestroEnv = parseMaestroEnv(core.getInput("maestro-env"));
+  // Default 9m — keep below begin's lease-timeout-ms default (10m).
+  const maestroTimeoutMs = intInput("maestro-timeout-ms", 540_000);
+  if (maestroTimeoutMs <= 0) {
+    throw new Error(`maestro-timeout-ms must be > 0, got ${maestroTimeoutMs}`);
+  }
   // 0 disables the cap; see drain()'s idlePolls.
   const maxIdlePolls = intInput("max-idle-polls", 5);
   // Longer than the server's retry_after_ms ceiling (~7s); see drain().
@@ -120,6 +126,7 @@ export async function run(): Promise<void> {
       maestroDevice,
       maestroPlatform,
       maestroEnv,
+      maestroTimeoutMs,
       workerArtifacts,
       playwrightRetries,
       playwrightProject,
@@ -203,6 +210,7 @@ interface DrainConfig {
   maestroDevice: string;
   maestroPlatform: string;
   maestroEnv: Record<string, string>;
+  maestroTimeoutMs: number;
   workerArtifacts: string;
   playwrightRetries: number;
   playwrightProject: string;
@@ -311,12 +319,13 @@ async function drain(cfg: DrainConfig): Promise<void> {
         // fullName, so match on that instead of a filename substring.
         await attachDetoxScreenshots(cfg, results, out.screenshotsBySpec);
       } else if (cfg.framework === "maestro") {
-        const out = runMaestroUnit(
+        const out = await runMaestroUnit(
           {
             maestroDir: cfg.maestroDir,
             maestroDevice: cfg.maestroDevice,
             maestroPlatform: cfg.maestroPlatform,
             maestroEnv: cfg.maestroEnv,
+            maestroTimeoutMs: cfg.maestroTimeoutMs,
             workerArtifacts: cfg.workerArtifacts,
           },
           cfg.nextIterationSeq(),
@@ -729,7 +738,11 @@ async function uploadOrchScreenshot(
   form.append("relative_path", relPath);
   // Wrap Node's Buffer in Uint8Array — same trick upload.ts uses to bridge
   // node:buffer to DOM Blob's BlobPart type.
-  form.append("file", new Blob([new Uint8Array(buf)], { type: "image/png" }), relPath);
+  form.append(
+    "file",
+    new Blob([new Uint8Array(buf)], { type: screenshotContentType(absPath) }),
+    relPath,
+  );
 
   let res: Response;
   try {

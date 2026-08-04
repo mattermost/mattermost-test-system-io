@@ -37,12 +37,30 @@ export function discoverMaestroSpecs(maestroDir: string, opts: MaestroDiscoveryO
         `maestro-flow-path "${opts.searchPath}" is a file but doesn't match *.yml/*.yaml`,
       );
     }
+    if (!isEligibleFlowFile(target, path.basename(target), opts.excludeTags)) {
+      return [];
+    }
     return [toRelative(maestroDir, target)];
+  }
+
+  // Reject an excluded directory when it is the search root, matching child skips.
+  if (opts.excludeDir && path.basename(target) === opts.excludeDir) {
+    return [];
   }
 
   const out: string[] = [];
   walk(target, opts.excludeDir, maestroDir, opts.excludeTags, out);
   return out.sort();
+}
+
+function isEligibleFlowFile(absPath: string, baseName: string, excludeTags: string[]): boolean {
+  if (MAESTRO_HELPER_RE.test(baseName) || MAESTRO_PICKER_RE.test(baseName)) {
+    return false;
+  }
+  if (excludeTags.length > 0 && shareAny(readMaestroFlowTags(absPath), excludeTags)) {
+    return false;
+  }
+  return true;
 }
 
 function walk(
@@ -57,13 +75,8 @@ function walk(
     if (ent.isDirectory()) {
       if (excludeDir && ent.name === excludeDir) continue;
       walk(full, excludeDir, maestroDir, excludeTags, out);
-    } else if (
-      ent.isFile() &&
-      MAESTRO_FLOW_RE.test(ent.name) &&
-      !MAESTRO_HELPER_RE.test(ent.name) &&
-      !MAESTRO_PICKER_RE.test(ent.name)
-    ) {
-      if (excludeTags.length > 0 && shareAny(readMaestroFlowTags(full), excludeTags)) continue;
+    } else if (ent.isFile() && MAESTRO_FLOW_RE.test(ent.name)) {
+      if (!isEligibleFlowFile(full, ent.name, excludeTags)) continue;
       out.push(toRelative(maestroDir, full));
     }
   }

@@ -2,7 +2,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import * as core from "@actions/core";
 import { XMLParser } from "fast-xml-parser";
 import type { InvocationRecord, SpecResult, TestCaseResult, TestStatus } from "./types";
@@ -16,6 +16,9 @@ export interface RunUnitConfig {
   // those from explicit --env flags, not the invoking process's ambient
   // environment, so this is required whenever a flow references a variable.
   maestroEnv: Record<string, string>;
+  // Cap on a single `maestro test` invocation. Keep below the run's
+  // lease-timeout-ms so the worker can /complete before the server reclaims.
+  maestroTimeoutMs: number;
   workerArtifacts: string;
 }
 
@@ -26,14 +29,21 @@ export interface MaestroUnitResult {
   screenshotsBySpec: Record<string, string[]>;
 }
 
+interface SpawnOutcome {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  error?: Error;
+  timedOut: boolean;
+}
+
 // batch_size is always 1 for Maestro (one flow file per invocation, mirroring
 // mattermost-mobile's run_ci_batches.sh loop), so specPaths has exactly one
 // entry; only the first is used defensively if a caller ever leases more.
-export function runUnit(
+export async function runUnit(
   cfg: RunUnitConfig,
   iterationSeq: number,
   specPaths: string[],
-): MaestroUnitResult {
+): Promise<MaestroUnitResult> {
   const specPath = specPaths[0]!;
   if (specPaths.length > 1) {
     core.warning(
@@ -65,19 +75,27 @@ export function runUnit(
   );
 
   const startedAt = Date.now();
-  const child = spawnSync("maestro", args, {
-    cwd: cfg.maestroDir,
-    stdio: "inherit",
-  });
+  const child = await spawnMaestro(args, cfg.maestroDir, cfg.maestroTimeoutMs);
   const durationMs = Date.now() - startedAt;
   core.info(
     `maestro exit ${child.status} in ${Math.round(durationMs / 1000)}s` +
+      (child.timedOut ? " timedOut=true" : "") +
       (child.error ? ` error=${child.error.message}` : "") +
       (child.signal ? ` signal=${child.signal}` : ""),
   );
 
   let result: SpecResult;
-  if (!fs.existsSync(junitOutputPath)) {
+  if (child.timedOut) {
+    core.warning(
+      `maestro timed out after ${cfg.maestroTimeoutMs}ms; returning interrupted for ${specPath}`,
+    );
+    result = {
+      spec_path: specPath,
+      status: "interrupted",
+      actual_duration_ms: durationMs,
+      test_cases: [],
+    };
+  } else if (!fs.existsSync(junitOutputPath)) {
     core.warning(`maestro junit xml missing: ${junitOutputPath}`);
     result = { spec_path: specPath, status: "interrupted", actual_duration_ms: 0, test_cases: [] };
   } else {
@@ -104,6 +122,57 @@ export function runUnit(
     results: [result],
     screenshotsBySpec,
   };
+}
+
+/** Runs Maestro and kills its process group when maestroTimeoutMs elapses. */
+function spawnMaestro(args: string[], cwd: string, timeoutMs: number): Promise<SpawnOutcome> {
+  return new Promise((resolve) => {
+    const child = spawn("maestro", args, {
+      cwd,
+      stdio: "inherit",
+      // Own process group so timeout can signal Maestro and its descendants.
+      detached: process.platform !== "win32",
+    });
+
+    let settled = false;
+    let timedOut = false;
+
+    const finish = (outcome: SpawnOutcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(outcome);
+    };
+
+    const killTree = () => {
+      if (child.pid == null) return;
+      try {
+        if (process.platform === "win32") {
+          child.kill("SIGKILL");
+        } else {
+          process.kill(-child.pid, "SIGKILL");
+        }
+      } catch {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // already exited
+        }
+      }
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree();
+    }, timeoutMs);
+
+    child.on("error", (error) => {
+      finish({ status: null, signal: null, error, timedOut });
+    });
+    child.on("close", (status, signal) => {
+      finish({ status, signal, timedOut });
+    });
+  });
 }
 
 /**
@@ -165,8 +234,15 @@ export function maestroStatus(raw: string | undefined): TestStatus {
     case "SKIPPED":
     case "WARNING":
       return "skipped";
+    // Canceled/stopped/in-progress FlowStatus values, plus unknown/missing.
+    case "CANCELED":
+    case "STOPPED":
+    case "PENDING":
+    case "PREPARING":
+    case "INSTALLING":
+    case "RUNNING":
     default:
-      return "skipped";
+      return "interrupted";
   }
 }
 

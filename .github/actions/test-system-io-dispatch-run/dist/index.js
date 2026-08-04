@@ -1066,14 +1066,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path7 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path8 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path7 && path7[0] !== "/") {
-          path7 = `/${path7}`;
+        if (path8 && path8[0] !== "/") {
+          path8 = `/${path8}`;
         }
-        return new URL(`${origin}${path7}`);
+        return new URL(`${origin}${path8}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -1524,39 +1524,39 @@ var require_diagnostics = __commonJS({
       });
       diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
         const {
-          request: { method, path: path7, origin }
+          request: { method, path: path8, origin }
         } = evt;
-        debuglog("sending request to %s %s/%s", method, origin, path7);
+        debuglog("sending request to %s %s/%s", method, origin, path8);
       });
       diagnosticsChannel.channel("undici:request:headers").subscribe((evt) => {
         const {
-          request: { method, path: path7, origin },
+          request: { method, path: path8, origin },
           response: { statusCode }
         } = evt;
         debuglog(
           "received response to %s %s/%s - HTTP %d",
           method,
           origin,
-          path7,
+          path8,
           statusCode
         );
       });
       diagnosticsChannel.channel("undici:request:trailers").subscribe((evt) => {
         const {
-          request: { method, path: path7, origin }
+          request: { method, path: path8, origin }
         } = evt;
-        debuglog("trailers received from %s %s/%s", method, origin, path7);
+        debuglog("trailers received from %s %s/%s", method, origin, path8);
       });
       diagnosticsChannel.channel("undici:request:error").subscribe((evt) => {
         const {
-          request: { method, path: path7, origin },
+          request: { method, path: path8, origin },
           error: error2
         } = evt;
         debuglog(
           "request to %s %s/%s errored - %s",
           method,
           origin,
-          path7,
+          path8,
           error2.message
         );
       });
@@ -1605,9 +1605,9 @@ var require_diagnostics = __commonJS({
         });
         diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
           const {
-            request: { method, path: path7, origin }
+            request: { method, path: path8, origin }
           } = evt;
-          debuglog("sending request to %s %s/%s", method, origin, path7);
+          debuglog("sending request to %s %s/%s", method, origin, path8);
         });
       }
       diagnosticsChannel.channel("undici:websocket:open").subscribe((evt) => {
@@ -1670,7 +1670,7 @@ var require_request = __commonJS({
     var kHandler = /* @__PURE__ */ Symbol("handler");
     var Request = class {
       constructor(origin, {
-        path: path7,
+        path: path8,
         method,
         body,
         headers,
@@ -1685,11 +1685,11 @@ var require_request = __commonJS({
         expectContinue,
         servername
       }, handler2) {
-        if (typeof path7 !== "string") {
+        if (typeof path8 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path7[0] !== "/" && !(path7.startsWith("http://") || path7.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path8[0] !== "/" && !(path8.startsWith("http://") || path8.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path7)) {
+        } else if (invalidPathRegex.test(path8)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -1755,7 +1755,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? buildURL(path7, query) : path7;
+        this.path = query ? buildURL(path8, query) : path8;
         this.origin = origin;
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" : idempotent;
         this.blocking = blocking == null ? false : blocking;
@@ -6281,7 +6281,7 @@ var require_client_h1 = __commonJS({
       return method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && method !== "TRACE" && method !== "CONNECT";
     }
     function writeH1(client, request2) {
-      const { method, path: path7, host, upgrade, blocking, reset } = request2;
+      const { method, path: path8, host, upgrade, blocking, reset } = request2;
       let { body, headers, contentLength } = request2;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -6347,7 +6347,7 @@ var require_client_h1 = __commonJS({
       if (blocking) {
         socket[kBlocking] = true;
       }
-      let header = `${method} ${path7} HTTP/1.1\r
+      let header = `${method} ${path8} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -6873,7 +6873,7 @@ var require_client_h2 = __commonJS({
     }
     function writeH2(client, request2) {
       const session = client[kHTTP2Session];
-      const { method, path: path7, host, upgrade, expectContinue, signal, headers: reqHeaders } = request2;
+      const { method, path: path8, host, upgrade, expectContinue, signal, headers: reqHeaders } = request2;
       let { body } = request2;
       if (upgrade) {
         util.errorRequest(client, request2, new Error("Upgrade not supported for H2"));
@@ -6940,7 +6940,7 @@ var require_client_h2 = __commonJS({
         });
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path7;
+      headers[HTTP2_HEADER_PATH] = path8;
       headers[HTTP2_HEADER_SCHEME] = "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH";
       if (body && typeof body.read === "function") {
@@ -7293,9 +7293,9 @@ var require_redirect_handler = __commonJS({
           return this.handler.onHeaders(statusCode, headers, resume, statusText);
         }
         const { origin, pathname, search } = util.parseURL(new URL(this.location, this.opts.origin && new URL(this.opts.path, this.opts.origin)));
-        const path7 = search ? `${pathname}${search}` : pathname;
+        const path8 = search ? `${pathname}${search}` : pathname;
         this.opts.headers = cleanRequestHeaders(this.opts.headers, statusCode === 303, this.opts.origin !== origin);
-        this.opts.path = path7;
+        this.opts.path = path8;
         this.opts.origin = origin;
         this.opts.maxRedirections = 0;
         this.opts.query = null;
@@ -8531,10 +8531,10 @@ var require_proxy_agent = __commonJS({
         };
         const {
           origin,
-          path: path7 = "/",
+          path: path8 = "/",
           headers = {}
         } = opts;
-        opts.path = origin + path7;
+        opts.path = origin + path8;
         if (!("host" in headers) && !("Host" in headers)) {
           const { host } = new URL2(origin);
           headers.host = host;
@@ -10457,20 +10457,20 @@ var require_mock_utils = __commonJS({
       }
       return true;
     }
-    function safeUrl(path7) {
-      if (typeof path7 !== "string") {
-        return path7;
+    function safeUrl(path8) {
+      if (typeof path8 !== "string") {
+        return path8;
       }
-      const pathSegments = path7.split("?");
+      const pathSegments = path8.split("?");
       if (pathSegments.length !== 2) {
-        return path7;
+        return path8;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path7, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path7);
+    function matchKey(mockDispatch2, { path: path8, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path8);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -10492,7 +10492,7 @@ var require_mock_utils = __commonJS({
     function getMockDispatch(mockDispatches, key) {
       const basePath = key.query ? buildURL(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path7 }) => matchValue(safeUrl(path7), resolvedPath));
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path8 }) => matchValue(safeUrl(path8), resolvedPath));
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
       }
@@ -10530,9 +10530,9 @@ var require_mock_utils = __commonJS({
       }
     }
     function buildKey(opts) {
-      const { path: path7, method, body, headers, query } = opts;
+      const { path: path8, method, body, headers, query } = opts;
       return {
-        path: path7,
+        path: path8,
         method,
         body,
         headers,
@@ -10995,10 +10995,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path7, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
+          ({ method, path: path8, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path7,
+            Path: path8,
             "Status code": statusCode,
             Persistent: persist ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -15879,9 +15879,9 @@ var require_util6 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path7) {
-      for (let i = 0; i < path7.length; ++i) {
-        const code = path7.charCodeAt(i);
+    function validateCookiePath(path8) {
+      for (let i = 0; i < path8.length; ++i) {
+        const code = path8.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code === 127 || // DEL
         code === 59) {
@@ -18558,11 +18558,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path7 = opts.path;
+          let path8 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path7 = `/${path7}`;
+            path8 = `/${path8}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path7);
+          url = new URL(util.parseOrigin(url).origin + path8);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -20791,7 +20791,7 @@ function getIDToken(aud) {
 
 // src/main.ts
 var fs7 = __toESM(require("fs"));
-var path6 = __toESM(require("path"));
+var path7 = __toESM(require("path"));
 
 // node_modules/@actions/github/lib/context.js
 var import_fs2 = require("fs");
@@ -20807,8 +20807,8 @@ var Context = class {
       if ((0, import_fs2.existsSync)(process.env.GITHUB_EVENT_PATH)) {
         this.payload = JSON.parse((0, import_fs2.readFileSync)(process.env.GITHUB_EVENT_PATH, { encoding: "utf8" }));
       } else {
-        const path7 = process.env.GITHUB_EVENT_PATH;
-        process.stdout.write(`GITHUB_EVENT_PATH ${path7} does not exist${import_os3.EOL}`);
+        const path8 = process.env.GITHUB_EVENT_PATH;
+        process.stdout.write(`GITHUB_EVENT_PATH ${path8} does not exist${import_os3.EOL}`);
       }
     }
     this.eventName = process.env.GITHUB_EVENT_NAME;
@@ -27107,16 +27107,16 @@ var MatcherView = class {
    * @returns {string|undefined}
    */
   getCurrentTag() {
-    const path7 = this._matcher.path;
-    return path7.length > 0 ? path7[path7.length - 1].tag : void 0;
+    const path8 = this._matcher.path;
+    return path8.length > 0 ? path8[path8.length - 1].tag : void 0;
   }
   /**
    * Get current namespace.
    * @returns {string|undefined}
    */
   getCurrentNamespace() {
-    const path7 = this._matcher.path;
-    return path7.length > 0 ? path7[path7.length - 1].namespace : void 0;
+    const path8 = this._matcher.path;
+    return path8.length > 0 ? path8[path8.length - 1].namespace : void 0;
   }
   /**
    * Get current node's attribute value.
@@ -27124,9 +27124,9 @@ var MatcherView = class {
    * @returns {*}
    */
   getAttrValue(attrName) {
-    const path7 = this._matcher.path;
-    if (path7.length === 0) return void 0;
-    return path7[path7.length - 1].values?.[attrName];
+    const path8 = this._matcher.path;
+    if (path8.length === 0) return void 0;
+    return path8[path8.length - 1].values?.[attrName];
   }
   /**
    * Check if current node has an attribute.
@@ -27134,9 +27134,9 @@ var MatcherView = class {
    * @returns {boolean}
    */
   hasAttr(attrName) {
-    const path7 = this._matcher.path;
-    if (path7.length === 0) return false;
-    const current = path7[path7.length - 1];
+    const path8 = this._matcher.path;
+    if (path8.length === 0) return false;
+    const current = path8[path8.length - 1];
     return current.values !== void 0 && attrName in current.values;
   }
   /**
@@ -27162,18 +27162,18 @@ var MatcherView = class {
    * @returns {number}
    */
   getPosition() {
-    const path7 = this._matcher.path;
-    if (path7.length === 0) return -1;
-    return path7[path7.length - 1].position ?? 0;
+    const path8 = this._matcher.path;
+    if (path8.length === 0) return -1;
+    return path8[path8.length - 1].position ?? 0;
   }
   /**
    * Get current node's repeat counter (occurrence count of this tag name).
    * @returns {number}
    */
   getCounter() {
-    const path7 = this._matcher.path;
-    if (path7.length === 0) return -1;
-    return path7[path7.length - 1].counter ?? 0;
+    const path8 = this._matcher.path;
+    if (path8.length === 0) return -1;
+    return path8[path8.length - 1].counter ?? 0;
   }
   /**
    * Get current node's sibling index (alias for getPosition).
@@ -29087,7 +29087,7 @@ var XMLParser = class {
 };
 
 // src/maestro.ts
-function runUnit4(cfg, iterationSeq, specPaths) {
+async function runUnit4(cfg, iterationSeq, specPaths) {
   const specPath = specPaths[0];
   if (specPaths.length > 1) {
     warning(
@@ -29115,16 +29115,23 @@ function runUnit4(cfg, iterationSeq, specPaths) {
     specPath
   );
   const startedAt = Date.now();
-  const child = (0, import_node_child_process4.spawnSync)("maestro", args, {
-    cwd: cfg.maestroDir,
-    stdio: "inherit"
-  });
+  const child = await spawnMaestro(args, cfg.maestroDir, cfg.maestroTimeoutMs);
   const durationMs = Date.now() - startedAt;
   info(
-    `maestro exit ${child.status} in ${Math.round(durationMs / 1e3)}s` + (child.error ? ` error=${child.error.message}` : "") + (child.signal ? ` signal=${child.signal}` : "")
+    `maestro exit ${child.status} in ${Math.round(durationMs / 1e3)}s` + (child.timedOut ? " timedOut=true" : "") + (child.error ? ` error=${child.error.message}` : "") + (child.signal ? ` signal=${child.signal}` : "")
   );
   let result;
-  if (!fs5.existsSync(junitOutputPath)) {
+  if (child.timedOut) {
+    warning(
+      `maestro timed out after ${cfg.maestroTimeoutMs}ms; returning interrupted for ${specPath}`
+    );
+    result = {
+      spec_path: specPath,
+      status: "interrupted",
+      actual_duration_ms: durationMs,
+      test_cases: []
+    };
+  } else if (!fs5.existsSync(junitOutputPath)) {
     warning(`maestro junit xml missing: ${junitOutputPath}`);
     result = { spec_path: specPath, status: "interrupted", actual_duration_ms: 0, test_cases: [] };
   } else {
@@ -29146,6 +29153,49 @@ function runUnit4(cfg, iterationSeq, specPaths) {
     results: [result],
     screenshotsBySpec
   };
+}
+function spawnMaestro(args, cwd, timeoutMs) {
+  return new Promise((resolve2) => {
+    const child = (0, import_node_child_process4.spawn)("maestro", args, {
+      cwd,
+      stdio: "inherit",
+      // Own process group so timeout can signal Maestro and its descendants.
+      detached: process.platform !== "win32"
+    });
+    let settled = false;
+    let timedOut = false;
+    const finish = (outcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve2(outcome);
+    };
+    const killTree = () => {
+      if (child.pid == null) return;
+      try {
+        if (process.platform === "win32") {
+          child.kill("SIGKILL");
+        } else {
+          process.kill(-child.pid, "SIGKILL");
+        }
+      } catch {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
+      }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree();
+    }, timeoutMs);
+    child.on("error", (error2) => {
+      finish({ status: null, signal: null, error: error2, timedOut });
+    });
+    child.on("close", (status, signal) => {
+      finish({ status, signal, timedOut });
+    });
+  });
 }
 function parseMaestroEnv(raw) {
   const out = {};
@@ -29193,8 +29243,15 @@ function maestroStatus(raw) {
     case "SKIPPED":
     case "WARNING":
       return "skipped";
+    // Canceled/stopped/in-progress FlowStatus values, plus unknown/missing.
+    case "CANCELED":
+    case "STOPPED":
+    case "PENDING":
+    case "PREPARING":
+    case "INSTALLING":
+    case "RUNNING":
     default:
-      return "skipped";
+      return "interrupted";
   }
 }
 function aggregateMaestroReport(xml, specPath) {
@@ -29260,9 +29317,21 @@ function toArray(x) {
   return Array.isArray(x) ? x : [x];
 }
 
+// src/mime.ts
+var path5 = __toESM(require("path"));
+function screenshotContentType(filePath) {
+  return imageContentType(filePath) ?? "image/png";
+}
+function imageContentType(filePath) {
+  const ext = path5.extname(filePath).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  return null;
+}
+
 // src/upload.ts
 var fs6 = __toESM(require("fs"));
-var path5 = __toESM(require("path"));
+var path6 = __toESM(require("path"));
 async function uploadShard(cfg, invocations) {
   if (invocations.length === 0) {
     info("no invocations; nothing to upload");
@@ -29277,7 +29346,7 @@ async function uploadShard(cfg, invocations) {
       const rel = invocations.length > 1 ? `playwright-results-${i}.json` : "playwright-results.json";
       jsonParts.push({ absPath: inv.playwrightJsonPath, relPath: rel, size: stat2.size });
     }
-    const outputRoot = path5.join(inv.iterDir, "output");
+    const outputRoot = path6.join(inv.iterDir, "output");
     if (fs6.existsSync(outputRoot)) {
       for (const img of listImages(outputRoot)) {
         const prefixed = invocations.length > 1 ? `iter-${i}/${img.relPath}` : img.relPath;
@@ -29354,9 +29423,8 @@ function listImages(root) {
   for (const ent of entries) {
     if (!ent.isFile()) continue;
     const dir = ent.parentPath || ent.path || root;
-    const abs = path5.join(dir, ent.name);
-    const ext = path5.extname(abs).toLowerCase();
-    const ct = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : null;
+    const abs = path6.join(dir, ent.name);
+    const ct = imageContentType(abs);
     if (!ct) continue;
     let stat2;
     try {
@@ -29366,7 +29434,7 @@ function listImages(root) {
     }
     out.push({
       absPath: abs,
-      relPath: path5.relative(root, abs).split(path5.sep).join("/"),
+      relPath: path6.relative(root, abs).split(path6.sep).join("/"),
       size: stat2.size,
       contentType: ct
     });
@@ -29435,6 +29503,10 @@ async function run() {
   const maestroDevice = getInput("maestro-device");
   const maestroPlatform = getInput("maestro-platform");
   const maestroEnv = parseMaestroEnv(getInput("maestro-env"));
+  const maestroTimeoutMs = intInput("maestro-timeout-ms", 54e4);
+  if (maestroTimeoutMs <= 0) {
+    throw new Error(`maestro-timeout-ms must be > 0, got ${maestroTimeoutMs}`);
+  }
   const maxIdlePolls = intInput("max-idle-polls", 5);
   const postFailureDelayMs = intInput("post-failure-delay-ms", 1e4);
   let compositeIdentity;
@@ -29448,12 +29520,12 @@ async function run() {
   const ghJobId = resolved.id;
   const resolvedJobName = resolved.name;
   info(`resolved gh_job_id=${ghJobId} gh_job_name=${resolvedJobName} (input=${ghJobName})`);
-  const playwrightDir = path6.resolve(repoDir, playwrightDirInput);
-  const resultsDir = path6.resolve(playwrightDir, resultsDirInput);
-  const cypressDir = path6.resolve(repoDir, cypressDirInput);
-  const detoxDir = path6.resolve(repoDir, detoxDirInput);
-  const maestroDir = path6.resolve(repoDir, maestroDirInput);
-  const workerArtifacts = path6.join(artifactsRoot, ghJobId);
+  const playwrightDir = path7.resolve(repoDir, playwrightDirInput);
+  const resultsDir = path7.resolve(playwrightDir, resultsDirInput);
+  const cypressDir = path7.resolve(repoDir, cypressDirInput);
+  const detoxDir = path7.resolve(repoDir, detoxDirInput);
+  const maestroDir = path7.resolve(repoDir, maestroDirInput);
+  const workerArtifacts = path7.join(artifactsRoot, ghJobId);
   fs7.mkdirSync(workerArtifacts, { recursive: true });
   const invocations = [];
   let iterationSeq = 0;
@@ -29475,6 +29547,7 @@ async function run() {
       maestroDevice,
       maestroPlatform,
       maestroEnv,
+      maestroTimeoutMs,
       workerArtifacts,
       playwrightRetries,
       playwrightProject,
@@ -29604,12 +29677,13 @@ async function drain(cfg) {
         results = out.results;
         await attachDetoxScreenshots(cfg, results, out.screenshotsBySpec);
       } else if (cfg.framework === "maestro") {
-        const out = runUnit4(
+        const out = await runUnit4(
           {
             maestroDir: cfg.maestroDir,
             maestroDevice: cfg.maestroDevice,
             maestroPlatform: cfg.maestroPlatform,
             maestroEnv: cfg.maestroEnv,
+            maestroTimeoutMs: cfg.maestroTimeoutMs,
             workerArtifacts: cfg.workerArtifacts
           },
           cfg.nextIterationSeq(),
@@ -29760,7 +29834,7 @@ async function attachCypressScreenshots(cfg, results, screenshotsBySpec) {
     ).map((tc) => ({ tc, sanitizedTitle: stripCypressInvalidFilenameChars(tc.title) })).sort((a, b) => b.sanitizedTitle.length - a.sanitizedTitle.length);
     if (candidates.length === 0) continue;
     for (const absPath of files) {
-      const base = path6.basename(absPath);
+      const base = path7.basename(absPath);
       const match = candidates.find((c) => c.sanitizedTitle && base.includes(c.sanitizedTitle));
       const tc = match?.tc;
       if (!tc) {
@@ -29780,7 +29854,7 @@ async function attachPlaywrightScreenshots(cfg, results, screenshots) {
     const spec = bySpecPath.get(shot.specPath);
     const tc = spec?.test_cases.find((c) => c.ordinal === shot.ordinal);
     if (!tc) {
-      warning(`no test_case match for screenshot ${path6.basename(shot.absPath)}; skipping`);
+      warning(`no test_case match for screenshot ${path7.basename(shot.absPath)}; skipping`);
       continue;
     }
     const uploaded = await uploadOrchScreenshot(cfg, shot.specPath, shot.absPath);
@@ -29794,7 +29868,7 @@ async function attachDetoxScreenshots(cfg, results, screenshotsBySpec) {
     const files = screenshotsBySpec[spec.spec_path];
     if (!files || files.length === 0) continue;
     for (const absPath of files) {
-      const folderName = path6.basename(path6.dirname(absPath));
+      const folderName = path7.basename(path7.dirname(absPath));
       const tc = spec.test_cases.find((c) => c.full_title === folderName) ?? spec.test_cases.find((c) => c.status === "failed");
       if (!tc) {
         warning(`no test_case match for screenshot folder ${folderName}; skipping`);
@@ -29832,7 +29906,7 @@ async function uploadOrchScreenshot(cfg, specPath, absPath) {
     warning(`read screenshot ${absPath} failed: ${err.message}`);
     return null;
   }
-  const relPath = path6.basename(absPath);
+  const relPath = path7.basename(absPath);
   const form = new FormData();
   for (const [k, v] of Object.entries(cfg.compositeIdentity)) {
     if (v !== void 0 && v !== null) form.append(k, String(v));
@@ -29842,7 +29916,11 @@ async function uploadOrchScreenshot(cfg, specPath, absPath) {
   form.append("framework", cfg.framework);
   form.append("spec_path", specPath);
   form.append("relative_path", relPath);
-  form.append("file", new Blob([new Uint8Array(buf)], { type: "image/png" }), relPath);
+  form.append(
+    "file",
+    new Blob([new Uint8Array(buf)], { type: screenshotContentType(absPath) }),
+    relPath
+  );
   let res;
   try {
     res = await fetchWithAuthRetry(async () => {

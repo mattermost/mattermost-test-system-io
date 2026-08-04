@@ -173,6 +173,15 @@ inputs:
       --env flags. Maestro only.
     required: false
     default: ""
+  maestro-timeout-ms:
+    description: >
+      Ceiling (ms) for a single `maestro test` invocation. On expiry the
+      action kills Maestro and its process group, reports the unit as
+      `interrupted`, and proceeds to `/complete`. Keep this below the
+      run's `lease-timeout-ms` so the worker finishes before the server
+      reclaims the lease. Maestro only.
+    required: false
+    default: "540000"
 
 runs:
   using: node24

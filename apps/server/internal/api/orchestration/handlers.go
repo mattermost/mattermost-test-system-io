@@ -967,7 +967,7 @@ func identityFromFields(f identityFields) (orchestration.CompositeIdentity, erro
 	}
 	if !orchestration.IsSupportedFramework(framework) {
 		return orchestration.CompositeIdentity{},
-			fmt.Errorf("framework %q is not supported (must be one of: playwright, cypress)", framework)
+			fmt.Errorf("framework %q is not supported (must be one of: %s)", framework, strings.Join(orchestration.SupportedFrameworksList(), ", "))
 	}
 	attempt := f.GHRunAttempt
 	if attempt == "" {

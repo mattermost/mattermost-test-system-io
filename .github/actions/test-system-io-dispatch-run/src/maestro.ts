@@ -95,6 +95,16 @@ export async function runUnit(
       actual_duration_ms: durationMs,
       test_cases: [],
     };
+  } else if (child.error) {
+    // Spawn failed to start Maestro (ENOENT, bad cwd, etc.) — not an interruption.
+    result = {
+      spec_path: specPath,
+      status: "failed",
+      actual_duration_ms: durationMs,
+      test_cases: [],
+      error_message: `maestro failed to start: ${child.error.message}`,
+      error_stack: child.error.stack,
+    };
   } else if (!fs.existsSync(junitOutputPath)) {
     core.warning(`maestro junit xml missing: ${junitOutputPath}`);
     result = { spec_path: specPath, status: "interrupted", actual_duration_ms: 0, test_cases: [] };

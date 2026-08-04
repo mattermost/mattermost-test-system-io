@@ -29131,6 +29131,15 @@ async function runUnit4(cfg, iterationSeq, specPaths) {
       actual_duration_ms: durationMs,
       test_cases: []
     };
+  } else if (child.error) {
+    result = {
+      spec_path: specPath,
+      status: "failed",
+      actual_duration_ms: durationMs,
+      test_cases: [],
+      error_message: `maestro failed to start: ${child.error.message}`,
+      error_stack: child.error.stack
+    };
   } else if (!fs5.existsSync(junitOutputPath)) {
     warning(`maestro junit xml missing: ${junitOutputPath}`);
     result = { spec_path: specPath, status: "interrupted", actual_duration_ms: 0, test_cases: [] };

@@ -25,11 +25,16 @@ const {
   collectSpecFiles: collectDetoxSpecFiles,
   normalizeSpecPath: normalizeDetoxSpecPath,
 } = require('../lib/detox-jest-results-parser');
+const {
+  parseMaestroReport,
+  aggregateSpec: aggregateMaestroSpec,
+  normalizeSpecPath: normalizeMaestroSpecPath,
+} = require('../lib/maestro-junit-parser');
 
 // Directory-name prefixes as they exist on disk (note the inconsistent
-// double-dash on non-fips groups vs single-dash on fips). Detox groups are
-// keyed by the mattermost-mobile artifact-name prefix instead — that corpus
-// has no fips split.
+// double-dash on non-fips groups vs single-dash on fips). Detox/Maestro
+// groups are keyed by the mattermost-mobile artifact-name prefix instead —
+// that corpus has no fips split.
 const GROUP_PREFIXES = {
   'cypress-full': 'cypress-full--debug-',
   'cypress-full-fips': 'cypress-full-fips-debug-',
@@ -38,20 +43,24 @@ const GROUP_PREFIXES = {
   'detox-ios': 'ios-results-',
   'detox-android': 'android-results-',
   'detox-ipad': 'ipad-results-',
+  'maestro-ios': 'maestro-ios-results-',
+  'maestro-android': 'maestro-android-results-',
 };
 
 function frameworkForGroup(group) {
+  if (group.startsWith('maestro')) return 'maestro';
   if (group.startsWith('detox')) return 'detox';
   return group.startsWith('playwright') ? 'playwright' : 'cypress';
 }
 
 // Override with CI_RUNS_ROOT if `gh run download` was pointed somewhere
-// else. Otherwise defaults by framework: the Detox corpus comes from a
-// different repo (mattermost-mobile) than Cypress/Playwright's (mattermost),
-// so it lives under its own default directory.
+// else. Otherwise defaults by framework: the Detox/Maestro corpus comes
+// from a different repo (mattermost-mobile) than Cypress/Playwright's
+// (mattermost), so it lives under its own default directory.
 function resolveRoot(group) {
   if (process.env.CI_RUNS_ROOT) return path.resolve(process.cwd(), process.env.CI_RUNS_ROOT);
-  const dirName = frameworkForGroup(group) === 'detox' ? 'mattermost-mobile-ci' : 'mattermost-ci';
+  const framework = frameworkForGroup(group);
+  const dirName = framework === 'detox' || framework === 'maestro' ? 'mattermost-mobile-ci' : 'mattermost-ci';
   return path.resolve(__dirname, '..', '..', '.local', dirName);
 }
 
@@ -246,6 +255,40 @@ function loadDetoxShard(shardDir) {
   return out;
 }
 
+// One run's downloaded artifact is `maestro-{ios,android}-results-<runid>/
+// maestro-report.xml` — a merged JUnit file with one <testsuite> per flow
+// (see maestro-junit-parser.js's doc comment), analogous to Detox's single
+// jest-results.json batching every spec a shard ran. No nested worker-
+// artifacts/iter-N here either, and no per-flow screenshots in this corpus.
+function loadMaestroShard(shardDir) {
+  const xmlPath = path.join(shardDir, 'maestro-report.xml');
+  if (!fs.existsSync(xmlPath)) return [];
+  let parsed;
+  try {
+    parsed = parseMaestroReport(fs.readFileSync(xmlPath, 'utf8'));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const testsuiteEntry of parsed.testsuites) {
+    if (!testsuiteEntry.name) continue;
+    const specPath = normalizeMaestroSpecPath(testsuiteEntry.name);
+    const result = aggregateMaestroSpec(testsuiteEntry, specPath);
+    out.push({
+      specPath,
+      sample: {
+        status: result.status,
+        actual_duration_ms: result.actual_duration_ms,
+        test_cases: result.test_cases,
+        sourcePath: xmlPath,
+        iterDir: shardDir,
+        screenshotFiles: [],
+      },
+    });
+  }
+  return out;
+}
+
 // loadCorpus builds the replay dataset for one named group.
 //
 // Returns { framework, specPaths (sorted union, feeds /begin), samplesBySpec
@@ -278,9 +321,10 @@ function loadCorpus(group) {
     seenIn.add(debugDir);
   };
 
-  if (framework === 'detox') {
+  if (framework === 'detox' || framework === 'maestro') {
+    const loadShard = framework === 'detox' ? loadDetoxShard : loadMaestroShard;
     for (const debugDir of debugDirs) {
-      for (const { specPath, sample } of loadDetoxShard(debugDir)) {
+      for (const { specPath, sample } of loadShard(debugDir)) {
         record(specPath, sample, debugDir);
       }
     }

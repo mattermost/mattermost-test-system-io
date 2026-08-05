@@ -47,17 +47,13 @@ inputs:
     required: false
     default: mattermost-test-system-io
   framework:
-    description: >
-      Test framework this run dispatches. One of `playwright`, `cypress`,
-      or `detox`. Defaults to `playwright` for backward compatibility
-      with existing consumers. When `cypress`, the action enumerates
-      `*_spec.{ts,js}` files under `<repo-dir>/<cypress-dir>/tests/integration/`
-      and submits them as dispatch units; the orchestration_runs row is
-      created with `framework: "cypress"`. When `detox`, the action
-      enumerates `*.e2e.ts` files under
-      `<repo-dir>/<detox-dir>/<detox-search-path>/` and submits them as
-      dispatch units; the orchestration_runs row is created with
-      `framework: "detox"`.
+    description: |
+      Test framework this run dispatches. One of `playwright`, `cypress`, `detox`, or `maestro`.
+
+      - `playwright` (default, for backward compatibility with existing consumers): enumerates files matching `testDir`/`testMatch` from `<repo-dir>/<playwright-dir>/playwright.config.*` (excluding `test_setup.ts` and `specs/visual/`) and submits them as dispatch units; the orchestration_runs row is created with `framework: "playwright"`.
+      - `cypress`: enumerates `*_spec.{ts,js}` files under `<repo-dir>/<cypress-dir>/tests/integration/` and submits them as dispatch units; the orchestration_runs row is created with `framework: "cypress"`.
+      - `detox`: enumerates `*.e2e.ts` files under `<repo-dir>/<detox-dir>/<detox-search-path>/` and submits them as dispatch units; the orchestration_runs row is created with `framework: "detox"`.
+      - `maestro`: enumerates `*.yml`/`*.yaml` flow files under `<repo-dir>/<maestro-dir>/<maestro-flow-path>/` and submits them as dispatch units; the orchestration_runs row is created with `framework: "maestro"`.
     required: false
     default: "playwright"
   retest-on-fail:
@@ -225,6 +221,39 @@ inputs:
       directory. Detox only.
     required: false
     default: ipad
+
+  # ── Maestro-specific ─────────────────────────────────────────────────
+  maestro-dir:
+    description: >
+      Path to the Maestro flow tree, relative to `repo-dir`. Defaults to
+      `detox/maestro` (the layout used by mattermost/mattermost-mobile).
+      Only consulted when `framework: maestro`.
+    required: false
+    default: detox/maestro
+  maestro-flow-path:
+    description: >
+      Path to search for `*.yml`/`*.yaml` flow files, relative to
+      `maestro-dir`. Defaults to `flows`. May instead name a single flow
+      file to dispatch exactly one unit. Maestro only.
+    required: false
+    default: flows
+  maestro-exclude-dir:
+    description: >
+      Directory name to skip during the walk (matched by exact directory
+      name at any depth). Defaults to `multi_device`, since those flows
+      require two devices and can't run through a single dispatch-run
+      worker. Set to `""` to disable — needed when `maestro-flow-path`
+      already points inside the excluded directory. Maestro only.
+    required: false
+    default: multi_device
+  maestro-exclude-tags:
+    description: >
+      Comma-separated flow `tags:` list. A flow is dropped when its
+      `tags:` shares any tag with this list — lets a caller reproduce
+      mattermost-mobile's `exclude_tags.json` behavior without hardcoding
+      it here. Empty disables the filter. Maestro only.
+    required: false
+    default: ""
 
 outputs:
   run-id:

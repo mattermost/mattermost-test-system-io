@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
 import { fetchWithAuthRetry, getBearer } from "./auth";
+import { imageContentType } from "./mime";
 import type {
   CompositeIdentity,
   InvocationRecord,
@@ -142,9 +143,7 @@ function listImages(root: string): UploadPart[] {
     if (!ent.isFile()) continue;
     const dir = ent.parentPath || (ent as unknown as { path?: string }).path || root;
     const abs = path.join(dir, ent.name);
-    const ext = path.extname(abs).toLowerCase();
-    const ct =
-      ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : null;
+    const ct = imageContentType(abs);
     if (!ct) continue;
     let stat: fs.Stats;
     try {

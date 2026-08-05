@@ -2,11 +2,11 @@
 
 Replays real historical CI artifacts through the real orchestration server's
 `/begin`, `/checkout`, `/complete` endpoints — no synthetic data, no actual
-Cypress/Playwright/Detox install. Used to stress-test dispatch/retest/lease
-logic under realistic worker concurrency and spec durations.
+Cypress/Playwright/Detox/Maestro install. Used to stress-test dispatch/retest/
+lease logic under realistic worker concurrency and spec durations.
 
 Covers two source repos: `mattermost/mattermost` (Cypress, Playwright) and
-`mattermost/mattermost-mobile` (Detox).
+`mattermost/mattermost-mobile` (Detox, Maestro).
 
 ## Quick start
 
@@ -41,6 +41,14 @@ works the same way, sourced from the same downloaded run:
 GROUP=detox-ipad node scripts/ci-replay/replay.js
 ```
 
+Maestro (also mattermost-mobile) shares the same downloaded run — one
+`maestro-{ios,android}-results-<run-id>/` dir per platform:
+
+```bash
+GROUP=maestro-ios node scripts/ci-replay/replay.js
+GROUP=maestro-android node scripts/ci-replay/replay.js
+```
+
 Downloaded elsewhere? Point at it: `CI_RUNS_ROOT=.local/some-dir GROUP=... node scripts/ci-replay/replay.js`.
 
 `.local/` is gitignored scratch data — safe to re-download or delete anytime.
@@ -48,16 +56,19 @@ Downloaded elsewhere? Point at it: `CI_RUNS_ROOT=.local/some-dir GROUP=... node 
 ## How it works
 
 Each debug-dir is one historical worker's session — `<group>-debug-N/` for
-Cypress/Playwright, `{ios,android,ipad}-results-<id>-N/` for Detox. This tool
-pools every recorded `(spec_path -> outcome)` sample across all debug-dirs in
-a group, then replays: whichever spec the server leases to a simulated
-worker, that worker sleeps for the sample's real `actual_duration_ms` (scaled
-by `SPEED`) instead of running a test framework.
+Cypress/Playwright, `{ios,android,ipad}-results-<id>-N/` for Detox,
+`maestro-{ios,android}-results-<run-id>/` for Maestro. This tool pools every
+recorded `(spec_path -> outcome)` sample across all debug-dirs in a group,
+then replays: whichever spec the server leases to a simulated worker, that
+worker sleeps for the sample's real `actual_duration_ms` (scaled by `SPEED`)
+instead of running a test framework.
 
 One simulated worker runs per debug-dir found (40/39/14/15 for
 cypress-full/cypress-full-fips/playwright-full/playwright-full-fips; 20/20
 for detox-ios/detox-android; iPad's own matrix size for detox-ipad — much
-smaller, since it's a narrower search path, not the full spec set).
+smaller, since it's a narrower search path, not the full spec set; a single
+worker for maestro-ios/maestro-android, since mattermost-mobile runs Maestro
+flows sequentially in one job today, not a matrix).
 
 **Known limitation**: pooling discards real inter-spec timing/ordering
 correlation, since replay-time dispatch order won't match history's.
@@ -65,8 +76,8 @@ correlation, since replay-time dispatch order won't match history's.
 ## Corpus layout
 
 `corpus.js` expects, under `CI_RUNS_ROOT` (default `.local/mattermost-ci` for
-cypress-*/playwright-* groups, `.local/mattermost-mobile-ci` for detox-*
-groups):
+cypress-*/playwright-* groups, `.local/mattermost-mobile-ci` for detox-*/
+maestro-* groups):
 
 ```
 # cypress-full, cypress-full-fips, playwright-full, playwright-full-fips
@@ -75,6 +86,9 @@ groups):
 
 # detox-ios, detox-android, detox-ipad
 {ios,android,ipad}-results-<id>-<N>/jest-results.json
+
+# maestro-ios, maestro-android
+maestro-{ios,android}-results-<run-id>/maestro-report.xml
 ```
 
 `gh run download` already produces both layouts, so no reorganizing is
@@ -90,12 +104,20 @@ artifact is a single flat `jest-results.json` (native Jest `--json
 shard therefore yields many samples, not one — unlike Cypress/Playwright,
 where one iter-dir is one spec.
 
+Maestro is the same shape, one level further: mattermost-mobile runs every
+flow sequentially in a single job (`run_ci_batches.sh` loops `maestro test`
+once per flow), then merges each flow's own JUnit output into one
+`maestro-report.xml` with one `<testsuite>` per flow. So there's only ever
+one debug-dir per platform (`workerCount: 1`), and that one dir's single
+XML file yields many samples — same "one shard, many samples" shape as
+Detox, just XML instead of JSON.
+
 ## Env vars
 
 | Var | Default | Meaning |
 |---|---|---|
-| `GROUP` | (required) | Which corpus to replay — `cypress-full`, `cypress-full-fips`, `playwright-full`, `playwright-full-fips`, `detox-ios`, `detox-android`, `detox-ipad` |
-| `CI_RUNS_ROOT` | `.local/mattermost-ci` (`.local/mattermost-mobile-ci` for `detox-*`) | Where the downloaded corpus lives |
+| `GROUP` | (required) | Which corpus to replay — `cypress-full`, `cypress-full-fips`, `playwright-full`, `playwright-full-fips`, `detox-ios`, `detox-android`, `detox-ipad`, `maestro-ios`, `maestro-android` |
+| `CI_RUNS_ROOT` | `.local/mattermost-ci` (`.local/mattermost-mobile-ci` for `detox-*`/`maestro-*`) | Where the downloaded corpus lives |
 | `SPEED` | `1` | Divides each spec's real duration before sleeping. Does **not** scale `retry_after_ms`/`post-failure-delay-ms` — those are the real client policy under test |
 | `RETEST` / `RETEST_BUDGET` | `1` / `1` | `retest_on_fail` config for the run |
 | `MAX_IDLE_POLLS` | `5` | Matches the real dispatch-run action's default |

@@ -64,6 +64,14 @@ export async function run(): Promise<void> {
   const cypressDirInput = core.getInput("cypress-dir") || "e2e-tests/cypress";
   const detoxDirInput = core.getInput("detox-dir") || "detox";
   const detoxConfig = core.getInput("detox-config") || "ios.sim.debug";
+  const batchSize = intInput("batch-size", 1);
+  if (batchSize < 1) {
+    throw new Error(`batch-size must be >= 1, got ${batchSize}`);
+  }
+  const detoxMaxWorkers = intInput("detox-max-workers", 1);
+  if (detoxMaxWorkers < 1) {
+    throw new Error(`detox-max-workers must be >= 1, got ${detoxMaxWorkers}`);
+  }
   const maestroDirInput = core.getInput("maestro-dir") || "detox/maestro";
   const maestroDevice = core.getInput("maestro-device");
   const maestroPlatform = core.getInput("maestro-platform");
@@ -122,6 +130,8 @@ export async function run(): Promise<void> {
       cypressDir,
       detoxDir,
       detoxConfig,
+      detoxMaxWorkers,
+      batchSize,
       maestroDir,
       maestroDevice,
       maestroPlatform,
@@ -206,6 +216,8 @@ interface DrainConfig {
   cypressDir: string;
   detoxDir: string;
   detoxConfig: string;
+  detoxMaxWorkers: number;
+  batchSize: number;
   maestroDir: string;
   maestroDevice: string;
   maestroPlatform: string;
@@ -232,7 +244,7 @@ async function drain(cfg: DrainConfig): Promise<void> {
       ...(cfg.compositeIdentity as unknown as Record<string, unknown>),
       gh_job_name: cfg.ghJobName,
       gh_job_id: cfg.ghJobId,
-      batch_size: 1,
+      batch_size: cfg.batchSize,
     });
 
     // The Test System IO Error envelope uses `{error, message}` — the Go `Code`
@@ -309,6 +321,7 @@ async function drain(cfg: DrainConfig): Promise<void> {
             detoxDir: cfg.detoxDir,
             detoxConfig: cfg.detoxConfig,
             workerArtifacts: cfg.workerArtifacts,
+            maxWorkers: cfg.detoxMaxWorkers,
           },
           cfg.nextIterationSeq(),
           specPaths,

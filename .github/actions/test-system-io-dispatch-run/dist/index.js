@@ -24922,10 +24922,18 @@ function runUnit3(cfg, iterationSeq, specPaths) {
     jestOutputPath
   ];
   const nodeOptions = [process.env.NODE_OPTIONS, DETOX_NODE_OPTIONS].filter(Boolean).join(" ");
+  const maxWorkers = cfg.maxWorkers && cfg.maxWorkers > 0 ? cfg.maxWorkers : 1;
+  info(
+    `detox invoke: ${specPaths.length} spec(s), DETOX_MAX_WORKERS=${maxWorkers}, config=${cfg.detoxConfig}`
+  );
   const startedAt = Date.now();
   const child = (0, import_node_child_process3.spawnSync)("npx", args, {
     cwd: cfg.detoxDir,
-    env: { ...process.env, NODE_OPTIONS: nodeOptions },
+    env: {
+      ...process.env,
+      NODE_OPTIONS: nodeOptions,
+      DETOX_MAX_WORKERS: String(maxWorkers)
+    },
     stdio: "inherit"
   });
   const durationMs = Date.now() - startedAt;
@@ -29508,6 +29516,14 @@ async function run() {
   const cypressDirInput = getInput("cypress-dir") || "e2e-tests/cypress";
   const detoxDirInput = getInput("detox-dir") || "detox";
   const detoxConfig = getInput("detox-config") || "ios.sim.debug";
+  const batchSize = intInput("batch-size", 1);
+  if (batchSize < 1) {
+    throw new Error(`batch-size must be >= 1, got ${batchSize}`);
+  }
+  const detoxMaxWorkers = intInput("detox-max-workers", 1);
+  if (detoxMaxWorkers < 1) {
+    throw new Error(`detox-max-workers must be >= 1, got ${detoxMaxWorkers}`);
+  }
   const maestroDirInput = getInput("maestro-dir") || "detox/maestro";
   const maestroDevice = getInput("maestro-device");
   const maestroPlatform = getInput("maestro-platform");
@@ -29552,6 +29568,8 @@ async function run() {
       cypressDir,
       detoxDir,
       detoxConfig,
+      detoxMaxWorkers,
+      batchSize,
       maestroDir,
       maestroDevice,
       maestroPlatform,
@@ -29616,7 +29634,7 @@ async function drain(cfg) {
       ...cfg.compositeIdentity,
       gh_job_name: cfg.ghJobName,
       gh_job_id: cfg.ghJobId,
-      batch_size: 1
+      batch_size: cfg.batchSize
     });
     if (checkout.status === 409 && checkout.body?.error === "WORKER_HAS_ACTIVE_LEASE") {
       info("active lease still recorded; waiting");
@@ -29677,7 +29695,8 @@ async function drain(cfg) {
           {
             detoxDir: cfg.detoxDir,
             detoxConfig: cfg.detoxConfig,
-            workerArtifacts: cfg.workerArtifacts
+            workerArtifacts: cfg.workerArtifacts,
+            maxWorkers: cfg.detoxMaxWorkers
           },
           cfg.nextIterationSeq(),
           specPaths

@@ -157,7 +157,8 @@ jobs:
   actions-checks:
     # Each composite action under .github/actions/ ships a committed
     # dist/index.js bundle that GH Actions executes directly. The matrix
-    # runs format:check / lint / tsc / build for every action and then
+    # runs format:check / lint / tsc / test / build for every action (test
+    # is --if-present since not every action has unit tests yet) and then
     # asserts the dist/ tree on disk matches what `npm run build` just
     # produced — catches PRs that touched src/ without rebuilding.
     runs-on: ubuntu-latest
@@ -197,6 +198,9 @@ jobs:
 
       - name: Typecheck
         run: npm run tsc
+
+      - name: Run tests
+        run: npm run test --if-present
 
       - name: Build
         run: npm run build

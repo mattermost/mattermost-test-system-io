@@ -8,6 +8,7 @@ import {
   collectMaestroScreenshots,
   maestroStatus,
   parseMaestroEnv,
+  stageMaestroScreenshotsForReports,
 } from "./maestro.ts";
 
 function withTmpDir(fn: (dir: string) => void): void {
@@ -117,6 +118,25 @@ test("collectMaestroScreenshots: missing artifacts directory returns empty map",
       "detox/maestro/flows/calls/join_call.yml",
     );
     assert.deepEqual(bySpec, {});
+  });
+});
+
+test("stageMaestroScreenshotsForReports: copies images under output/<flow stem>/", () => {
+  withTmpDir((dir) => {
+    const src = path.join(dir, "artifacts", "screenshot-failed-(mute_unmute).png");
+    fs.mkdirSync(path.dirname(src), { recursive: true });
+    fs.writeFileSync(src, "png");
+    stageMaestroScreenshotsForReports(dir, "flows/calls/mute_unmute.yml", [src]);
+    const staged = path.join(dir, "output", "mute_unmute", "screenshot-failed-(mute_unmute).png");
+    assert.equal(fs.existsSync(staged), true);
+    assert.equal(fs.readFileSync(staged, "utf8"), "png");
+  });
+});
+
+test("stageMaestroScreenshotsForReports: no-op when there are no images", () => {
+  withTmpDir((dir) => {
+    stageMaestroScreenshotsForReports(dir, "flows/calls/mute_unmute.yml", []);
+    assert.equal(fs.existsSync(path.join(dir, "output")), false);
   });
 });
 

@@ -63,12 +63,18 @@ export async function runUnit(
   for (const [key, value] of Object.entries(cfg.maestroEnv)) {
     args.push("--env", `${key}=${value}`);
   }
+  // Maestro CLI 2.6.x: failure screenshots land under --debug-output, not
+  // --test-output-dir. With --flatten-debug-output and no --debug-output,
+  // the CLI writes them to $HOME — so collectMaestroScreenshots under
+  // artifactsDir finds nothing. Point both flags at the same dir.
   args.push(
     "--format",
     "junit",
     "--output",
     junitOutputPath,
     "--test-output-dir",
+    artifactsDir,
+    "--debug-output",
     artifactsDir,
     "--flatten-debug-output",
     specPath,
@@ -126,6 +132,11 @@ export async function runUnit(
   // artifacts dir belongs to the single spec/test_case just run — unlike
   // Detox, no folder-name/full_title matching heuristic is needed.
   const screenshotsBySpec = collectMaestroScreenshots(artifactsDir, specPath);
+  const files = screenshotsBySpec[specPath] ?? [];
+  core.info(`maestro screenshots collected: ${files.length} under ${artifactsDir}`);
+  // upload.ts only walks <iterDir>/output (Cypress convention). Stage a
+  // per-flow folder so Reports-tab LinkScreenshots can match full_title.
+  stageMaestroScreenshotsForReports(iterDir, specPath, files);
 
   return {
     invocation: { specPath, iterDir, playwrightJsonPath: junitOutputPath },
@@ -210,6 +221,25 @@ export function collectMaestroScreenshots(
   const files: string[] = [];
   walkImages(artifactsDir, files);
   return files.length > 0 ? { [specPath]: files } : {};
+}
+
+/**
+ * Copy collected Maestro images into <iterDir>/output/<flowName>/ so the
+ * shard Reports upload (upload.ts) and LinkScreenshots path matching see
+ * them. flowName is the YAML stem (matches Maestro JUnit name/classname).
+ */
+export function stageMaestroScreenshotsForReports(
+  iterDir: string,
+  specPath: string,
+  absPaths: string[],
+): void {
+  if (absPaths.length === 0) return;
+  const flowName = path.basename(specPath, path.extname(specPath));
+  const dstDir = path.join(iterDir, "output", flowName);
+  fs.mkdirSync(dstDir, { recursive: true });
+  for (const src of absPaths) {
+    fs.cpSync(src, path.join(dstDir, path.basename(src)));
+  }
 }
 
 function walkImages(dir: string, out: string[]): void {

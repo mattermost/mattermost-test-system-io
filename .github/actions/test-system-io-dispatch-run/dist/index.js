@@ -29125,6 +29125,8 @@ async function runUnit4(cfg, iterationSeq, specPaths) {
     junitOutputPath,
     "--test-output-dir",
     artifactsDir,
+    "--debug-output",
+    artifactsDir,
     "--flatten-debug-output",
     specPath
   );
@@ -29171,6 +29173,9 @@ async function runUnit4(cfg, iterationSeq, specPaths) {
     }
   }
   const screenshotsBySpec = collectMaestroScreenshots(artifactsDir, specPath);
+  const files = screenshotsBySpec[specPath] ?? [];
+  info(`maestro screenshots collected: ${files.length} under ${artifactsDir}`);
+  stageMaestroScreenshotsForReports(iterDir, specPath, files);
   return {
     invocation: { specPath, iterDir, playwrightJsonPath: junitOutputPath },
     results: [result],
@@ -29236,6 +29241,15 @@ function collectMaestroScreenshots(artifactsDir, specPath) {
   const files = [];
   walkImages(artifactsDir, files);
   return files.length > 0 ? { [specPath]: files } : {};
+}
+function stageMaestroScreenshotsForReports(iterDir, specPath, absPaths) {
+  if (absPaths.length === 0) return;
+  const flowName = path4.basename(specPath, path4.extname(specPath));
+  const dstDir = path4.join(iterDir, "output", flowName);
+  fs5.mkdirSync(dstDir, { recursive: true });
+  for (const src of absPaths) {
+    fs5.cpSync(src, path4.join(dstDir, path4.basename(src)));
+  }
 }
 function walkImages(dir, out) {
   for (const ent of fs5.readdirSync(dir, { withFileTypes: true })) {

@@ -143,6 +143,8 @@ inputs:
       Units to request per `/orchestration/checkout` call. Defaults to 1
       (one spec per lease). Detox consumers that boot multiple devices
       typically set this to 4 so each lease feeds a parallel Jest run.
+      Maestro always checks out with batch_size=1 regardless of this input
+      (one flow per invocation).
     required: false
     default: "1"
   detox-max-workers:

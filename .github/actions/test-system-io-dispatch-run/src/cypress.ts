@@ -106,7 +106,7 @@ export function runUnit(
   // finishes draining (uploadShard skips paths whose file no longer
   // exists).
   const results: SpecResult[] = [];
-  let firstArchivedPath: string | null = null;
+  const archivedPaths: string[] = [];
   for (const sp of specPaths) {
     const baseName = path.basename(sp).replace(/\.(ts|js)$/, "");
     const jsonPath = path.join(reportRoot, "json", "tests", `${baseName}.json`);
@@ -140,7 +140,7 @@ export function runUnit(
     // Persist a copy outside the soon-to-be-wiped live results tree.
     const archived = path.join(iterDir, `${baseName}.json`);
     fs.cpSync(jsonPath, archived);
-    if (!firstArchivedPath) firstArchivedPath = archived;
+    archivedPaths.push(archived);
   }
 
   // Collect Cypress failure screenshots and stage them for both upload
@@ -168,14 +168,20 @@ export function runUnit(
     }
   }
 
-  // The InvocationRecord wants ONE json path; pick the first archived
-  // file (so it survives subsequent iterations that wipe the live
-  // results dir), falling back to a synthetic path that will fail the
-  // existence check upstream and be skipped from the upload set
+  // Upload every archived Mochawesome JSON (one per leased spec). The
+  // primary path + additionalJsonPaths survive subsequent iterations that
+  // wipe the live results dir. When nothing archived, use a synthetic
+  // path that fails the existence check upstream and is skipped
   // (matching playwright's semantics when its results.json is missing).
-  const jsonForUpload = firstArchivedPath ?? path.join(iterDir, "missing.json");
+  const [firstArchived, ...restArchived] = archivedPaths;
+  const jsonForUpload = firstArchived ?? path.join(iterDir, "missing.json");
   return {
-    invocation: { specPath: specPaths[0]!, iterDir, playwrightJsonPath: jsonForUpload },
+    invocation: {
+      specPath: specPaths[0]!,
+      iterDir,
+      playwrightJsonPath: jsonForUpload,
+      ...(restArchived.length > 0 ? { additionalJsonPaths: restArchived } : {}),
+    },
     results,
     screenshotsBySpec,
   };

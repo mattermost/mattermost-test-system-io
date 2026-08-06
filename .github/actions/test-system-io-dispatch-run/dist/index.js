@@ -24775,7 +24775,7 @@ function runUnit2(cfg, iterationSeq, specPaths) {
   const durationMs = Date.now() - startedAt;
   info(`cypress exit ${child.status} in ${Math.round(durationMs / 1e3)}s`);
   const results = [];
-  let firstArchivedPath = null;
+  const archivedPaths = [];
   for (const sp of specPaths) {
     const baseName = path2.basename(sp).replace(/\.(ts|js)$/, "");
     const jsonPath = path2.join(reportRoot, "json", "tests", `${baseName}.json`);
@@ -24805,7 +24805,7 @@ function runUnit2(cfg, iterationSeq, specPaths) {
     results.push(aggregateSpec2(parsed, sp));
     const archived = path2.join(iterDir, `${baseName}.json`);
     fs3.cpSync(jsonPath, archived);
-    if (!firstArchivedPath) firstArchivedPath = archived;
+    archivedPaths.push(archived);
   }
   const screenshotsBySpec = {};
   const outputRoot = path2.join(iterDir, "output");
@@ -24823,9 +24823,15 @@ function runUnit2(cfg, iterationSeq, specPaths) {
       fs3.cpSync(src, path2.join(dstDir, path2.basename(src)));
     }
   }
-  const jsonForUpload = firstArchivedPath ?? path2.join(iterDir, "missing.json");
+  const [firstArchived, ...restArchived] = archivedPaths;
+  const jsonForUpload = firstArchived ?? path2.join(iterDir, "missing.json");
   return {
-    invocation: { specPath: specPaths[0], iterDir, playwrightJsonPath: jsonForUpload },
+    invocation: {
+      specPath: specPaths[0],
+      iterDir,
+      playwrightJsonPath: jsonForUpload,
+      ...restArchived.length > 0 ? { additionalJsonPaths: restArchived } : {}
+    },
     results,
     screenshotsBySpec
   };
@@ -29356,12 +29362,17 @@ async function uploadShard(cfg, invocations) {
   }
   const jsonParts = [];
   const screenshotParts = [];
+  let jsonSeq = 0;
+  const multiJson = invocations.length > 1 || invocations.some((inv) => (inv.additionalJsonPaths?.length ?? 0) > 0);
   for (let i = 0; i < invocations.length; i++) {
     const inv = invocations[i];
-    if (fs6.existsSync(inv.playwrightJsonPath)) {
-      const stat2 = fs6.statSync(inv.playwrightJsonPath);
-      const rel = invocations.length > 1 ? `playwright-results-${i}.json` : "playwright-results.json";
-      jsonParts.push({ absPath: inv.playwrightJsonPath, relPath: rel, size: stat2.size });
+    const jsonPaths = [inv.playwrightJsonPath, ...inv.additionalJsonPaths ?? []];
+    for (const jsonPath of jsonPaths) {
+      if (!fs6.existsSync(jsonPath)) continue;
+      const stat2 = fs6.statSync(jsonPath);
+      const rel = multiJson ? `playwright-results-${jsonSeq}.json` : "playwright-results.json";
+      jsonSeq += 1;
+      jsonParts.push({ absPath: jsonPath, relPath: rel, size: stat2.size });
     }
     const outputRoot = path6.join(inv.iterDir, "output");
     if (fs6.existsSync(outputRoot)) {
@@ -29520,9 +29531,15 @@ async function run() {
   if (batchSize < 1) {
     throw new Error(`batch-size must be >= 1, got ${batchSize}`);
   }
-  const detoxMaxWorkers = intInput("detox-max-workers", 1);
-  if (detoxMaxWorkers < 1) {
-    throw new Error(`detox-max-workers must be >= 1, got ${detoxMaxWorkers}`);
+  if (framework === "maestro" && batchSize > 1) {
+    warning(`batch-size=${batchSize} ignored for maestro; checkout uses batch_size=1`);
+  }
+  let detoxMaxWorkers = 1;
+  if (framework === "detox") {
+    detoxMaxWorkers = intInput("detox-max-workers", 1);
+    if (detoxMaxWorkers < 1) {
+      throw new Error(`detox-max-workers must be >= 1, got ${detoxMaxWorkers}`);
+    }
   }
   const maestroDirInput = getInput("maestro-dir") || "detox/maestro";
   const maestroDevice = getInput("maestro-device");
@@ -29630,11 +29647,12 @@ async function drain(cfg) {
   let leasesHeld = 0;
   let idlePolls = 0;
   while (true) {
+    const checkoutBatchSize = cfg.framework === "maestro" ? 1 : cfg.batchSize;
     const checkout = await postJSON2(cfg, "/api/v1/orchestration/checkout", {
       ...cfg.compositeIdentity,
       gh_job_name: cfg.ghJobName,
       gh_job_id: cfg.ghJobId,
-      batch_size: cfg.batchSize
+      batch_size: checkoutBatchSize
     });
     if (checkout.status === 409 && checkout.body?.error === "WORKER_HAS_ACTIVE_LEASE") {
       info("active lease still recorded; waiting");
@@ -29982,8 +30000,8 @@ function resolveBaseURL() {
 function intInput(name, fallback) {
   const raw = getInput(name);
   if (raw === "") return fallback;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
     throw new Error(`input ${name}=${raw} is not a non-negative integer`);
   }
   return n;

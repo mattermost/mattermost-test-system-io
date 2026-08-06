@@ -40,13 +40,18 @@ export async function uploadShard(
 
   const jsonParts: UploadPart[] = [];
   const screenshotParts: UploadPart[] = [];
+  let jsonSeq = 0;
+  const multiJson =
+    invocations.length > 1 || invocations.some((inv) => (inv.additionalJsonPaths?.length ?? 0) > 0);
   for (let i = 0; i < invocations.length; i++) {
     const inv = invocations[i]!;
-    if (fs.existsSync(inv.playwrightJsonPath)) {
-      const stat = fs.statSync(inv.playwrightJsonPath);
-      const rel =
-        invocations.length > 1 ? `playwright-results-${i}.json` : "playwright-results.json";
-      jsonParts.push({ absPath: inv.playwrightJsonPath, relPath: rel, size: stat.size });
+    const jsonPaths = [inv.playwrightJsonPath, ...(inv.additionalJsonPaths ?? [])];
+    for (const jsonPath of jsonPaths) {
+      if (!fs.existsSync(jsonPath)) continue;
+      const stat = fs.statSync(jsonPath);
+      const rel = multiJson ? `playwright-results-${jsonSeq}.json` : "playwright-results.json";
+      jsonSeq += 1;
+      jsonParts.push({ absPath: jsonPath, relPath: rel, size: stat.size });
     }
     const outputRoot = path.join(inv.iterDir, "output");
     if (fs.existsSync(outputRoot)) {

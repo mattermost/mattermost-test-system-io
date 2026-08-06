@@ -193,6 +193,10 @@ async function runScenario(
       `(DEVICE_A=${cfg.maestroDevice} DEVICE_B=${cfg.maestroDeviceB})`,
   );
 
+  // Drop leftover maestro-*.xml from prior scenarios in this worker so
+  // aggregation does not attribute stale Device A/B reports to this unit.
+  clearScenarioJUnitReports(cfg.repoDir);
+
   const startedAt = Date.now();
   const child = await spawnCommand(scriptAbs, [], cfg.repoDir, cfg.maestroTimeoutMs, env);
   const durationMs = Date.now() - startedAt;
@@ -204,7 +208,7 @@ async function runScenario(
   );
 
   // Orchestrator scripts write JUnit under repo `build/` or `detox/build/`.
-  const reportXmls = collectScenarioJUnitReports(cfg.repoDir);
+  const reportXmls = collectScenarioJUnitReports(cfg.repoDir, startedAt);
   let result: SpecResult;
   if (child.timedOut) {
     core.warning(
@@ -349,15 +353,39 @@ export function parseMaestroScenarioScript(text: string): string {
   return script;
 }
 
-function collectScenarioJUnitReports(repoDir: string): string[] {
-  const candidates = [path.join(repoDir, "build"), path.join(repoDir, "detox", "build")];
-  const out: string[] = [];
-  for (const dir of candidates) {
+function scenarioReportDirs(repoDir: string): string[] {
+  return [path.join(repoDir, "build"), path.join(repoDir, "detox", "build")];
+}
+
+function clearScenarioJUnitReports(repoDir: string): void {
+  for (const dir of scenarioReportDirs(repoDir)) {
     if (!fs.existsSync(dir)) continue;
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
       if (ent.isFile() && /maestro.*\.xml$/i.test(ent.name)) {
-        out.push(path.join(dir, ent.name));
+        try {
+          fs.unlinkSync(path.join(dir, ent.name));
+        } catch {
+          // best-effort
+        }
       }
+    }
+  }
+}
+
+/** Collects maestro-*.xml reports written at or after startedAtMs. */
+function collectScenarioJUnitReports(repoDir: string, startedAtMs: number): string[] {
+  const out: string[] = [];
+  for (const dir of scenarioReportDirs(repoDir)) {
+    if (!fs.existsSync(dir)) continue;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!ent.isFile() || !/maestro.*\.xml$/i.test(ent.name)) continue;
+      const full = path.join(dir, ent.name);
+      try {
+        if (fs.statSync(full).mtimeMs + 1000 < startedAtMs) continue;
+      } catch {
+        continue;
+      }
+      out.push(full);
     }
   }
   return out.sort();

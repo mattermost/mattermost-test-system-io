@@ -29220,13 +29220,14 @@ async function runScenario(cfg, iterationSeq, specPath) {
   info(
     `maestro scenario ${specPath} \u2192 ${scriptRel} (DEVICE_A=${cfg.maestroDevice} DEVICE_B=${cfg.maestroDeviceB})`
   );
+  clearScenarioJUnitReports(cfg.repoDir);
   const startedAt = Date.now();
   const child = await spawnCommand(scriptAbs, [], cfg.repoDir, cfg.maestroTimeoutMs, env);
   const durationMs = Date.now() - startedAt;
   info(
     `scenario script exit ${child.status} in ${Math.round(durationMs / 1e3)}s` + (child.timedOut ? " timedOut=true" : "") + (child.error ? ` error=${child.error.message}` : "") + (child.signal ? ` signal=${child.signal}` : "")
   );
-  const reportXmls = collectScenarioJUnitReports(cfg.repoDir);
+  const reportXmls = collectScenarioJUnitReports(cfg.repoDir, startedAt);
   let result;
   if (child.timedOut) {
     warning(
@@ -29353,15 +29354,35 @@ function parseMaestroScenarioScript(text) {
   }
   return script;
 }
-function collectScenarioJUnitReports(repoDir) {
-  const candidates = [path4.join(repoDir, "build"), path4.join(repoDir, "detox", "build")];
-  const out = [];
-  for (const dir of candidates) {
+function scenarioReportDirs(repoDir) {
+  return [path4.join(repoDir, "build"), path4.join(repoDir, "detox", "build")];
+}
+function clearScenarioJUnitReports(repoDir) {
+  for (const dir of scenarioReportDirs(repoDir)) {
     if (!fs5.existsSync(dir)) continue;
     for (const ent of fs5.readdirSync(dir, { withFileTypes: true })) {
       if (ent.isFile() && /maestro.*\.xml$/i.test(ent.name)) {
-        out.push(path4.join(dir, ent.name));
+        try {
+          fs5.unlinkSync(path4.join(dir, ent.name));
+        } catch {
+        }
       }
+    }
+  }
+}
+function collectScenarioJUnitReports(repoDir, startedAtMs) {
+  const out = [];
+  for (const dir of scenarioReportDirs(repoDir)) {
+    if (!fs5.existsSync(dir)) continue;
+    for (const ent of fs5.readdirSync(dir, { withFileTypes: true })) {
+      if (!ent.isFile() || !/maestro.*\.xml$/i.test(ent.name)) continue;
+      const full = path4.join(dir, ent.name);
+      try {
+        if (fs5.statSync(full).mtimeMs + 1e3 < startedAtMs) continue;
+      } catch {
+        continue;
+      }
+      out.push(full);
     }
   }
   return out.sort();

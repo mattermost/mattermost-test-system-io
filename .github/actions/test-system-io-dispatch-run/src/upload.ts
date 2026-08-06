@@ -40,19 +40,23 @@ export async function uploadShard(
 
   const jsonParts: UploadPart[] = [];
   const screenshotParts: UploadPart[] = [];
-  let jsonSeq = 0;
-  const multiJson =
-    invocations.length > 1 || invocations.some((inv) => (inv.additionalJsonPaths?.length ?? 0) > 0);
+  // Collect existing JSON paths first so filename mode reflects what will
+  // actually upload (not invocations that listed missing reports).
+  const existingJsonPaths: string[] = [];
+  for (const inv of invocations) {
+    for (const jsonPath of [inv.playwrightJsonPath, ...(inv.additionalJsonPaths ?? [])]) {
+      if (fs.existsSync(jsonPath)) existingJsonPaths.push(jsonPath);
+    }
+  }
+  const multiJson = existingJsonPaths.length > 1;
+  for (let j = 0; j < existingJsonPaths.length; j++) {
+    const jsonPath = existingJsonPaths[j]!;
+    const stat = fs.statSync(jsonPath);
+    const rel = multiJson ? `playwright-results-${j}.json` : "playwright-results.json";
+    jsonParts.push({ absPath: jsonPath, relPath: rel, size: stat.size });
+  }
   for (let i = 0; i < invocations.length; i++) {
     const inv = invocations[i]!;
-    const jsonPaths = [inv.playwrightJsonPath, ...(inv.additionalJsonPaths ?? [])];
-    for (const jsonPath of jsonPaths) {
-      if (!fs.existsSync(jsonPath)) continue;
-      const stat = fs.statSync(jsonPath);
-      const rel = multiJson ? `playwright-results-${jsonSeq}.json` : "playwright-results.json";
-      jsonSeq += 1;
-      jsonParts.push({ absPath: jsonPath, relPath: rel, size: stat.size });
-    }
     const outputRoot = path.join(inv.iterDir, "output");
     if (fs.existsSync(outputRoot)) {
       for (const img of listImages(outputRoot)) {

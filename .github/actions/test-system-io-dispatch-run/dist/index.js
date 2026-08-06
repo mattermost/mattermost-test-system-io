@@ -29362,18 +29362,21 @@ async function uploadShard(cfg, invocations) {
   }
   const jsonParts = [];
   const screenshotParts = [];
-  let jsonSeq = 0;
-  const multiJson = invocations.length > 1 || invocations.some((inv) => (inv.additionalJsonPaths?.length ?? 0) > 0);
+  const existingJsonPaths = [];
+  for (const inv of invocations) {
+    for (const jsonPath of [inv.playwrightJsonPath, ...inv.additionalJsonPaths ?? []]) {
+      if (fs6.existsSync(jsonPath)) existingJsonPaths.push(jsonPath);
+    }
+  }
+  const multiJson = existingJsonPaths.length > 1;
+  for (let j = 0; j < existingJsonPaths.length; j++) {
+    const jsonPath = existingJsonPaths[j];
+    const stat2 = fs6.statSync(jsonPath);
+    const rel = multiJson ? `playwright-results-${j}.json` : "playwright-results.json";
+    jsonParts.push({ absPath: jsonPath, relPath: rel, size: stat2.size });
+  }
   for (let i = 0; i < invocations.length; i++) {
     const inv = invocations[i];
-    const jsonPaths = [inv.playwrightJsonPath, ...inv.additionalJsonPaths ?? []];
-    for (const jsonPath of jsonPaths) {
-      if (!fs6.existsSync(jsonPath)) continue;
-      const stat2 = fs6.statSync(jsonPath);
-      const rel = multiJson ? `playwright-results-${jsonSeq}.json` : "playwright-results.json";
-      jsonSeq += 1;
-      jsonParts.push({ absPath: jsonPath, relPath: rel, size: stat2.size });
-    }
     const outputRoot = path6.join(inv.iterDir, "output");
     if (fs6.existsSync(outputRoot)) {
       for (const img of listImages(outputRoot)) {

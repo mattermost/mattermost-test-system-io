@@ -40,14 +40,23 @@ export async function uploadShard(
 
   const jsonParts: UploadPart[] = [];
   const screenshotParts: UploadPart[] = [];
+  // Collect existing JSON paths first so filename mode reflects what will
+  // actually upload (not invocations that listed missing reports).
+  const existingJsonPaths: string[] = [];
+  for (const inv of invocations) {
+    for (const jsonPath of [inv.playwrightJsonPath, ...(inv.additionalJsonPaths ?? [])]) {
+      if (fs.existsSync(jsonPath)) existingJsonPaths.push(jsonPath);
+    }
+  }
+  const multiJson = existingJsonPaths.length > 1;
+  for (let j = 0; j < existingJsonPaths.length; j++) {
+    const jsonPath = existingJsonPaths[j]!;
+    const stat = fs.statSync(jsonPath);
+    const rel = multiJson ? `playwright-results-${j}.json` : "playwright-results.json";
+    jsonParts.push({ absPath: jsonPath, relPath: rel, size: stat.size });
+  }
   for (let i = 0; i < invocations.length; i++) {
     const inv = invocations[i]!;
-    if (fs.existsSync(inv.playwrightJsonPath)) {
-      const stat = fs.statSync(inv.playwrightJsonPath);
-      const rel =
-        invocations.length > 1 ? `playwright-results-${i}.json` : "playwright-results.json";
-      jsonParts.push({ absPath: inv.playwrightJsonPath, relPath: rel, size: stat.size });
-    }
     const outputRoot = path.join(inv.iterDir, "output");
     if (fs.existsSync(outputRoot)) {
       for (const img of listImages(outputRoot)) {

@@ -138,6 +138,23 @@ inputs:
       own that setup. Detox only.
     required: false
     default: ios.sim.debug
+  batch-size:
+    description: >
+      Units to request per `/orchestration/checkout` call. Defaults to 1
+      (one spec per lease). Detox consumers that boot multiple devices
+      typically set this to 4 so each lease feeds a parallel Jest run.
+      Maestro always checks out with batch_size=1 regardless of this input
+      (one flow per invocation).
+    required: false
+    default: "1"
+  detox-max-workers:
+    description: >
+      Value forwarded as `DETOX_MAX_WORKERS` for each Detox invocation so
+      Jest/`maxWorkers` can run that many specs concurrently on the
+      pre-booted devices. Defaults to 1. Detox only; ignored for other
+      frameworks. Caller must boot at least this many devices first.
+    required: false
+    default: "1"
 
   # ── Maestro-specific ─────────────────────────────────────────────────
   maestro-dir:

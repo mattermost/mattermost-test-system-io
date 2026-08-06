@@ -24775,7 +24775,7 @@ function runUnit2(cfg, iterationSeq, specPaths) {
   const durationMs = Date.now() - startedAt;
   info(`cypress exit ${child.status} in ${Math.round(durationMs / 1e3)}s`);
   const results = [];
-  let firstArchivedPath = null;
+  const archivedPaths = [];
   for (const sp of specPaths) {
     const baseName = path2.basename(sp).replace(/\.(ts|js)$/, "");
     const jsonPath = path2.join(reportRoot, "json", "tests", `${baseName}.json`);
@@ -24805,7 +24805,7 @@ function runUnit2(cfg, iterationSeq, specPaths) {
     results.push(aggregateSpec2(parsed, sp));
     const archived = path2.join(iterDir, `${baseName}.json`);
     fs3.cpSync(jsonPath, archived);
-    if (!firstArchivedPath) firstArchivedPath = archived;
+    archivedPaths.push(archived);
   }
   const screenshotsBySpec = {};
   const outputRoot = path2.join(iterDir, "output");
@@ -24823,9 +24823,15 @@ function runUnit2(cfg, iterationSeq, specPaths) {
       fs3.cpSync(src, path2.join(dstDir, path2.basename(src)));
     }
   }
-  const jsonForUpload = firstArchivedPath ?? path2.join(iterDir, "missing.json");
+  const [firstArchived, ...restArchived] = archivedPaths;
+  const jsonForUpload = firstArchived ?? path2.join(iterDir, "missing.json");
   return {
-    invocation: { specPath: specPaths[0], iterDir, playwrightJsonPath: jsonForUpload },
+    invocation: {
+      specPath: specPaths[0],
+      iterDir,
+      playwrightJsonPath: jsonForUpload,
+      ...restArchived.length > 0 ? { additionalJsonPaths: restArchived } : {}
+    },
     results,
     screenshotsBySpec
   };
@@ -24922,10 +24928,18 @@ function runUnit3(cfg, iterationSeq, specPaths) {
     jestOutputPath
   ];
   const nodeOptions = [process.env.NODE_OPTIONS, DETOX_NODE_OPTIONS].filter(Boolean).join(" ");
+  const maxWorkers = cfg.maxWorkers && cfg.maxWorkers > 0 ? cfg.maxWorkers : 1;
+  info(
+    `detox invoke: ${specPaths.length} spec(s), DETOX_MAX_WORKERS=${maxWorkers}, config=${cfg.detoxConfig}`
+  );
   const startedAt = Date.now();
   const child = (0, import_node_child_process3.spawnSync)("npx", args, {
     cwd: cfg.detoxDir,
-    env: { ...process.env, NODE_OPTIONS: nodeOptions },
+    env: {
+      ...process.env,
+      NODE_OPTIONS: nodeOptions,
+      DETOX_MAX_WORKERS: String(maxWorkers)
+    },
     stdio: "inherit"
   });
   const durationMs = Date.now() - startedAt;
@@ -29348,13 +29362,21 @@ async function uploadShard(cfg, invocations) {
   }
   const jsonParts = [];
   const screenshotParts = [];
+  const existingJsonPaths = [];
+  for (const inv of invocations) {
+    for (const jsonPath of [inv.playwrightJsonPath, ...inv.additionalJsonPaths ?? []]) {
+      if (fs6.existsSync(jsonPath)) existingJsonPaths.push(jsonPath);
+    }
+  }
+  const multiJson = existingJsonPaths.length > 1;
+  for (let j = 0; j < existingJsonPaths.length; j++) {
+    const jsonPath = existingJsonPaths[j];
+    const stat2 = fs6.statSync(jsonPath);
+    const rel = multiJson ? `playwright-results-${j}.json` : "playwright-results.json";
+    jsonParts.push({ absPath: jsonPath, relPath: rel, size: stat2.size });
+  }
   for (let i = 0; i < invocations.length; i++) {
     const inv = invocations[i];
-    if (fs6.existsSync(inv.playwrightJsonPath)) {
-      const stat2 = fs6.statSync(inv.playwrightJsonPath);
-      const rel = invocations.length > 1 ? `playwright-results-${i}.json` : "playwright-results.json";
-      jsonParts.push({ absPath: inv.playwrightJsonPath, relPath: rel, size: stat2.size });
-    }
     const outputRoot = path6.join(inv.iterDir, "output");
     if (fs6.existsSync(outputRoot)) {
       for (const img of listImages(outputRoot)) {
@@ -29508,6 +29530,20 @@ async function run() {
   const cypressDirInput = getInput("cypress-dir") || "e2e-tests/cypress";
   const detoxDirInput = getInput("detox-dir") || "detox";
   const detoxConfig = getInput("detox-config") || "ios.sim.debug";
+  const batchSize = intInput("batch-size", 1);
+  if (batchSize < 1) {
+    throw new Error(`batch-size must be >= 1, got ${batchSize}`);
+  }
+  if (framework === "maestro" && batchSize > 1) {
+    warning(`batch-size=${batchSize} ignored for maestro; checkout uses batch_size=1`);
+  }
+  let detoxMaxWorkers = 1;
+  if (framework === "detox") {
+    detoxMaxWorkers = intInput("detox-max-workers", 1);
+    if (detoxMaxWorkers < 1) {
+      throw new Error(`detox-max-workers must be >= 1, got ${detoxMaxWorkers}`);
+    }
+  }
   const maestroDirInput = getInput("maestro-dir") || "detox/maestro";
   const maestroDevice = getInput("maestro-device");
   const maestroPlatform = getInput("maestro-platform");
@@ -29552,6 +29588,8 @@ async function run() {
       cypressDir,
       detoxDir,
       detoxConfig,
+      detoxMaxWorkers,
+      batchSize,
       maestroDir,
       maestroDevice,
       maestroPlatform,
@@ -29612,11 +29650,12 @@ async function drain(cfg) {
   let leasesHeld = 0;
   let idlePolls = 0;
   while (true) {
+    const checkoutBatchSize = cfg.framework === "maestro" ? 1 : cfg.batchSize;
     const checkout = await postJSON2(cfg, "/api/v1/orchestration/checkout", {
       ...cfg.compositeIdentity,
       gh_job_name: cfg.ghJobName,
       gh_job_id: cfg.ghJobId,
-      batch_size: 1
+      batch_size: checkoutBatchSize
     });
     if (checkout.status === 409 && checkout.body?.error === "WORKER_HAS_ACTIVE_LEASE") {
       info("active lease still recorded; waiting");
@@ -29677,7 +29716,8 @@ async function drain(cfg) {
           {
             detoxDir: cfg.detoxDir,
             detoxConfig: cfg.detoxConfig,
-            workerArtifacts: cfg.workerArtifacts
+            workerArtifacts: cfg.workerArtifacts,
+            maxWorkers: cfg.detoxMaxWorkers
           },
           cfg.nextIterationSeq(),
           specPaths
@@ -29963,8 +30003,8 @@ function resolveBaseURL() {
 function intInput(name, fallback) {
   const raw = getInput(name);
   if (raw === "") return fallback;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
     throw new Error(`input ${name}=${raw} is not a non-negative integer`);
   }
   return n;

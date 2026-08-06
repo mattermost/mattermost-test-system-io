@@ -10,6 +10,8 @@ export interface RunUnitConfig {
   detoxDir: string;
   detoxConfig: string;
   workerArtifacts: string;
+  /** Forwarded as DETOX_MAX_WORKERS so the consumer's Jest maxWorkers can parallelize. */
+  maxWorkers?: number;
 }
 
 export interface DetoxUnitResult {
@@ -51,11 +53,19 @@ export function runUnit(
   ];
 
   const nodeOptions = [process.env.NODE_OPTIONS, DETOX_NODE_OPTIONS].filter(Boolean).join(" ");
+  const maxWorkers = cfg.maxWorkers && cfg.maxWorkers > 0 ? cfg.maxWorkers : 1;
+  core.info(
+    `detox invoke: ${specPaths.length} spec(s), DETOX_MAX_WORKERS=${maxWorkers}, config=${cfg.detoxConfig}`,
+  );
 
   const startedAt = Date.now();
   const child = spawnSync("npx", args, {
     cwd: cfg.detoxDir,
-    env: { ...process.env, NODE_OPTIONS: nodeOptions },
+    env: {
+      ...process.env,
+      NODE_OPTIONS: nodeOptions,
+      DETOX_MAX_WORKERS: String(maxWorkers),
+    },
     stdio: "inherit",
   });
   const durationMs = Date.now() - startedAt;
@@ -101,8 +111,9 @@ export function runUnit(
  * test_case's full_title. Hook failures (beforeAll/afterAll) write their
  * screenshot directly under the session folder instead of a per-test
  * folder, so there's no full_title to match — with a single spec_path
- * per invocation (batch_size is always 1), that's unambiguous, so those
- * files still go to the one spec instead of being dropped.
+ * per invocation that's unambiguous and those files still go to the one
+ * spec instead of being dropped. With batch_size > 1, unmatched hook
+ * screenshots are skipped unless a sole-spec fallback applies.
  */
 export function collectDetoxScreenshots(
   artifactsDir: string,

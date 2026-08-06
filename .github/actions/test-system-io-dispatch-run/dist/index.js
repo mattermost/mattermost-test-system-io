@@ -2080,9 +2080,9 @@ var require_dispatcher_base = __commonJS({
       }
       close(callback) {
         if (callback === void 0) {
-          return new Promise((resolve2, reject) => {
+          return new Promise((resolve3, reject) => {
             this.close((err, data) => {
-              return err ? reject(err) : resolve2(data);
+              return err ? reject(err) : resolve3(data);
             });
           });
         }
@@ -2120,12 +2120,12 @@ var require_dispatcher_base = __commonJS({
           err = null;
         }
         if (callback === void 0) {
-          return new Promise((resolve2, reject) => {
+          return new Promise((resolve3, reject) => {
             this.destroy(err, (err2, data) => {
               return err2 ? (
                 /* istanbul ignore next: should never error */
                 reject(err2)
-              ) : resolve2(data);
+              ) : resolve3(data);
             });
           });
         }
@@ -4392,8 +4392,8 @@ var require_util2 = __commonJS({
     function createDeferredPromise() {
       let res;
       let rej;
-      const promise = new Promise((resolve2, reject) => {
-        res = resolve2;
+      const promise = new Promise((resolve3, reject) => {
+        res = resolve3;
         rej = reject;
       });
       return { promise, resolve: res, reject: rej };
@@ -6534,12 +6534,12 @@ upgrade: ${upgrade}\r
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve2, reject) => {
+      const waitForDrain = () => new Promise((resolve3, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve2;
+          callback = resolve3;
         }
       });
       socket.on("close", onDrain).on("drain", onDrain);
@@ -7176,12 +7176,12 @@ var require_client_h2 = __commonJS({
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve2, reject) => {
+      const waitForDrain = () => new Promise((resolve3, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve2;
+          callback = resolve3;
         }
       });
       h2stream.on("close", onDrain).on("drain", onDrain);
@@ -7659,16 +7659,16 @@ var require_client = __commonJS({
         return this[kNeedDrain] < 2;
       }
       async [kClose]() {
-        return new Promise((resolve2) => {
+        return new Promise((resolve3) => {
           if (this[kSize]) {
-            this[kClosedResolve] = resolve2;
+            this[kClosedResolve] = resolve3;
           } else {
-            resolve2(null);
+            resolve3(null);
           }
         });
       }
       async [kDestroy](err) {
-        return new Promise((resolve2) => {
+        return new Promise((resolve3) => {
           const requests = this[kQueue].splice(this[kPendingIdx]);
           for (let i = 0; i < requests.length; i++) {
             const request2 = requests[i];
@@ -7679,7 +7679,7 @@ var require_client = __commonJS({
               this[kClosedResolve]();
               this[kClosedResolve] = null;
             }
-            resolve2(null);
+            resolve3(null);
           };
           if (this[kHTTPContext]) {
             this[kHTTPContext].destroy(err, callback);
@@ -7730,7 +7730,7 @@ var require_client = __commonJS({
         });
       }
       try {
-        const socket = await new Promise((resolve2, reject) => {
+        const socket = await new Promise((resolve3, reject) => {
           client[kConnector]({
             host,
             hostname,
@@ -7742,7 +7742,7 @@ var require_client = __commonJS({
             if (err) {
               reject(err);
             } else {
-              resolve2(socket2);
+              resolve3(socket2);
             }
           });
         });
@@ -8079,8 +8079,8 @@ var require_pool_base = __commonJS({
         if (this[kQueue].isEmpty()) {
           await Promise.all(this[kClients].map((c) => c.close()));
         } else {
-          await new Promise((resolve2) => {
-            this[kClosedResolve] = resolve2;
+          await new Promise((resolve3) => {
+            this[kClosedResolve] = resolve3;
           });
         }
       }
@@ -9295,7 +9295,7 @@ var require_readable = __commonJS({
         if (this._readableState.closeEmitted) {
           return null;
         }
-        return await new Promise((resolve2, reject) => {
+        return await new Promise((resolve3, reject) => {
           if (this[kContentLength] > limit) {
             this.destroy(new AbortError());
           }
@@ -9308,7 +9308,7 @@ var require_readable = __commonJS({
             if (signal?.aborted) {
               reject(signal.reason ?? new AbortError());
             } else {
-              resolve2(null);
+              resolve3(null);
             }
           }).on("error", noop3).on("data", function(chunk) {
             limit -= chunk.length;
@@ -9327,7 +9327,7 @@ var require_readable = __commonJS({
     }
     async function consume(stream, type) {
       assert(!stream[kConsume]);
-      return new Promise((resolve2, reject) => {
+      return new Promise((resolve3, reject) => {
         if (isUnusable(stream)) {
           const rState = stream._readableState;
           if (rState.destroyed && rState.closeEmitted === false) {
@@ -9344,7 +9344,7 @@ var require_readable = __commonJS({
             stream[kConsume] = {
               type,
               stream,
-              resolve: resolve2,
+              resolve: resolve3,
               reject,
               length: 0,
               body: []
@@ -9414,18 +9414,18 @@ var require_readable = __commonJS({
       return buffer;
     }
     function consumeEnd(consume2) {
-      const { type, body, resolve: resolve2, stream, length } = consume2;
+      const { type, body, resolve: resolve3, stream, length } = consume2;
       try {
         if (type === "text") {
-          resolve2(chunksDecode(body, length));
+          resolve3(chunksDecode(body, length));
         } else if (type === "json") {
-          resolve2(JSON.parse(chunksDecode(body, length)));
+          resolve3(JSON.parse(chunksDecode(body, length)));
         } else if (type === "arrayBuffer") {
-          resolve2(chunksConcat(body, length).buffer);
+          resolve3(chunksConcat(body, length).buffer);
         } else if (type === "blob") {
-          resolve2(new Blob(body, { type: stream[kContentType] }));
+          resolve3(new Blob(body, { type: stream[kContentType] }));
         } else if (type === "bytes") {
-          resolve2(chunksConcat(body, length));
+          resolve3(chunksConcat(body, length));
         }
         consumeFinish(consume2);
       } catch (err) {
@@ -9683,9 +9683,9 @@ var require_api_request = __commonJS({
     };
     function request2(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve3, reject) => {
           request2.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve2(data);
+            return err ? reject(err) : resolve3(data);
           });
         });
       }
@@ -9909,9 +9909,9 @@ var require_api_stream = __commonJS({
     };
     function stream(opts, factory, callback) {
       if (callback === void 0) {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve3, reject) => {
           stream.call(this, opts, factory, (err, data) => {
-            return err ? reject(err) : resolve2(data);
+            return err ? reject(err) : resolve3(data);
           });
         });
       }
@@ -10196,9 +10196,9 @@ var require_api_upgrade = __commonJS({
     };
     function upgrade(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve3, reject) => {
           upgrade.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve2(data);
+            return err ? reject(err) : resolve3(data);
           });
         });
       }
@@ -10290,9 +10290,9 @@ var require_api_connect = __commonJS({
     };
     function connect(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve3, reject) => {
           connect.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve2(data);
+            return err ? reject(err) : resolve3(data);
           });
         });
       }
@@ -14154,7 +14154,7 @@ var require_fetch = __commonJS({
       function dispatch({ body }) {
         const url = requestCurrentURL(request2);
         const agent = fetchParams.controller.dispatcher;
-        return new Promise((resolve2, reject) => agent.dispatch(
+        return new Promise((resolve3, reject) => agent.dispatch(
           {
             path: url.pathname + url.search,
             origin: url.origin,
@@ -14230,7 +14230,7 @@ var require_fetch = __commonJS({
                 }
               }
               const onError = this.onError.bind(this);
-              resolve2({
+              resolve3({
                 status,
                 statusText,
                 headersList,
@@ -14276,7 +14276,7 @@ var require_fetch = __commonJS({
               for (let i = 0; i < rawHeaders.length; i += 2) {
                 headersList.append(bufferToLowerCasedHeaderName(rawHeaders[i]), rawHeaders[i + 1].toString("latin1"), true);
               }
-              resolve2({
+              resolve3({
                 status,
                 statusText: STATUS_CODES[status],
                 headersList,
@@ -17952,8 +17952,8 @@ var require_util8 = __commonJS({
       return true;
     }
     function delay(ms) {
-      return new Promise((resolve2) => {
-        setTimeout(resolve2, ms).unref();
+      return new Promise((resolve3) => {
+        setTimeout(resolve3, ms).unref();
       });
     }
     module2.exports = {
@@ -18757,11 +18757,11 @@ var require_lib = __commonJS({
     })();
     var __awaiter7 = exports2 && exports2.__awaiter || function(thisArg, _arguments, P, generator) {
       function adopt(value) {
-        return value instanceof P ? value : new P(function(resolve2) {
-          resolve2(value);
+        return value instanceof P ? value : new P(function(resolve3) {
+          resolve3(value);
         });
       }
-      return new (P || (P = Promise))(function(resolve2, reject) {
+      return new (P || (P = Promise))(function(resolve3, reject) {
         function fulfilled(value) {
           try {
             step(generator.next(value));
@@ -18777,7 +18777,7 @@ var require_lib = __commonJS({
           }
         }
         function step(result) {
-          result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+          result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
         }
         step((generator = generator.apply(thisArg, _arguments || [])).next());
       });
@@ -18864,26 +18864,26 @@ var require_lib = __commonJS({
       }
       readBody() {
         return __awaiter7(this, void 0, void 0, function* () {
-          return new Promise((resolve2) => __awaiter7(this, void 0, void 0, function* () {
+          return new Promise((resolve3) => __awaiter7(this, void 0, void 0, function* () {
             let output = Buffer.alloc(0);
             this.message.on("data", (chunk) => {
               output = Buffer.concat([output, chunk]);
             });
             this.message.on("end", () => {
-              resolve2(output.toString());
+              resolve3(output.toString());
             });
           }));
         });
       }
       readBodyBuffer() {
         return __awaiter7(this, void 0, void 0, function* () {
-          return new Promise((resolve2) => __awaiter7(this, void 0, void 0, function* () {
+          return new Promise((resolve3) => __awaiter7(this, void 0, void 0, function* () {
             const chunks = [];
             this.message.on("data", (chunk) => {
               chunks.push(chunk);
             });
             this.message.on("end", () => {
-              resolve2(Buffer.concat(chunks));
+              resolve3(Buffer.concat(chunks));
             });
           }));
         });
@@ -19091,14 +19091,14 @@ var require_lib = __commonJS({
        */
       requestRaw(info2, data) {
         return __awaiter7(this, void 0, void 0, function* () {
-          return new Promise((resolve2, reject) => {
+          return new Promise((resolve3, reject) => {
             function callbackForResult(err, res) {
               if (err) {
                 reject(err);
               } else if (!res) {
                 reject(new Error("Unknown error"));
               } else {
-                resolve2(res);
+                resolve3(res);
               }
             }
             this.requestRawWithCallback(info2, data, callbackForResult);
@@ -19342,12 +19342,12 @@ var require_lib = __commonJS({
         return __awaiter7(this, void 0, void 0, function* () {
           retryNumber = Math.min(ExponentialBackoffCeiling2, retryNumber);
           const ms = ExponentialBackoffTimeSlice2 * Math.pow(2, retryNumber);
-          return new Promise((resolve2) => setTimeout(() => resolve2(), ms));
+          return new Promise((resolve3) => setTimeout(() => resolve3(), ms));
         });
       }
       _processResponse(res, options) {
         return __awaiter7(this, void 0, void 0, function* () {
-          return new Promise((resolve2, reject) => __awaiter7(this, void 0, void 0, function* () {
+          return new Promise((resolve3, reject) => __awaiter7(this, void 0, void 0, function* () {
             const statusCode = res.message.statusCode || 0;
             const response = {
               statusCode,
@@ -19355,7 +19355,7 @@ var require_lib = __commonJS({
               headers: {}
             };
             if (statusCode === HttpCodes2.NotFound) {
-              resolve2(response);
+              resolve3(response);
             }
             function dateTimeDeserializer(key, value) {
               if (typeof value === "string") {
@@ -19394,7 +19394,7 @@ var require_lib = __commonJS({
               err.result = response.result;
               reject(err);
             } else {
-              resolve2(response);
+              resolve3(response);
             }
           }));
         });
@@ -19657,11 +19657,11 @@ var tunnel = __toESM(require_tunnel2(), 1);
 var import_undici = __toESM(require_undici(), 1);
 var __awaiter = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -19677,7 +19677,7 @@ var __awaiter = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -19750,26 +19750,26 @@ var HttpClientResponse = class {
   }
   readBody() {
     return __awaiter(this, void 0, void 0, function* () {
-      return new Promise((resolve2) => __awaiter(this, void 0, void 0, function* () {
+      return new Promise((resolve3) => __awaiter(this, void 0, void 0, function* () {
         let output = Buffer.alloc(0);
         this.message.on("data", (chunk) => {
           output = Buffer.concat([output, chunk]);
         });
         this.message.on("end", () => {
-          resolve2(output.toString());
+          resolve3(output.toString());
         });
       }));
     });
   }
   readBodyBuffer() {
     return __awaiter(this, void 0, void 0, function* () {
-      return new Promise((resolve2) => __awaiter(this, void 0, void 0, function* () {
+      return new Promise((resolve3) => __awaiter(this, void 0, void 0, function* () {
         const chunks = [];
         this.message.on("data", (chunk) => {
           chunks.push(chunk);
         });
         this.message.on("end", () => {
-          resolve2(Buffer.concat(chunks));
+          resolve3(Buffer.concat(chunks));
         });
       }));
     });
@@ -19972,14 +19972,14 @@ var HttpClient = class {
    */
   requestRaw(info2, data) {
     return __awaiter(this, void 0, void 0, function* () {
-      return new Promise((resolve2, reject) => {
+      return new Promise((resolve3, reject) => {
         function callbackForResult(err, res) {
           if (err) {
             reject(err);
           } else if (!res) {
             reject(new Error("Unknown error"));
           } else {
-            resolve2(res);
+            resolve3(res);
           }
         }
         this.requestRawWithCallback(info2, data, callbackForResult);
@@ -20223,12 +20223,12 @@ var HttpClient = class {
     return __awaiter(this, void 0, void 0, function* () {
       retryNumber = Math.min(ExponentialBackoffCeiling, retryNumber);
       const ms = ExponentialBackoffTimeSlice * Math.pow(2, retryNumber);
-      return new Promise((resolve2) => setTimeout(() => resolve2(), ms));
+      return new Promise((resolve3) => setTimeout(() => resolve3(), ms));
     });
   }
   _processResponse(res, options) {
     return __awaiter(this, void 0, void 0, function* () {
-      return new Promise((resolve2, reject) => __awaiter(this, void 0, void 0, function* () {
+      return new Promise((resolve3, reject) => __awaiter(this, void 0, void 0, function* () {
         const statusCode = res.message.statusCode || 0;
         const response = {
           statusCode,
@@ -20236,7 +20236,7 @@ var HttpClient = class {
           headers: {}
         };
         if (statusCode === HttpCodes.NotFound) {
-          resolve2(response);
+          resolve3(response);
         }
         function dateTimeDeserializer(key, value) {
           if (typeof value === "string") {
@@ -20275,7 +20275,7 @@ var HttpClient = class {
           err.result = response.result;
           reject(err);
         } else {
-          resolve2(response);
+          resolve3(response);
         }
       }));
     });
@@ -20286,11 +20286,11 @@ var lowercaseKeys = (obj) => Object.keys(obj).reduce((c, k) => (c[k.toLowerCase(
 // node_modules/@actions/http-client/lib/auth.js
 var __awaiter2 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -20306,7 +20306,7 @@ var __awaiter2 = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -20337,11 +20337,11 @@ var BearerCredentialHandler = class {
 // node_modules/@actions/core/lib/oidc-utils.js
 var __awaiter3 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -20357,7 +20357,7 @@ var __awaiter3 = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -20426,11 +20426,11 @@ var import_os = require("os");
 var import_fs = require("fs");
 var __awaiter4 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -20446,7 +20446,7 @@ var __awaiter4 = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -20724,11 +20724,11 @@ var arch = import_os2.default.arch();
 // node_modules/@actions/core/lib/core.js
 var __awaiter5 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -20744,7 +20744,7 @@ var __awaiter5 = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -20849,11 +20849,11 @@ var httpClient = __toESM(require_lib(), 1);
 var import_undici2 = __toESM(require_undici(), 1);
 var __awaiter6 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve2) {
-      resolve2(value);
+    return value instanceof P ? value : new P(function(resolve3) {
+      resolve3(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve2, reject) {
+  return new (P || (P = Promise))(function(resolve3, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -20869,7 +20869,7 @@ var __awaiter6 = function(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve3(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -29101,6 +29101,7 @@ var XMLParser = class {
 };
 
 // src/maestro.ts
+var MAESTRO_SCENARIO_RE = /\.scenario\.ya?ml$/;
 async function runUnit4(cfg, iterationSeq, specPaths) {
   const specPath = specPaths[0];
   if (specPaths.length > 1) {
@@ -29108,6 +29109,12 @@ async function runUnit4(cfg, iterationSeq, specPaths) {
       `maestro runUnit leased ${specPaths.length} specs; only running the first (${specPath})`
     );
   }
+  if (MAESTRO_SCENARIO_RE.test(path4.basename(specPath))) {
+    return runScenario(cfg, iterationSeq, specPath);
+  }
+  return runFlow(cfg, iterationSeq, specPath);
+}
+async function runFlow(cfg, iterationSeq, specPath) {
   const iterDir = path4.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs5.mkdirSync(iterDir, { recursive: true });
   const artifactsDir = path4.join(iterDir, "artifacts");
@@ -29129,15 +29136,101 @@ async function runUnit4(cfg, iterationSeq, specPaths) {
     specPath
   );
   const startedAt = Date.now();
-  const child = await spawnMaestro(args, cfg.maestroDir, cfg.maestroTimeoutMs);
+  const child = await spawnCommand("maestro", args, cfg.maestroDir, cfg.maestroTimeoutMs);
   const durationMs = Date.now() - startedAt;
   info(
     `maestro exit ${child.status} in ${Math.round(durationMs / 1e3)}s` + (child.timedOut ? " timedOut=true" : "") + (child.error ? ` error=${child.error.message}` : "") + (child.signal ? ` signal=${child.signal}` : "")
   );
+  const result = outcomeToSpecResult(
+    child,
+    durationMs,
+    junitOutputPath,
+    specPath,
+    cfg.maestroTimeoutMs
+  );
+  const screenshotsBySpec = collectMaestroScreenshots(artifactsDir, specPath);
+  return {
+    invocation: { specPath, iterDir, playwrightJsonPath: junitOutputPath },
+    results: [result],
+    screenshotsBySpec
+  };
+}
+async function runScenario(cfg, iterationSeq, specPath) {
+  const iterDir = path4.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
+  fs5.mkdirSync(iterDir, { recursive: true });
+  const artifactsDir = path4.join(iterDir, "artifacts");
+  fs5.mkdirSync(artifactsDir, { recursive: true });
+  const junitOutputPath = path4.join(iterDir, "maestro-batch.xml");
+  const scenarioAbs = path4.join(cfg.maestroDir, specPath);
+  let scriptRel;
+  try {
+    scriptRel = parseMaestroScenarioScript(fs5.readFileSync(scenarioAbs, "utf8"));
+  } catch (e) {
+    const result2 = {
+      spec_path: specPath,
+      status: "failed",
+      actual_duration_ms: 0,
+      test_cases: [],
+      error_message: `failed to parse scenario ${specPath}: ${e.message}`
+    };
+    return {
+      invocation: { specPath, iterDir, playwrightJsonPath: junitOutputPath },
+      results: [result2],
+      screenshotsBySpec: {}
+    };
+  }
+  if (!cfg.maestroDevice || !cfg.maestroDeviceB) {
+    const result2 = {
+      spec_path: specPath,
+      status: "failed",
+      actual_duration_ms: 0,
+      test_cases: [],
+      error_message: `scenario ${specPath} requires maestro-device (DEVICE_A) and maestro-device-b (DEVICE_B); got device=${cfg.maestroDevice || "(empty)"} device-b=${cfg.maestroDeviceB || "(empty)"}`
+    };
+    return {
+      invocation: { specPath, iterDir, playwrightJsonPath: junitOutputPath },
+      results: [result2],
+      screenshotsBySpec: {}
+    };
+  }
+  const scriptAbs = path4.isAbsolute(scriptRel) ? scriptRel : path4.resolve(cfg.repoDir, scriptRel);
+  if (!fs5.existsSync(scriptAbs)) {
+    const result2 = {
+      spec_path: specPath,
+      status: "failed",
+      actual_duration_ms: 0,
+      test_cases: [],
+      error_message: `scenario script not found: ${scriptAbs} (from ${specPath})`
+    };
+    return {
+      invocation: { specPath, iterDir, playwrightJsonPath: junitOutputPath },
+      results: [result2],
+      screenshotsBySpec: {}
+    };
+  }
+  const env = {
+    ...process.env,
+    ...cfg.maestroEnv,
+    DEVICE_A_UDID: cfg.maestroDevice,
+    DEVICE_B_UDID: cfg.maestroDeviceB
+  };
+  if (cfg.maestroPlatform) {
+    env.MAESTRO_PLATFORM = cfg.maestroPlatform;
+  }
+  info(
+    `maestro scenario ${specPath} \u2192 ${scriptRel} (DEVICE_A=${cfg.maestroDevice} DEVICE_B=${cfg.maestroDeviceB})`
+  );
+  const startedAt = Date.now();
+  const child = await spawnCommand(scriptAbs, [], cfg.repoDir, cfg.maestroTimeoutMs, env);
+  const durationMs = Date.now() - startedAt;
+  info(
+    `scenario script exit ${child.status} in ${Math.round(durationMs / 1e3)}s` + (child.timedOut ? " timedOut=true" : "") + (child.error ? ` error=${child.error.message}` : "") + (child.signal ? ` signal=${child.signal}` : "")
+  );
+  const reportXmls = collectScenarioJUnitReports(cfg.repoDir);
   let result;
   if (child.timedOut) {
     warning(
-      `maestro timed out after ${cfg.maestroTimeoutMs}ms; returning interrupted for ${specPath}`
+      `scenario timed out after ${cfg.maestroTimeoutMs}ms; returning interrupted for ${specPath}`
     );
     result = {
       spec_path: specPath,
@@ -29151,38 +29244,190 @@ async function runUnit4(cfg, iterationSeq, specPaths) {
       status: "failed",
       actual_duration_ms: durationMs,
       test_cases: [],
-      error_message: `maestro failed to start: ${child.error.message}`,
+      error_message: `scenario script failed to start: ${child.error.message}`,
       error_stack: child.error.stack
     };
-  } else if (!fs5.existsSync(junitOutputPath)) {
-    warning(`maestro junit xml missing: ${junitOutputPath}`);
-    result = { spec_path: specPath, status: "interrupted", actual_duration_ms: 0, test_cases: [] };
-  } else {
+  } else if (reportXmls.length > 0) {
+    result = aggregateScenarioReports(reportXmls, specPath, durationMs, child.status);
     try {
-      result = aggregateMaestroReport(fs5.readFileSync(junitOutputPath, "utf8"), specPath);
-    } catch (e) {
-      warning(`maestro junit xml parse failure: ${e.message}`);
-      result = {
-        spec_path: specPath,
-        status: "interrupted",
-        actual_duration_ms: 0,
-        test_cases: []
-      };
+      fs5.writeFileSync(
+        junitOutputPath,
+        reportXmls.map((p) => fs5.readFileSync(p, "utf8")).join("\n")
+      );
+    } catch {
     }
+  } else if (child.status === 0) {
+    result = {
+      spec_path: specPath,
+      status: "passed",
+      actual_duration_ms: durationMs,
+      test_cases: [
+        {
+          title: path4.basename(specPath),
+          full_title: specPath,
+          status: "passed",
+          retry_count: 0,
+          duration_ms: durationMs,
+          ordinal: 0
+        }
+      ]
+    };
+  } else {
+    result = {
+      spec_path: specPath,
+      status: "failed",
+      actual_duration_ms: durationMs,
+      test_cases: [
+        {
+          title: path4.basename(specPath),
+          full_title: specPath,
+          status: "failed",
+          retry_count: 0,
+          duration_ms: durationMs,
+          ordinal: 0,
+          error_message: `scenario script exited with code ${child.status}`
+        }
+      ],
+      error_message: `scenario script exited with code ${child.status}`
+    };
   }
-  const screenshotsBySpec = collectMaestroScreenshots(artifactsDir, specPath);
+  const screenshots = [
+    ...Object.values(collectMaestroScreenshots(artifactsDir, specPath)).flat(),
+    ...findImagesUnder(path4.join(cfg.repoDir, "build")),
+    ...findImagesUnder(path4.join(cfg.repoDir, "detox", "build"))
+  ];
+  const screenshotsBySpec = screenshots.length > 0 ? { [specPath]: unique(screenshots) } : {};
   return {
     invocation: { specPath, iterDir, playwrightJsonPath: junitOutputPath },
     results: [result],
     screenshotsBySpec
   };
 }
-function spawnMaestro(args, cwd, timeoutMs) {
-  return new Promise((resolve2) => {
-    const child = (0, import_node_child_process4.spawn)("maestro", args, {
+function outcomeToSpecResult(child, durationMs, junitOutputPath, specPath, timeoutMs) {
+  if (child.timedOut) {
+    warning(`maestro timed out after ${timeoutMs}ms; returning interrupted for ${specPath}`);
+    return {
+      spec_path: specPath,
+      status: "interrupted",
+      actual_duration_ms: durationMs,
+      test_cases: []
+    };
+  }
+  if (child.error) {
+    return {
+      spec_path: specPath,
+      status: "failed",
+      actual_duration_ms: durationMs,
+      test_cases: [],
+      error_message: `maestro failed to start: ${child.error.message}`,
+      error_stack: child.error.stack
+    };
+  }
+  if (!fs5.existsSync(junitOutputPath)) {
+    warning(`maestro junit xml missing: ${junitOutputPath}`);
+    return { spec_path: specPath, status: "interrupted", actual_duration_ms: 0, test_cases: [] };
+  }
+  try {
+    return aggregateMaestroReport(fs5.readFileSync(junitOutputPath, "utf8"), specPath);
+  } catch (e) {
+    warning(`maestro junit xml parse failure: ${e.message}`);
+    return {
+      spec_path: specPath,
+      status: "interrupted",
+      actual_duration_ms: 0,
+      test_cases: []
+    };
+  }
+}
+function parseMaestroScenarioScript(text) {
+  const m = /^script:\s*(.+?)\s*$/m.exec(text);
+  if (!m) {
+    throw new Error('scenario missing required "script:" field');
+  }
+  let script = m[1].trim();
+  if (script.startsWith('"') && script.endsWith('"') || script.startsWith("'") && script.endsWith("'")) {
+    script = script.slice(1, -1);
+  }
+  if (!script) {
+    throw new Error('scenario "script:" field is empty');
+  }
+  return script;
+}
+function collectScenarioJUnitReports(repoDir) {
+  const candidates = [path4.join(repoDir, "build"), path4.join(repoDir, "detox", "build")];
+  const out = [];
+  for (const dir of candidates) {
+    if (!fs5.existsSync(dir)) continue;
+    for (const ent of fs5.readdirSync(dir, { withFileTypes: true })) {
+      if (ent.isFile() && /maestro.*\.xml$/i.test(ent.name)) {
+        out.push(path4.join(dir, ent.name));
+      }
+    }
+  }
+  return out.sort();
+}
+function aggregateScenarioReports(reportPaths, specPath, wallDurationMs, exitStatus) {
+  const cases = [];
+  let ordinal = 0;
+  for (const reportPath of reportPaths) {
+    let parsed;
+    try {
+      parsed = aggregateMaestroReport(fs5.readFileSync(reportPath, "utf8"), specPath);
+    } catch (e) {
+      warning(`scenario junit parse failure (${reportPath}): ${e.message}`);
+      continue;
+    }
+    for (const tc of parsed.test_cases) {
+      cases.push({ ...tc, ordinal: ordinal++ });
+    }
+  }
+  if (cases.length === 0) {
+    if (exitStatus === 0) {
+      return {
+        spec_path: specPath,
+        status: "passed",
+        actual_duration_ms: wallDurationMs,
+        test_cases: []
+      };
+    }
+    return {
+      spec_path: specPath,
+      status: "failed",
+      actual_duration_ms: wallDurationMs,
+      test_cases: [],
+      error_message: `scenario script exited with code ${exitStatus} (no parsable junit)`
+    };
+  }
+  let worst = "skipped";
+  let totalMs = 0;
+  for (const c of cases) {
+    if (RANKS4[c.status] > RANKS4[worst]) worst = c.status;
+    totalMs += c.duration_ms;
+  }
+  if (exitStatus !== 0 && exitStatus != null && worst === "passed") {
+    worst = "failed";
+  }
+  const out = {
+    spec_path: specPath,
+    status: worst,
+    actual_duration_ms: totalMs > 0 ? totalMs : wallDurationMs,
+    test_cases: cases
+  };
+  const firstFail = cases.find((c) => c.status === "failed");
+  if (firstFail?.error_message) out.error_message = firstFail.error_message;
+  if (firstFail?.error_stack) out.error_stack = firstFail.error_stack;
+  else if (exitStatus !== 0 && exitStatus != null && !out.error_message) {
+    out.error_message = `scenario script exited with code ${exitStatus}`;
+  }
+  return out;
+}
+function spawnCommand(command, args, cwd, timeoutMs, env) {
+  return new Promise((resolve3) => {
+    const child = (0, import_node_child_process4.spawn)(command, args, {
       cwd,
+      env,
       stdio: "inherit",
-      // Own process group so timeout can signal Maestro and its descendants.
+      // Own process group so timeout can signal the process and its descendants.
       detached: process.platform !== "win32"
     });
     let settled = false;
@@ -29191,7 +29436,7 @@ function spawnMaestro(args, cwd, timeoutMs) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve2(outcome);
+      resolve3(outcome);
     };
     const killTree = () => {
       if (child.pid == null) return;
@@ -29237,6 +29482,12 @@ function collectMaestroScreenshots(artifactsDir, specPath) {
   walkImages(artifactsDir, files);
   return files.length > 0 ? { [specPath]: files } : {};
 }
+function findImagesUnder(dir) {
+  if (!fs5.existsSync(dir)) return [];
+  const files = [];
+  walkImages(dir, files);
+  return files;
+}
 function walkImages(dir, out) {
   for (const ent of fs5.readdirSync(dir, { withFileTypes: true })) {
     const full = path4.join(dir, ent.name);
@@ -29246,6 +29497,9 @@ function walkImages(dir, out) {
       out.push(full);
     }
   }
+}
+function unique(paths) {
+  return [...new Set(paths)];
 }
 var RANKS4 = {
   skipped: 0,
@@ -29546,6 +29800,7 @@ async function run() {
   }
   const maestroDirInput = getInput("maestro-dir") || "detox/maestro";
   const maestroDevice = getInput("maestro-device");
+  const maestroDeviceB = getInput("maestro-device-b");
   const maestroPlatform = getInput("maestro-platform");
   const maestroEnv = parseMaestroEnv(getInput("maestro-env"));
   const maestroTimeoutMs = intInput("maestro-timeout-ms", 54e4);
@@ -29591,7 +29846,9 @@ async function run() {
       detoxMaxWorkers,
       batchSize,
       maestroDir,
+      repoDir,
       maestroDevice,
+      maestroDeviceB,
       maestroPlatform,
       maestroEnv,
       maestroTimeoutMs,
@@ -29729,7 +29986,9 @@ async function drain(cfg) {
         const out = await runUnit4(
           {
             maestroDir: cfg.maestroDir,
+            repoDir: cfg.repoDir,
             maestroDevice: cfg.maestroDevice,
+            maestroDeviceB: cfg.maestroDeviceB,
             maestroPlatform: cfg.maestroPlatform,
             maestroEnv: cfg.maestroEnv,
             maestroTimeoutMs: cfg.maestroTimeoutMs,

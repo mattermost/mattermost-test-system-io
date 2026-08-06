@@ -53,7 +53,7 @@ inputs:
       - `playwright` (default, for backward compatibility with existing consumers): enumerates files matching `testDir`/`testMatch` from `<repo-dir>/<playwright-dir>/playwright.config.*` (excluding `test_setup.ts` and `specs/visual/`) and submits them as dispatch units; the orchestration_runs row is created with `framework: "playwright"`.
       - `cypress`: enumerates `*_spec.{ts,js}` files under `<repo-dir>/<cypress-dir>/tests/integration/` and submits them as dispatch units; the orchestration_runs row is created with `framework: "cypress"`.
       - `detox`: enumerates `*.e2e.ts` files under `<repo-dir>/<detox-dir>/<detox-search-path>/` and submits them as dispatch units; the orchestration_runs row is created with `framework: "detox"`.
-      - `maestro`: enumerates `*.yml`/`*.yaml` flow files under `<repo-dir>/<maestro-dir>/<maestro-flow-path>/` and submits them as dispatch units; the orchestration_runs row is created with `framework: "maestro"`.
+      - `maestro`: enumerates `*.yml`/`*.yaml` flow files under `<repo-dir>/<maestro-dir>/<maestro-flow-path>/` plus `*.scenario.yml` manifests under `<maestro-scenarios-path>/` and submits them as dispatch units; the orchestration_runs row is created with `framework: "maestro"`.
     required: false
     default: "playwright"
   retest-on-fail:
@@ -239,13 +239,23 @@ inputs:
     default: flows
   maestro-exclude-dir:
     description: >
-      Directory name to skip during the walk (matched by exact directory
-      name at any depth). Defaults to `multi_device`, since those flows
-      require two devices and can't run through a single dispatch-run
-      worker. Set to `""` to disable — needed when `maestro-flow-path`
-      already points inside the excluded directory. Maestro only.
+      Directory name to skip during the flow walk (matched by exact
+      directory name at any depth). Defaults to `multi_device`, since
+      those half-flows are paired via `*.scenario.yml` orchestrator
+      scripts rather than leased as independent units. Set to `""` to
+      disable — needed when `maestro-flow-path` already points inside
+      the excluded directory. Maestro only.
     required: false
     default: multi_device
+  maestro-scenarios-path:
+    description: >
+      Path to search for `*.scenario.yml` / `*.scenario.yaml` manifests,
+      relative to `maestro-dir`. Defaults to `scenarios`. Each manifest
+      declares a `script:` that dispatch-run executes (e.g. two-device
+      orchestrators). Missing directory is a no-op. Set to `""` to skip
+      scenario discovery. Maestro only.
+    required: false
+    default: scenarios
   maestro-exclude-tags:
     description: >
       Comma-separated flow `tags:` list. A flow is dropped when its

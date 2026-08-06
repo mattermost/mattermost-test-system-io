@@ -1,9 +1,10 @@
-/** Maestro flow discovery for dispatch-begin: walks *.yml/*.yaml flow files under a directory. */
+/** Maestro flow + scenario discovery for dispatch-begin. */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 const MAESTRO_FLOW_RE = /\.ya?ml$/;
+const MAESTRO_SCENARIO_RE = /\.scenario\.ya?ml$/;
 // Helper flows (e.g. `_connect_check.yml`) and chooser flows consumed via
 // `runFlow:` rather than dispatched directly — not real test cases.
 const MAESTRO_HELPER_RE = /^_/;
@@ -15,6 +16,13 @@ export interface MaestroDiscoveryOptions {
   /** Directory name to skip during the walk. Empty string disables the exclusion. */
   excludeDir: string;
   /** Flow dropped if its `tags:` list shares any tag with this list. Empty array = no filter. */
+  excludeTags: string[];
+}
+
+export interface MaestroScenarioDiscoveryOptions {
+  /** Relative to maestroDir. Walked recursively for `*.scenario.yml` / `*.scenario.yaml`. */
+  searchPath: string;
+  /** Scenario dropped if its `tags:` list shares any tag with this list. Empty array = no filter. */
   excludeTags: string[];
 }
 
@@ -37,6 +45,10 @@ export function discoverMaestroSpecs(maestroDir: string, opts: MaestroDiscoveryO
         `maestro-flow-path "${opts.searchPath}" is a file but doesn't match *.yml/*.yaml`,
       );
     }
+    if (MAESTRO_SCENARIO_RE.test(path.basename(target))) {
+      // Scenario manifests are discovered separately via discoverMaestroScenarios.
+      return [];
+    }
     if (!isEligibleFlowFile(target, path.basename(target), opts.excludeTags)) {
       return [];
     }
@@ -49,11 +61,39 @@ export function discoverMaestroSpecs(maestroDir: string, opts: MaestroDiscoveryO
   }
 
   const out: string[] = [];
-  walk(target, opts.excludeDir, maestroDir, opts.excludeTags, out);
+  walkFlows(target, opts.excludeDir, maestroDir, opts.excludeTags, out);
+  return out.sort();
+}
+
+/**
+ * Returns sorted scenario paths relative to maestroDir.
+ * Missing searchPath is a no-op (empty list) so callers can leave the default
+ * enabled when a consumer repo has no scenarios yet.
+ */
+export function discoverMaestroScenarios(
+  maestroDir: string,
+  opts: MaestroScenarioDiscoveryOptions,
+): string[] {
+  if (!opts.searchPath) return [];
+  const target = path.join(maestroDir, opts.searchPath);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    return [];
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(
+      `maestro-scenarios-path "${opts.searchPath}" must be a directory under maestro-dir`,
+    );
+  }
+  const out: string[] = [];
+  walkScenarios(target, maestroDir, opts.excludeTags, out);
   return out.sort();
 }
 
 function isEligibleFlowFile(absPath: string, baseName: string, excludeTags: string[]): boolean {
+  if (MAESTRO_SCENARIO_RE.test(baseName)) return false;
   if (MAESTRO_HELPER_RE.test(baseName) || MAESTRO_PICKER_RE.test(baseName)) {
     return false;
   }
@@ -63,7 +103,7 @@ function isEligibleFlowFile(absPath: string, baseName: string, excludeTags: stri
   return true;
 }
 
-function walk(
+function walkFlows(
   dir: string,
   excludeDir: string,
   maestroDir: string,
@@ -74,9 +114,28 @@ function walk(
     const full = path.join(dir, ent.name);
     if (ent.isDirectory()) {
       if (excludeDir && ent.name === excludeDir) continue;
-      walk(full, excludeDir, maestroDir, excludeTags, out);
+      walkFlows(full, excludeDir, maestroDir, excludeTags, out);
     } else if (ent.isFile() && MAESTRO_FLOW_RE.test(ent.name)) {
       if (!isEligibleFlowFile(full, ent.name, excludeTags)) continue;
+      out.push(toRelative(maestroDir, full));
+    }
+  }
+}
+
+function walkScenarios(
+  dir: string,
+  maestroDir: string,
+  excludeTags: string[],
+  out: string[],
+): void {
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      walkScenarios(full, maestroDir, excludeTags, out);
+    } else if (ent.isFile() && MAESTRO_SCENARIO_RE.test(ent.name)) {
+      if (excludeTags.length > 0 && shareAny(readMaestroFlowTags(full), excludeTags)) {
+        continue;
+      }
       out.push(toRelative(maestroDir, full));
     }
   }

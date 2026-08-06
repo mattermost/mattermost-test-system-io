@@ -26211,6 +26211,7 @@ function toRelative(detoxDir, full) {
 var fs5 = __toESM(require("fs"));
 var path3 = __toESM(require("path"));
 var MAESTRO_FLOW_RE = /\.ya?ml$/;
+var MAESTRO_SCENARIO_RE = /\.scenario\.ya?ml$/;
 var MAESTRO_HELPER_RE = /^_/;
 var MAESTRO_PICKER_RE = /_picker\.ya?ml$/;
 function discoverMaestroSpecs(maestroDir, opts) {
@@ -26229,6 +26230,9 @@ function discoverMaestroSpecs(maestroDir, opts) {
         `maestro-flow-path "${opts.searchPath}" is a file but doesn't match *.yml/*.yaml`
       );
     }
+    if (MAESTRO_SCENARIO_RE.test(path3.basename(target))) {
+      return [];
+    }
     if (!isEligibleFlowFile(target, path3.basename(target), opts.excludeTags)) {
       return [];
     }
@@ -26238,10 +26242,29 @@ function discoverMaestroSpecs(maestroDir, opts) {
     return [];
   }
   const out = [];
-  walk2(target, opts.excludeDir, maestroDir, opts.excludeTags, out);
+  walkFlows(target, opts.excludeDir, maestroDir, opts.excludeTags, out);
+  return out.sort();
+}
+function discoverMaestroScenarios(maestroDir, opts) {
+  if (!opts.searchPath) return [];
+  const target = path3.join(maestroDir, opts.searchPath);
+  let stat2;
+  try {
+    stat2 = fs5.statSync(target);
+  } catch {
+    return [];
+  }
+  if (!stat2.isDirectory()) {
+    throw new Error(
+      `maestro-scenarios-path "${opts.searchPath}" must be a directory under maestro-dir`
+    );
+  }
+  const out = [];
+  walkScenarios(target, maestroDir, opts.excludeTags, out);
   return out.sort();
 }
 function isEligibleFlowFile(absPath, baseName, excludeTags) {
+  if (MAESTRO_SCENARIO_RE.test(baseName)) return false;
   if (MAESTRO_HELPER_RE.test(baseName) || MAESTRO_PICKER_RE.test(baseName)) {
     return false;
   }
@@ -26250,14 +26273,27 @@ function isEligibleFlowFile(absPath, baseName, excludeTags) {
   }
   return true;
 }
-function walk2(dir, excludeDir, maestroDir, excludeTags, out) {
+function walkFlows(dir, excludeDir, maestroDir, excludeTags, out) {
   for (const ent of fs5.readdirSync(dir, { withFileTypes: true })) {
     const full = path3.join(dir, ent.name);
     if (ent.isDirectory()) {
       if (excludeDir && ent.name === excludeDir) continue;
-      walk2(full, excludeDir, maestroDir, excludeTags, out);
+      walkFlows(full, excludeDir, maestroDir, excludeTags, out);
     } else if (ent.isFile() && MAESTRO_FLOW_RE.test(ent.name)) {
       if (!isEligibleFlowFile(full, ent.name, excludeTags)) continue;
+      out.push(toRelative2(maestroDir, full));
+    }
+  }
+}
+function walkScenarios(dir, maestroDir, excludeTags, out) {
+  for (const ent of fs5.readdirSync(dir, { withFileTypes: true })) {
+    const full = path3.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      walkScenarios(full, maestroDir, excludeTags, out);
+    } else if (ent.isFile() && MAESTRO_SCENARIO_RE.test(ent.name)) {
+      if (excludeTags.length > 0 && shareAny2(readMaestroFlowTags(full), excludeTags)) {
+        continue;
+      }
       out.push(toRelative2(maestroDir, full));
     }
   }
@@ -26443,6 +26479,7 @@ async function run() {
   const maestroDirInput = getInput("maestro-dir") || "detox/maestro";
   const maestroFlowPath = getInput("maestro-flow-path") || "flows";
   const maestroExcludeDir = getInput("maestro-exclude-dir");
+  const maestroScenariosPath = getInput("maestro-scenarios-path");
   const maestroExcludeTags = parseTagList(getInput("maestro-exclude-tags"));
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
@@ -26490,9 +26527,17 @@ async function run() {
       excludeDir: maestroExcludeDir,
       excludeTags: maestroExcludeTags
     });
+    const scenarios = discoverMaestroScenarios(maestroDir, {
+      searchPath: maestroScenariosPath,
+      excludeTags: maestroExcludeTags
+    });
+    if (scenarios.length > 0) {
+      info(`discovered ${scenarios.length} Maestro scenario(s) under ${maestroScenariosPath}`);
+      specs = [...specs, ...scenarios].sort();
+    }
     if (specs.length === 0) {
       throw new Error(
-        `no Maestro flows found under ${path5.join(maestroDir, maestroFlowPath)} (exclude-dir=${maestroExcludeDir || "none"}, exclude-tags=${maestroExcludeTags.join(",") || "none"})`
+        `no Maestro flows found under ${path5.join(maestroDir, maestroFlowPath)} (exclude-dir=${maestroExcludeDir || "none"}, exclude-tags=${maestroExcludeTags.join(",") || "none"}, scenarios-path=${maestroScenariosPath || "none"})`
       );
     }
   } else {

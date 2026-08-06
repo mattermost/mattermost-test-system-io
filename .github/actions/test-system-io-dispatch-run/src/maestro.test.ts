@@ -8,6 +8,7 @@ import {
   collectMaestroScreenshots,
   maestroStatus,
   parseMaestroEnv,
+  parseMaestroScenarioScript,
 } from "./maestro.ts";
 
 function withTmpDir(fn: (dir: string) => void): void {
@@ -137,4 +138,25 @@ test("parseMaestroEnv: only the first = splits key from value", () => {
 
 test("parseMaestroEnv: empty input returns empty object", () => {
   assert.deepEqual(parseMaestroEnv(""), {});
+});
+
+test("parseMaestroScenarioScript: reads script field", () => {
+  assert.equal(
+    parseMaestroScenarioScript(
+      "name: Multi-device message sync\nscript: detox/maestro/scripts/run_two_device.sh\ntags:\n  - multi_device\n",
+    ),
+    "detox/maestro/scripts/run_two_device.sh",
+  );
+});
+
+test("parseMaestroScenarioScript: strips quotes", () => {
+  assert.equal(parseMaestroScenarioScript('script: "scripts/a.sh"\n'), "scripts/a.sh");
+  assert.equal(parseMaestroScenarioScript("script: 'scripts/b.sh'\n"), "scripts/b.sh");
+});
+
+test("parseMaestroScenarioScript: missing script throws", () => {
+  assert.throws(
+    () => parseMaestroScenarioScript("name: no script\n"),
+    /missing required "script:"/,
+  );
 });

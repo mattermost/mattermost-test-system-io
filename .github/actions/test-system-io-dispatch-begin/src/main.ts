@@ -15,7 +15,7 @@ import * as core from "@actions/core";
 import { setCommitStatus } from "./commit-status";
 import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
 import { discoverDetoxSpecs } from "./detox";
-import { discoverMaestroSpecs } from "./maestro";
+import { discoverMaestroScenarios, discoverMaestroSpecs } from "./maestro";
 import { discoverPlaywrightSpecs } from "./playwright";
 import { retryFetch, safeText } from "./retry-fetch";
 
@@ -69,8 +69,9 @@ export async function run(): Promise<void> {
   const detoxExcludeDir = core.getInput("detox-exclude-dir");
   const maestroDirInput = core.getInput("maestro-dir") || "detox/maestro";
   const maestroFlowPath = core.getInput("maestro-flow-path") || "flows";
-  // "" is a valid value here (disables exclusion), so no JS fallback.
+  // "" is a valid value here (disables exclusion / scenario discovery).
   const maestroExcludeDir = core.getInput("maestro-exclude-dir");
+  const maestroScenariosPath = core.getInput("maestro-scenarios-path");
   const maestroExcludeTags = parseTagList(core.getInput("maestro-exclude-tags"));
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
@@ -125,10 +126,22 @@ export async function run(): Promise<void> {
       excludeDir: maestroExcludeDir,
       excludeTags: maestroExcludeTags,
     });
+    // Multi-device (and other) orchestrator scripts are declared as
+    // `*.scenario.yml` manifests — kept out of the flow walk so unpaired
+    // half-flows under multi_device/ stay excluded.
+    const scenarios = discoverMaestroScenarios(maestroDir, {
+      searchPath: maestroScenariosPath,
+      excludeTags: maestroExcludeTags,
+    });
+    if (scenarios.length > 0) {
+      core.info(`discovered ${scenarios.length} Maestro scenario(s) under ${maestroScenariosPath}`);
+      specs = [...specs, ...scenarios].sort();
+    }
     if (specs.length === 0) {
       throw new Error(
         `no Maestro flows found under ${path.join(maestroDir, maestroFlowPath)} ` +
-          `(exclude-dir=${maestroExcludeDir || "none"}, exclude-tags=${maestroExcludeTags.join(",") || "none"})`,
+          `(exclude-dir=${maestroExcludeDir || "none"}, exclude-tags=${maestroExcludeTags.join(",") || "none"}, ` +
+          `scenarios-path=${maestroScenariosPath || "none"})`,
       );
     }
   } else {

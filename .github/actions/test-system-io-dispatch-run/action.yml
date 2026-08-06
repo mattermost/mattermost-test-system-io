@@ -56,7 +56,7 @@ inputs:
       - `playwright` (default, for backward compatibility with existing consumers): invokes `npx playwright test --project=<playwright-project> --no-deps [--retries=<playwright-retries>] <leased>` from `<repo-dir>/<playwright-dir>` and reads `<results-dir>/reporter/results.json`.
       - `cypress`: invokes `npx cypress run --reporter cypress-multi-reporters --reporter-options configFile=reporter-config.json --spec <leased>` from `<repo-dir>/<cypress-dir>` and reads each leased spec's Mochawesome JSON from `results/mochawesome-report/json/tests/[name].json` (the path reporter-config.json prescribes via reportDir + reportFilename).
       - `detox`: invokes `npx detox test <leased> -c <detox-config> --record-logs failing --take-screenshots failing --artifacts-location <iter-dir>/artifacts -- --json --outputFile <iter-dir>/jest-results.json` from `<repo-dir>/<detox-dir>` and reads Jest's native `--json` output.
-      - `maestro`: invokes `maestro test [--device <maestro-device>] [--platform <maestro-platform>] --format junit --output <iter-dir>/maestro-batch.xml --test-output-dir <iter-dir>/artifacts --flatten-debug-output <leased>` from `<repo-dir>/<maestro-dir>` (one flow file per invocation) and reads Maestro's native JUnit output.
+      - `maestro`: for flow units, invokes `maestro test [--device <maestro-device>] [--platform <maestro-platform>] --format junit --output <iter-dir>/maestro-batch.xml --test-output-dir <iter-dir>/artifacts --flatten-debug-output <leased>` from `<repo-dir>/<maestro-dir>` (one flow file per invocation) and reads Maestro's native JUnit output. For `*.scenario.yml` units, runs the manifest's `script:` from `repo-dir` with `DEVICE_A_UDID`/`DEVICE_B_UDID` from `maestro-device`/`maestro-device-b` (batch_size remains 1).
     required: false
     default: "playwright"
   max-idle-polls:
@@ -166,11 +166,21 @@ inputs:
     default: detox/maestro
   maestro-device:
     description: >
-      Device UDID / AVD name / emulator serial passed to each per-spec
-      invocation as `--device`. The simulator/emulator must already be up
-      before the worker starts leasing — the action does not own that
-      setup. Empty omits `--device` (Maestro picks the sole connected
-      device). Maestro only.
+      Device A UDID / AVD name / emulator serial. Passed to single-device
+      `maestro test` as `--device`, and to `*.scenario.yml` scripts as
+      `DEVICE_A_UDID`. The simulator/emulator must already be up before
+      the worker starts leasing — the action does not own that setup.
+      Empty omits `--device` for single-device flows (Maestro picks the
+      sole connected device). Maestro only.
+    required: false
+    default: ""
+  maestro-device-b:
+    description: >
+      Device B UDID / emulator serial for multi-device `*.scenario.yml`
+      units (`DEVICE_B_UDID`). Required when a scenario is leased; unused
+      for single-device flows. Parallel leasing of two independent devices
+      (batch_size > 1) is not supported — scenarios run serially with
+      batch_size=1. Maestro only.
     required: false
     default: ""
   maestro-platform:

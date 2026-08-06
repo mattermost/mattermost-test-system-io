@@ -3,7 +3,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { discoverMaestroSpecs, parseMaestroFlowTags } from "./maestro.ts";
+import { discoverMaestroScenarios, discoverMaestroSpecs, parseMaestroFlowTags } from "./maestro.ts";
 
 function withTmpDir(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "maestro-discovery-"));
@@ -200,4 +200,66 @@ test("parseMaestroFlowTags: inline flow form", () => {
 
 test("parseMaestroFlowTags: absent tags returns empty", () => {
   assert.deepEqual(parseMaestroFlowTags("appId: x\n---\n- launchApp\n"), []);
+});
+
+test("discoverMaestroScenarios: walks *.scenario.yml, ignores plain flows", () => {
+  withTmpDir((dir) => {
+    writeFlow(dir, "scenarios/multi_device/message_sync.scenario.yml", "script: scripts/a.sh\n");
+    writeFlow(dir, "scenarios/multi_device/calls.scenario.yaml", "script: scripts/b.sh\n");
+    writeFlow(dir, "scenarios/multi_device/not_a_scenario.yml", "appId: x\n");
+    writeFlow(dir, "flows/account/settings.yml");
+    const specs = discoverMaestroScenarios(dir, {
+      searchPath: "scenarios",
+      excludeTags: [],
+    });
+    assert.deepEqual(specs, [
+      "scenarios/multi_device/calls.scenario.yaml",
+      "scenarios/multi_device/message_sync.scenario.yml",
+    ]);
+  });
+});
+
+test("discoverMaestroScenarios: missing directory returns empty", () => {
+  withTmpDir((dir) => {
+    assert.deepEqual(
+      discoverMaestroScenarios(dir, { searchPath: "scenarios", excludeTags: [] }),
+      [],
+    );
+  });
+});
+
+test("discoverMaestroScenarios: empty searchPath returns empty", () => {
+  withTmpDir((dir) => {
+    writeFlow(dir, "scenarios/x.scenario.yml", "script: s.sh\n");
+    assert.deepEqual(discoverMaestroScenarios(dir, { searchPath: "", excludeTags: [] }), []);
+  });
+});
+
+test("discoverMaestroScenarios: excludeTags drops matching scenarios", () => {
+  withTmpDir((dir) => {
+    writeFlow(
+      dir,
+      "scenarios/a.scenario.yml",
+      "script: a.sh\ntags:\n  - multi_device\n  - ios_exclude\n",
+    );
+    writeFlow(dir, "scenarios/b.scenario.yml", "script: b.sh\ntags:\n  - multi_device\n");
+    const specs = discoverMaestroScenarios(dir, {
+      searchPath: "scenarios",
+      excludeTags: ["ios_exclude"],
+    });
+    assert.deepEqual(specs, ["scenarios/b.scenario.yml"]);
+  });
+});
+
+test("discoverMaestroSpecs: does not pick up *.scenario.yml under flows", () => {
+  withTmpDir((dir) => {
+    writeFlow(dir, "flows/account/settings.yml");
+    writeFlow(dir, "flows/account/oops.scenario.yml", "script: s.sh\n");
+    const specs = discoverMaestroSpecs(dir, {
+      searchPath: "flows",
+      excludeDir: "multi_device",
+      excludeTags: [],
+    });
+    assert.deepEqual(specs, ["flows/account/settings.yml"]);
+  });
 });

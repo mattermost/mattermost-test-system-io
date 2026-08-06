@@ -82,6 +82,7 @@ export async function run(): Promise<void> {
   }
   const maestroDirInput = core.getInput("maestro-dir") || "detox/maestro";
   const maestroDevice = core.getInput("maestro-device");
+  const maestroDeviceB = core.getInput("maestro-device-b");
   const maestroPlatform = core.getInput("maestro-platform");
   const maestroEnv = parseMaestroEnv(core.getInput("maestro-env"));
   // Default 9m — keep below begin's lease-timeout-ms default (10m).
@@ -141,7 +142,9 @@ export async function run(): Promise<void> {
       detoxMaxWorkers,
       batchSize,
       maestroDir,
+      repoDir,
       maestroDevice,
+      maestroDeviceB,
       maestroPlatform,
       maestroEnv,
       maestroTimeoutMs,
@@ -227,7 +230,9 @@ interface DrainConfig {
   detoxMaxWorkers: number;
   batchSize: number;
   maestroDir: string;
+  repoDir: string;
   maestroDevice: string;
+  maestroDeviceB: string;
   maestroPlatform: string;
   maestroEnv: Record<string, string>;
   maestroTimeoutMs: number;
@@ -346,7 +351,9 @@ async function drain(cfg: DrainConfig): Promise<void> {
         const out = await runMaestroUnit(
           {
             maestroDir: cfg.maestroDir,
+            repoDir: cfg.repoDir,
             maestroDevice: cfg.maestroDevice,
+            maestroDeviceB: cfg.maestroDeviceB,
             maestroPlatform: cfg.maestroPlatform,
             maestroEnv: cfg.maestroEnv,
             maestroTimeoutMs: cfg.maestroTimeoutMs,

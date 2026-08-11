@@ -67,6 +67,8 @@ export async function run(): Promise<void> {
   const detoxSearchPath = core.getInput("detox-search-path") || "e2e/test";
   // "" is a valid value here (disables exclusion), so no JS fallback.
   const detoxExcludeDir = core.getInput("detox-exclude-dir");
+  const detoxIncludeTags = parseTagList(core.getInput("detox-include-tags"));
+  const detoxExcludeTags = parseTagList(core.getInput("detox-exclude-tags"));
   const maestroDirInput = core.getInput("maestro-dir") || "detox/maestro";
   const maestroFlowPath = core.getInput("maestro-flow-path") || "flows";
   // "" is a valid value here (disables exclusion), so no JS fallback.
@@ -111,11 +113,15 @@ export async function run(): Promise<void> {
     specs = discoverDetoxSpecs(detoxDir, {
       searchPath: detoxSearchPath,
       excludeDir: detoxExcludeDir,
+      includeTags: detoxIncludeTags,
+      excludeTags: detoxExcludeTags,
     });
     if (specs.length === 0) {
       throw new Error(
         `no Detox specs found under ${path.join(detoxDir, detoxSearchPath)} ` +
-          `(exclude-dir=${detoxExcludeDir || "none"})`,
+          `(exclude-dir=${detoxExcludeDir || "none"}, ` +
+          `include-tags=${detoxIncludeTags.join(",") || "*"}, ` +
+          `exclude-tags=${detoxExcludeTags.join(",") || "none"})`,
       );
     }
   } else if (framework === "maestro") {

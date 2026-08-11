@@ -221,6 +221,21 @@ inputs:
       directory. Detox only.
     required: false
     default: ipad
+  detox-include-tags:
+    description: >
+      Comma-separated `// Tags:` list. A Detox `*.e2e.ts` spec is kept
+      only when its preamble `// Tags: @foo @bar` line shares at least
+      one tag with this list (e.g. `@ios_complementary`). Empty disables
+      the include filter so the full search path is dispatched. Detox only.
+    required: false
+    default: ""
+  detox-exclude-tags:
+    description: >
+      Comma-separated `// Tags:` list. A Detox spec is dropped when its
+      preamble tags share any tag with this list. Applied after
+      `detox-include-tags`. Empty disables the exclude filter. Detox only.
+    required: false
+    default: ""
 
   # ── Maestro-specific ─────────────────────────────────────────────────
   maestro-dir:

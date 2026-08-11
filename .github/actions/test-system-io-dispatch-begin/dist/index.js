@@ -26186,22 +26186,55 @@ function discoverDetoxSpecs(detoxDir, opts) {
         `detox-search-path "${opts.searchPath}" is a file but doesn't match *.e2e.ts`
       );
     }
-    return [toRelative(detoxDir, target)];
+    const rel = toRelative(detoxDir, target);
+    return passesDetoxTagFilters(readDetoxSpecTags(target), opts) ? [rel] : [];
   }
   const out = [];
-  walk(target, opts.excludeDir, detoxDir, out);
+  walk(target, opts, detoxDir, out);
   return out.sort();
 }
-function walk(dir, excludeDir, detoxDir, out) {
+function walk(dir, opts, detoxDir, out) {
   for (const ent of fs4.readdirSync(dir, { withFileTypes: true })) {
     const full = path2.join(dir, ent.name);
     if (ent.isDirectory()) {
-      if (excludeDir && ent.name === excludeDir) continue;
-      walk(full, excludeDir, detoxDir, out);
+      if (opts.excludeDir && ent.name === opts.excludeDir) continue;
+      walk(full, opts, detoxDir, out);
     } else if (ent.isFile() && DETOX_SPEC_RE.test(ent.name)) {
+      if (!passesDetoxTagFilters(readDetoxSpecTags(full), opts)) continue;
       out.push(toRelative(detoxDir, full));
     }
   }
+}
+function readDetoxSpecTags(absPath) {
+  let text;
+  try {
+    text = fs4.readFileSync(absPath, "utf8");
+  } catch {
+    return [];
+  }
+  return parseDetoxSpecTags(text);
+}
+function parseDetoxSpecTags(text) {
+  const preambleEnd = text.search(/^\s*(?:import|export|const|let|var|function|class|describe)\b/m);
+  const preamble = preambleEnd === -1 ? text : text.slice(0, preambleEnd);
+  const tags = [];
+  for (const m of preamble.matchAll(/^\s*\/\/\s*tags:\s*(.+)$/gim)) {
+    for (const tok of m[1].split(/\s+/)) {
+      if (/^@\S+$/.test(tok)) tags.push(tok);
+    }
+  }
+  return tags;
+}
+function passesDetoxTagFilters(tags, opts) {
+  if (opts.includeTags.length > 0 && !shareAny2(tags, opts.includeTags)) return false;
+  if (opts.excludeTags.length > 0 && shareAny2(tags, opts.excludeTags)) return false;
+  return true;
+}
+function shareAny2(a, b) {
+  if (a.length === 0 || b.length === 0) return false;
+  const setB = new Set(b);
+  for (const x of a) if (setB.has(x)) return true;
+  return false;
 }
 function toRelative(detoxDir, full) {
   return path2.relative(detoxDir, full).split(path2.sep).join("/");
@@ -26245,7 +26278,7 @@ function isEligibleFlowFile(absPath, baseName, excludeTags) {
   if (MAESTRO_HELPER_RE.test(baseName) || MAESTRO_PICKER_RE.test(baseName)) {
     return false;
   }
-  if (excludeTags.length > 0 && shareAny2(readMaestroFlowTags(absPath), excludeTags)) {
+  if (excludeTags.length > 0 && shareAny3(readMaestroFlowTags(absPath), excludeTags)) {
     return false;
   }
   return true;
@@ -26282,7 +26315,7 @@ function parseMaestroFlowTags(text) {
     (m) => m[1].trim()
   );
 }
-function shareAny2(a, b) {
+function shareAny3(a, b) {
   if (a.length === 0 || b.length === 0) return false;
   const setB = new Set(b);
   for (const x of a) if (setB.has(x)) return true;
@@ -26440,6 +26473,8 @@ async function run() {
   const detoxDirInput = getInput("detox-dir") || "detox";
   const detoxSearchPath = getInput("detox-search-path") || "e2e/test";
   const detoxExcludeDir = getInput("detox-exclude-dir");
+  const detoxIncludeTags = parseTagList(getInput("detox-include-tags"));
+  const detoxExcludeTags = parseTagList(getInput("detox-exclude-tags"));
   const maestroDirInput = getInput("maestro-dir") || "detox/maestro";
   const maestroFlowPath = getInput("maestro-flow-path") || "flows";
   const maestroExcludeDir = getInput("maestro-exclude-dir");
@@ -26476,11 +26511,13 @@ async function run() {
     const detoxDir = path5.resolve(repoDir, detoxDirInput);
     specs = discoverDetoxSpecs(detoxDir, {
       searchPath: detoxSearchPath,
-      excludeDir: detoxExcludeDir
+      excludeDir: detoxExcludeDir,
+      includeTags: detoxIncludeTags,
+      excludeTags: detoxExcludeTags
     });
     if (specs.length === 0) {
       throw new Error(
-        `no Detox specs found under ${path5.join(detoxDir, detoxSearchPath)} (exclude-dir=${detoxExcludeDir || "none"})`
+        `no Detox specs found under ${path5.join(detoxDir, detoxSearchPath)} (exclude-dir=${detoxExcludeDir || "none"}, include-tags=${detoxIncludeTags.join(",") || "*"}, exclude-tags=${detoxExcludeTags.join(",") || "none"})`
       );
     }
   } else if (framework === "maestro") {

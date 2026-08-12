@@ -46,7 +46,7 @@ test("discoverDetoxSpecs: walks nested dirs, sorted, forward-slash paths", () =>
   });
 });
 
-test("discoverDetoxSpecs: excludes named directory by default (ipad)", () => {
+test("discoverDetoxSpecs: excludes named directory when set (legacy)", () => {
   withTmpDir((dir) => {
     writeSpec(dir, "e2e/test/products/channels/messaging/message_post.e2e.ts");
     writeSpec(dir, "e2e/test/products/channels/ipad/ipad_only.e2e.ts");
@@ -60,16 +60,39 @@ test("discoverDetoxSpecs: excludes named directory by default (ipad)", () => {
   });
 });
 
-test("discoverDetoxSpecs: empty excludeDir disables exclusion (iPad-only run)", () => {
+test("discoverDetoxSpecs: excludeTags @ipad_only drops iPad specs anywhere", () => {
   withTmpDir((dir) => {
-    writeSpec(dir, "e2e/test/products/channels/ipad/ipad_only.e2e.ts");
+    writeSpec(dir, "e2e/test/products/channels/messaging/message_post.e2e.ts");
+    writeSpec(
+      dir,
+      "e2e/test/products/channels/tablet/ipad_sidebar.e2e.ts",
+      "// Tags: @ipad_only\ndescribe('x', () => {});",
+    );
     const specs = discoverDetoxSpecs(dir, {
-      searchPath: "e2e/test/products/channels/ipad",
+      searchPath: "e2e/test",
       excludeDir: "",
       includeTags: [],
+      excludeTags: ["@ipad_only"],
+    });
+    assert.deepEqual(specs, ["e2e/test/products/channels/messaging/message_post.e2e.ts"]);
+  });
+});
+
+test("discoverDetoxSpecs: includeTags @ipad_only keeps iPad specs anywhere", () => {
+  withTmpDir((dir) => {
+    writeSpec(dir, "e2e/test/products/channels/messaging/message_post.e2e.ts");
+    writeSpec(
+      dir,
+      "e2e/test/products/channels/tablet/ipad_sidebar.e2e.ts",
+      "// Tags: @ipad_only\ndescribe('x', () => {});",
+    );
+    const specs = discoverDetoxSpecs(dir, {
+      searchPath: "e2e/test",
+      excludeDir: "",
+      includeTags: ["@ipad_only"],
       excludeTags: [],
     });
-    assert.deepEqual(specs, ["e2e/test/products/channels/ipad/ipad_only.e2e.ts"]);
+    assert.deepEqual(specs, ["e2e/test/products/channels/tablet/ipad_sidebar.e2e.ts"]);
   });
 });
 

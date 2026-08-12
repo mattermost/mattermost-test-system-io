@@ -42,7 +42,7 @@ test("discoverMaestroSpecs: walks nested dirs, sorted, forward-slash paths", () 
   });
 });
 
-test("discoverMaestroSpecs: excludes named directory by default (multi_device)", () => {
+test("discoverMaestroSpecs: excludes named directory when set (legacy)", () => {
   withTmpDir((dir) => {
     writeFlow(dir, "flows/calls/join_call.yml");
     writeFlow(dir, "flows/multi_device/two_device_call.yml");
@@ -50,6 +50,23 @@ test("discoverMaestroSpecs: excludes named directory by default (multi_device)",
       searchPath: "flows",
       excludeDir: "multi_device",
       excludeTags: [],
+    });
+    assert.deepEqual(specs, ["flows/calls/join_call.yml"]);
+  });
+});
+
+test("discoverMaestroSpecs: excludeTags @multi_device drops two-device flows anywhere", () => {
+  withTmpDir((dir) => {
+    writeFlow(dir, "flows/calls/join_call.yml", "tags:\n  - MM-T1\nappId: x\n");
+    writeFlow(
+      dir,
+      "flows/special/two_device_call.yml",
+      "tags:\n  - MM-T2\n  - @multi_device\nappId: x\n",
+    );
+    const specs = discoverMaestroSpecs(dir, {
+      searchPath: "flows",
+      excludeDir: "",
+      excludeTags: ["@multi_device"],
     });
     assert.deepEqual(specs, ["flows/calls/join_call.yml"]);
   });

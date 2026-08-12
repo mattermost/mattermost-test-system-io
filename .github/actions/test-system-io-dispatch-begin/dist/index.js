@@ -26425,7 +26425,8 @@ function buildReportURL(baseURL, c) {
   const branch = encodeURIComponent(encodeBranchPathSegment(c.branch || "main"));
   const shortSha = (c.commit_sha || "").slice(0, 7);
   const name = encodeURIComponent(c.name);
-  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
+  const attempt = encodeURIComponent(c.gh_run_attempt || "1");
+  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}&gh_run_attempt=${attempt}`;
 }
 
 // src/retry-fetch.ts

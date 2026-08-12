@@ -3,11 +3,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  discoverDetoxSpecs,
-  parseDetoxSpecTags,
-  passesDetoxTagFilters,
-} from "./detox.ts";
+import { discoverDetoxSpecs, parseDetoxSpecTags, passesDetoxTagFilters } from "./detox.ts";
 
 function withTmpDir(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "detox-discovery-"));
@@ -21,10 +17,7 @@ function withTmpDir(fn: (dir: string) => void): void {
 function writeSpec(root: string, relPath: string, body?: string): void {
   const abs = path.join(root, relPath);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
-  fs.writeFileSync(
-    abs,
-    body ?? "describe('x', () => { it('y', async () => {}); });",
-  );
+  fs.writeFileSync(abs, body ?? "describe('x', () => { it('y', async () => {}); });");
 }
 
 test("discoverDetoxSpecs: walks nested dirs, sorted, forward-slash paths", () => {
@@ -34,7 +27,6 @@ test("discoverDetoxSpecs: walks nested dirs, sorted, forward-slash paths", () =>
     writeSpec(dir, "e2e/test/products/channels/account/settings.e2e.ts");
     const specs = discoverDetoxSpecs(dir, {
       searchPath: "e2e/test",
-      excludeDir: "ipad",
       includeTags: [],
       excludeTags: [],
     });
@@ -43,20 +35,6 @@ test("discoverDetoxSpecs: walks nested dirs, sorted, forward-slash paths", () =>
       "e2e/test/products/channels/channels/browse_channels.e2e.ts",
       "e2e/test/products/channels/messaging/message_post.e2e.ts",
     ]);
-  });
-});
-
-test("discoverDetoxSpecs: excludes named directory when set (legacy)", () => {
-  withTmpDir((dir) => {
-    writeSpec(dir, "e2e/test/products/channels/messaging/message_post.e2e.ts");
-    writeSpec(dir, "e2e/test/products/channels/ipad/ipad_only.e2e.ts");
-    const specs = discoverDetoxSpecs(dir, {
-      searchPath: "e2e/test",
-      excludeDir: "ipad",
-      includeTags: [],
-      excludeTags: [],
-    });
-    assert.deepEqual(specs, ["e2e/test/products/channels/messaging/message_post.e2e.ts"]);
   });
 });
 
@@ -70,7 +48,6 @@ test("discoverDetoxSpecs: excludeTags @ipad_only drops iPad specs anywhere", () 
     );
     const specs = discoverDetoxSpecs(dir, {
       searchPath: "e2e/test",
-      excludeDir: "",
       includeTags: [],
       excludeTags: ["@ipad_only"],
     });
@@ -88,7 +65,6 @@ test("discoverDetoxSpecs: includeTags @ipad_only keeps iPad specs anywhere", () 
     );
     const specs = discoverDetoxSpecs(dir, {
       searchPath: "e2e/test",
-      excludeDir: "",
       includeTags: ["@ipad_only"],
       excludeTags: [],
     });
@@ -103,7 +79,6 @@ test("discoverDetoxSpecs: ignores non-.e2e.ts files (support/helper modules)", (
     fs.writeFileSync(path.join(dir, "e2e/test/support/server_api.ts"), "export const Setup = {};");
     const specs = discoverDetoxSpecs(dir, {
       searchPath: "e2e/test",
-      excludeDir: "ipad",
       includeTags: [],
       excludeTags: [],
     });
@@ -117,7 +92,6 @@ test("discoverDetoxSpecs: searchPath pointing at a single file returns just that
     writeSpec(dir, "e2e/test/products/channels/smoke_test/account.e2e.ts");
     const specs = discoverDetoxSpecs(dir, {
       searchPath: "e2e/test/products/channels/smoke_test/server_login.e2e.ts",
-      excludeDir: "ipad",
       includeTags: [],
       excludeTags: [],
     });
@@ -133,7 +107,6 @@ test("discoverDetoxSpecs: searchPath file not matching *.e2e.ts throws", () => {
       () =>
         discoverDetoxSpecs(dir, {
           searchPath: "e2e/test/readme.md",
-          excludeDir: "ipad",
           includeTags: [],
           excludeTags: [],
         }),
@@ -172,10 +145,7 @@ test("passesDetoxTagFilters: include/exclude semantics", () => {
     }),
     false,
   );
-  assert.equal(
-    passesDetoxTagFilters([], { includeTags: [], excludeTags: [] }),
-    true,
-  );
+  assert.equal(passesDetoxTagFilters([], { includeTags: [], excludeTags: [] }), true);
 });
 
 test("discoverDetoxSpecs: includeTags keeps only matching specs with real paths", () => {
@@ -193,7 +163,6 @@ test("discoverDetoxSpecs: includeTags keeps only matching specs with real paths"
     writeSpec(dir, "e2e/test/products/channels/account/settings.e2e.ts");
     const specs = discoverDetoxSpecs(dir, {
       searchPath: "e2e/test",
-      excludeDir: "ipad",
       includeTags: ["@ios_pr"],
       excludeTags: [],
     });

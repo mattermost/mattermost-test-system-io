@@ -8,8 +8,6 @@ const DETOX_SPEC_RE = /\.e2e\.ts$/;
 export interface DetoxDiscoveryOptions {
   /** Relative to detoxDir. May point at a directory (walked recursively) or a single spec file. */
   searchPath: string;
-  /** Directory name to skip during the walk. Empty string disables the exclusion. */
-  excludeDir: string;
   /**
    * Specs kept only when their `// Tags:` line shares at least one tag with this list.
    * Empty array = no include filter (discover everything under searchPath).
@@ -54,7 +52,6 @@ function walk(dir: string, opts: DetoxDiscoveryOptions, detoxDir: string, out: s
   for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, ent.name);
     if (ent.isDirectory()) {
-      if (opts.excludeDir && ent.name === opts.excludeDir) continue;
       walk(full, opts, detoxDir, out);
     } else if (ent.isFile() && DETOX_SPEC_RE.test(ent.name)) {
       if (!passesDetoxTagFilters(readDetoxSpecTags(full), opts)) continue;

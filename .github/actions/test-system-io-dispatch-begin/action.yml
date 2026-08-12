@@ -212,14 +212,6 @@ inputs:
       over narrowing the search path for iPad-only runs. Detox only.
     required: false
     default: e2e/test
-  detox-exclude-dir:
-    description: >
-      Optional directory name to skip during the walk (exact name at any
-      depth). Prefer `detox-include-tags` / `detox-exclude-tags` (e.g.
-      `@ipad_only`) over directory filters — specs may move. Empty
-      disables. Detox only.
-    required: false
-    default: ""
   detox-include-tags:
     description: >
       Comma-separated `// Tags:` list (`@snake_case`). A Detox `*.e2e.ts`
@@ -252,13 +244,6 @@ inputs:
       file to dispatch exactly one unit. Maestro only.
     required: false
     default: flows
-  maestro-exclude-dir:
-    description: >
-      Optional directory name to skip during the walk (exact name at any
-      depth). Prefer `maestro-exclude-tags` (e.g. `@multi_device`) over
-      directory filters — flows may move. Empty disables. Maestro only.
-    required: false
-    default: ""
   maestro-exclude-tags:
     description: >
       Comma-separated flow `tags:` list (`@snake_case` plan tags and/or

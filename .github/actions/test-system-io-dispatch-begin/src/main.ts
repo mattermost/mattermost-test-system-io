@@ -66,14 +66,10 @@ export async function run(): Promise<void> {
   const cypressDirInput = core.getInput("cypress-dir") || "e2e-tests/cypress";
   const detoxDirInput = core.getInput("detox-dir") || "detox";
   const detoxSearchPath = core.getInput("detox-search-path") || "e2e/test";
-  // "" is a valid value here (disables exclusion), so no JS fallback.
-  const detoxExcludeDir = core.getInput("detox-exclude-dir");
   const detoxIncludeTags = parseTagList(core.getInput("detox-include-tags"));
   const detoxExcludeTags = parseTagList(core.getInput("detox-exclude-tags"));
   const maestroDirInput = core.getInput("maestro-dir") || "detox/maestro";
   const maestroFlowPath = core.getInput("maestro-flow-path") || "flows";
-  // "" is a valid value here (disables exclusion), so no JS fallback.
-  const maestroExcludeDir = core.getInput("maestro-exclude-dir");
   const maestroExcludeTags = parseTagList(core.getInput("maestro-exclude-tags"));
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
@@ -113,15 +109,13 @@ export async function run(): Promise<void> {
     const detoxDir = path.resolve(repoDir, detoxDirInput);
     specs = discoverDetoxSpecs(detoxDir, {
       searchPath: detoxSearchPath,
-      excludeDir: detoxExcludeDir,
       includeTags: detoxIncludeTags,
       excludeTags: detoxExcludeTags,
     });
     if (specs.length === 0) {
       throw new Error(
         `no Detox specs found under ${path.join(detoxDir, detoxSearchPath)} ` +
-          `(exclude-dir=${detoxExcludeDir || "none"}, ` +
-          `include-tags=${detoxIncludeTags.join(",") || "*"}, ` +
+          `(include-tags=${detoxIncludeTags.join(",") || "*"}, ` +
           `exclude-tags=${detoxExcludeTags.join(",") || "none"})`,
       );
     }
@@ -129,13 +123,12 @@ export async function run(): Promise<void> {
     const maestroDir = path.resolve(repoDir, maestroDirInput);
     specs = discoverMaestroSpecs(maestroDir, {
       searchPath: maestroFlowPath,
-      excludeDir: maestroExcludeDir,
       excludeTags: maestroExcludeTags,
     });
     if (specs.length === 0) {
       throw new Error(
         `no Maestro flows found under ${path.join(maestroDir, maestroFlowPath)} ` +
-          `(exclude-dir=${maestroExcludeDir || "none"}, exclude-tags=${maestroExcludeTags.join(",") || "none"})`,
+          `(exclude-tags=${maestroExcludeTags.join(",") || "none"})`,
       );
     }
   } else {

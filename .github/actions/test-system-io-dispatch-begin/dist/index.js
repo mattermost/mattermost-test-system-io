@@ -26197,7 +26197,6 @@ function walk(dir, opts, detoxDir, out) {
   for (const ent of fs4.readdirSync(dir, { withFileTypes: true })) {
     const full = path2.join(dir, ent.name);
     if (ent.isDirectory()) {
-      if (opts.excludeDir && ent.name === opts.excludeDir) continue;
       walk(full, opts, detoxDir, out);
     } else if (ent.isFile() && DETOX_SPEC_RE.test(ent.name)) {
       if (!passesDetoxTagFilters(readDetoxSpecTags(full), opts)) continue;
@@ -26267,11 +26266,8 @@ function discoverMaestroSpecs(maestroDir, opts) {
     }
     return [toRelative2(maestroDir, target)];
   }
-  if (opts.excludeDir && path3.basename(target) === opts.excludeDir) {
-    return [];
-  }
   const out = [];
-  walk2(target, opts.excludeDir, maestroDir, opts.excludeTags, out);
+  walk2(target, maestroDir, opts.excludeTags, out);
   return out.sort();
 }
 function isEligibleFlowFile(absPath, baseName, excludeTags) {
@@ -26283,12 +26279,11 @@ function isEligibleFlowFile(absPath, baseName, excludeTags) {
   }
   return true;
 }
-function walk2(dir, excludeDir, maestroDir, excludeTags, out) {
+function walk2(dir, maestroDir, excludeTags, out) {
   for (const ent of fs5.readdirSync(dir, { withFileTypes: true })) {
     const full = path3.join(dir, ent.name);
     if (ent.isDirectory()) {
-      if (excludeDir && ent.name === excludeDir) continue;
-      walk2(full, excludeDir, maestroDir, excludeTags, out);
+      walk2(full, maestroDir, excludeTags, out);
     } else if (ent.isFile() && MAESTRO_FLOW_RE.test(ent.name)) {
       if (!isEligibleFlowFile(full, ent.name, excludeTags)) continue;
       out.push(toRelative2(maestroDir, full));
@@ -26486,12 +26481,10 @@ async function run() {
   const cypressDirInput = getInput("cypress-dir") || "e2e-tests/cypress";
   const detoxDirInput = getInput("detox-dir") || "detox";
   const detoxSearchPath = getInput("detox-search-path") || "e2e/test";
-  const detoxExcludeDir = getInput("detox-exclude-dir");
   const detoxIncludeTags = parseTagList(getInput("detox-include-tags"));
   const detoxExcludeTags = parseTagList(getInput("detox-exclude-tags"));
   const maestroDirInput = getInput("maestro-dir") || "detox/maestro";
   const maestroFlowPath = getInput("maestro-flow-path") || "flows";
-  const maestroExcludeDir = getInput("maestro-exclude-dir");
   const maestroExcludeTags = parseTagList(getInput("maestro-exclude-tags"));
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
@@ -26525,25 +26518,23 @@ async function run() {
     const detoxDir = path5.resolve(repoDir, detoxDirInput);
     specs = discoverDetoxSpecs(detoxDir, {
       searchPath: detoxSearchPath,
-      excludeDir: detoxExcludeDir,
       includeTags: detoxIncludeTags,
       excludeTags: detoxExcludeTags
     });
     if (specs.length === 0) {
       throw new Error(
-        `no Detox specs found under ${path5.join(detoxDir, detoxSearchPath)} (exclude-dir=${detoxExcludeDir || "none"}, include-tags=${detoxIncludeTags.join(",") || "*"}, exclude-tags=${detoxExcludeTags.join(",") || "none"})`
+        `no Detox specs found under ${path5.join(detoxDir, detoxSearchPath)} (include-tags=${detoxIncludeTags.join(",") || "*"}, exclude-tags=${detoxExcludeTags.join(",") || "none"})`
       );
     }
   } else if (framework === "maestro") {
     const maestroDir = path5.resolve(repoDir, maestroDirInput);
     specs = discoverMaestroSpecs(maestroDir, {
       searchPath: maestroFlowPath,
-      excludeDir: maestroExcludeDir,
       excludeTags: maestroExcludeTags
     });
     if (specs.length === 0) {
       throw new Error(
-        `no Maestro flows found under ${path5.join(maestroDir, maestroFlowPath)} (exclude-dir=${maestroExcludeDir || "none"}, exclude-tags=${maestroExcludeTags.join(",") || "none"})`
+        `no Maestro flows found under ${path5.join(maestroDir, maestroFlowPath)} (exclude-tags=${maestroExcludeTags.join(",") || "none"})`
       );
     }
   } else {

@@ -64,7 +64,7 @@ function walk(dir: string, opts: DetoxDiscoveryOptions, detoxDir: string, out: s
 }
 
 /**
- * Read `// Tags: @ios_complementary @smoke` annotations from the file preamble
+ * Read `// Tags: @ios_pr @smoke` annotations from the file preamble
  * (before the first non-comment import/code line). Same `@token` shape as Cypress
  * Stage/Group so callers can pass comma-separated action inputs.
  */

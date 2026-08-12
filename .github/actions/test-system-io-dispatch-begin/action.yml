@@ -225,7 +225,7 @@ inputs:
     description: >
       Comma-separated `// Tags:` list. A Detox `*.e2e.ts` spec is kept
       only when its preamble `// Tags: @foo @bar` line shares at least
-      one tag with this list (e.g. `@ios_complementary`). Empty disables
+      one tag with this list (e.g. `@ios_pr`). Empty disables
       the include filter so the full search path is dispatched. Detox only.
     required: false
     default: ""

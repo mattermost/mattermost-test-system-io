@@ -123,28 +123,28 @@ test("parseDetoxSpecTags: reads // Tags: @tokens from preamble only", () => {
   const tags = parseDetoxSpecTags(
     [
       "// Copyright",
-      "// Tags: @ios_complementary @smoke",
+      "// Tags: @ios_pr @smoke",
       "",
       "import {describe} from 'detox';",
       "// Tags: @ignored_after_import",
       "describe('x', () => {});",
     ].join("\n"),
   );
-  assert.deepEqual(tags, ["@ios_complementary", "@smoke"]);
+  assert.deepEqual(tags, ["@ios_pr", "@smoke"]);
 });
 
 test("passesDetoxTagFilters: include/exclude semantics", () => {
   assert.equal(
-    passesDetoxTagFilters(["@ios_complementary"], { includeTags: ["@ios_complementary"], excludeTags: [] }),
+    passesDetoxTagFilters(["@ios_pr"], { includeTags: ["@ios_pr"], excludeTags: [] }),
     true,
   );
   assert.equal(
-    passesDetoxTagFilters(["@smoke"], { includeTags: ["@ios_complementary"], excludeTags: [] }),
+    passesDetoxTagFilters(["@smoke"], { includeTags: ["@ios_pr"], excludeTags: [] }),
     false,
   );
   assert.equal(
-    passesDetoxTagFilters(["@ios_complementary", "@flaky"], {
-      includeTags: ["@ios_complementary"],
+    passesDetoxTagFilters(["@ios_pr", "@flaky"], {
+      includeTags: ["@ios_pr"],
       excludeTags: ["@flaky"],
     }),
     false,
@@ -160,7 +160,7 @@ test("discoverDetoxSpecs: includeTags keeps only matching specs with real paths"
     writeSpec(
       dir,
       "e2e/test/products/channels/smoke_test/channels.e2e.ts",
-      "// Tags: @ios_complementary\ndescribe('x', () => {});",
+      "// Tags: @ios_pr\ndescribe('x', () => {});",
     );
     writeSpec(
       dir,
@@ -171,7 +171,7 @@ test("discoverDetoxSpecs: includeTags keeps only matching specs with real paths"
     const specs = discoverDetoxSpecs(dir, {
       searchPath: "e2e/test",
       excludeDir: "ipad",
-      includeTags: ["@ios_complementary"],
+      includeTags: ["@ios_pr"],
       excludeTags: [],
     });
     assert.deepEqual(specs, ["e2e/test/products/channels/smoke_test/channels.e2e.ts"]);

@@ -17,6 +17,7 @@ import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypre
 import { discoverDetoxSpecs } from "./detox";
 import { discoverMaestroSpecs } from "./maestro";
 import { discoverPlaywrightSpecs } from "./playwright";
+import { buildReportURL } from "./report_url";
 import { retryFetch, safeText } from "./retry-fetch";
 
 interface CompositeIdentity {
@@ -256,15 +257,6 @@ function formatPendingDescription(): string {
   if (!imageTag) return "tests running";
   const aliases = imageAliases ? ` (${imageAliases})` : "";
   return `tests running, image_tag:${imageTag}${aliases}`;
-}
-
-function buildReportURL(baseURL: string, c: CompositeIdentity): string {
-  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
-  const repo = encodeURIComponent(repoTrailing);
-  const branch = encodeURIComponent(c.branch || "main");
-  const shortSha = (c.commit_sha || "").slice(0, 7);
-  const name = encodeURIComponent(c.name);
-  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
 }
 
 function identityForReports(

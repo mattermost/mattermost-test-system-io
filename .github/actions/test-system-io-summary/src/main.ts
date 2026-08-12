@@ -12,6 +12,7 @@
 import * as fs from "node:fs";
 import * as core from "@actions/core";
 import { setCommitStatus, type CommitStatusState } from "./commit-status.ts";
+import { buildReportURL } from "./report_url.ts";
 import { retryFetch } from "./retry-fetch.ts";
 
 export interface CompositeIdentity {
@@ -149,17 +150,9 @@ export async function run(): Promise<void> {
   });
 
   // Dashboard URLs use only the trailing segment of the repository slug
-  // ("owner/repo" → "repo") to match the convention surfaced by the
-  // /reports/consolidated and /reports/grouped endpoints. Mirroring the same
-  // path shape used elsewhere in the UI keeps deep links consistent and
-  // browsable.
-  const repoSlug = compositeIdentity.repository || "";
-  const repoTrailing = repoSlug.split("/").pop() || repoSlug;
-  const repo = encodeURIComponent(repoTrailing);
-  const branch = encodeURIComponent(compositeIdentity.branch || "main");
-  const shortSha = (compositeIdentity.commit_sha || "").slice(0, 7);
-  const name = encodeURIComponent(compositeIdentity.name);
-  const reportURL = `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(compositeIdentity.gh_run_id)}`;
+  // ("owner/repo" → "repo") and encode branch slashes as `~`, matching
+  // /reports/consolidated and apps/web encodeBranchPathSegment.
+  const reportURL = buildReportURL(baseURL, compositeIdentity);
 
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) {

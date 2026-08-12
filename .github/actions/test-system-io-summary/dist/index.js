@@ -26029,6 +26029,19 @@ function truncateDescription(s) {
   return `${s.slice(0, DESCRIPTION_MAX - 1)}\u2026`;
 }
 
+// src/report_url.ts
+function encodeBranchPathSegment(branch) {
+  return (branch || "main").replace(/^refs\/heads\//, "").replace(/^refs\/tags\//, "").replace(/\//g, "~");
+}
+function buildReportURL(baseURL, c) {
+  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
+  const repo = encodeURIComponent(repoTrailing);
+  const branch = encodeURIComponent(encodeBranchPathSegment(c.branch || "main"));
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const name = encodeURIComponent(c.name);
+  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
+}
+
 // src/retry-fetch.ts
 var DEFAULT_DELAYS_MS = [400, 1200, 3e3];
 async function retryFetch(input, init, label) {
@@ -26123,13 +26136,7 @@ async function run() {
     totalSpecs,
     missedCount
   });
-  const repoSlug = compositeIdentity.repository || "";
-  const repoTrailing = repoSlug.split("/").pop() || repoSlug;
-  const repo = encodeURIComponent(repoTrailing);
-  const branch = encodeURIComponent(compositeIdentity.branch || "main");
-  const shortSha = (compositeIdentity.commit_sha || "").slice(0, 7);
-  const name = encodeURIComponent(compositeIdentity.name);
-  const reportURL = `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(compositeIdentity.gh_run_id)}`;
+  const reportURL = buildReportURL(baseURL, compositeIdentity);
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) {
     const total = status.total_units ?? "?";

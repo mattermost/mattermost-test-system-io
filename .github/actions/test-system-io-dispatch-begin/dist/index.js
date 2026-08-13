@@ -26186,22 +26186,65 @@ function discoverDetoxSpecs(detoxDir, opts) {
         `detox-search-path "${opts.searchPath}" is a file but doesn't match *.e2e.ts`
       );
     }
-    return [toRelative(detoxDir, target)];
+    const rel = toRelative(detoxDir, target);
+    return passesDetoxTagFilters(readDetoxSpecTags(target), opts) ? [rel] : [];
   }
   const out = [];
-  walk(target, opts.excludeDir, detoxDir, out);
+  walk(target, opts, detoxDir, out);
   return out.sort();
 }
-function walk(dir, excludeDir, detoxDir, out) {
+function walk(dir, opts, detoxDir, out) {
   for (const ent of fs4.readdirSync(dir, { withFileTypes: true })) {
     const full = path2.join(dir, ent.name);
     if (ent.isDirectory()) {
-      if (excludeDir && ent.name === excludeDir) continue;
-      walk(full, excludeDir, detoxDir, out);
+      walk(full, opts, detoxDir, out);
     } else if (ent.isFile() && DETOX_SPEC_RE.test(ent.name)) {
+      if (!passesDetoxTagFilters(readDetoxSpecTags(full), opts)) continue;
       out.push(toRelative(detoxDir, full));
     }
   }
+}
+function readDetoxSpecTags(absPath) {
+  let text;
+  try {
+    text = fs4.readFileSync(absPath, "utf8");
+  } catch {
+    return [];
+  }
+  return parseDetoxSpecTags(text);
+}
+function parseDetoxSpecTags(text) {
+  const preamble = takeDetoxPreamble(text);
+  const tags = [];
+  for (const m of preamble.matchAll(/^\s*\/\/\s*tags:\s*(.+)$/gim)) {
+    for (const tok of m[1].split(/\s+/)) {
+      if (/^@\S+$/.test(tok)) tags.push(tok);
+    }
+  }
+  return tags;
+}
+function takeDetoxPreamble(text) {
+  const lines = text.split(/\r?\n/);
+  const kept = [];
+  for (const line of lines) {
+    if (/^\s*$/.test(line) || /^\s*\/\//.test(line)) {
+      kept.push(line);
+      continue;
+    }
+    break;
+  }
+  return kept.join("\n");
+}
+function passesDetoxTagFilters(tags, opts) {
+  if (opts.includeTags.length > 0 && !shareAny2(tags, opts.includeTags)) return false;
+  if (opts.excludeTags.length > 0 && shareAny2(tags, opts.excludeTags)) return false;
+  return true;
+}
+function shareAny2(a, b) {
+  if (a.length === 0 || b.length === 0) return false;
+  const setB = new Set(b);
+  for (const x of a) if (setB.has(x)) return true;
+  return false;
 }
 function toRelative(detoxDir, full) {
   return path2.relative(detoxDir, full).split(path2.sep).join("/");
@@ -26234,28 +26277,24 @@ function discoverMaestroSpecs(maestroDir, opts) {
     }
     return [toRelative2(maestroDir, target)];
   }
-  if (opts.excludeDir && path3.basename(target) === opts.excludeDir) {
-    return [];
-  }
   const out = [];
-  walk2(target, opts.excludeDir, maestroDir, opts.excludeTags, out);
+  walk2(target, maestroDir, opts.excludeTags, out);
   return out.sort();
 }
 function isEligibleFlowFile(absPath, baseName, excludeTags) {
   if (MAESTRO_HELPER_RE.test(baseName) || MAESTRO_PICKER_RE.test(baseName)) {
     return false;
   }
-  if (excludeTags.length > 0 && shareAny2(readMaestroFlowTags(absPath), excludeTags)) {
+  if (excludeTags.length > 0 && shareAny3(readMaestroFlowTags(absPath), excludeTags)) {
     return false;
   }
   return true;
 }
-function walk2(dir, excludeDir, maestroDir, excludeTags, out) {
+function walk2(dir, maestroDir, excludeTags, out) {
   for (const ent of fs5.readdirSync(dir, { withFileTypes: true })) {
     const full = path3.join(dir, ent.name);
     if (ent.isDirectory()) {
-      if (excludeDir && ent.name === excludeDir) continue;
-      walk2(full, excludeDir, maestroDir, excludeTags, out);
+      walk2(full, maestroDir, excludeTags, out);
     } else if (ent.isFile() && MAESTRO_FLOW_RE.test(ent.name)) {
       if (!isEligibleFlowFile(full, ent.name, excludeTags)) continue;
       out.push(toRelative2(maestroDir, full));
@@ -26282,7 +26321,7 @@ function parseMaestroFlowTags(text) {
     (m) => m[1].trim()
   );
 }
-function shareAny2(a, b) {
+function shareAny3(a, b) {
   if (a.length === 0 || b.length === 0) return false;
   const setB = new Set(b);
   for (const x of a) if (setB.has(x)) return true;
@@ -26382,6 +26421,20 @@ function extractStringOrArrayProp2(text, key) {
   return [];
 }
 
+// src/report_url.ts
+function encodeBranchPathSegment(branch) {
+  return (branch || "main").replace(/^refs\/heads\//, "").replace(/^refs\/tags\//, "").replace(/\//g, "~");
+}
+function buildReportURL(baseURL, c) {
+  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
+  const repo = encodeURIComponent(repoTrailing);
+  const branch = encodeURIComponent(encodeBranchPathSegment(c.branch || "main"));
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const name = encodeURIComponent(c.name);
+  const attempt = encodeURIComponent(c.gh_run_attempt || "1");
+  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}&gh_run_attempt=${attempt}`;
+}
+
 // src/retry-fetch.ts
 var DEFAULT_DELAYS_MS = [400, 1200, 3e3];
 async function retryFetch(input, init, label) {
@@ -26439,10 +26492,10 @@ async function run() {
   const cypressDirInput = getInput("cypress-dir") || "e2e-tests/cypress";
   const detoxDirInput = getInput("detox-dir") || "detox";
   const detoxSearchPath = getInput("detox-search-path") || "e2e/test";
-  const detoxExcludeDir = getInput("detox-exclude-dir");
+  const detoxIncludeTags = parseTagList(getInput("detox-include-tags"));
+  const detoxExcludeTags = parseTagList(getInput("detox-exclude-tags"));
   const maestroDirInput = getInput("maestro-dir") || "detox/maestro";
   const maestroFlowPath = getInput("maestro-flow-path") || "flows";
-  const maestroExcludeDir = getInput("maestro-exclude-dir");
   const maestroExcludeTags = parseTagList(getInput("maestro-exclude-tags"));
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
@@ -26476,23 +26529,23 @@ async function run() {
     const detoxDir = path5.resolve(repoDir, detoxDirInput);
     specs = discoverDetoxSpecs(detoxDir, {
       searchPath: detoxSearchPath,
-      excludeDir: detoxExcludeDir
+      includeTags: detoxIncludeTags,
+      excludeTags: detoxExcludeTags
     });
     if (specs.length === 0) {
       throw new Error(
-        `no Detox specs found under ${path5.join(detoxDir, detoxSearchPath)} (exclude-dir=${detoxExcludeDir || "none"})`
+        `no Detox specs found under ${path5.join(detoxDir, detoxSearchPath)} (include-tags=${detoxIncludeTags.join(",") || "*"}, exclude-tags=${detoxExcludeTags.join(",") || "none"})`
       );
     }
   } else if (framework === "maestro") {
     const maestroDir = path5.resolve(repoDir, maestroDirInput);
     specs = discoverMaestroSpecs(maestroDir, {
       searchPath: maestroFlowPath,
-      excludeDir: maestroExcludeDir,
       excludeTags: maestroExcludeTags
     });
     if (specs.length === 0) {
       throw new Error(
-        `no Maestro flows found under ${path5.join(maestroDir, maestroFlowPath)} (exclude-dir=${maestroExcludeDir || "none"}, exclude-tags=${maestroExcludeTags.join(",") || "none"})`
+        `no Maestro flows found under ${path5.join(maestroDir, maestroFlowPath)} (exclude-tags=${maestroExcludeTags.join(",") || "none"})`
       );
     }
   } else {
@@ -26591,14 +26644,6 @@ function formatPendingDescription() {
   if (!imageTag) return "tests running";
   const aliases = imageAliases ? ` (${imageAliases})` : "";
   return `tests running, image_tag:${imageTag}${aliases}`;
-}
-function buildReportURL(baseURL, c) {
-  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
-  const repo = encodeURIComponent(repoTrailing);
-  const branch = encodeURIComponent(c.branch || "main");
-  const shortSha = (c.commit_sha || "").slice(0, 7);
-  const name = encodeURIComponent(c.name);
-  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
 }
 function identityForReports(c, framework, totalReportsExpected) {
   const body = {

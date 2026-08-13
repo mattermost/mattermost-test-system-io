@@ -26029,6 +26029,20 @@ function truncateDescription(s) {
   return `${s.slice(0, DESCRIPTION_MAX - 1)}\u2026`;
 }
 
+// src/report_url.ts
+function encodeBranchPathSegment(branch) {
+  return (branch || "main").replace(/^refs\/heads\//, "").replace(/^refs\/tags\//, "").replace(/\//g, "~");
+}
+function buildReportURL(baseURL, c) {
+  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
+  const repo = encodeURIComponent(repoTrailing);
+  const branch = encodeURIComponent(encodeBranchPathSegment(c.branch || "main"));
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const name = encodeURIComponent(c.name);
+  const attempt = encodeURIComponent(c.gh_run_attempt || "1");
+  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}&gh_run_attempt=${attempt}`;
+}
+
 // src/retry-fetch.ts
 var DEFAULT_DELAYS_MS = [400, 1200, 3e3];
 async function retryFetch(input, init, label) {
@@ -26104,12 +26118,12 @@ async function run() {
   const totalSpecs = unitPass + unitFail + unitSkip;
   const missedCount = computeMissedCount(status.total_units, totalSpecs);
   const incomplete = status.status !== "completed" || missedCount > 0;
-  const t = status.tests;
-  const haveTestRollup = !!t && (t.total ?? 0) > 0;
-  const passed = haveTestRollup ? (t.passed ?? 0) + (t.flaky ?? 0) : unitPass;
-  const failed = haveTestRollup ? t.failed ?? 0 : unitFail;
-  const skipped = haveTestRollup ? t.skipped ?? 0 : unitSkip;
-  const flaky = haveTestRollup ? t.flaky ?? 0 : 0;
+  const { passed, failed, skipped, flaky } = resolveHeadlineCounts({
+    unitPass,
+    unitFail,
+    unitSkip,
+    tests: status.tests
+  });
   const rateDenom = passed + failed;
   const rate = rateDenom > 0 ? passed * 100 / rateDenom : 0;
   const rateStr = rate === 100 ? "100%" : `${rate.toFixed(1)}%`;
@@ -26123,13 +26137,7 @@ async function run() {
     totalSpecs,
     missedCount
   });
-  const repoSlug = compositeIdentity.repository || "";
-  const repoTrailing = repoSlug.split("/").pop() || repoSlug;
-  const repo = encodeURIComponent(repoTrailing);
-  const branch = encodeURIComponent(compositeIdentity.branch || "main");
-  const shortSha = (compositeIdentity.commit_sha || "").slice(0, 7);
-  const name = encodeURIComponent(compositeIdentity.name);
-  const reportURL = `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(compositeIdentity.gh_run_id)}`;
+  const reportURL = buildReportURL(baseURL, compositeIdentity);
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) {
     const total = status.total_units ?? "?";
@@ -26222,11 +26230,30 @@ async function run() {
       targetURL: reportURL
     });
   }
-  const failureMessage = buildFailureMessage(incomplete, status.status, missedCount, failed);
+  const failureMessage = buildFailureMessage(incomplete, status.status, missedCount, unitFail);
   if (failureMessage) {
     if (failOnTestFailures) throw new Error(failureMessage);
     warning(failureMessage);
   }
+}
+function resolveHeadlineCounts(a) {
+  const t = a.tests;
+  const haveTestRollup = !!t && (t.total ?? 0) > 0;
+  const testFailed = haveTestRollup ? t.failed ?? 0 : 0;
+  if (!haveTestRollup || a.unitFail > 0 && testFailed === 0) {
+    return {
+      passed: a.unitPass,
+      failed: a.unitFail,
+      skipped: a.unitSkip,
+      flaky: 0
+    };
+  }
+  return {
+    passed: (t.passed ?? 0) + (t.flaky ?? 0),
+    failed: testFailed,
+    skipped: t.skipped ?? 0,
+    flaky: t.flaky ?? 0
+  };
 }
 function resolveBaseURL() {
   const useStaging = getInput("use-staging").trim().toLowerCase() === "true";

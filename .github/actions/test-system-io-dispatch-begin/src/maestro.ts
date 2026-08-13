@@ -12,8 +12,6 @@ const MAESTRO_PICKER_RE = /_picker\.ya?ml$/;
 export interface MaestroDiscoveryOptions {
   /** Relative to maestroDir. May point at a directory (walked recursively) or a single flow file. */
   searchPath: string;
-  /** Directory name to skip during the walk. Empty string disables the exclusion. */
-  excludeDir: string;
   /** Flow dropped if its `tags:` list shares any tag with this list. Empty array = no filter. */
   excludeTags: string[];
 }
@@ -43,13 +41,8 @@ export function discoverMaestroSpecs(maestroDir: string, opts: MaestroDiscoveryO
     return [toRelative(maestroDir, target)];
   }
 
-  // Reject an excluded directory when it is the search root, matching child skips.
-  if (opts.excludeDir && path.basename(target) === opts.excludeDir) {
-    return [];
-  }
-
   const out: string[] = [];
-  walk(target, opts.excludeDir, maestroDir, opts.excludeTags, out);
+  walk(target, maestroDir, opts.excludeTags, out);
   return out.sort();
 }
 
@@ -63,18 +56,11 @@ function isEligibleFlowFile(absPath: string, baseName: string, excludeTags: stri
   return true;
 }
 
-function walk(
-  dir: string,
-  excludeDir: string,
-  maestroDir: string,
-  excludeTags: string[],
-  out: string[],
-): void {
+function walk(dir: string, maestroDir: string, excludeTags: string[], out: string[]): void {
   for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, ent.name);
     if (ent.isDirectory()) {
-      if (excludeDir && ent.name === excludeDir) continue;
-      walk(full, excludeDir, maestroDir, excludeTags, out);
+      walk(full, maestroDir, excludeTags, out);
     } else if (ent.isFile() && MAESTRO_FLOW_RE.test(ent.name)) {
       if (!isEligibleFlowFile(full, ent.name, excludeTags)) continue;
       out.push(toRelative(maestroDir, full));

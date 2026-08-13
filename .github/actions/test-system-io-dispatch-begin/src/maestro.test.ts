@@ -31,7 +31,6 @@ test("discoverMaestroSpecs: walks nested dirs, sorted, forward-slash paths", () 
     writeFlow(dir, "flows/account/settings.yml");
     const specs = discoverMaestroSpecs(dir, {
       searchPath: "flows",
-      excludeDir: "multi_device",
       excludeTags: [],
     });
     assert.deepEqual(specs, [
@@ -42,28 +41,19 @@ test("discoverMaestroSpecs: walks nested dirs, sorted, forward-slash paths", () 
   });
 });
 
-test("discoverMaestroSpecs: excludes named directory by default (multi_device)", () => {
+test("discoverMaestroSpecs: excludeTags @multi_device drops two-device flows anywhere", () => {
   withTmpDir((dir) => {
-    writeFlow(dir, "flows/calls/join_call.yml");
-    writeFlow(dir, "flows/multi_device/two_device_call.yml");
+    writeFlow(dir, "flows/calls/join_call.yml", "tags:\n  - MM-T1\nappId: x\n");
+    writeFlow(
+      dir,
+      "flows/special/two_device_call.yml",
+      "tags:\n  - MM-T2\n  - @multi_device\nappId: x\n",
+    );
     const specs = discoverMaestroSpecs(dir, {
       searchPath: "flows",
-      excludeDir: "multi_device",
-      excludeTags: [],
+      excludeTags: ["@multi_device"],
     });
     assert.deepEqual(specs, ["flows/calls/join_call.yml"]);
-  });
-});
-
-test("discoverMaestroSpecs: empty excludeDir disables exclusion", () => {
-  withTmpDir((dir) => {
-    writeFlow(dir, "flows/multi_device/two_device_call.yml");
-    const specs = discoverMaestroSpecs(dir, {
-      searchPath: "flows/multi_device",
-      excludeDir: "",
-      excludeTags: [],
-    });
-    assert.deepEqual(specs, ["flows/multi_device/two_device_call.yml"]);
   });
 });
 
@@ -74,7 +64,6 @@ test("discoverMaestroSpecs: ignores non-.yml/.yaml files (fixtures/scripts)", ()
     fs.writeFileSync(path.join(dir, "flows/timezone/helper.ts"), "export const Setup = {};");
     const specs = discoverMaestroSpecs(dir, {
       searchPath: "flows",
-      excludeDir: "multi_device",
       excludeTags: [],
     });
     assert.deepEqual(specs, ["flows/timezone/clock_display.yml"]);
@@ -88,7 +77,6 @@ test("discoverMaestroSpecs: ignores helper flows (_-prefixed) and picker flows",
     writeFlow(dir, "flows/account/server_picker.yml");
     const specs = discoverMaestroSpecs(dir, {
       searchPath: "flows",
-      excludeDir: "multi_device",
       excludeTags: [],
     });
     assert.deepEqual(specs, ["flows/account/settings.yml"]);
@@ -101,7 +89,6 @@ test("discoverMaestroSpecs: excludeTags drops flows sharing a tag", () => {
     writeFlow(dir, "flows/calls/mute_call.yml", "tags:\n  - MM-T100\nappId: x\n");
     const specs = discoverMaestroSpecs(dir, {
       searchPath: "flows",
-      excludeDir: "multi_device",
       excludeTags: ["@known_issue"],
     });
     assert.deepEqual(specs, ["flows/calls/mute_call.yml"]);
@@ -114,7 +101,6 @@ test("discoverMaestroSpecs: searchPath pointing at a single file returns just th
     writeFlow(dir, "flows/account/settings.yml");
     const specs = discoverMaestroSpecs(dir, {
       searchPath: "flows/account/login.yml",
-      excludeDir: "multi_device",
       excludeTags: [],
     });
     assert.deepEqual(specs, ["flows/account/login.yml"]);
@@ -128,7 +114,6 @@ test("discoverMaestroSpecs: direct helper/picker paths are excluded", () => {
     assert.deepEqual(
       discoverMaestroSpecs(dir, {
         searchPath: "flows/account/_connect_check.yml",
-        excludeDir: "multi_device",
         excludeTags: [],
       }),
       [],
@@ -136,7 +121,6 @@ test("discoverMaestroSpecs: direct helper/picker paths are excluded", () => {
     assert.deepEqual(
       discoverMaestroSpecs(dir, {
         searchPath: "flows/account/server_picker.yml",
-        excludeDir: "multi_device",
         excludeTags: [],
       }),
       [],
@@ -150,22 +134,7 @@ test("discoverMaestroSpecs: direct tagged path honors excludeTags", () => {
     assert.deepEqual(
       discoverMaestroSpecs(dir, {
         searchPath: "flows/calls/join_call.yml",
-        excludeDir: "multi_device",
         excludeTags: ["@known_issue"],
-      }),
-      [],
-    );
-  });
-});
-
-test("discoverMaestroSpecs: excluded directory as search root returns empty", () => {
-  withTmpDir((dir) => {
-    writeFlow(dir, "flows/multi_device/two_device_call.yml");
-    assert.deepEqual(
-      discoverMaestroSpecs(dir, {
-        searchPath: "flows/multi_device",
-        excludeDir: "multi_device",
-        excludeTags: [],
       }),
       [],
     );
@@ -180,7 +149,6 @@ test("discoverMaestroSpecs: searchPath file not matching *.yml/*.yaml throws", (
       () =>
         discoverMaestroSpecs(dir, {
           searchPath: "flows/not-a-flow.ts",
-          excludeDir: "multi_device",
           excludeTags: [],
         }),
       /doesn't match \*\.yml\/\*\.yaml/,

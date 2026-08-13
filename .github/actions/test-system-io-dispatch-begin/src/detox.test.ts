@@ -3,7 +3,7 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { discoverDetoxSpecs } from "./detox.ts";
+import { discoverDetoxSpecs, parseDetoxSpecTags, passesDetoxTagFilters } from "./detox.ts";
 
 function withTmpDir(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "detox-discovery-"));
@@ -14,10 +14,10 @@ function withTmpDir(fn: (dir: string) => void): void {
   }
 }
 
-function writeSpec(root: string, relPath: string): void {
+function writeSpec(root: string, relPath: string, body?: string): void {
   const abs = path.join(root, relPath);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
-  fs.writeFileSync(abs, "describe('x', () => { it('y', async () => {}); });");
+  fs.writeFileSync(abs, body ?? "describe('x', () => { it('y', async () => {}); });");
 }
 
 test("discoverDetoxSpecs: walks nested dirs, sorted, forward-slash paths", () => {
@@ -25,7 +25,11 @@ test("discoverDetoxSpecs: walks nested dirs, sorted, forward-slash paths", () =>
     writeSpec(dir, "e2e/test/products/channels/messaging/message_post.e2e.ts");
     writeSpec(dir, "e2e/test/products/channels/channels/browse_channels.e2e.ts");
     writeSpec(dir, "e2e/test/products/channels/account/settings.e2e.ts");
-    const specs = discoverDetoxSpecs(dir, { searchPath: "e2e/test", excludeDir: "ipad" });
+    const specs = discoverDetoxSpecs(dir, {
+      searchPath: "e2e/test",
+      includeTags: [],
+      excludeTags: [],
+    });
     assert.deepEqual(specs, [
       "e2e/test/products/channels/account/settings.e2e.ts",
       "e2e/test/products/channels/channels/browse_channels.e2e.ts",
@@ -34,23 +38,37 @@ test("discoverDetoxSpecs: walks nested dirs, sorted, forward-slash paths", () =>
   });
 });
 
-test("discoverDetoxSpecs: excludes named directory by default (ipad)", () => {
+test("discoverDetoxSpecs: excludeTags @ipad_only drops iPad specs anywhere", () => {
   withTmpDir((dir) => {
     writeSpec(dir, "e2e/test/products/channels/messaging/message_post.e2e.ts");
-    writeSpec(dir, "e2e/test/products/channels/ipad/ipad_only.e2e.ts");
-    const specs = discoverDetoxSpecs(dir, { searchPath: "e2e/test", excludeDir: "ipad" });
+    writeSpec(
+      dir,
+      "e2e/test/products/channels/tablet/ipad_sidebar.e2e.ts",
+      "// Tags: @ipad_only\ndescribe('x', () => {});",
+    );
+    const specs = discoverDetoxSpecs(dir, {
+      searchPath: "e2e/test",
+      includeTags: [],
+      excludeTags: ["@ipad_only"],
+    });
     assert.deepEqual(specs, ["e2e/test/products/channels/messaging/message_post.e2e.ts"]);
   });
 });
 
-test("discoverDetoxSpecs: empty excludeDir disables exclusion (iPad-only run)", () => {
+test("discoverDetoxSpecs: includeTags @ipad_only keeps iPad specs anywhere", () => {
   withTmpDir((dir) => {
-    writeSpec(dir, "e2e/test/products/channels/ipad/ipad_only.e2e.ts");
+    writeSpec(dir, "e2e/test/products/channels/messaging/message_post.e2e.ts");
+    writeSpec(
+      dir,
+      "e2e/test/products/channels/tablet/ipad_sidebar.e2e.ts",
+      "// Tags: @ipad_only\ndescribe('x', () => {});",
+    );
     const specs = discoverDetoxSpecs(dir, {
-      searchPath: "e2e/test/products/channels/ipad",
-      excludeDir: "",
+      searchPath: "e2e/test",
+      includeTags: ["@ipad_only"],
+      excludeTags: [],
     });
-    assert.deepEqual(specs, ["e2e/test/products/channels/ipad/ipad_only.e2e.ts"]);
+    assert.deepEqual(specs, ["e2e/test/products/channels/tablet/ipad_sidebar.e2e.ts"]);
   });
 });
 
@@ -59,7 +77,11 @@ test("discoverDetoxSpecs: ignores non-.e2e.ts files (support/helper modules)", (
     writeSpec(dir, "e2e/test/products/channels/messaging/message_post.e2e.ts");
     fs.mkdirSync(path.join(dir, "e2e/test/support"), { recursive: true });
     fs.writeFileSync(path.join(dir, "e2e/test/support/server_api.ts"), "export const Setup = {};");
-    const specs = discoverDetoxSpecs(dir, { searchPath: "e2e/test", excludeDir: "ipad" });
+    const specs = discoverDetoxSpecs(dir, {
+      searchPath: "e2e/test",
+      includeTags: [],
+      excludeTags: [],
+    });
     assert.deepEqual(specs, ["e2e/test/products/channels/messaging/message_post.e2e.ts"]);
   });
 });
@@ -70,7 +92,8 @@ test("discoverDetoxSpecs: searchPath pointing at a single file returns just that
     writeSpec(dir, "e2e/test/products/channels/smoke_test/account.e2e.ts");
     const specs = discoverDetoxSpecs(dir, {
       searchPath: "e2e/test/products/channels/smoke_test/server_login.e2e.ts",
-      excludeDir: "ipad",
+      includeTags: [],
+      excludeTags: [],
     });
     assert.deepEqual(specs, ["e2e/test/products/channels/smoke_test/server_login.e2e.ts"]);
   });
@@ -79,10 +102,83 @@ test("discoverDetoxSpecs: searchPath pointing at a single file returns just that
 test("discoverDetoxSpecs: searchPath file not matching *.e2e.ts throws", () => {
   withTmpDir((dir) => {
     fs.mkdirSync(path.join(dir, "e2e/test"), { recursive: true });
-    fs.writeFileSync(path.join(dir, "e2e/test/not-a-spec.ts"), "export {};");
+    fs.writeFileSync(path.join(dir, "e2e/test/readme.md"), "x");
     assert.throws(
-      () => discoverDetoxSpecs(dir, { searchPath: "e2e/test/not-a-spec.ts", excludeDir: "ipad" }),
-      /doesn't match \*\.e2e\.ts/,
+      () =>
+        discoverDetoxSpecs(dir, {
+          searchPath: "e2e/test/readme.md",
+          includeTags: [],
+          excludeTags: [],
+        }),
+      /doesn't match/,
     );
+  });
+});
+
+test("parseDetoxSpecTags: reads // Tags: @tokens from preamble only", () => {
+  const tags = parseDetoxSpecTags(
+    [
+      "// Copyright",
+      "// Tags: @ios_pr @smoke",
+      "",
+      "import {describe} from 'detox';",
+      "// Tags: @ignored_after_import",
+      "describe('x', () => {});",
+    ].join("\n"),
+  );
+  assert.deepEqual(tags, ["@ios_pr", "@smoke"]);
+});
+
+test("parseDetoxSpecTags: ignores Tags after a type declaration (not just import/describe)", () => {
+  const tags = parseDetoxSpecTags(
+    [
+      "// Copyright",
+      "",
+      "type ChannelFixture = { id: string };",
+      "// Tags: @ios_pr",
+      "describe('x', () => {});",
+    ].join("\n"),
+  );
+  assert.deepEqual(tags, []);
+});
+
+test("passesDetoxTagFilters: include/exclude semantics", () => {
+  assert.equal(
+    passesDetoxTagFilters(["@ios_pr"], { includeTags: ["@ios_pr"], excludeTags: [] }),
+    true,
+  );
+  assert.equal(
+    passesDetoxTagFilters(["@smoke"], { includeTags: ["@ios_pr"], excludeTags: [] }),
+    false,
+  );
+  assert.equal(
+    passesDetoxTagFilters(["@ios_pr", "@flaky"], {
+      includeTags: ["@ios_pr"],
+      excludeTags: ["@flaky"],
+    }),
+    false,
+  );
+  assert.equal(passesDetoxTagFilters([], { includeTags: [], excludeTags: [] }), true);
+});
+
+test("discoverDetoxSpecs: includeTags keeps only matching specs with real paths", () => {
+  withTmpDir((dir) => {
+    writeSpec(
+      dir,
+      "e2e/test/products/channels/smoke_test/channels.e2e.ts",
+      "// Tags: @ios_pr\ndescribe('x', () => {});",
+    );
+    writeSpec(
+      dir,
+      "e2e/test/products/channels/messaging/message_post.e2e.ts",
+      "// Tags: @other\ndescribe('x', () => {});",
+    );
+    writeSpec(dir, "e2e/test/products/channels/account/settings.e2e.ts");
+    const specs = discoverDetoxSpecs(dir, {
+      searchPath: "e2e/test",
+      includeTags: ["@ios_pr"],
+      excludeTags: [],
+    });
+    assert.deepEqual(specs, ["e2e/test/products/channels/smoke_test/channels.e2e.ts"]);
   });
 });

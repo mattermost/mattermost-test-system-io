@@ -208,19 +208,26 @@ inputs:
     description: >
       Path to search for `*.e2e.ts` specs, relative to `detox-dir`.
       Defaults to `e2e/test`. May instead name a single spec file to
-      dispatch exactly one unit. Point this at a narrower subtree (e.g.
-      `e2e/test/products/channels/ipad`) for an iPad-only run. Detox only.
+      dispatch exactly one unit. Prefer `@ipad_only` include/exclude tags
+      over narrowing the search path for iPad-only runs. Detox only.
     required: false
     default: e2e/test
-  detox-exclude-dir:
+  detox-include-tags:
     description: >
-      Directory name to skip during the walk (matched by exact directory
-      name at any depth). Defaults to `ipad`, so a non-iPad run doesn't
-      pick up the iPad-only leg's specs. Set to `""` to disable — needed
-      when `detox-search-path` already points inside the excluded
-      directory. Detox only.
+      Comma-separated `// Tags:` list (`@snake_case`). A Detox `*.e2e.ts`
+      spec is kept only when its preamble `// Tags: @foo @bar` line shares
+      at least one tag with this list (e.g. `@ios_pr`, `@ipad_only`).
+      Empty disables the include filter. Detox only.
     required: false
-    default: ipad
+    default: ""
+  detox-exclude-tags:
+    description: >
+      Comma-separated `// Tags:` list (`@snake_case`). A Detox spec is
+      dropped when its preamble tags share any tag with this list (e.g.
+      `@ipad_only`). Applied after `detox-include-tags`. Empty disables.
+      Detox only.
+    required: false
+    default: ""
 
   # ── Maestro-specific ─────────────────────────────────────────────────
   maestro-dir:
@@ -237,21 +244,12 @@ inputs:
       file to dispatch exactly one unit. Maestro only.
     required: false
     default: flows
-  maestro-exclude-dir:
-    description: >
-      Directory name to skip during the walk (matched by exact directory
-      name at any depth). Defaults to `multi_device`, since those flows
-      require two devices and can't run through a single dispatch-run
-      worker. Set to `""` to disable — needed when `maestro-flow-path`
-      already points inside the excluded directory. Maestro only.
-    required: false
-    default: multi_device
   maestro-exclude-tags:
     description: >
-      Comma-separated flow `tags:` list. A flow is dropped when its
-      `tags:` shares any tag with this list — lets a caller reproduce
-      mattermost-mobile's `exclude_tags.json` behavior without hardcoding
-      it here. Empty disables the filter. Maestro only.
+      Comma-separated flow `tags:` list (`@snake_case` plan tags and/or
+      Zephyr ids). A flow is dropped when its `tags:` shares any tag with
+      this list — reproduces mattermost-mobile's `exclude_tags.json`
+      without hardcoding it here. Empty disables. Maestro only.
     required: false
     default: ""
 

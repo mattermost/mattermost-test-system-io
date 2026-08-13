@@ -62,7 +62,7 @@ function walk(dir: string, opts: DetoxDiscoveryOptions, detoxDir: string, out: s
 
 /**
  * Read `// Tags: @ios_pr @smoke` annotations from the file preamble
- * (before the first non-comment import/code line). Same `@token` shape as Cypress
+ * (leading blank/comment lines only). Same `@token` shape as Cypress
  * Stage/Group so callers can pass comma-separated action inputs.
  */
 export function readDetoxSpecTags(absPath: string): string[] {
@@ -76,9 +76,9 @@ export function readDetoxSpecTags(absPath: string): string[] {
 }
 
 export function parseDetoxSpecTags(text: string): string[] {
-  // Only scan the preamble so a string literal later in the file cannot match.
-  const preambleEnd = text.search(/^\s*(?:import|export|const|let|var|function|class|describe)\b/m);
-  const preamble = preambleEnd === -1 ? text : text.slice(0, preambleEnd);
+  // Only scan the preamble (blank + // comments) so a later // Tags: line
+  // after any TypeScript statement cannot match.
+  const preamble = takeDetoxPreamble(text);
   const tags: string[] = [];
   for (const m of preamble.matchAll(/^\s*\/\/\s*tags:\s*(.+)$/gim)) {
     for (const tok of m[1]!.split(/\s+/)) {
@@ -86,6 +86,20 @@ export function parseDetoxSpecTags(text: string): string[] {
     }
   }
   return tags;
+}
+
+/** Leading blank lines and `//` comments; stops at the first code line. */
+export function takeDetoxPreamble(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (/^\s*$/.test(line) || /^\s*\/\//.test(line)) {
+      kept.push(line);
+      continue;
+    }
+    break;
+  }
+  return kept.join("\n");
 }
 
 export function passesDetoxTagFilters(

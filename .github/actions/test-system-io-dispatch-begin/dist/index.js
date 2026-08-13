@@ -26214,8 +26214,7 @@ function readDetoxSpecTags(absPath) {
   return parseDetoxSpecTags(text);
 }
 function parseDetoxSpecTags(text) {
-  const preambleEnd = text.search(/^\s*(?:import|export|const|let|var|function|class|describe)\b/m);
-  const preamble = preambleEnd === -1 ? text : text.slice(0, preambleEnd);
+  const preamble = takeDetoxPreamble(text);
   const tags = [];
   for (const m of preamble.matchAll(/^\s*\/\/\s*tags:\s*(.+)$/gim)) {
     for (const tok of m[1].split(/\s+/)) {
@@ -26223,6 +26222,18 @@ function parseDetoxSpecTags(text) {
     }
   }
   return tags;
+}
+function takeDetoxPreamble(text) {
+  const lines = text.split(/\r?\n/);
+  const kept = [];
+  for (const line of lines) {
+    if (/^\s*$/.test(line) || /^\s*\/\//.test(line)) {
+      kept.push(line);
+      continue;
+    }
+    break;
+  }
+  return kept.join("\n");
 }
 function passesDetoxTagFilters(tags, opts) {
   if (opts.includeTags.length > 0 && !shareAny2(tags, opts.includeTags)) return false;

@@ -129,6 +129,19 @@ test("parseDetoxSpecTags: reads // Tags: @tokens from preamble only", () => {
   assert.deepEqual(tags, ["@ios_pr", "@smoke"]);
 });
 
+test("parseDetoxSpecTags: ignores Tags after a type declaration (not just import/describe)", () => {
+  const tags = parseDetoxSpecTags(
+    [
+      "// Copyright",
+      "",
+      "type ChannelFixture = { id: string };",
+      "// Tags: @ios_pr",
+      "describe('x', () => {});",
+    ].join("\n"),
+  );
+  assert.deepEqual(tags, []);
+});
+
 test("passesDetoxTagFilters: include/exclude semantics", () => {
   assert.equal(
     passesDetoxTagFilters(["@ios_pr"], { includeTags: ["@ios_pr"], excludeTags: [] }),

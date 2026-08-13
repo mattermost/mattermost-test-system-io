@@ -5,6 +5,7 @@ import {
   buildFailureMessage,
   computeMissedCount,
   deriveCommitState,
+  resolveHeadlineCounts,
 } from "./main.ts";
 import { buildReportURL, encodeBranchPathSegment } from "./report_url.ts";
 
@@ -104,4 +105,60 @@ test("buildFailureMessage: fails on failed units when otherwise complete", () =>
 
 test("buildFailureMessage: null when complete, nothing failed, nothing missed", () => {
   assert.equal(buildFailureMessage(false, "completed", 0, 0), null);
+});
+
+test("resolveHeadlineCounts: uses test rollup when it reports failures", () => {
+  assert.deepEqual(
+    resolveHeadlineCounts({
+      unitPass: 124,
+      unitFail: 1,
+      unitSkip: 15,
+      tests: { passed: 467, failed: 6, flaky: 0, skipped: 133, total: 606 },
+    }),
+    { passed: 467, failed: 6, skipped: 133, flaky: 0 },
+  );
+});
+
+test("resolveHeadlineCounts: falls back to units when rollup is 100% but units failed", () => {
+  // Maestro interrupted/parse-fail: empty test_cases → tests.failed=0, unitFail>0.
+  assert.deepEqual(
+    resolveHeadlineCounts({
+      unitPass: 5,
+      unitFail: 4,
+      unitSkip: 0,
+      tests: { passed: 5, failed: 0, flaky: 0, skipped: 0, total: 5 },
+    }),
+    { passed: 5, failed: 4, skipped: 0, flaky: 0 },
+  );
+});
+
+test("resolveHeadlineCounts: unit counts when no test rollup", () => {
+  assert.deepEqual(resolveHeadlineCounts({ unitPass: 10, unitFail: 2, unitSkip: 1 }), {
+    passed: 10,
+    failed: 2,
+    skipped: 1,
+    flaky: 0,
+  });
+});
+
+test("buildCommitStatusMessage: unit-fallback produces non-100% with failed clause", () => {
+  const counts = resolveHeadlineCounts({
+    unitPass: 5,
+    unitFail: 4,
+    unitSkip: 0,
+    tests: { passed: 5, failed: 0, flaky: 0, skipped: 0, total: 5 },
+  });
+  const rateDenom = counts.passed + counts.failed;
+  const rate = (counts.passed * 100) / rateDenom;
+  const msg = buildCommitStatusMessage({
+    incomplete: false,
+    rate,
+    rateStr: `${rate.toFixed(1)}%`,
+    passed: counts.passed,
+    rateDenom,
+    failed: counts.failed,
+    totalSpecs: 9,
+    missedCount: 0,
+  });
+  assert.equal(msg, "55.6% passed (5/9), 9 specs, 4 failed");
 });

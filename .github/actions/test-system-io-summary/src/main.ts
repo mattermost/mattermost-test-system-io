@@ -126,15 +126,16 @@ export async function run(): Promise<void> {
   // Incomplete if status isn't completed, or units never reported.
   const incomplete = status.status !== "completed" || missedCount > 0;
 
-  const t = status.tests;
-  const haveTestRollup = !!t && (t.total ?? 0) > 0;
-  // Flaky tests counted alongside passed in the pass-rate (a
-  // flaky-but-eventually-passed test isn't a failure from the
-  // commit-status perspective).
-  const passed = haveTestRollup ? (t!.passed ?? 0) + (t!.flaky ?? 0) : unitPass;
-  const failed = haveTestRollup ? (t!.failed ?? 0) : unitFail;
-  const skipped = haveTestRollup ? (t!.skipped ?? 0) : unitSkip;
-  const flaky = haveTestRollup ? (t!.flaky ?? 0) : 0;
+  // Headline pass/fail: prefer per-test rollup when present, but fall back to
+  // unit counts when completed_fail > 0 and the rollup reports zero failures
+  // (Maestro interrupted/parse-fail often uploads empty test_cases → a false
+  // "100% passed" while the commit status is correctly red via unitFail).
+  const { passed, failed, skipped, flaky } = resolveHeadlineCounts({
+    unitPass,
+    unitFail,
+    unitSkip,
+    tests: status.tests,
+  });
   const rateDenom = passed + failed;
   const rate = rateDenom > 0 ? (passed * 100) / rateDenom : 0;
   const rateStr = rate === 100 ? "100%" : `${rate.toFixed(1)}%`;
@@ -276,11 +277,57 @@ export async function run(): Promise<void> {
     });
   }
 
-  const failureMessage = buildFailureMessage(incomplete, status.status, missedCount, failed);
+  // Gate on unitFail (same signal as deriveCommitState), not the headline
+  // `failed` count — interrupted units with empty test_cases must still fail CI.
+  const failureMessage = buildFailureMessage(incomplete, status.status, missedCount, unitFail);
   if (failureMessage) {
     if (failOnTestFailures) throw new Error(failureMessage);
     core.warning(failureMessage);
   }
+}
+
+export interface HeadlineCountsArgs {
+  unitPass: number;
+  unitFail: number;
+  unitSkip: number;
+  tests?: {
+    passed?: number;
+    failed?: number;
+    flaky?: number;
+    skipped?: number;
+    total?: number;
+  };
+}
+
+export interface HeadlineCounts {
+  passed: number;
+  failed: number;
+  skipped: number;
+  flaky: number;
+}
+
+/** Pick test-rollup vs unit counts for the commit-status pass-rate headline. */
+export function resolveHeadlineCounts(a: HeadlineCountsArgs): HeadlineCounts {
+  const t = a.tests;
+  const haveTestRollup = !!t && (t.total ?? 0) > 0;
+  const testFailed = haveTestRollup ? (t!.failed ?? 0) : 0;
+  if (!haveTestRollup || (a.unitFail > 0 && testFailed === 0)) {
+    return {
+      passed: a.unitPass,
+      failed: a.unitFail,
+      skipped: a.unitSkip,
+      flaky: 0,
+    };
+  }
+  // Flaky tests counted alongside passed in the pass-rate (a
+  // flaky-but-eventually-passed test isn't a failure from the
+  // commit-status perspective).
+  return {
+    passed: (t!.passed ?? 0) + (t!.flaky ?? 0),
+    failed: testFailed,
+    skipped: t!.skipped ?? 0,
+    flaky: t!.flaky ?? 0,
+  };
 }
 
 function resolveBaseURL(): string {

@@ -26118,12 +26118,12 @@ async function run() {
   const totalSpecs = unitPass + unitFail + unitSkip;
   const missedCount = computeMissedCount(status.total_units, totalSpecs);
   const incomplete = status.status !== "completed" || missedCount > 0;
-  const t = status.tests;
-  const haveTestRollup = !!t && (t.total ?? 0) > 0;
-  const passed = haveTestRollup ? (t.passed ?? 0) + (t.flaky ?? 0) : unitPass;
-  const failed = haveTestRollup ? t.failed ?? 0 : unitFail;
-  const skipped = haveTestRollup ? t.skipped ?? 0 : unitSkip;
-  const flaky = haveTestRollup ? t.flaky ?? 0 : 0;
+  const { passed, failed, skipped, flaky } = resolveHeadlineCounts({
+    unitPass,
+    unitFail,
+    unitSkip,
+    tests: status.tests
+  });
   const rateDenom = passed + failed;
   const rate = rateDenom > 0 ? passed * 100 / rateDenom : 0;
   const rateStr = rate === 100 ? "100%" : `${rate.toFixed(1)}%`;
@@ -26230,11 +26230,30 @@ async function run() {
       targetURL: reportURL
     });
   }
-  const failureMessage = buildFailureMessage(incomplete, status.status, missedCount, failed);
+  const failureMessage = buildFailureMessage(incomplete, status.status, missedCount, unitFail);
   if (failureMessage) {
     if (failOnTestFailures) throw new Error(failureMessage);
     warning(failureMessage);
   }
+}
+function resolveHeadlineCounts(a) {
+  const t = a.tests;
+  const haveTestRollup = !!t && (t.total ?? 0) > 0;
+  const testFailed = haveTestRollup ? t.failed ?? 0 : 0;
+  if (!haveTestRollup || a.unitFail > 0 && testFailed === 0) {
+    return {
+      passed: a.unitPass,
+      failed: a.unitFail,
+      skipped: a.unitSkip,
+      flaky: 0
+    };
+  }
+  return {
+    passed: (t.passed ?? 0) + (t.flaky ?? 0),
+    failed: testFailed,
+    skipped: t.skipped ?? 0,
+    flaky: t.flaky ?? 0
+  };
 }
 function resolveBaseURL() {
   const useStaging = getInput("use-staging").trim().toLowerCase() === "true";

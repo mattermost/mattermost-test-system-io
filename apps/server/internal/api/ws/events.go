@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
@@ -28,6 +29,11 @@ import (
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 )
+
+// wsPingInterval is how often the server sends a WebSocket ping. It must stay
+// well below any proxy/load-balancer idle timeout (the ALB is 120s) so an
+// otherwise-quiet subscription (no events for a while) isn't dropped as idle.
+const wsPingInterval = 30 * time.Second
 
 // hubAPI is the slice of *events.Hub the handler actually depends on. Defining
 // it as an interface lets unit tests substitute a recording fake without
@@ -138,6 +144,31 @@ func (h *Handler) serve(ctx context.Context, conn *websocket.Conn, hub hubAPI) {
 	defaultCancel := onceCancel(defaultCancelRaw)
 	wg.Add(1)
 	go forwardChan(defaultCh)
+
+	// Keepalive: ping periodically so a connection with no events to forward
+	// isn't dropped by an idle proxy / load-balancer timeout before the next
+	// event arrives. coder/websocket's Ping is safe to call concurrently with
+	// the forwarder writes. A failed ping tears the connection down.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(wsPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				err := conn.Ping(pingCtx)
+				cancel()
+				if err != nil {
+					cancelCtx()
+					return
+				}
+			}
+		}
+	}()
 
 	// Per-connection orchestration subscriptions. Keyed by composite identity
 	// so a duplicate subscribe.orchestration frame for the same run is a

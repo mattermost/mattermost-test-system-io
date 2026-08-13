@@ -3,13 +3,48 @@ package db
 import (
 	"context"
 	"fmt"
+	"math"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NewPool constructs a pgx connection pool with sane defaults.
-func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+// PoolOption tweaks the pgxpool.Config before the pool is opened. Options are
+// variadic so existing callers (CLI tools, tests) keep the zero-config
+// defaults while the server can thread through operator-tunable knobs.
+type PoolOption func(*pgxpool.Config)
+
+// WithMaxConns overrides the pool's maximum connection count. Values outside
+// (0, math.MaxInt32] are ignored so a missing/invalid env knob falls back to
+// the default (and the int->int32 conversion is provably in range).
+func WithMaxConns(n int) PoolOption {
+	return func(cfg *pgxpool.Config) {
+		if n > 0 && n <= math.MaxInt32 {
+			cfg.MaxConns = int32(n)
+		}
+	}
+}
+
+// WithStatementTimeout sets a per-statement timeout (in milliseconds) on every
+// connection in the pool. This bounds any single query so a slow read cannot
+// hold a connection indefinitely and starve the pool — the query is aborted
+// server-side and the connection returns to the pool. A value of 0 explicitly
+// disables the timeout (Postgres statement_timeout=0), overriding any value
+// inherited from the connection string; a negative value leaves the connection
+// default untouched. Applies per-statement, so it does not affect long
+// multi-statement work like the background JSON extractor.
+func WithStatementTimeout(ms int) PoolOption {
+	return func(cfg *pgxpool.Config) {
+		if ms >= 0 {
+			cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.Itoa(ms)
+		}
+	}
+}
+
+// NewPool constructs a pgx connection pool with sane defaults, applying any
+// supplied options after the defaults so callers can override them.
+func NewPool(ctx context.Context, databaseURL string, opts ...PoolOption) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
@@ -19,6 +54,9 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	cfg.MaxConnIdleTime = 10 * time.Minute
 	cfg.MaxConnLifetime = 1 * time.Hour
 	cfg.ConnConfig.RuntimeParams["application_name"] = "tsio"
+	for _, opt := range opts {
+		opt(cfg)
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

@@ -130,6 +130,10 @@ export class Networking extends Construct {
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroup: albSecurityGroup,
       dropInvalidHeaderFields: true,
+      // Above the AWS default of 60s so a slow-but-completing request isn't
+      // guillotined into a 504 while still holding a backend connection; the
+      // app's own per-request/statement timeouts (~30s) are the real bound.
+      idleTimeout: cdk.Duration.seconds(120),
     });
 
     this.alb.logAccessLogs(albAccessLogBucket, "alb-logs");

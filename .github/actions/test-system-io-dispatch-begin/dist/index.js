@@ -1066,14 +1066,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path4 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path6 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path4 && path4[0] !== "/") {
-          path4 = `/${path4}`;
+        if (path6 && path6[0] !== "/") {
+          path6 = `/${path6}`;
         }
-        return new URL(`${origin}${path4}`);
+        return new URL(`${origin}${path6}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -1524,39 +1524,39 @@ var require_diagnostics = __commonJS({
       });
       diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
         const {
-          request: { method, path: path4, origin }
+          request: { method, path: path6, origin }
         } = evt;
-        debuglog("sending request to %s %s/%s", method, origin, path4);
+        debuglog("sending request to %s %s/%s", method, origin, path6);
       });
       diagnosticsChannel.channel("undici:request:headers").subscribe((evt) => {
         const {
-          request: { method, path: path4, origin },
+          request: { method, path: path6, origin },
           response: { statusCode }
         } = evt;
         debuglog(
           "received response to %s %s/%s - HTTP %d",
           method,
           origin,
-          path4,
+          path6,
           statusCode
         );
       });
       diagnosticsChannel.channel("undici:request:trailers").subscribe((evt) => {
         const {
-          request: { method, path: path4, origin }
+          request: { method, path: path6, origin }
         } = evt;
-        debuglog("trailers received from %s %s/%s", method, origin, path4);
+        debuglog("trailers received from %s %s/%s", method, origin, path6);
       });
       diagnosticsChannel.channel("undici:request:error").subscribe((evt) => {
         const {
-          request: { method, path: path4, origin },
+          request: { method, path: path6, origin },
           error: error2
         } = evt;
         debuglog(
           "request to %s %s/%s errored - %s",
           method,
           origin,
-          path4,
+          path6,
           error2.message
         );
       });
@@ -1605,9 +1605,9 @@ var require_diagnostics = __commonJS({
         });
         diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
           const {
-            request: { method, path: path4, origin }
+            request: { method, path: path6, origin }
           } = evt;
-          debuglog("sending request to %s %s/%s", method, origin, path4);
+          debuglog("sending request to %s %s/%s", method, origin, path6);
         });
       }
       diagnosticsChannel.channel("undici:websocket:open").subscribe((evt) => {
@@ -1670,7 +1670,7 @@ var require_request = __commonJS({
     var kHandler = /* @__PURE__ */ Symbol("handler");
     var Request = class {
       constructor(origin, {
-        path: path4,
+        path: path6,
         method,
         body,
         headers,
@@ -1685,11 +1685,11 @@ var require_request = __commonJS({
         expectContinue,
         servername
       }, handler2) {
-        if (typeof path4 !== "string") {
+        if (typeof path6 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path4[0] !== "/" && !(path4.startsWith("http://") || path4.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path6[0] !== "/" && !(path6.startsWith("http://") || path6.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path4)) {
+        } else if (invalidPathRegex.test(path6)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -1755,7 +1755,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? buildURL(path4, query) : path4;
+        this.path = query ? buildURL(path6, query) : path6;
         this.origin = origin;
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" : idempotent;
         this.blocking = blocking == null ? false : blocking;
@@ -6281,7 +6281,7 @@ var require_client_h1 = __commonJS({
       return method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && method !== "TRACE" && method !== "CONNECT";
     }
     function writeH1(client, request2) {
-      const { method, path: path4, host, upgrade, blocking, reset } = request2;
+      const { method, path: path6, host, upgrade, blocking, reset } = request2;
       let { body, headers, contentLength } = request2;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -6347,7 +6347,7 @@ var require_client_h1 = __commonJS({
       if (blocking) {
         socket[kBlocking] = true;
       }
-      let header = `${method} ${path4} HTTP/1.1\r
+      let header = `${method} ${path6} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -6873,7 +6873,7 @@ var require_client_h2 = __commonJS({
     }
     function writeH2(client, request2) {
       const session = client[kHTTP2Session];
-      const { method, path: path4, host, upgrade, expectContinue, signal, headers: reqHeaders } = request2;
+      const { method, path: path6, host, upgrade, expectContinue, signal, headers: reqHeaders } = request2;
       let { body } = request2;
       if (upgrade) {
         util.errorRequest(client, request2, new Error("Upgrade not supported for H2"));
@@ -6940,7 +6940,7 @@ var require_client_h2 = __commonJS({
         });
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path4;
+      headers[HTTP2_HEADER_PATH] = path6;
       headers[HTTP2_HEADER_SCHEME] = "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH";
       if (body && typeof body.read === "function") {
@@ -7293,9 +7293,9 @@ var require_redirect_handler = __commonJS({
           return this.handler.onHeaders(statusCode, headers, resume, statusText);
         }
         const { origin, pathname, search } = util.parseURL(new URL(this.location, this.opts.origin && new URL(this.opts.path, this.opts.origin)));
-        const path4 = search ? `${pathname}${search}` : pathname;
+        const path6 = search ? `${pathname}${search}` : pathname;
         this.opts.headers = cleanRequestHeaders(this.opts.headers, statusCode === 303, this.opts.origin !== origin);
-        this.opts.path = path4;
+        this.opts.path = path6;
         this.opts.origin = origin;
         this.opts.maxRedirections = 0;
         this.opts.query = null;
@@ -8531,10 +8531,10 @@ var require_proxy_agent = __commonJS({
         };
         const {
           origin,
-          path: path4 = "/",
+          path: path6 = "/",
           headers = {}
         } = opts;
-        opts.path = origin + path4;
+        opts.path = origin + path6;
         if (!("host" in headers) && !("Host" in headers)) {
           const { host } = new URL2(origin);
           headers.host = host;
@@ -10457,20 +10457,20 @@ var require_mock_utils = __commonJS({
       }
       return true;
     }
-    function safeUrl(path4) {
-      if (typeof path4 !== "string") {
-        return path4;
+    function safeUrl(path6) {
+      if (typeof path6 !== "string") {
+        return path6;
       }
-      const pathSegments = path4.split("?");
+      const pathSegments = path6.split("?");
       if (pathSegments.length !== 2) {
-        return path4;
+        return path6;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path4, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path4);
+    function matchKey(mockDispatch2, { path: path6, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path6);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -10492,7 +10492,7 @@ var require_mock_utils = __commonJS({
     function getMockDispatch(mockDispatches, key) {
       const basePath = key.query ? buildURL(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path4 }) => matchValue(safeUrl(path4), resolvedPath));
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path6 }) => matchValue(safeUrl(path6), resolvedPath));
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
       }
@@ -10530,9 +10530,9 @@ var require_mock_utils = __commonJS({
       }
     }
     function buildKey(opts) {
-      const { path: path4, method, body, headers, query } = opts;
+      const { path: path6, method, body, headers, query } = opts;
       return {
-        path: path4,
+        path: path6,
         method,
         body,
         headers,
@@ -10995,10 +10995,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path4, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
+          ({ method, path: path6, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path4,
+            Path: path6,
             "Status code": statusCode,
             Persistent: persist ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -15879,9 +15879,9 @@ var require_util6 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path4) {
-      for (let i = 0; i < path4.length; ++i) {
-        const code = path4.charCodeAt(i);
+    function validateCookiePath(path6) {
+      for (let i = 0; i < path6.length; ++i) {
+        const code = path6.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code === 127 || // DEL
         code === 59) {
@@ -18558,11 +18558,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path4 = opts.path;
+          let path6 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path4 = `/${path4}`;
+            path6 = `/${path6}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path4);
+          url = new URL(util.parseOrigin(url).origin + path6);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -22181,7 +22181,7 @@ function getIDToken(aud) {
 }
 
 // src/main.ts
-var path3 = __toESM(require("path"));
+var path5 = __toESM(require("path"));
 
 // node_modules/@actions/github/lib/context.js
 var import_fs2 = require("fs");
@@ -22197,8 +22197,8 @@ var Context = class {
       if ((0, import_fs2.existsSync)(process.env.GITHUB_EVENT_PATH)) {
         this.payload = JSON.parse((0, import_fs2.readFileSync)(process.env.GITHUB_EVENT_PATH, { encoding: "utf8" }));
       } else {
-        const path4 = process.env.GITHUB_EVENT_PATH;
-        process.stdout.write(`GITHUB_EVENT_PATH ${path4} does not exist${import_os3.EOL}`);
+        const path6 = process.env.GITHUB_EVENT_PATH;
+        process.stdout.write(`GITHUB_EVENT_PATH ${path6} does not exist${import_os3.EOL}`);
       }
     }
     this.eventName = process.env.GITHUB_EVENT_NAME;
@@ -26166,23 +26166,188 @@ function parseTagList(raw) {
   return raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
-// src/playwright.ts
+// src/detox.ts
 var fs4 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
+var DETOX_SPEC_RE = /\.e2e\.ts$/;
+function discoverDetoxSpecs(detoxDir, opts) {
+  const target = path2.join(detoxDir, opts.searchPath);
+  let stat2;
+  try {
+    stat2 = fs4.statSync(target);
+  } catch (e) {
+    throw new Error(
+      `detox spec discovery could not find "${target}" \u2014 check detoxDir/detox-search-path (detoxDir="${detoxDir}", detox-search-path="${opts.searchPath}"): ${e.message}`
+    );
+  }
+  if (stat2.isFile()) {
+    if (!DETOX_SPEC_RE.test(target)) {
+      throw new Error(
+        `detox-search-path "${opts.searchPath}" is a file but doesn't match *.e2e.ts`
+      );
+    }
+    const rel = toRelative(detoxDir, target);
+    return passesDetoxTagFilters(readDetoxSpecTags(target), opts) ? [rel] : [];
+  }
+  const out = [];
+  walk(target, opts, detoxDir, out);
+  return out.sort();
+}
+function walk(dir, opts, detoxDir, out) {
+  for (const ent of fs4.readdirSync(dir, { withFileTypes: true })) {
+    const full = path2.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      walk(full, opts, detoxDir, out);
+    } else if (ent.isFile() && DETOX_SPEC_RE.test(ent.name)) {
+      if (!passesDetoxTagFilters(readDetoxSpecTags(full), opts)) continue;
+      out.push(toRelative(detoxDir, full));
+    }
+  }
+}
+function readDetoxSpecTags(absPath) {
+  let text;
+  try {
+    text = fs4.readFileSync(absPath, "utf8");
+  } catch {
+    return [];
+  }
+  return parseDetoxSpecTags(text);
+}
+function parseDetoxSpecTags(text) {
+  const preamble = takeDetoxPreamble(text);
+  const tags = [];
+  for (const m of preamble.matchAll(/^\s*\/\/\s*tags:\s*(.+)$/gim)) {
+    for (const tok of m[1].split(/\s+/)) {
+      if (/^@\S+$/.test(tok)) tags.push(tok);
+    }
+  }
+  return tags;
+}
+function takeDetoxPreamble(text) {
+  const lines = text.split(/\r?\n/);
+  const kept = [];
+  for (const line of lines) {
+    if (/^\s*$/.test(line) || /^\s*\/\//.test(line)) {
+      kept.push(line);
+      continue;
+    }
+    break;
+  }
+  return kept.join("\n");
+}
+function passesDetoxTagFilters(tags, opts) {
+  if (opts.includeTags.length > 0 && !shareAny2(tags, opts.includeTags)) return false;
+  if (opts.excludeTags.length > 0 && shareAny2(tags, opts.excludeTags)) return false;
+  return true;
+}
+function shareAny2(a, b) {
+  if (a.length === 0 || b.length === 0) return false;
+  const setB = new Set(b);
+  for (const x of a) if (setB.has(x)) return true;
+  return false;
+}
+function toRelative(detoxDir, full) {
+  return path2.relative(detoxDir, full).split(path2.sep).join("/");
+}
+
+// src/maestro.ts
+var fs5 = __toESM(require("fs"));
+var path3 = __toESM(require("path"));
+var MAESTRO_FLOW_RE = /\.ya?ml$/;
+var MAESTRO_HELPER_RE = /^_/;
+var MAESTRO_PICKER_RE = /_picker\.ya?ml$/;
+function discoverMaestroSpecs(maestroDir, opts) {
+  const target = path3.join(maestroDir, opts.searchPath);
+  let stat2;
+  try {
+    stat2 = fs5.statSync(target);
+  } catch (e) {
+    throw new Error(
+      `maestro flow discovery could not find "${target}" \u2014 check maestro-dir/maestro-flow-path (maestro-dir="${maestroDir}", maestro-flow-path="${opts.searchPath}"): ${e.message}`
+    );
+  }
+  if (stat2.isFile()) {
+    if (!MAESTRO_FLOW_RE.test(target)) {
+      throw new Error(
+        `maestro-flow-path "${opts.searchPath}" is a file but doesn't match *.yml/*.yaml`
+      );
+    }
+    if (!isEligibleFlowFile(target, path3.basename(target), opts.excludeTags)) {
+      return [];
+    }
+    return [toRelative2(maestroDir, target)];
+  }
+  const out = [];
+  walk2(target, maestroDir, opts.excludeTags, out);
+  return out.sort();
+}
+function isEligibleFlowFile(absPath, baseName, excludeTags) {
+  if (MAESTRO_HELPER_RE.test(baseName) || MAESTRO_PICKER_RE.test(baseName)) {
+    return false;
+  }
+  if (excludeTags.length > 0 && shareAny3(readMaestroFlowTags(absPath), excludeTags)) {
+    return false;
+  }
+  return true;
+}
+function walk2(dir, maestroDir, excludeTags, out) {
+  for (const ent of fs5.readdirSync(dir, { withFileTypes: true })) {
+    const full = path3.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      walk2(full, maestroDir, excludeTags, out);
+    } else if (ent.isFile() && MAESTRO_FLOW_RE.test(ent.name)) {
+      if (!isEligibleFlowFile(full, ent.name, excludeTags)) continue;
+      out.push(toRelative2(maestroDir, full));
+    }
+  }
+}
+function readMaestroFlowTags(absPath) {
+  let text;
+  try {
+    text = fs5.readFileSync(absPath, "utf8");
+  } catch {
+    return [];
+  }
+  return parseMaestroFlowTags(text);
+}
+function parseMaestroFlowTags(text) {
+  const inline = /^tags:\s*\[([^\]]*)\]\s*$/m.exec(text);
+  if (inline) {
+    return [...inline[1].matchAll(/['"]?([^,'"\s]+)['"]?/g)].map((m) => m[1]).filter((s) => s.length > 0);
+  }
+  const block = /^tags:[ \t]*\n((?:[ \t]+-[ \t]*.+\n?)+)/m.exec(text);
+  if (!block) return [];
+  return [...block[1].matchAll(/^[ \t]+-[ \t]*['"]?([^'"\n]+?)['"]?[ \t]*$/gm)].map(
+    (m) => m[1].trim()
+  );
+}
+function shareAny3(a, b) {
+  if (a.length === 0 || b.length === 0) return false;
+  const setB = new Set(b);
+  for (const x of a) if (setB.has(x)) return true;
+  return false;
+}
+function toRelative2(maestroDir, full) {
+  return path3.relative(maestroDir, full).split(path3.sep).join("/");
+}
+
+// src/playwright.ts
+var fs6 = __toESM(require("fs"));
+var path4 = __toESM(require("path"));
 var PLAYWRIGHT_DEFAULT_TEST_MATCH = ["**/*.{spec,test}.{ts,tsx,js,jsx,mjs,cjs,mts,cts}"];
 var PLAYWRIGHT_DEFAULT_TEST_DIR = ".";
 function discoverPlaywrightSpecs(playwrightDir, excludePaths = []) {
   const cfg = readPlaywrightSpecConfig(playwrightDir);
   const seen = /* @__PURE__ */ new Set();
   for (const pattern of cfg.testMatch) {
-    for (const match of fs4.globSync(pattern, { cwd: cfg.testDir })) {
-      const abs = path2.resolve(cfg.testDir, match);
+    for (const match of fs6.globSync(pattern, { cwd: cfg.testDir })) {
+      const abs = path4.resolve(cfg.testDir, match);
       try {
-        if (!fs4.statSync(abs).isFile()) continue;
+        if (!fs6.statSync(abs).isFile()) continue;
       } catch {
         continue;
       }
-      const rel = path2.relative(playwrightDir, abs).split(path2.sep).join("/");
+      const rel = path4.relative(playwrightDir, abs).split(path4.sep).join("/");
       if (seen.has(rel)) continue;
       seen.add(rel);
     }
@@ -26199,9 +26364,9 @@ function readPlaywrightSpecConfig(playwrightDir) {
     "playwright.config.mjs",
     "playwright.config.cjs"
   ]) {
-    const cfgPath = path2.join(playwrightDir, name);
-    if (!fs4.existsSync(cfgPath)) continue;
-    const raw = fs4.readFileSync(cfgPath, "utf8");
+    const cfgPath = path4.join(playwrightDir, name);
+    if (!fs6.existsSync(cfgPath)) continue;
+    const raw = fs6.readFileSync(cfgPath, "utf8");
     const text = stripBlocks(raw, [
       [/\bprojects\s*:\s*\[/, "[", "]"],
       [/\buse\s*:\s*\{/, "{", "}"]
@@ -26213,7 +26378,7 @@ function readPlaywrightSpecConfig(playwrightDir) {
     break;
   }
   return {
-    testDir: path2.resolve(playwrightDir, testDirRel),
+    testDir: path4.resolve(playwrightDir, testDirRel),
     testMatch
   };
 }
@@ -26254,6 +26419,20 @@ function extractStringOrArrayProp2(text, key) {
   const str = stringRe.exec(text);
   if (str) return [str[1]];
   return [];
+}
+
+// src/report_url.ts
+function encodeBranchPathSegment(branch) {
+  return (branch || "main").replace(/^refs\/heads\//, "").replace(/^refs\/tags\//, "").replace(/\//g, "~");
+}
+function buildReportURL(baseURL, c) {
+  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
+  const repo = encodeURIComponent(repoTrailing);
+  const branch = encodeURIComponent(encodeBranchPathSegment(c.branch || "main"));
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const name = encodeURIComponent(c.name);
+  const attempt = encodeURIComponent(c.gh_run_attempt || "1");
+  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}&gh_run_attempt=${attempt}`;
 }
 
 // src/retry-fetch.ts
@@ -26303,12 +26482,21 @@ async function run() {
   const idleTimeoutMs = intInput("idle-timeout-ms", 6e5);
   const leaseTimeoutMs = intInput("lease-timeout-ms", 6e5);
   const framework = (getInput("framework") || "playwright").trim().toLowerCase();
-  if (framework !== "playwright" && framework !== "cypress") {
-    throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
+  if (framework !== "playwright" && framework !== "cypress" && framework !== "detox" && framework !== "maestro") {
+    throw new Error(
+      `framework must be "playwright", "cypress", "detox", or "maestro", got "${framework}"`
+    );
   }
   const playwrightProject = getInput("playwright-project") || "chrome";
   const playwrightDirInput = getInput("playwright-dir") || "e2e-tests/playwright";
   const cypressDirInput = getInput("cypress-dir") || "e2e-tests/cypress";
+  const detoxDirInput = getInput("detox-dir") || "detox";
+  const detoxSearchPath = getInput("detox-search-path") || "e2e/test";
+  const detoxIncludeTags = parseTagList(getInput("detox-include-tags"));
+  const detoxExcludeTags = parseTagList(getInput("detox-exclude-tags"));
+  const maestroDirInput = getInput("maestro-dir") || "detox/maestro";
+  const maestroFlowPath = getInput("maestro-flow-path") || "flows";
+  const maestroExcludeTags = parseTagList(getInput("maestro-exclude-tags"));
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
     throw new Error("total-reports-expected is required and must be > 0");
@@ -26322,7 +26510,7 @@ async function run() {
   normalizeCompositeIdentity(compositeIdentity);
   let specs;
   if (framework === "cypress") {
-    const cypressDir = path3.resolve(repoDir, cypressDirInput);
+    const cypressDir = path5.resolve(repoDir, cypressDirInput);
     const filters = {
       stage: parseTagList(getInput("cypress-stage")),
       includeGroup: parseTagList(getInput("cypress-include-group")),
@@ -26337,8 +26525,31 @@ async function run() {
         `no Cypress specs survived the filter under ${cypressDir} (stage=${filters.stage.join(",") || "*"}, include=${filters.includeGroup.join(",") || "*"}, exclude=${filters.excludeGroup.join(",") || "none"}, skip-on=${filters.skipOn.join(",") || "none"})`
       );
     }
+  } else if (framework === "detox") {
+    const detoxDir = path5.resolve(repoDir, detoxDirInput);
+    specs = discoverDetoxSpecs(detoxDir, {
+      searchPath: detoxSearchPath,
+      includeTags: detoxIncludeTags,
+      excludeTags: detoxExcludeTags
+    });
+    if (specs.length === 0) {
+      throw new Error(
+        `no Detox specs found under ${path5.join(detoxDir, detoxSearchPath)} (include-tags=${detoxIncludeTags.join(",") || "*"}, exclude-tags=${detoxExcludeTags.join(",") || "none"})`
+      );
+    }
+  } else if (framework === "maestro") {
+    const maestroDir = path5.resolve(repoDir, maestroDirInput);
+    specs = discoverMaestroSpecs(maestroDir, {
+      searchPath: maestroFlowPath,
+      excludeTags: maestroExcludeTags
+    });
+    if (specs.length === 0) {
+      throw new Error(
+        `no Maestro flows found under ${path5.join(maestroDir, maestroFlowPath)} (exclude-tags=${maestroExcludeTags.join(",") || "none"})`
+      );
+    }
   } else {
-    const playwrightDir = path3.resolve(repoDir, playwrightDirInput);
+    const playwrightDir = path5.resolve(repoDir, playwrightDirInput);
     specs = discoverPlaywrightSpecs(playwrightDir, ["test_setup.ts", "specs/visual/"]);
     if (specs.length === 0) {
       throw new Error(`no Playwright specs found under ${playwrightDir}`);
@@ -26433,14 +26644,6 @@ function formatPendingDescription() {
   if (!imageTag) return "tests running";
   const aliases = imageAliases ? ` (${imageAliases})` : "";
   return `tests running, image_tag:${imageTag}${aliases}`;
-}
-function buildReportURL(baseURL, c) {
-  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
-  const repo = encodeURIComponent(repoTrailing);
-  const branch = encodeURIComponent(c.branch || "main");
-  const shortSha = (c.commit_sha || "").slice(0, 7);
-  const name = encodeURIComponent(c.name);
-  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
 }
 function identityForReports(c, framework, totalReportsExpected) {
   const body = {

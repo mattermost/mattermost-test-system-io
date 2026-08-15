@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
 import { fetchWithAuthRetry, getBearer } from "./auth";
+import { imageContentType } from "./mime";
 import type {
   CompositeIdentity,
   InvocationRecord,
@@ -24,6 +25,7 @@ export interface UploadConfig {
   audience: string;
   ghJobId: string;
   ghJobName: string;
+  framework: string;
   compositeIdentity: CompositeIdentity;
 }
 
@@ -38,14 +40,23 @@ export async function uploadShard(
 
   const jsonParts: UploadPart[] = [];
   const screenshotParts: UploadPart[] = [];
+  // Collect existing JSON paths first so filename mode reflects what will
+  // actually upload (not invocations that listed missing reports).
+  const existingJsonPaths: string[] = [];
+  for (const inv of invocations) {
+    for (const jsonPath of [inv.playwrightJsonPath, ...(inv.additionalJsonPaths ?? [])]) {
+      if (fs.existsSync(jsonPath)) existingJsonPaths.push(jsonPath);
+    }
+  }
+  const multiJson = existingJsonPaths.length > 1;
+  for (let j = 0; j < existingJsonPaths.length; j++) {
+    const jsonPath = existingJsonPaths[j]!;
+    const stat = fs.statSync(jsonPath);
+    const rel = multiJson ? `playwright-results-${j}.json` : "playwright-results.json";
+    jsonParts.push({ absPath: jsonPath, relPath: rel, size: stat.size });
+  }
   for (let i = 0; i < invocations.length; i++) {
     const inv = invocations[i]!;
-    if (fs.existsSync(inv.playwrightJsonPath)) {
-      const stat = fs.statSync(inv.playwrightJsonPath);
-      const rel =
-        invocations.length > 1 ? `playwright-results-${i}.json` : "playwright-results.json";
-      jsonParts.push({ absPath: inv.playwrightJsonPath, relPath: rel, size: stat.size });
-    }
     const outputRoot = path.join(inv.iterDir, "output");
     if (fs.existsSync(outputRoot)) {
       for (const img of listImages(outputRoot)) {
@@ -62,7 +73,7 @@ export async function uploadShard(
   }
 
   const regBody: Record<string, unknown> = {
-    ...identityFields(cfg.compositeIdentity),
+    ...identityFields(cfg.compositeIdentity, cfg.framework),
     gh_job_id: cfg.ghJobId,
     gh_job_name: cfg.ghJobName,
     json_files: jsonParts.map((p) => ({ path: p.relPath, size: p.size })),
@@ -141,9 +152,7 @@ function listImages(root: string): UploadPart[] {
     if (!ent.isFile()) continue;
     const dir = ent.parentPath || (ent as unknown as { path?: string }).path || root;
     const abs = path.join(dir, ent.name);
-    const ext = path.extname(abs).toLowerCase();
-    const ct =
-      ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : null;
+    const ct = imageContentType(abs);
     if (!ct) continue;
     let stat: fs.Stats;
     try {
@@ -161,13 +170,13 @@ function listImages(root: string): UploadPart[] {
   return out;
 }
 
-function identityFields(c: CompositeIdentity): Record<string, unknown> {
+function identityFields(c: CompositeIdentity, framework: string): Record<string, unknown> {
   const body: Record<string, unknown> = {
     repository: c.repository,
     commit: c.commit_sha,
     gh_run_id: c.gh_run_id,
     gh_run_attempt: c.gh_run_attempt,
-    framework: "playwright",
+    framework,
     name: c.name,
     branch: c.branch,
   };

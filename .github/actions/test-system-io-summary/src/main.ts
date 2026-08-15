@@ -11,10 +11,11 @@
 
 import * as fs from "node:fs";
 import * as core from "@actions/core";
-import { setCommitStatus, type CommitStatusState } from "./commit-status";
-import { retryFetch } from "./retry-fetch";
+import { setCommitStatus, type CommitStatusState } from "./commit-status.ts";
+import { buildReportURL } from "./report_url.ts";
+import { retryFetch } from "./retry-fetch.ts";
 
-interface CompositeIdentity {
+export interface CompositeIdentity {
   repository: string;
   commit_sha: string;
   gh_run_id: string;
@@ -24,7 +25,7 @@ interface CompositeIdentity {
   gh_pr_number?: number | string;
 }
 
-interface OrchestrationStatus {
+export interface OrchestrationStatus {
   status?: string;
   total_units?: number;
   counts?: {
@@ -33,6 +34,7 @@ interface OrchestrationStatus {
     completed_skipped?: number;
     pending?: number;
     leased?: number;
+    abandoned?: number;
   };
   // Per-test-case rollup, present once any attempt has reported
   // test_cases. Counts use the same any-passed-AND-any-failed → flaky
@@ -115,22 +117,46 @@ export async function run(): Promise<void> {
       `skip=${counts.completed_skipped ?? 0} pending=${counts.pending ?? 0} leased=${counts.leased ?? 0}`,
   );
 
+  const unitPass = status.counts?.completed_pass ?? 0;
+  const unitFail = status.counts?.completed_fail ?? 0;
+  const unitSkip = status.counts?.completed_skipped ?? 0;
+  const totalSpecs = unitPass + unitFail + unitSkip;
+
+  const missedCount = computeMissedCount(status.total_units, totalSpecs);
+  // Incomplete if status isn't completed, or units never reported.
+  const incomplete = status.status !== "completed" || missedCount > 0;
+
+  // Headline pass/fail: prefer per-test rollup when present, but fall back to
+  // unit counts when completed_fail > 0 and the rollup reports zero failures
+  // (Maestro interrupted/parse-fail often uploads empty test_cases → a false
+  // "100% passed" while the commit status is correctly red via unitFail).
+  const { passed, failed, skipped, flaky } = resolveHeadlineCounts({
+    unitPass,
+    unitFail,
+    unitSkip,
+    tests: status.tests,
+  });
+  const rateDenom = passed + failed;
+  const rate = rateDenom > 0 ? (passed * 100) / rateDenom : 0;
+  const rateStr = rate === 100 ? "100%" : `${rate.toFixed(1)}%`;
+  const commitStatusMessage = buildCommitStatusMessage({
+    incomplete,
+    rate,
+    rateStr,
+    passed,
+    rateDenom,
+    failed,
+    totalSpecs,
+    missedCount,
+  });
+
   // Dashboard URLs use only the trailing segment of the repository slug
-  // ("owner/repo" → "repo") to match the convention surfaced by the
-  // /reports/consolidated and /reports/grouped endpoints. Mirroring the same
-  // path shape used elsewhere in the UI keeps deep links consistent and
-  // browsable.
-  const repoSlug = compositeIdentity.repository || "";
-  const repoTrailing = repoSlug.split("/").pop() || repoSlug;
-  const repo = encodeURIComponent(repoTrailing);
-  const branch = encodeURIComponent(compositeIdentity.branch || "main");
-  const shortSha = (compositeIdentity.commit_sha || "").slice(0, 7);
-  const name = encodeURIComponent(compositeIdentity.name);
-  const reportURL = `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(compositeIdentity.gh_run_id)}`;
+  // ("owner/repo" → "repo") and encode branch slashes as `~`, matching
+  // /reports/consolidated and apps/web encodeBranchPathSegment.
+  const reportURL = buildReportURL(baseURL, compositeIdentity);
 
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) {
-    const counts = status.counts || {};
     const total = status.total_units ?? "?";
     const lines = [
       `## E2E Test Results — ${framework}`,
@@ -138,6 +164,8 @@ export async function run(): Promise<void> {
       `**Context:** \`${contextName}\``,
       "",
       `**Run status:** \`${status.status ?? "unknown"}\``,
+      "",
+      `**Result:** ${commitStatusMessage}`,
       "",
       "| metric | value |",
       "|---|---|",
@@ -147,42 +175,13 @@ export async function run(): Promise<void> {
       `| skipped | ${counts.completed_skipped ?? 0} |`,
       `| pending | ${counts.pending ?? 0} |`,
       `| leased | ${counts.leased ?? 0} |`,
+      `| abandoned | ${counts.abandoned ?? 0} |`,
       "",
       `[Open Report Group](${reportURL})`,
       "",
     ];
     fs.appendFileSync(summaryPath, lines.join("\n"));
   }
-
-  // Headline pass-rate message: `100% passed (1345), 446 specs` when
-  // green, `96.8% passed (457/472), 117 specs, 15 failed` otherwise.
-  // The (passed/total) part uses test-case counts when the per-test
-  // rollup is available (the headline number a reader expects on a
-  // commit status); the `N specs` suffix uses the dispatch-unit count
-  // (one unit == one spec) so the message answers both "how many tests"
-  // and "how many specs ran" at a glance.
-  const unitPass = status.counts?.completed_pass ?? 0;
-  const unitFail = status.counts?.completed_fail ?? 0;
-  const unitSkip = status.counts?.completed_skipped ?? 0;
-  const totalSpecs = unitPass + unitFail + unitSkip;
-
-  const t = status.tests;
-  const haveTestRollup = !!t && (t.total ?? 0) > 0;
-  // Flaky tests counted alongside passed in the pass-rate (a
-  // flaky-but-eventually-passed test isn't a failure from the
-  // commit-status perspective).
-  const passed = haveTestRollup ? (t!.passed ?? 0) + (t!.flaky ?? 0) : unitPass;
-  const failed = haveTestRollup ? (t!.failed ?? 0) : unitFail;
-  const skipped = haveTestRollup ? (t!.skipped ?? 0) : unitSkip;
-  const flaky = haveTestRollup ? (t!.flaky ?? 0) : 0;
-  const rateDenom = passed + failed;
-  const rate = rateDenom > 0 ? (passed * 100) / rateDenom : 0;
-  const rateStr = rate === 100 ? "100%" : `${rate.toFixed(1)}%`;
-  const specSuffix = totalSpecs > 0 ? `, ${totalSpecs} specs` : "";
-  const commitStatusMessage =
-    rate === 100
-      ? `${rateStr} passed (${passed})${specSuffix}`
-      : `${rateStr} passed (${passed}/${rateDenom})${specSuffix}, ${failed} failed`;
 
   // Per-phase durations rendered as `(setup) + first-pass + (retest)`,
   // matching the dashboard. The /status endpoint returns first_pass_ms
@@ -226,7 +225,8 @@ export async function run(): Promise<void> {
   const durationSegment = durationDisplay ? `, ${durationDisplay}` : "";
   const commitStatusDescription = `${commitStatusMessage}${durationSegment}${imageTagSegment}`;
 
-  const webhookColor = colorForRate(rate);
+  // Incomplete runs stay red even at 100% pass rate.
+  const webhookColor = incomplete ? "#F44336" : colorForRate(rate);
   const retestDisplay = retestUnitCount > 0 ? `:repeat: re-run ${retestUnitCount} spec(s)` : "";
   const webhookPayload = renderWebhookPayload({
     username: webhookUsername,
@@ -270,28 +270,112 @@ export async function run(): Promise<void> {
     await finalizeCommitStatus({
       compositeIdentity,
       contextName,
-      runStatus: status.status ?? "unknown",
+      incomplete,
       failedUnitCount: unitFail,
       description: commitStatusDescription,
       targetURL: reportURL,
     });
   }
 
-  if (status.status !== "completed") {
-    const msg = `run did not complete cleanly: ${status.status}`;
-    if (failOnTestFailures) throw new Error(msg);
-    core.warning(msg);
+  // Gate on unitFail (same signal as deriveCommitState), not the headline
+  // `failed` count — interrupted units with empty test_cases must still fail CI.
+  const failureMessage = buildFailureMessage(incomplete, status.status, missedCount, unitFail);
+  if (failureMessage) {
+    if (failOnTestFailures) throw new Error(failureMessage);
+    core.warning(failureMessage);
   }
-  if (failed > 0) {
-    const msg = `${failed} unit(s) failed`;
-    if (failOnTestFailures) throw new Error(msg);
-    core.warning(msg);
+}
+
+export interface HeadlineCountsArgs {
+  unitPass: number;
+  unitFail: number;
+  unitSkip: number;
+  tests?: {
+    passed?: number;
+    failed?: number;
+    flaky?: number;
+    skipped?: number;
+    total?: number;
+  };
+}
+
+export interface HeadlineCounts {
+  passed: number;
+  failed: number;
+  skipped: number;
+  flaky: number;
+}
+
+/** Pick test-rollup vs unit counts for the commit-status pass-rate headline. */
+export function resolveHeadlineCounts(a: HeadlineCountsArgs): HeadlineCounts {
+  const t = a.tests;
+  const haveTestRollup = !!t && (t.total ?? 0) > 0;
+  const testFailed = haveTestRollup ? (t!.failed ?? 0) : 0;
+  if (!haveTestRollup || (a.unitFail > 0 && testFailed === 0)) {
+    return {
+      passed: a.unitPass,
+      failed: a.unitFail,
+      skipped: a.unitSkip,
+      flaky: 0,
+    };
   }
+  // Flaky tests counted alongside passed in the pass-rate (a
+  // flaky-but-eventually-passed test isn't a failure from the
+  // commit-status perspective).
+  return {
+    passed: (t!.passed ?? 0) + (t!.flaky ?? 0),
+    failed: testFailed,
+    skipped: t!.skipped ?? 0,
+    flaky: t!.flaky ?? 0,
+  };
 }
 
 function resolveBaseURL(): string {
   const useStaging = core.getInput("use-staging").trim().toLowerCase() === "true";
   return useStaging ? STAGING_URL : PRODUCTION_URL;
+}
+
+// Units that never reached a terminal outcome (pending/leased/abandoned).
+export function computeMissedCount(totalUnits: number | undefined, totalSpecs: number): number {
+  return Math.max(0, (totalUnits ?? 0) - totalSpecs);
+}
+
+// Fail incomplete runs first, then failed units. Null = success.
+export function buildFailureMessage(
+  incomplete: boolean,
+  status: string | undefined,
+  missedCount: number,
+  failed: number,
+): string | null {
+  if (incomplete) return `run incomplete: status=${status ?? "unknown"} missed=${missedCount}`;
+  if (failed > 0) return `${failed} unit(s) failed`;
+  return null;
+}
+
+interface CommitStatusMessageArgs {
+  incomplete: boolean;
+  rate: number;
+  rateStr: string;
+  passed: number;
+  rateDenom: number;
+  failed: number;
+  totalSpecs: number;
+  missedCount: number;
+}
+
+// Pass-rate headline; prefixes a callout when the run is incomplete.
+export function buildCommitStatusMessage(args: CommitStatusMessageArgs): string {
+  const { incomplete, rate, rateStr, passed, rateDenom, failed, totalSpecs, missedCount } = args;
+  const specSuffix = totalSpecs > 0 ? `, ${totalSpecs} specs` : "";
+  const missedClause =
+    missedCount > 0
+      ? `⚠ ${missedCount} spec(s) missed, the rest `
+      : incomplete
+        ? `⚠ run incomplete, `
+        : "";
+  return rate === 100
+    ? `${missedClause}${rateStr} passed (${passed})${specSuffix}`
+    : `${missedClause}${rateStr} passed (${passed}/${rateDenom})${specSuffix}, ${failed} failed`;
 }
 
 // fetchOrchestrationStatus calls /api/v1/orchestration/status and returns
@@ -334,7 +418,7 @@ async function fetchOrchestrationStatus(
 // `5m 30s`, `5m` (exact minute), `30s` (sub-minute). Returns null when
 // the value rounds to zero so the caller can omit the chip entirely
 // instead of rendering a stray `0s` next to real durations.
-function formatDuration(ms: number): string | null {
+export function formatDuration(ms: number): string | null {
   const total = Math.max(0, Math.floor(ms / 1000));
   const m = Math.floor(total / 60);
   const s = total % 60;
@@ -348,7 +432,7 @@ function formatDuration(ms: number): string | null {
 // absolute timestamps the /status endpoint surfaces. Returns null when
 // either timestamp is missing or unparseable so the caller can suppress
 // the setup chip.
-function computeSetupMs(beginAt?: string, firstTestAt?: string): number | null {
+export function computeSetupMs(beginAt?: string, firstTestAt?: string): number | null {
   if (!beginAt || !firstTestAt) return null;
   const begin = Date.parse(beginAt);
   const first = Date.parse(firstTestAt);
@@ -361,7 +445,7 @@ function computeSetupMs(beginAt?: string, firstTestAt?: string): number | null {
 // when its ms is null or rounds to zero, so a fresh run with no first
 // attempt yet returns an empty string and the caller omits the
 // `duration: ...` suffix entirely.
-function formatDurationSegments(
+export function formatDurationSegments(
   setupMs: number | null,
   firstPassMs: number | null,
   retestMs: number | null,
@@ -383,14 +467,14 @@ function formatDurationSegments(
 }
 
 // Attachment color bands keyed on pass-rate.
-function colorForRate(rate: number): string {
+export function colorForRate(rate: number): string {
   if (rate === 100) return "#43A047";
   if (rate >= 99) return "#FFEB3B";
   if (rate >= 98) return "#FF9800";
   return "#F44336";
 }
 
-interface WebhookFields {
+export interface WebhookFields {
   username: string;
   iconURL: string;
   color: string;
@@ -412,20 +496,21 @@ interface WebhookFields {
 interface FinalizeCommitStatusArgs {
   compositeIdentity: CompositeIdentity;
   contextName: string;
-  runStatus: string;
+  incomplete: boolean;
   failedUnitCount: number;
   description: string;
   targetURL: string;
 }
 
+// success = complete + no fails; failure = complete + fails; error = incomplete.
+export function deriveCommitState(incomplete: boolean, failedUnitCount: number): CommitStatusState {
+  if (incomplete) return "error";
+  return failedUnitCount > 0 ? "failure" : "success";
+}
+
 // finalizeCommitStatus flips the `pending` row the begin action
 // pushed to a terminal state on the same commit + context, with the
 // `target_url` still pointing at the Test System IO report page.
-//
-// State mapping:
-//   * `success` — run reached `completed` and no failed units.
-//   * `failure` — run reached `completed` but recorded failed units.
-//   * `error`   — run did not reach `completed` (timed_out, incomplete).
 async function finalizeCommitStatus(a: FinalizeCommitStatusArgs): Promise<void> {
   const c = a.compositeIdentity;
   const [owner, repo] = (c.repository || "").split("/");
@@ -437,8 +522,7 @@ async function finalizeCommitStatus(a: FinalizeCommitStatusArgs): Promise<void> 
     core.warning("update-commit-status is true but commit-status-context is empty; skipping.");
     return;
   }
-  const state: CommitStatusState =
-    a.runStatus !== "completed" ? "error" : a.failedUnitCount > 0 ? "failure" : "success";
+  const state = deriveCommitState(a.incomplete, a.failedUnitCount);
   await setCommitStatus({
     token: core.getInput("github-token"),
     owner,
@@ -460,7 +544,7 @@ const LONG_RUN_THRESHOLD_MS = 15 * 60 * 1000;
 // Title is the caller-supplied commit-status-context (same one shown
 // in the GitHub commit-status row); duration line uses the
 // `(setup) + first + (retest)` shape that matches the dashboard.
-function renderWebhookPayload(f: WebhookFields): string {
+export function renderWebhookPayload(f: WebhookFields): string {
   const title = `**Results - ${f.contextName}**`;
 
   // Source line: PR runs link the PR; everything else (MASTER, RELEASE,
@@ -499,7 +583,7 @@ function renderWebhookPayload(f: WebhookFields): string {
 // `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
 // identityFields.GHPRNumber is *int and json.Decode rejects the string
 // form. Normalizing once here keeps every downstream payload accepted.
-function normalizeCompositeIdentity(c: CompositeIdentity): void {
+export function normalizeCompositeIdentity(c: CompositeIdentity): void {
   if (typeof c.gh_pr_number === "string") {
     const n = Number.parseInt(c.gh_pr_number, 10);
     if (Number.isFinite(n)) {

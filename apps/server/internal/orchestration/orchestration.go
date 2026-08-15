@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +27,8 @@ import (
 const (
 	FrameworkPlaywright = "playwright"
 	FrameworkCypress    = "cypress"
+	FrameworkDetox      = "detox"
+	FrameworkMaestro    = "maestro"
 
 	// DefaultFramework is the value used when a request omits framework.
 	// Kept at playwright for backward compatibility with consumers that
@@ -38,6 +41,8 @@ const (
 var supportedFrameworks = map[string]struct{}{
 	FrameworkPlaywright: {},
 	FrameworkCypress:    {},
+	FrameworkDetox:      {},
+	FrameworkMaestro:    {},
 }
 
 // IsSupportedFramework reports whether s is one of the orchestration-
@@ -46,6 +51,19 @@ var supportedFrameworks = map[string]struct{}{
 func IsSupportedFramework(s string) bool {
 	_, ok := supportedFrameworks[s]
 	return ok
+}
+
+// SupportedFrameworksList returns accepted framework labels in a stable
+// order for error messages and docs.
+func SupportedFrameworksList() []string {
+	order := []string{FrameworkPlaywright, FrameworkCypress, FrameworkDetox, FrameworkMaestro}
+	out := make([]string, 0, len(order))
+	for _, f := range order {
+		if _, ok := supportedFrameworks[f]; ok {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // Run status enum values.
@@ -279,7 +297,7 @@ func (ci CompositeIdentity) Validate() error {
 		return errors.New("composite identity: gh_run_attempt is required")
 	}
 	if !IsSupportedFramework(ci.Framework) {
-		return fmt.Errorf("composite identity: framework %q is not supported (must be one of: playwright, cypress)", ci.Framework)
+		return fmt.Errorf("composite identity: framework %q is not supported (must be one of: %s)", ci.Framework, strings.Join(SupportedFrameworksList(), ", "))
 	}
 	return nil
 }

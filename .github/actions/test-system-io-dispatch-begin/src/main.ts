@@ -14,7 +14,10 @@ import * as path from "node:path";
 import * as core from "@actions/core";
 import { setCommitStatus } from "./commit-status";
 import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
+import { discoverDetoxSpecs } from "./detox";
+import { discoverMaestroSpecs } from "./maestro";
 import { discoverPlaywrightSpecs } from "./playwright";
+import { buildReportURL } from "./report_url";
 import { retryFetch, safeText } from "./retry-fetch";
 
 interface CompositeIdentity {
@@ -48,12 +51,26 @@ export async function run(): Promise<void> {
   const idleTimeoutMs = intInput("idle-timeout-ms", 600_000);
   const leaseTimeoutMs = intInput("lease-timeout-ms", 600_000);
   const framework = (core.getInput("framework") || "playwright").trim().toLowerCase();
-  if (framework !== "playwright" && framework !== "cypress") {
-    throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
+  if (
+    framework !== "playwright" &&
+    framework !== "cypress" &&
+    framework !== "detox" &&
+    framework !== "maestro"
+  ) {
+    throw new Error(
+      `framework must be "playwright", "cypress", "detox", or "maestro", got "${framework}"`,
+    );
   }
   const playwrightProject = core.getInput("playwright-project") || "chrome";
   const playwrightDirInput = core.getInput("playwright-dir") || "e2e-tests/playwright";
   const cypressDirInput = core.getInput("cypress-dir") || "e2e-tests/cypress";
+  const detoxDirInput = core.getInput("detox-dir") || "detox";
+  const detoxSearchPath = core.getInput("detox-search-path") || "e2e/test";
+  const detoxIncludeTags = parseTagList(core.getInput("detox-include-tags"));
+  const detoxExcludeTags = parseTagList(core.getInput("detox-exclude-tags"));
+  const maestroDirInput = core.getInput("maestro-dir") || "detox/maestro";
+  const maestroFlowPath = core.getInput("maestro-flow-path") || "flows";
+  const maestroExcludeTags = parseTagList(core.getInput("maestro-exclude-tags"));
   const totalReportsExpected = intInput("total-reports-expected", 0);
   if (totalReportsExpected <= 0) {
     throw new Error("total-reports-expected is required and must be > 0");
@@ -86,6 +103,32 @@ export async function run(): Promise<void> {
           `include=${filters.includeGroup.join(",") || "*"}, ` +
           `exclude=${filters.excludeGroup.join(",") || "none"}, ` +
           `skip-on=${filters.skipOn.join(",") || "none"})`,
+      );
+    }
+  } else if (framework === "detox") {
+    const detoxDir = path.resolve(repoDir, detoxDirInput);
+    specs = discoverDetoxSpecs(detoxDir, {
+      searchPath: detoxSearchPath,
+      includeTags: detoxIncludeTags,
+      excludeTags: detoxExcludeTags,
+    });
+    if (specs.length === 0) {
+      throw new Error(
+        `no Detox specs found under ${path.join(detoxDir, detoxSearchPath)} ` +
+          `(include-tags=${detoxIncludeTags.join(",") || "*"}, ` +
+          `exclude-tags=${detoxExcludeTags.join(",") || "none"})`,
+      );
+    }
+  } else if (framework === "maestro") {
+    const maestroDir = path.resolve(repoDir, maestroDirInput);
+    specs = discoverMaestroSpecs(maestroDir, {
+      searchPath: maestroFlowPath,
+      excludeTags: maestroExcludeTags,
+    });
+    if (specs.length === 0) {
+      throw new Error(
+        `no Maestro flows found under ${path.join(maestroDir, maestroFlowPath)} ` +
+          `(exclude-tags=${maestroExcludeTags.join(",") || "none"})`,
       );
     }
   } else {
@@ -207,15 +250,6 @@ function formatPendingDescription(): string {
   if (!imageTag) return "tests running";
   const aliases = imageAliases ? ` (${imageAliases})` : "";
   return `tests running, image_tag:${imageTag}${aliases}`;
-}
-
-function buildReportURL(baseURL: string, c: CompositeIdentity): string {
-  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
-  const repo = encodeURIComponent(repoTrailing);
-  const branch = encodeURIComponent(c.branch || "main");
-  const shortSha = (c.commit_sha || "").slice(0, 7);
-  const name = encodeURIComponent(c.name);
-  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}`;
 }
 
 function identityForReports(

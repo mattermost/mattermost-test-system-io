@@ -16,6 +16,9 @@ import * as github from "@actions/github";
 import { fetchWithAuthRetry, getBearer } from "./auth";
 import { runUnit as runPlaywrightUnit } from "./playwright";
 import { runUnit as runCypressUnit } from "./cypress";
+import { runUnit as runDetoxUnit } from "./detox";
+import { runUnit as runMaestroUnit, parseMaestroEnv } from "./maestro";
+import { screenshotContentType } from "./mime";
 import { uploadShard, type UploadConfig } from "./upload";
 import type {
   CheckoutResponseBody,
@@ -44,14 +47,48 @@ export async function run(): Promise<void> {
   core.setSecret(githubToken);
   const ghJobName = core.getInput("gh-job-name", { required: true });
   const framework = (core.getInput("framework") || "playwright").trim().toLowerCase();
-  if (framework !== "playwright" && framework !== "cypress") {
-    throw new Error(`framework must be "playwright" or "cypress", got "${framework}"`);
+  if (
+    framework !== "playwright" &&
+    framework !== "cypress" &&
+    framework !== "detox" &&
+    framework !== "maestro"
+  ) {
+    throw new Error(
+      `framework must be "playwright", "cypress", "detox", or "maestro", got "${framework}"`,
+    );
   }
   const playwrightRetries = intInput("playwright-retries", 1);
   const playwrightProject = core.getInput("playwright-project") || "chrome";
   const playwrightDirInput = core.getInput("playwright-dir") || "e2e-tests/playwright";
   const resultsDirInput = core.getInput("results-dir") || "results";
   const cypressDirInput = core.getInput("cypress-dir") || "e2e-tests/cypress";
+  const detoxDirInput = core.getInput("detox-dir") || "detox";
+  const detoxConfig = core.getInput("detox-config") || "ios.sim.debug";
+  const batchSize = intInput("batch-size", 1);
+  if (batchSize < 1) {
+    throw new Error(`batch-size must be >= 1, got ${batchSize}`);
+  }
+  if (framework === "maestro" && batchSize > 1) {
+    core.warning(`batch-size=${batchSize} ignored for maestro; checkout uses batch_size=1`);
+  }
+  // detox-max-workers is Detox-only (action.yml); ignore for other frameworks
+  // so a stale/invalid value cannot fail Playwright/Cypress/Maestro runs.
+  let detoxMaxWorkers = 1;
+  if (framework === "detox") {
+    detoxMaxWorkers = intInput("detox-max-workers", 1);
+    if (detoxMaxWorkers < 1) {
+      throw new Error(`detox-max-workers must be >= 1, got ${detoxMaxWorkers}`);
+    }
+  }
+  const maestroDirInput = core.getInput("maestro-dir") || "detox/maestro";
+  const maestroDevice = core.getInput("maestro-device");
+  const maestroPlatform = core.getInput("maestro-platform");
+  const maestroEnv = parseMaestroEnv(core.getInput("maestro-env"));
+  // Default 9m — keep below begin's lease-timeout-ms default (10m).
+  const maestroTimeoutMs = intInput("maestro-timeout-ms", 540_000);
+  if (maestroTimeoutMs <= 0) {
+    throw new Error(`maestro-timeout-ms must be > 0, got ${maestroTimeoutMs}`);
+  }
   // 0 disables the cap; see drain()'s idlePolls.
   const maxIdlePolls = intInput("max-idle-polls", 5);
   // Longer than the server's retry_after_ms ceiling (~7s); see drain().
@@ -76,6 +113,8 @@ export async function run(): Promise<void> {
   const playwrightDir = path.resolve(repoDir, playwrightDirInput);
   const resultsDir = path.resolve(playwrightDir, resultsDirInput);
   const cypressDir = path.resolve(repoDir, cypressDirInput);
+  const detoxDir = path.resolve(repoDir, detoxDirInput);
+  const maestroDir = path.resolve(repoDir, maestroDirInput);
   const workerArtifacts = path.join(artifactsRoot, ghJobId);
   fs.mkdirSync(workerArtifacts, { recursive: true });
 
@@ -97,6 +136,15 @@ export async function run(): Promise<void> {
       playwrightDir,
       resultsDir,
       cypressDir,
+      detoxDir,
+      detoxConfig,
+      detoxMaxWorkers,
+      batchSize,
+      maestroDir,
+      maestroDevice,
+      maestroPlatform,
+      maestroEnv,
+      maestroTimeoutMs,
       workerArtifacts,
       playwrightRetries,
       playwrightProject,
@@ -116,6 +164,7 @@ export async function run(): Promise<void> {
       audience,
       ghJobId,
       ghJobName: resolvedJobName,
+      framework,
       compositeIdentity,
     };
     try {
@@ -173,6 +222,15 @@ interface DrainConfig {
   playwrightDir: string;
   resultsDir: string;
   cypressDir: string;
+  detoxDir: string;
+  detoxConfig: string;
+  detoxMaxWorkers: number;
+  batchSize: number;
+  maestroDir: string;
+  maestroDevice: string;
+  maestroPlatform: string;
+  maestroEnv: Record<string, string>;
+  maestroTimeoutMs: number;
   workerArtifacts: string;
   playwrightRetries: number;
   playwrightProject: string;
@@ -190,11 +248,14 @@ async function drain(cfg: DrainConfig): Promise<void> {
   // Consecutive empty-poll count; reset to 0 whenever a unit is leased.
   let idlePolls = 0;
   while (true) {
+    // Maestro runs one flow per invocation (runMaestroUnit only executes
+    // specPaths[0]); never lease more than one unit for that framework.
+    const checkoutBatchSize = cfg.framework === "maestro" ? 1 : cfg.batchSize;
     const checkout = await postJSON<CheckoutResponseBody>(cfg, "/api/v1/orchestration/checkout", {
       ...(cfg.compositeIdentity as unknown as Record<string, unknown>),
       gh_job_name: cfg.ghJobName,
       gh_job_id: cfg.ghJobId,
-      batch_size: 1,
+      batch_size: checkoutBatchSize,
     });
 
     // The Test System IO Error envelope uses `{error, message}` — the Go `Code`
@@ -265,6 +326,40 @@ async function drain(cfg: DrainConfig): Promise<void> {
         // have to be matched by filename and uploaded out-of-band before
         // /complete sees them.
         await attachCypressScreenshots(cfg, results, out.screenshotsBySpec);
+      } else if (cfg.framework === "detox") {
+        const out = runDetoxUnit(
+          {
+            detoxDir: cfg.detoxDir,
+            detoxConfig: cfg.detoxConfig,
+            workerArtifacts: cfg.workerArtifacts,
+            maxWorkers: cfg.detoxMaxWorkers,
+          },
+          cfg.nextIterationSeq(),
+          specPaths,
+        );
+        cfg.invocations.push(out.invocation);
+        results = out.results;
+        // Detox screenshots live under a folder named after the test's
+        // fullName, so match on that instead of a filename substring.
+        await attachDetoxScreenshots(cfg, results, out.screenshotsBySpec);
+      } else if (cfg.framework === "maestro") {
+        const out = await runMaestroUnit(
+          {
+            maestroDir: cfg.maestroDir,
+            maestroDevice: cfg.maestroDevice,
+            maestroPlatform: cfg.maestroPlatform,
+            maestroEnv: cfg.maestroEnv,
+            maestroTimeoutMs: cfg.maestroTimeoutMs,
+            workerArtifacts: cfg.workerArtifacts,
+          },
+          cfg.nextIterationSeq(),
+          specPaths,
+        );
+        cfg.invocations.push(out.invocation);
+        results = out.results;
+        // batch_size is always 1 for Maestro, so every screenshot belongs to
+        // the single spec/test_case this invocation ran — no matching needed.
+        await attachMaestroScreenshots(cfg, results, out.screenshotsBySpec);
       } else {
         const out = runPlaywrightUnit(
           {
@@ -563,6 +658,79 @@ async function attachPlaywrightScreenshots(
   }
 }
 
+/** Matches each screenshot's parent folder name against a test_case's full_title (Detox's fullName). */
+async function attachDetoxScreenshots(
+  cfg: {
+    baseURL: string;
+    audience: string;
+    compositeIdentity: CompositeIdentity;
+    ghJobId: string;
+    ghJobName: string;
+    framework: string;
+  },
+  results: SpecResult[],
+  screenshotsBySpec: Record<string, string[]>,
+): Promise<void> {
+  for (const spec of results) {
+    const files = screenshotsBySpec[spec.spec_path];
+    if (!files || files.length === 0) continue;
+
+    for (const absPath of files) {
+      const folderName = path.basename(path.dirname(absPath));
+      // Hook failures (beforeAll/afterAll) write directly under the
+      // session folder, not a per-test folder, so there's no full_title
+      // to match — fall back to the spec's first failed test_case rather
+      // than dropping a screenshot that's still useful for debugging.
+      const tc =
+        spec.test_cases.find((c) => c.full_title === folderName) ??
+        spec.test_cases.find((c) => c.status === "failed");
+      if (!tc) {
+        core.warning(`no test_case match for screenshot folder ${folderName}; skipping`);
+        continue;
+      }
+      const uploaded = await uploadOrchScreenshot(cfg, spec.spec_path, absPath);
+      if (!uploaded) continue;
+      tc.attachments ??= { screenshots: [] };
+      tc.attachments.screenshots.push(uploaded);
+    }
+  }
+}
+
+/**
+ * Attaches every screenshot from one Maestro invocation to the spec's sole
+ * test_case. batch_size is always 1 for Maestro (one flow file per
+ * invocation), so unlike Detox/Cypress there's no folder-name/full_title
+ * ambiguity to resolve — the single test_case is the unambiguous owner.
+ */
+async function attachMaestroScreenshots(
+  cfg: {
+    baseURL: string;
+    audience: string;
+    compositeIdentity: CompositeIdentity;
+    ghJobId: string;
+    ghJobName: string;
+    framework: string;
+  },
+  results: SpecResult[],
+  screenshotsBySpec: Record<string, string[]>,
+): Promise<void> {
+  for (const spec of results) {
+    const files = screenshotsBySpec[spec.spec_path];
+    if (!files || files.length === 0) continue;
+    const tc = spec.test_cases[0];
+    if (!tc) {
+      core.warning(`no test_case to attach screenshots to for ${spec.spec_path}; skipping`);
+      continue;
+    }
+    for (const absPath of files) {
+      const uploaded = await uploadOrchScreenshot(cfg, spec.spec_path, absPath);
+      if (!uploaded) continue;
+      tc.attachments ??= { screenshots: [] };
+      tc.attachments.screenshots.push(uploaded);
+    }
+  }
+}
+
 async function uploadOrchScreenshot(
   cfg: {
     baseURL: string;
@@ -594,7 +762,11 @@ async function uploadOrchScreenshot(
   form.append("relative_path", relPath);
   // Wrap Node's Buffer in Uint8Array — same trick upload.ts uses to bridge
   // node:buffer to DOM Blob's BlobPart type.
-  form.append("file", new Blob([new Uint8Array(buf)], { type: "image/png" }), relPath);
+  form.append(
+    "file",
+    new Blob([new Uint8Array(buf)], { type: screenshotContentType(absPath) }),
+    relPath,
+  );
 
   let res: Response;
   try {
@@ -631,8 +803,9 @@ function resolveBaseURL(): string {
 function intInput(name: string, fallback: number): number {
   const raw = core.getInput(name);
   if (raw === "") return fallback;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) {
+  // Reject decimals / trailing junk ("2.5", "2abc") — parseInt would truncate.
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
     throw new Error(`input ${name}=${raw} is not a non-negative integer`);
   }
   return n;

@@ -115,4 +115,6 @@ export interface InvocationRecord {
   specPath: string;
   iterDir: string;
   playwrightJsonPath: string;
+  /** Extra JSON reports from the same iteration (Cypress multi-spec batches). */
+  additionalJsonPaths?: string[];
 }

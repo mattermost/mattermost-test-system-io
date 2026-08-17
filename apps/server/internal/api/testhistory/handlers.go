@@ -157,9 +157,9 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// historySummary is the part of the series triage actually branches on, computed
+// HistorySummary is the part of the series triage actually branches on, computed
 // server-side so every caller derives it the same way.
-type historySummary struct {
+type HistorySummary struct {
 	Runs               int      `json:"runs"`
 	Passed             int      `json:"passed"`
 	Failed             int      `json:"failed"`
@@ -180,8 +180,8 @@ type historySummary struct {
 // counts adjacent outcome changes over pass/fail only — skipped runs are carried
 // over rather than counted as a transition, since a skip says nothing about
 // stability.
-func summarize(entries []historyEntry) historySummary {
-	s := historySummary{Series: make([]string, 0, len(entries))}
+func summarize(entries []historyEntry) HistorySummary {
+	s := HistorySummary{Series: make([]string, 0, len(entries))}
 	var prevStable string
 	// Walk oldest→newest for flips so the series reads chronologically.
 	for i := len(entries) - 1; i >= 0; i-- {

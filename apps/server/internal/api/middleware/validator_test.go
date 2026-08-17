@@ -58,6 +58,7 @@ func TestSpecRoutesResolve(t *testing.T) {
 		{http.MethodPost, baseURL + "/api/v1/triage/verdicts/018f0000-0000-7000-8000-000000000000/correction"},
 		{http.MethodGet, baseURL + "/api/v1/triage/amnesty?test_id=MM-T1&repo=mattermost-mobile"},
 		{http.MethodGet, baseURL + "/api/v1/triage/accuracy?repo=mattermost-mobile"},
+		{http.MethodGet, baseURL + "/api/v1/triage/evidence?group_id=018f0000-0000-7000-8000-000000000000"},
 	}
 
 	for _, rt := range routes {

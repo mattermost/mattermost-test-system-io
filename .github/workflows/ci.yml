@@ -170,6 +170,7 @@ jobs:
           - test-system-io-dispatch-run
           - test-system-io-summary
           - test-system-io-report-upload
+          - test-system-io-ai-triage
     defaults:
       run:
         working-directory: .github/actions/${{ matrix.action }}

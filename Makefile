@@ -40,7 +40,7 @@ SERVER_PORT := 8080
 WEB_PORT    := 3000
 # GH Actions under .github/actions/ that ship a committed dist/index.js bundle;
 # keep in sync with the `actions-checks` matrix in .github/workflows/ci.yml.
-ACTIONS_DIRS := test-system-io-dispatch-begin test-system-io-dispatch-run test-system-io-summary test-system-io-report-upload
+ACTIONS_DIRS := test-system-io-dispatch-begin test-system-io-dispatch-run test-system-io-summary test-system-io-report-upload test-system-io-ai-triage
 # macOS default open-file limit (256) breaks testcontainers; bump for test targets.
 ULIMIT_N    := 4096
 

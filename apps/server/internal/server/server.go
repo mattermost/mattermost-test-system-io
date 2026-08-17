@@ -196,6 +196,7 @@ func Build(d Deps) chi.Router {
 		triageH := &triageapi.Handlers{Pool: d.Pool, Logger: d.Logger}
 		r.Get("/triage/amnesty", triageH.Amnesty)
 		r.Get("/triage/accuracy", triageH.Accuracy)
+		r.Get("/triage/evidence", triageH.Evidence)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)

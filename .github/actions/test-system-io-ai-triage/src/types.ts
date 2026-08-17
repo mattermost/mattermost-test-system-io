@@ -73,9 +73,20 @@ export interface EvidenceGroup {
   status: string;
 }
 
+export interface EvidenceCluster {
+  signature: string;
+  label: string;
+  member_count: number;
+  members: Array<{ external_test_id?: string; full_title: string; status: string }>;
+  representative: EvidenceFailure;
+  suggested: Suggestion;
+}
+
 export interface EvidencePack {
   group: EvidenceGroup;
-  failures: EvidenceFailure[];
+  failure_count: number;
+  cluster_count: number;
+  clusters: EvidenceCluster[];
   truncated: boolean;
   lookups: number;
   max_lookups: number;
@@ -89,6 +100,10 @@ export interface Decision {
   waived: boolean;
   source: "history" | "model" | "policy";
   check_state: "success" | "failure";
+  kind: "flaky" | "bug" | "unknown";
+  member_count: number;
+  suspect_sha?: string;
+  suspect_author?: string;
 }
 
 export interface ClaudeVerdict {
@@ -96,4 +111,6 @@ export interface ClaudeVerdict {
   confidence: number;
   reason: string;
   citations: string[];
+  suspect_sha?: string;
+  suspect_author?: string;
 }

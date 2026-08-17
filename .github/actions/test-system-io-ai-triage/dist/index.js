@@ -26438,106 +26438,6 @@ function retry(octokit, octokitOptions) {
 retry.VERSION = VERSION7;
 
 // src/claude.ts
-var MAX_SHOTS = 3;
-var MAX_BYTES = 2 * 1024 * 1024;
-var MAX_ERROR = 4e3;
-async function adjudicate(failure, args) {
-  const images = await loadScreenshots(args.baseURL, failure.screenshots.slice(0, MAX_SHOTS));
-  const prompt = buildPrompt(failure, args.changedFiles, images.length);
-  try {
-    const raw = await callClaude({
-      apiKey: args.apiKey,
-      model: args.model,
-      prompt,
-      images
-    });
-    return parseVerdict(raw);
-  } catch (err) {
-    warning(`claude: ${err.message}; leaving ${failure.full_title} INCONCLUSIVE`);
-    return void 0;
-  }
-}
-function buildPrompt(failure, changedFiles, imageCount) {
-  const hist = failure.history ? `runs=${failure.history.runs} passed=${failure.history.passed} failed=${failure.history.failed} flaky=${failure.history.flaky} flips=${failure.history.flips} failure_rate=${failure.history.failure_rate} series=${failure.history.series.join(",")} failing_since=${failure.history.failing_since_commit ?? "none"}` : failure.history_error || "no history";
-  const error2 = (failure.error_message || "").slice(0, MAX_ERROR);
-  const stack = (failure.error_stack || "").slice(0, MAX_ERROR);
-  return `You classify one E2E test failure. Do not rerun anything. Decide from the evidence.
-
-Return ONLY JSON: {"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["..."]}
-
-Rules:
-- FLAKY_* if the screenshot/error shows a timing, animation, keyboard, network blip, or known-unstable locator, and the PR diff is unrelated.
-- PR_REGRESSION if the failure matches the PR's changed files or the UI state is a real product bug.
-- MAIN_REGRESSION if history shows it already failing on the baseline branch.
-- INCONCLUSIVE if you cannot tell. Prefer INCONCLUSIVE over a flake waiver.
-- confidence 0.85+ only with two citations (screenshot, error_message, history, diff, ...).
-- ${imageCount} screenshot(s) attached, in failure order.
-
-Test: ${failure.full_title}
-File: ${failure.file || "unknown"}
-Status: ${failure.status}
-History: ${hist}
-Other PRs currently failing: ${failure.distinct_prs ?? "unknown"}
-Deterministic suggestion: ${failure.suggested.verdict} (${failure.suggested.reason})
-Changed files: ${changedFiles.slice(0, 40).join(", ") || "(none)"}
-Error: ${error2 || "(none)"}
-Stack: ${stack || "(none)"}`;
-}
-async function loadScreenshots(baseURL, shots) {
-  const out = [];
-  for (const s of shots) {
-    const url = s.url.startsWith("http") ? s.url : `${baseURL}${s.url}`;
-    try {
-      const res = await fetch(url, { redirect: "follow" });
-      if (!res.ok) continue;
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length === 0 || buf.length > MAX_BYTES) continue;
-      const mediaType = sniffMedia(buf, s.s3_key);
-      if (!mediaType) continue;
-      out.push({ mediaType, data: buf.toString("base64") });
-    } catch (err) {
-      warning(`screenshot ${s.s3_key}: ${err.message}`);
-    }
-  }
-  return out;
-}
-function sniffMedia(buf, key) {
-  if (buf.length >= 8 && buf[0] === 137 && buf[1] === 80) return "image/png";
-  if (buf.length >= 3 && buf[0] === 255 && buf[1] === 216) return "image/jpeg";
-  if (key.endsWith(".png")) return "image/png";
-  if (key.endsWith(".jpg") || key.endsWith(".jpeg")) return "image/jpeg";
-  return void 0;
-}
-async function callClaude(args) {
-  const content = [];
-  for (const img of args.images) {
-    content.push({
-      type: "image",
-      source: { type: "base64", media_type: img.mediaType, data: img.data }
-    });
-  }
-  content.push({ type: "text", text: args.prompt });
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": args.apiKey,
-      "anthropic-version": "2023-06-01"
-    },
-    body: JSON.stringify({
-      model: args.model,
-      max_tokens: 1024,
-      messages: [{ role: "user", content }]
-    })
-  });
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} ${await res.text().catch(() => "")}`);
-  }
-  const body = await res.json();
-  const text = body.content?.find((c) => c.type === "text")?.text;
-  if (!text) throw new Error("empty model response");
-  return text;
-}
 var VERDICTS = /* @__PURE__ */ new Set([
   "PR_REGRESSION",
   "MAIN_REGRESSION",
@@ -26554,11 +26454,15 @@ function parseVerdict(raw) {
   const confidence = Number(json.confidence);
   const reason = String(json.reason || "").slice(0, 500);
   const citations = Array.isArray(json.citations) ? json.citations.map((c) => String(c)).filter(Boolean).slice(0, 8) : [];
+  const suspectSha = json.suspect_sha ? String(json.suspect_sha) : void 0;
+  const suspectAuthor = json.suspect_author ? String(json.suspect_author) : void 0;
   return {
     verdict: VERDICTS.has(verdict) ? verdict : "INCONCLUSIVE",
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : 0,
     reason: reason || "model returned no reason",
-    citations
+    citations,
+    suspect_sha: suspectSha,
+    suspect_author: suspectAuthor
   };
 }
 function extractJSON(raw) {
@@ -26566,6 +26470,339 @@ function extractJSON(raw) {
   const end = raw.lastIndexOf("}");
   if (start < 0 || end <= start) throw new Error("model response was not JSON");
   return JSON.parse(raw.slice(start, end + 1));
+}
+
+// src/blame.ts
+var MAX_NAMEABLE_RANGE = 8;
+function kindOf(verdict) {
+  if (verdict.startsWith("FLAKY_")) return "flaky";
+  if (!verdict || verdict === "INCONCLUSIVE") return "unknown";
+  return "bug";
+}
+function resolveSuspectRange(history) {
+  if (!history) return { resolvable: false, reason: "no history for this test" };
+  const lastPass = history.last_pass_commit;
+  const failingSince = history.failing_since_commit;
+  if (!failingSince) {
+    return { resolvable: false, reason: "the test is not in a failing streak on the baseline" };
+  }
+  if (!lastPass) {
+    return {
+      resolvable: false,
+      reason: "the test has not passed within the history window \u2014 not a fresh regression",
+      failingSince
+    };
+  }
+  return {
+    resolvable: true,
+    reason: "suspect range is last pass \u2026 first fail",
+    lastPass,
+    failingSince
+  };
+}
+function attribute(compareCommits2, maxRange = MAX_NAMEABLE_RANGE) {
+  const commits = (compareCommits2 || []).filter((c) => !c.parents || c.parents.length <= 1).map((c) => ({
+    sha: c.sha || "",
+    author: c.author?.login || c.commit?.author?.name || null,
+    message: (c.commit?.message || "").split("\n")[0].slice(0, 120)
+  })).filter((c) => c.sha);
+  if (commits.length === 0) {
+    return { confident: false, reason: "no non-merge commits in the suspect range", commits: [] };
+  }
+  if (commits.length === 1) {
+    return {
+      confident: true,
+      reason: "exactly one commit landed between the last pass and the first failure",
+      commits
+    };
+  }
+  if (commits.length > maxRange) {
+    return {
+      confident: false,
+      reason: `${commits.length} commits in the suspect range \u2014 too wide to name a culprit`,
+      commits: commits.slice(0, maxRange)
+    };
+  }
+  return {
+    confident: false,
+    reason: `${commits.length} candidate commits \u2014 needs a human to narrow`,
+    commits
+  };
+}
+function finishBlame(args) {
+  const kind = kindOf(args.verdict);
+  if (kind !== "bug") {
+    return {
+      kind,
+      resolvable: false,
+      confident: false,
+      reason: "not a bug \u2014 no author to name",
+      candidates: []
+    };
+  }
+  const range = args.range ?? resolveSuspectRange(args.history);
+  if (!range.resolvable) {
+    return {
+      kind,
+      resolvable: false,
+      confident: false,
+      reason: range.reason,
+      last_pass_commit: range.lastPass,
+      failing_since_commit: range.failingSince,
+      candidates: []
+    };
+  }
+  const attributed = args.attributed ?? {
+    confident: false,
+    reason: "compare not fetched",
+    commits: []
+  };
+  return {
+    kind,
+    resolvable: true,
+    confident: attributed.confident,
+    reason: attributed.reason,
+    last_pass_commit: range.lastPass,
+    failing_since_commit: range.failingSince,
+    suspect: attributed.confident ? attributed.commits[0] : void 0,
+    candidates: attributed.commits
+  };
+}
+
+// src/retry-fetch.ts
+var DEFAULT_DELAYS_MS = [400, 1200, 3e3];
+async function retryFetch(input, init, label) {
+  const delays = DEFAULT_DELAYS_MS;
+  let lastErr;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const res = await fetch(input, init);
+      if (res.ok || !isRetryableStatus(res.status)) return res;
+      lastErr = new Error(`HTTP ${res.status} ${await safeText(res)}`);
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt === delays.length) break;
+    const ms = delays[attempt] + Math.floor(Math.random() * 200);
+    warning(
+      `${label}: fetch failed (attempt ${attempt + 1}/${delays.length + 1}): ${lastErr.message}; retrying in ${ms}ms`
+    );
+    await new Promise((r) => setTimeout(r, ms));
+  }
+  throw lastErr;
+}
+function isRetryableStatus(status) {
+  return status === 408 || status === 429 || status >= 500 && status < 600;
+}
+async function safeText(res, max = 500) {
+  try {
+    const t = await res.text();
+    return t.length <= max ? t : `${t.slice(0, max)}\u2026(${t.length - max} more chars)`;
+  } catch {
+    return "<unreadable body>";
+  }
+}
+
+// src/agent.ts
+var MAX_ROUNDS = 6;
+var MAX_BYTES = 2 * 1024 * 1024;
+var TOOLS = [
+  {
+    name: "get_history",
+    description: "GET /api/v1/tests/history \u2014 outcome series on the baseline branch. Use this to see if the test was already failing, flipping, or clean.",
+    input_schema: {
+      type: "object",
+      properties: { test_id: { type: "string" } },
+      required: ["test_id"]
+    }
+  },
+  {
+    name: "get_failing_elsewhere",
+    description: "GET /api/v1/tests/failing-elsewhere \u2014 is the same test failing on other open PRs right now?",
+    input_schema: {
+      type: "object",
+      properties: { test_id: { type: "string" } },
+      required: ["test_id"]
+    }
+  },
+  {
+    name: "get_screenshot",
+    description: "Fetch a TSIO failure screenshot (/files/{s3_key}) so you can see the UI. Call this before calling a flake.",
+    input_schema: {
+      type: "object",
+      properties: { s3_key: { type: "string" } },
+      required: ["s3_key"]
+    }
+  },
+  {
+    name: "blame_commits",
+    description: "List commits between last_pass_commit and failing_since_commit. Only after you have classified this as a bug.",
+    input_schema: {
+      type: "object",
+      properties: {
+        last_pass_commit: { type: "string" },
+        failing_since_commit: { type: "string" }
+      },
+      required: ["last_pass_commit", "failing_since_commit"]
+    }
+  }
+];
+async function investigate(cluster, ctx) {
+  const prompt = buildPrompt(cluster, ctx);
+  const messages = [{ role: "user", content: prompt }];
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const body = await callClaude(ctx, messages);
+    const blocks = body.content || [];
+    const toolUses = blocks.filter((b) => b.type === "tool_use");
+    const text = blocks.find((b) => b.type === "text")?.text || "";
+    if (toolUses.length === 0) {
+      return parseVerdict(text);
+    }
+    messages.push({ role: "assistant", content: blocks });
+    const results = [];
+    for (const tu of toolUses) {
+      results.push(
+        await runTool(
+          String(tu.name),
+          tu.input || {},
+          cluster,
+          ctx,
+          String(tu.id)
+        )
+      );
+    }
+    messages.push({ role: "user", content: results });
+  }
+  warning(`agent hit ${MAX_ROUNDS} tool rounds; failing closed`);
+  return { verdict: "INCONCLUSIVE", confidence: 0, reason: "agent did not finish", citations: [] };
+}
+function buildPrompt(cluster, ctx) {
+  const f = cluster.representative;
+  const shots = (f.screenshots || []).map((s) => s.s3_key).join(", ") || "(none)";
+  const hist = f.history ? `runs=${f.history.runs} failed=${f.history.failed} flaky=${f.history.flaky} flips=${f.history.flips} last_pass=${f.history.last_pass_commit ?? "none"} failing_since=${f.history.failing_since_commit ?? "none"} series=${f.history.series.join(",")}` : f.history_error || "not loaded \u2014 call get_history";
+  return `You investigate ONE clustered E2E failure. Do not ask for a rerun. 300 identical failures are still one cause.
+
+Call TSIO tools to collect what you need, look at screenshots, then decide.
+
+Return ONLY JSON when done:
+{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["screenshot","history",...],"suspect_sha":"optional","suspect_author":"optional"}
+
+kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits). INCONCLUSIVE if unsure.
+
+Rules:
+- Look at at least one screenshot before calling a flake.
+- Prefer INCONCLUSIVE over a flake waiver.
+- confidence 0.85+ needs two citations.
+- If history says already failing on the baseline, it is MAIN_REGRESSION, not this PR.
+- If the PR diff overlaps the failing area, do not call a flake.
+
+Cluster: ${cluster.signature} (${cluster.member_count} tests) \u2014 ${cluster.label}
+Representative: ${f.full_title}
+File: ${f.file || "unknown"}
+Status: ${f.status}
+external_test_id: ${f.external_test_id || "none"}
+Error: ${(f.error_message || "").slice(0, 3e3) || "(none)"}
+Stack: ${(f.error_stack || "").slice(0, 2e3) || "(none)"}
+History: ${hist}
+Other PRs failing: ${f.distinct_prs ?? "unknown"}
+Screenshot keys (get_screenshot): ${shots}
+PR changed files: ${ctx.changedFiles.slice(0, 40).join(", ") || "(none)"}
+Deterministic hint: ${cluster.suggested.verdict} \u2014 ${cluster.suggested.reason}`;
+}
+async function callClaude(ctx, messages) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": ctx.apiKey,
+      "anthropic-version": "2023-06-01"
+    },
+    body: JSON.stringify({
+      model: ctx.model,
+      max_tokens: 2048,
+      tools: TOOLS,
+      messages
+    })
+  });
+  if (!res.ok) {
+    throw new Error(`claude HTTP ${res.status} ${await res.text().catch(() => "")}`);
+  }
+  return await res.json();
+}
+async function runTool(name, input, cluster, ctx, toolUseId) {
+  try {
+    if (name === "get_history") {
+      const testID = input.test_id || cluster.representative.external_test_id || "";
+      const qs = new URLSearchParams({
+        test_id: testID,
+        repo: ctx.group.repository,
+        branch: ctx.baselineBranch,
+        limit: "20"
+      });
+      const data = await getJSON(`${ctx.baseURL}/api/v1/tests/history?${qs}`);
+      return toolText(toolUseId, JSON.stringify(data).slice(0, 8e3));
+    }
+    if (name === "get_failing_elsewhere") {
+      const testID = input.test_id || cluster.representative.external_test_id || "";
+      const qs = new URLSearchParams({
+        test_id: testID,
+        repo: ctx.group.repository,
+        window: "24h"
+      });
+      if (ctx.group.gh_pr_number) qs.set("exclude_pr", String(ctx.group.gh_pr_number));
+      const data = await getJSON(`${ctx.baseURL}/api/v1/tests/failing-elsewhere?${qs}`);
+      return toolText(toolUseId, JSON.stringify(data).slice(0, 4e3));
+    }
+    if (name === "get_screenshot") {
+      const key = input.s3_key;
+      const allowed = (cluster.representative.screenshots || []).some((s) => s.s3_key === key);
+      if (!allowed) return toolText(toolUseId, `screenshot ${key} is not on this cluster`);
+      const img = await loadShot(ctx.baseURL, key);
+      if (!img) return toolText(toolUseId, `could not fetch ${key}`);
+      return {
+        type: "tool_result",
+        tool_use_id: toolUseId,
+        content: [
+          { type: "image", source: { type: "base64", media_type: img.mediaType, data: img.data } },
+          { type: "text", text: `screenshot ${key}` }
+        ]
+      };
+    }
+    if (name === "blame_commits") {
+      const lastPass = input.last_pass_commit;
+      const failingSince = input.failing_since_commit;
+      if (!lastPass || !failingSince) {
+        return toolText(toolUseId, "last_pass_commit and failing_since_commit are required");
+      }
+      const commits = await ctx.compareCommits(lastPass, failingSince);
+      return toolText(toolUseId, JSON.stringify(attribute(commits)));
+    }
+    return toolText(toolUseId, `unknown tool ${name}`);
+  } catch (err) {
+    return toolText(toolUseId, `tool error: ${err.message}`);
+  }
+}
+function toolText(id, text) {
+  return { type: "tool_result", tool_use_id: id, content: text };
+}
+async function getJSON(url) {
+  const res = await retryFetch(url, {}, "triage-agent");
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  const ct = res.headers.get("content-type") || "";
+  if (!ct.includes("json")) throw new Error(`not JSON (${ct}) for ${url}`);
+  return res.json();
+}
+async function loadShot(baseURL, key) {
+  const url = `${baseURL}/files/${key.split("/").map(encodeURIComponent).join("/")}`;
+  const res = await retryFetch(url, { redirect: "follow" }, "triage-screenshot");
+  if (!res.ok) return void 0;
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length === 0 || buf.length > MAX_BYTES) return void 0;
+  if (buf[0] === 137 && buf[1] === 80)
+    return { mediaType: "image/png", data: buf.toString("base64") };
+  if (buf[0] === 255 && buf[1] === 216)
+    return { mediaType: "image/jpeg", data: buf.toString("base64") };
+  return void 0;
 }
 
 // src/commit-status.ts
@@ -26666,7 +26903,9 @@ function decide(args) {
     ...merged,
     waived: waiver.waived,
     check_state: waiver.waived ? "success" : "failure",
-    reason: waiver.waived ? merged.reason : `${merged.reason} (${waiver.reason})`
+    reason: waiver.waived ? merged.reason : `${merged.reason} (${waiver.reason})`,
+    kind: kindOf(merged.verdict),
+    member_count: 1
   };
 }
 function mergeModel(suggested, ai, overlaps) {
@@ -26710,7 +26949,7 @@ function rollup(decisions) {
       waived: true,
       verdict: decisions[0].verdict,
       state: "success",
-      description: `${decisions.length} failure(s) classified as flaky/pre-existing`
+      description: `${decisions.reduce((n, d) => n + d.member_count, 0)} failure(s) in ${decisions.length} cluster(s) classified as flaky/pre-existing`
     };
   }
   const worst = unwaived[0];
@@ -26718,7 +26957,7 @@ function rollup(decisions) {
     waived: false,
     verdict: worst.verdict,
     state: "failure",
-    description: `${unwaived.length}/${decisions.length} unwaived (${worst.verdict})`
+    description: `${unwaived.length}/${decisions.length} cluster(s) unwaived (${worst.verdict})`
   };
 }
 
@@ -26736,44 +26975,10 @@ function buildReportURL(baseURL, c) {
   return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}&gh_run_attempt=${attempt}`;
 }
 
-// src/retry-fetch.ts
-var DEFAULT_DELAYS_MS = [400, 1200, 3e3];
-async function retryFetch(input, init, label) {
-  const delays = DEFAULT_DELAYS_MS;
-  let lastErr;
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    try {
-      const res = await fetch(input, init);
-      if (res.ok || !isRetryableStatus(res.status)) return res;
-      lastErr = new Error(`HTTP ${res.status} ${await safeText(res)}`);
-    } catch (err) {
-      lastErr = err;
-    }
-    if (attempt === delays.length) break;
-    const ms = delays[attempt] + Math.floor(Math.random() * 200);
-    warning(
-      `${label}: fetch failed (attempt ${attempt + 1}/${delays.length + 1}): ${lastErr.message}; retrying in ${ms}ms`
-    );
-    await new Promise((r) => setTimeout(r, ms));
-  }
-  throw lastErr;
-}
-function isRetryableStatus(status) {
-  return status === 408 || status === 429 || status >= 500 && status < 600;
-}
-async function safeText(res, max = 500) {
-  try {
-    const t = await res.text();
-    return t.length <= max ? t : `${t.slice(0, max)}\u2026(${t.length - max} more chars)`;
-  } catch {
-    return "<unreadable body>";
-  }
-}
-
 // src/main.ts
 var PRODUCTION_URL = "https://test-io.test.mattermost.com";
 var STAGING_URL = "https://staging-test-io.test.mattermost.com";
-var MAX_AI_FAILURES = 8;
+var MAX_AGENT_CLUSTERS = 8;
 var RetryingOctokit2 = GitHub.plugin(retry);
 async function run() {
   const baseURL = getInput("use-staging") === "true" ? STAGING_URL : PRODUCTION_URL;
@@ -26791,7 +26996,7 @@ async function run() {
   setOutput("report_url", reportURL);
   const pack = await fetchEvidence(baseURL, identity, groupID, baseline);
   info(
-    `evidence: group=${pack.group.id} failures=${pack.failures.length} lookups=${pack.lookups}` + (pack.truncated ? " truncated=true" : "")
+    `evidence: group=${pack.group.id} failures=${pack.failure_count} clusters=${pack.cluster_count}` + (pack.truncated ? " truncated=true" : "")
   );
   const changedFiles = await listChangedFiles(
     githubToken,
@@ -26799,29 +27004,45 @@ async function run() {
     pack.group.gh_pr_number
   );
   const decisions = [];
-  for (const failure of pack.failures) {
+  for (const cluster of pack.clusters || []) {
     let ai = void 0;
-    if (failure.suggested.needs_ai && anthropicKey && decisions.filter((d2) => d2.source === "model").length < MAX_AI_FAILURES) {
-      info(`claude: ${failure.full_title}`);
-      ai = await adjudicate(failure, { baseURL, apiKey: anthropicKey, model, changedFiles });
-    } else if (failure.suggested.needs_ai && !anthropicKey) {
-      info(`no anthropic key; leaving ${failure.full_title} on history suggestion`);
+    if (cluster.suggested.needs_ai && anthropicKey && agentCalls(decisions) < MAX_AGENT_CLUSTERS) {
+      info(
+        `agent: ${cluster.signature} \xD7${cluster.member_count} (${cluster.label.slice(0, 80)})`
+      );
+      try {
+        ai = await investigate(cluster, {
+          baseURL,
+          apiKey: anthropicKey,
+          model,
+          group: pack.group,
+          baselineBranch: baseline,
+          changedFiles,
+          compareCommits: (base, head) => compareCommits(githubToken, pack.group.repository, base, head)
+        });
+      } catch (err) {
+        warning(`agent failed: ${err.message}; failing closed`);
+      }
+    } else if (cluster.suggested.needs_ai && !anthropicKey) {
+      info(`no anthropic key; leaving cluster ${cluster.signature} on history suggestion`);
     }
     const d = decide({
-      failure,
+      failure: cluster.representative,
       runType,
       branch: pack.group.branch || identity.branch || "",
       changedFiles,
       ai
     });
-    decisions.push(d);
+    d.member_count = cluster.member_count;
+    const blamed = await attachBlame(d, cluster, githubToken, pack.group.repository);
+    decisions.push(blamed);
     info(
-      `${failure.full_title}: ${d.verdict} conf=${d.confidence} waived=${d.waived} source=${d.source}`
+      `${cluster.signature} \xD7${cluster.member_count}: kind=${blamed.kind} ${blamed.verdict} waived=${blamed.waived}` + (blamed.suspect_author ? ` author=@${blamed.suspect_author}` : "")
     );
   }
   const summary2 = rollup(decisions);
   await writeLedger(baseURL, audience, pack, decisions, model);
-  await writeStepSummary(pack.failures, decisions, summary2, reportURL);
+  await writeStepSummary(pack.clusters || [], decisions, summary2, reportURL);
   if (githubToken) {
     const [owner, repo] = splitRepo(pack.group.repository);
     await setCommitStatus({
@@ -26842,6 +27063,41 @@ async function run() {
   if (mode === "gate" && summary2.state === "failure") {
     setFailed(summary2.description);
   }
+}
+function agentCalls(decisions) {
+  return decisions.filter((d) => d.source === "model").length;
+}
+async function attachBlame(d, cluster, githubToken, repository) {
+  d.kind = kindOf(d.verdict);
+  if (d.kind !== "bug") return d;
+  const range = resolveSuspectRange(cluster.representative.history);
+  if (!range.resolvable || !range.lastPass || !range.failingSince || !githubToken) {
+    return d;
+  }
+  try {
+    const commits = await compareCommits(
+      githubToken,
+      repository,
+      range.lastPass,
+      range.failingSince
+    );
+    const blamed = finishBlame({
+      verdict: d.verdict,
+      history: cluster.representative.history,
+      range,
+      attributed: attribute(commits)
+    });
+    if (blamed.suspect) {
+      d.suspect_sha = blamed.suspect.sha;
+      d.suspect_author = blamed.suspect.author || void 0;
+      d.reason = `${d.reason} \u2014 ${blamed.reason}: ${blamed.suspect.sha.slice(0, 7)}` + (blamed.suspect.author ? ` @${blamed.suspect.author}` : "");
+    } else if (blamed.candidates.length > 0) {
+      d.reason = `${d.reason} \u2014 ${blamed.reason}`;
+    }
+  } catch (err) {
+    warning(`blame: ${err.message}`);
+  }
+  return d;
 }
 function parseIdentity(raw) {
   let parsed;
@@ -26905,6 +27161,18 @@ async function listChangedFiles(token, repository, prNumber) {
     return [];
   }
 }
+async function compareCommits(token, repository, base, head) {
+  if (!token) return [];
+  const [owner, repo] = splitRepo(repository);
+  const octokit = new RetryingOctokit2(getOctokitOptions(token));
+  const res = await octokit.rest.repos.compareCommits({ owner, repo, base, head });
+  return (res.data.commits || []).map((c) => ({
+    sha: c.sha,
+    parents: c.parents,
+    author: c.author,
+    commit: c.commit
+  }));
+}
 async function writeLedger(baseURL, audience, pack, decisions, model) {
   if (decisions.length === 0) return;
   let bearer;
@@ -26923,15 +27191,17 @@ async function writeLedger(baseURL, audience, pack, decisions, model) {
     gh_pr_number: pack.group.gh_pr_number,
     model,
     verdicts: decisions.map((d, i) => {
-      const f = pack.failures[i];
+      const c = pack.clusters[i];
+      const testID = c.representative.external_test_id;
       return {
-        external_test_id: f.external_test_id,
-        cluster_signature: f.external_test_id ? void 0 : slug(f.full_title),
-        member_count: 1,
+        external_test_id: testID,
+        cluster_signature: c.signature,
+        member_count: c.member_count,
         verdict: d.verdict,
         confidence: d.confidence,
         root_cause: d.reason,
-        evidence: d.citations.map((c) => ({ citation: c })),
+        evidence: d.citations.map((cit) => ({ citation: cit })),
+        suspect_commit: d.suspect_sha,
         check_state: d.check_state,
         waived: d.waived
       };
@@ -26953,25 +27223,27 @@ async function writeLedger(baseURL, audience, pack, decisions, model) {
     warning(`ledger write HTTP ${res.status} ${await res.text()}`);
   }
 }
-async function writeStepSummary(failures, decisions, summary2, reportURL) {
+async function writeStepSummary(clusters, decisions, summary2, reportURL) {
   const lines = [
     `## E2E flake triage`,
     ``,
     `**Outcome:** \`${summary2.description}\` \u2014 [report](${reportURL})`,
     ``,
-    `| Test | Verdict | Conf | Waived | Source | Why |`,
-    `|---|---|---:|---|---|---|`
+    `No rerun. Cost scales with distinct error signatures, not failure count.`,
+    ``,
+    `| Kind | Cluster | n | Verdict | Author | Waived | Why |`,
+    `|---|---|---:|---|---|---|---|`
   ];
   for (let i = 0; i < decisions.length; i++) {
     const d = decisions[i];
-    const f = failures[i];
-    const title = (f.external_test_id || f.full_title).replace(/\|/g, "\\|");
+    const c = clusters[i];
+    const author = d.suspect_author ? `@${d.suspect_author} (\`${(d.suspect_sha || "").slice(0, 7)}\`)` : "\u2014";
     lines.push(
-      `| ${title} | ${d.verdict} | ${d.confidence.toFixed(2)} | ${d.waived ? "yes" : "no"} | ${d.source} | ${d.reason.replace(/\|/g, " ").slice(0, 160)} |`
+      `| ${d.kind} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`
     );
   }
   if (decisions.length === 0) {
-    lines.push(`| \u2014 | \u2014 | \u2014 | \u2014 | \u2014 | no failures |`);
+    lines.push(`| \u2014 | \u2014 | \u2014 | \u2014 | \u2014 | \u2014 | no failures |`);
   }
   const file = process.env.GITHUB_STEP_SUMMARY;
   if (file) fs3.appendFileSync(file, lines.join("\n") + "\n");
@@ -26980,9 +27252,6 @@ function splitRepo(repository) {
   const [owner, repo] = repository.split("/");
   if (!owner || !repo) throw new Error(`repository ${repository} is not owner/repo`);
   return [owner, repo];
-}
-function slug(title) {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "untitled";
 }
 
 // src/index.ts

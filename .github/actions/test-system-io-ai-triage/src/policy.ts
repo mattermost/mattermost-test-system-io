@@ -1,4 +1,5 @@
 import type { ClaudeVerdict, Decision, EvidenceFailure, Suggestion } from "./types.ts";
+import { kindOf } from "./blame.ts";
 
 export const WAIVE_CONFIDENCE = 0.85;
 
@@ -83,6 +84,8 @@ export function decide(args: {
     waived: waiver.waived,
     check_state: waiver.waived ? "success" : "failure",
     reason: waiver.waived ? merged.reason : `${merged.reason} (${waiver.reason})`,
+    kind: kindOf(merged.verdict),
+    member_count: 1,
   };
 }
 
@@ -149,7 +152,7 @@ export function rollup(decisions: Decision[]): {
       waived: true,
       verdict: decisions[0]!.verdict,
       state: "success",
-      description: `${decisions.length} failure(s) classified as flaky/pre-existing`,
+      description: `${decisions.reduce((n, d) => n + d.member_count, 0)} failure(s) in ${decisions.length} cluster(s) classified as flaky/pre-existing`,
     };
   }
   const worst = unwaived[0]!;
@@ -157,6 +160,6 @@ export function rollup(decisions: Decision[]): {
     waived: false,
     verdict: worst.verdict,
     state: "failure",
-    description: `${unwaived.length}/${decisions.length} unwaived (${worst.verdict})`,
+    description: `${unwaived.length}/${decisions.length} cluster(s) unwaived (${worst.verdict})`,
   };
 }

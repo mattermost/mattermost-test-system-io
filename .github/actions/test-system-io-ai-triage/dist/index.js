@@ -26672,7 +26672,9 @@ async function investigate(cluster, ctx) {
         return parseVerdict(text);
       } catch (err) {
         if (round === MAX_ROUNDS - 1) throw err;
-        warning(`agent JSON unusable (${err.message}); asking once more for JSON only`);
+        warning(
+          `agent JSON unusable (${err.message}); asking once more for JSON only`
+        );
         messages.push({ role: "assistant", content: blocks });
         messages.push({
           role: "user",

@@ -123,11 +123,7 @@ test("diffOverlaps matches spec path and stack frames", () => {
   );
   assert.equal(diffOverlaps(["README.md"], "detox/e2e/login.e2e.ts", "boom"), false);
   assert.equal(
-    diffOverlaps(
-      ["detox/e2e/test/login.e2e.ts"],
-      "detox/e2e/test/login.e2e.ts",
-      "Error: boom",
-    ),
+    diffOverlaps(["detox/e2e/test/login.e2e.ts"], "detox/e2e/test/login.e2e.ts", "Error: boom"),
     true,
   );
 });

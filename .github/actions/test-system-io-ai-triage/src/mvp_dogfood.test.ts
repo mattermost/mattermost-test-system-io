@@ -103,7 +103,9 @@ test("MVP: three waived flake clusters flip e2e-test/detox-ios in gate mode", ()
     triageContext: "e2e-test/ai-triage-detox-ios",
   });
   assert.deepEqual(flip, ["e2e-test/detox-ios"]);
-  assert.ok(flakeSuccessDescription("e2e-test/ai-triage-detox-ios", summary.description).length <= 140);
+  assert.ok(
+    flakeSuccessDescription("e2e-test/ai-triage-detox-ios", summary.description).length <= 140,
+  );
 });
 
 test("MVP: one INCONCLUSIVE cluster keeps the original check red (fail closed)", () => {

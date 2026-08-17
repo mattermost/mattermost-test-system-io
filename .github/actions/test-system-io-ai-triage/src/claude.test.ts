@@ -20,7 +20,7 @@ test("parseVerdict extracts JSON from surrounding text", () => {
 
 test("parseVerdict extracts JSON from a fenced code block", () => {
   const v = parseVerdict(
-    "Here you go:\n```json\n{\"verdict\":\"FLAKY_TEST\",\"confidence\":0.9,\"reason\":\"timeout\",\"citations\":[\"screenshot\",\"history\"]}\n```\n",
+    'Here you go:\n```json\n{"verdict":"FLAKY_TEST","confidence":0.9,"reason":"timeout","citations":["screenshot","history"]}\n```\n',
   );
   assert.equal(v.verdict, "FLAKY_TEST");
   assert.equal(v.confidence, 0.9);
@@ -32,4 +32,3 @@ test("parseVerdict tolerates trailing commas", () => {
   );
   assert.equal(v.verdict, "FLAKY_SERVER");
 });
-

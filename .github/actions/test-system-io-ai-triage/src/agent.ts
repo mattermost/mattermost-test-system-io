@@ -81,7 +81,9 @@ export async function investigate(
         return parseVerdict(text);
       } catch (err) {
         if (round === MAX_ROUNDS - 1) throw err;
-        core.warning(`agent JSON unusable (${(err as Error).message}); asking once more for JSON only`);
+        core.warning(
+          `agent JSON unusable (${(err as Error).message}); asking once more for JSON only`,
+        );
         messages.push({ role: "assistant", content: blocks });
         messages.push({
           role: "user",

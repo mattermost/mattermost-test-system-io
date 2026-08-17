@@ -33,14 +33,8 @@ import (
 )
 
 // subjectLabel renders the authenticated principal for the corrected_by column.
-//
-// This records the credential that wrote the correction, which is the only
-// identity the server can verify. It is deliberately not the maintainer who
-// typed the override command: that person is already recorded, by GitHub and
-// under GitHub's own authentication, in the PR comment the override workflow
-// posts ("Triage override applied by @someone") — and that workflow only runs
-// for an OWNER, MEMBER, or COLLABORATOR. The verdict row carries the PR number
-// and run id needed to find it.
+// Attribution comes from the credential that wrote the correction — the only
+// identity the server can verify — never from the request body.
 func subjectLabel(s authapi.Subject) string {
 	switch {
 	case s.OIDCSubject != "":
@@ -109,16 +103,14 @@ type verdictBatch struct {
 	GHRunID    string         `json:"gh_run_id"`
 	GHPRNumber *int           `json:"gh_pr_number"`
 	Model      *string        `json:"model"`
-	Tier       *int           `json:"tier"`
 	Verdicts   []verdictInput `json:"verdicts"`
 }
 
 // CreateVerdicts serves POST /api/v1/triage/verdicts — upserts a run's triage
 // decisions.
 //
-// Upsert rather than insert because triage re-runs (a retry of the triage job, a
-// re-triage after a rerun produced better evidence) must correct the record for
-// that run rather than append a second, contradictory row.
+// Upsert rather than insert because a retry of the triage job must correct the
+// record for that run rather than append a second, contradictory row.
 func (h *Handlers) CreateVerdicts(w http.ResponseWriter, r *http.Request) {
 	var batch verdictBatch
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&batch); err != nil {
@@ -186,10 +178,10 @@ func (h *Handlers) CreateVerdicts(w http.ResponseWriter, r *http.Request) {
 			INSERT INTO triage_verdicts (
 				repository, branch, commit_sha, gh_run_id, gh_pr_number,
 				external_test_id, cluster_signature, member_count,
-				verdict, confidence, tier, root_cause, evidence,
+				verdict, confidence, root_cause, evidence,
 				suspect_commit, check_state, waived, model
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 			ON CONFLICT (repository, commit_sha, gh_run_id, cluster_signature, external_test_id)
 			DO UPDATE SET
 				branch        = EXCLUDED.branch,
@@ -197,7 +189,6 @@ func (h *Handlers) CreateVerdicts(w http.ResponseWriter, r *http.Request) {
 				member_count  = EXCLUDED.member_count,
 				verdict       = EXCLUDED.verdict,
 				confidence    = EXCLUDED.confidence,
-				tier          = EXCLUDED.tier,
 				root_cause    = EXCLUDED.root_cause,
 				evidence      = EXCLUDED.evidence,
 				suspect_commit = EXCLUDED.suspect_commit,
@@ -208,7 +199,7 @@ func (h *Handlers) CreateVerdicts(w http.ResponseWriter, r *http.Request) {
 		`,
 			batch.Repository, batch.Branch, batch.CommitSHA, batch.GHRunID, batch.GHPRNumber,
 			v.ExternalTestID, v.ClusterSignature, memberCount,
-			v.Verdict, v.Confidence, batch.Tier, v.RootCause, evidence,
+			v.Verdict, v.Confidence, v.RootCause, evidence,
 			v.SuspectCommit, checkState, v.Waived, batch.Model,
 		).Scan(&id); err != nil {
 			h.logError("triage verdicts upsert", err)
@@ -445,7 +436,6 @@ type verdictRow struct {
 	MemberCount      int        `json:"member_count"`
 	Verdict          string     `json:"verdict"`
 	Confidence       float64    `json:"confidence"`
-	Tier             *int       `json:"tier,omitempty"`
 	RootCause        *string    `json:"root_cause,omitempty"`
 	SuspectCommit    *string    `json:"suspect_commit,omitempty"`
 	CheckState       string     `json:"check_state"`
@@ -483,7 +473,7 @@ func (h *Handlers) ListVerdicts(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT id, repository, branch, commit_sha, gh_run_id, gh_pr_number,
 		       external_test_id, cluster_signature, member_count, verdict, confidence,
-		       tier, root_cause, suspect_commit, check_state, waived, model,
+		       root_cause, suspect_commit, check_state, waived, model,
 		       corrected_verdict, corrected_by, corrected_at, created_at
 		FROM triage_verdicts
 		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
@@ -506,7 +496,7 @@ func (h *Handlers) ListVerdicts(w http.ResponseWriter, r *http.Request) {
 		var v verdictRow
 		if err := rows.Scan(&v.ID, &v.Repository, &v.Branch, &v.CommitSHA, &v.GHRunID,
 			&v.GHPRNumber, &v.ExternalTestID, &v.ClusterSignature, &v.MemberCount,
-			&v.Verdict, &v.Confidence, &v.Tier, &v.RootCause, &v.SuspectCommit,
+			&v.Verdict, &v.Confidence, &v.RootCause, &v.SuspectCommit,
 			&v.CheckState, &v.Waived, &v.Model, &v.CorrectedVerdict, &v.CorrectedBy,
 			&v.CorrectedAt, &v.CreatedAt); err != nil {
 			h.logError("triage list verdicts scan", err)

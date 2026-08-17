@@ -134,6 +134,8 @@ test("one unwaived failure keeps the run red", () => {
       waived: true,
       source: "history",
       check_state: "success",
+      kind: "flaky",
+      member_count: 12,
     },
     {
       verdict: "PR_REGRESSION",
@@ -143,6 +145,8 @@ test("one unwaived failure keeps the run red", () => {
       waived: false,
       source: "history",
       check_state: "failure",
+      kind: "bug",
+      member_count: 1,
     },
   ]);
   assert.equal(r.waived, false);
@@ -154,6 +158,25 @@ test("no failures is success", () => {
   const r = rollup([]);
   assert.equal(r.state, "success");
   assert.equal(r.description, "no failures");
+});
+
+test("rollup counts clustered members, not just clusters", () => {
+  const r = rollup([
+    {
+      verdict: "FLAKY_TEST",
+      confidence: 1,
+      reason: "spinner",
+      citations: ["this_run_recovered"],
+      waived: true,
+      source: "history",
+      check_state: "success",
+      kind: "flaky",
+      member_count: 300,
+    },
+  ]);
+  assert.equal(r.waived, true);
+  assert.equal(r.state, "success");
+  assert.match(r.description, /300 failure\(s\) in 1 cluster/);
 });
 
 test("decide uses history suggestion when no model call", () => {

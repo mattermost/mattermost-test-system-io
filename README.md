@@ -52,7 +52,7 @@ Reads are public. Writes and admin endpoints require `X-API-Key`, `Authorization
 | `GET /api/v1/tests/history` | Per-test outcome series across commits (public) |
 | `GET /api/v1/tests/flakiness` | Stability leaderboard (public) |
 | `GET /api/v1/tests/failing-elsewhere` | Same test failing on other PRs (public) |
-| `GET /api/v1/triage/evidence` | Failures + screenshots + history + deterministic flake suggestion (public) |
+| `GET /api/v1/triage/evidence` | Clustered failures + screenshots + history + deterministic flake suggestion (public). Cost scales with distinct error signatures, not failure count. |
 | `POST /api/v1/triage/verdicts` | Upsert a run's triage verdicts (auth required) |
 | `POST /api/v1/auth/github/start`, `GET /api/v1/auth/github/callback` | GitHub OAuth sign-in |
 | `POST /api/v1/auth/logout` | Clear session |

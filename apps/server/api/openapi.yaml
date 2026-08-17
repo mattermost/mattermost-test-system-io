@@ -1224,17 +1224,19 @@ paths:
   /api/v1/triage/evidence:
     get:
       tags: [triage]
-      summary: One-shot evidence pack for AI flake classification
+      summary: Clustered evidence pack for AI flake classification
       description: |
         Joins this run's failures (error, stack, screenshots) to the history
-        APIs (outcome series, failing-elsewhere, amnesty) and attaches a
-        deterministic suggestion.
+        APIs and groups them by normalized error signature.
 
-        The point is to replace a costly targeted rerun: history already
-        answers "was this failing on main?", screenshots and the PR diff are
-        what a human looks at, and the model is only asked when those do not
-        decide. Failures without a stable `external_test_id` cannot consult
-        history and are marked `needs_ai`.
+        Cost scales with distinct causes, not failure count: 300 identical
+        "element not visible" failures are one cluster, one history lookup,
+        and one agent investigation — never 300 reruns.
+
+        Each cluster carries a representative (error, screenshots, history,
+        amnesty) and a deterministic suggestion. An agent then fetches
+        artifacts and, for bugs, the suspect commit range
+        (`last_pass_commit` … `failing_since_commit`).
 
         Identify the run with `group_id` or with the same composite identity
         `/orchestration/status` uses.
@@ -2832,7 +2834,7 @@ components:
 
     TriageEvidence:
       type: object
-      required: [group, failures, truncated, lookups, max_lookups]
+      required: [group, failure_count, cluster_count, clusters, truncated, lookups, max_lookups]
       properties:
         group:
           type: object
@@ -2848,9 +2850,32 @@ components:
             framework: { type: string }
             name: { type: string }
             status: { type: string }
-        failures:
+        failure_count:
+          type: integer
+          description: Distinct failing tests before clustering.
+        cluster_count:
+          type: integer
+          description: Distinct error signatures returned (capped).
+        clusters:
           type: array
-          items: { $ref: '#/components/schemas/TriageEvidenceFailure' }
+          items:
+            type: object
+            required: [signature, label, member_count, members, representative, suggested]
+            properties:
+              signature: { type: string }
+              label: { type: string }
+              member_count: { type: integer }
+              members:
+                type: array
+                items:
+                  type: object
+                  required: [full_title, status]
+                  properties:
+                    external_test_id: { type: string }
+                    full_title: { type: string }
+                    status: { type: string }
+              representative: { $ref: '#/components/schemas/TriageEvidenceFailure' }
+              suggested: { $ref: '#/components/schemas/TriageSuggestion' }
         truncated: { type: boolean }
         lookups: { type: integer }
         max_lookups: { type: integer }

@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { decide, rollup } from "./policy.ts";
-import { contextsToFlip, flakeSuccessDescription } from "./flip.ts";
+import { contextsToUpdate, originalStatusDescription } from "./flip.ts";
 import type { EvidenceFailure } from "./types.ts";
 
 /** Files from mattermost-mobile#9996 at the dogfood head (minus .github / .md). */
@@ -94,17 +94,21 @@ test("MVP: three waived flake clusters flip e2e-test/detox-ios in gate mode", ()
   assert.equal(summary.waived, true);
   assert.equal(summary.state, "success");
 
-  const flip = contextsToFlip({
+  const flip = contextsToUpdate({
     mode: "gate",
-    waived: summary.waived,
     hasFailures: true,
     explicit: ["e2e-test/detox-ios"],
     discovered: [],
     triageContext: "e2e-test/ai-triage-detox-ios",
   });
   assert.deepEqual(flip, ["e2e-test/detox-ios"]);
-  assert.ok(
-    flakeSuccessDescription("e2e-test/ai-triage-detox-ios", summary.description).length <= 140,
+  assert.match(
+    originalStatusDescription({
+      counts: { passed: 477, failed: 6, skipped: 91 },
+      waived: true,
+      verdict: summary.verdict,
+    }),
+    /waived as flaky/,
   );
 });
 
@@ -190,16 +194,24 @@ test("MVP: true no-evidence INCONCLUSIVE keeps the original check red (fail clos
   assert.equal(bad.verdict, "INCONCLUSIVE");
   const summary = rollup([ok, bad]);
   assert.equal(summary.waived, false);
+  // Still rewrite the original row — keep failure, add test-bug blame.
   assert.deepEqual(
-    contextsToFlip({
+    contextsToUpdate({
       mode: "gate",
-      waived: summary.waived,
       hasFailures: true,
       explicit: ["e2e-test/detox-ios"],
       discovered: [],
       triageContext: "e2e-test/ai-triage-detox-ios",
     }),
-    [],
+    ["e2e-test/detox-ios"],
+  );
+  assert.equal(
+    originalStatusDescription({
+      counts: { passed: 477, failed: 6, skipped: 91 },
+      waived: false,
+      verdict: summary.verdict,
+    }),
+    "477 passed, 6 failed, 91 skipped — test bug",
   );
 });
 
@@ -222,9 +234,8 @@ test("MVP: MAIN flake waiver flips e2e-test/detox-ios (release-branch source com
   const summary = rollup(decisions);
   assert.equal(summary.waived, true);
   assert.deepEqual(
-    contextsToFlip({
+    contextsToUpdate({
       mode: "gate",
-      waived: summary.waived,
       hasFailures: true,
       explicit: ["e2e-test/detox-ios"],
       discovered: [],

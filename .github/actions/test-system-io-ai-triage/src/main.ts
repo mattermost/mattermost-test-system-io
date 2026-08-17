@@ -20,7 +20,7 @@ import {
   listLatestCommitStatuses,
   type CommitStatusState,
 } from "./commit-status.ts";
-import { contextsToFlip, flakeSuccessDescription, parseContextList } from "./flip.ts";
+import { contextsToUpdate, originalStatusDescription, parseContextList, parseRunCounts } from "./flip.ts";
 import { decide, rollup } from "./policy.ts";
 import { buildReportURL } from "./report_url.ts";
 import { retryFetch } from "./retry-fetch.ts";
@@ -110,19 +110,38 @@ export async function run(): Promise<void> {
 
   if (githubToken) {
     const [owner, repo] = splitRepo(pack.group.repository);
-    await setCommitStatus({
-      token: githubToken,
-      owner,
-      repo,
-      sha: pack.group.commit_sha,
-      state: summary.state as CommitStatusState,
-      context: contextName,
-      description: summary.description,
-      targetURL: reportURL,
-    });
+    // When callers name the original platform check, rewrite that row and skip
+    // a separate e2e-test/ai-triage-* failure — PR Checks stay one row per suite.
+    const postTriageRow = Boolean(contextName) && originalContexts.length === 0;
+    if (postTriageRow) {
+      await setCommitStatus({
+        token: githubToken,
+        owner,
+        repo,
+        sha: pack.group.commit_sha,
+        state: summary.state as CommitStatusState,
+        context: contextName,
+        description: summary.description,
+        targetURL: reportURL,
+      });
+    } else if (contextName && originalContexts.length > 0) {
+      // Neutralize any prior red e2e-test/ai-triage-* on this SHA; signal lives on originals.
+      await setCommitStatus({
+        token: githubToken,
+        owner,
+        repo,
+        sha: pack.group.commit_sha,
+        state: "success",
+        context: contextName,
+        description: summary.waived
+          ? `waived on ${originalContexts[0]}`
+          : `see ${originalContexts[0]}`,
+        targetURL: reportURL,
+      });
+    }
 
-    const discovered =
-      mode === "gate" && summary.waived && decisions.length > 0 && originalContexts.length === 0
+    const statusRows =
+      mode === "gate" && decisions.length > 0
         ? await listLatestCommitStatuses({
             token: githubToken,
             owner,
@@ -130,31 +149,40 @@ export async function run(): Promise<void> {
             sha: pack.group.commit_sha,
           })
         : [];
-    const flip = contextsToFlip({
+
+    const targets = contextsToUpdate({
       mode,
-      waived: summary.waived,
       hasFailures: decisions.length > 0,
       explicit: originalContexts,
-      discovered,
+      discovered: statusRows,
       triageContext: contextName,
     });
-    const flakeDesc = flakeSuccessDescription(contextName, summary.description);
-    for (const ctx of flip) {
+    const descByContext = new Map(statusRows.map((s) => [s.context, s.description]));
+    for (const ctx of targets) {
+      const counts = parseRunCounts(descByContext.get(ctx));
+      const description = originalStatusDescription({
+        counts,
+        failureCount: pack.failure_count,
+        waived: summary.waived,
+        verdict: summary.verdict,
+      });
       await setCommitStatus({
         token: githubToken,
         owner,
         repo,
         sha: pack.group.commit_sha,
-        state: "success",
+        state: summary.waived ? "success" : "failure",
         context: ctx,
-        description: flakeDesc,
+        description,
         targetURL: reportURL,
       });
     }
-    if (flip.length > 0) {
-      core.info(`flipped original check(s) to success: ${flip.join(", ")}`);
+    if (targets.length > 0) {
+      core.info(
+        `updated original check(s) → ${summary.waived ? "success" : "failure"}: ${targets.join(", ")}`,
+      );
     }
-    core.setOutput("flipped_contexts", flip.join(","));
+    core.setOutput("flipped_contexts", summary.waived ? targets.join(",") : "");
   } else {
     core.setOutput("flipped_contexts", "");
   }
@@ -164,7 +192,9 @@ export async function run(): Promise<void> {
   core.setOutput("verdict", summary.verdict);
   core.setOutput("description", summary.description);
 
-  if (mode === "gate" && summary.state === "failure") {
+  // Fail the Actions job only when nothing annotated the merge-blocking row
+  // (shadow/discover mode). Named originals stay red via commit status instead.
+  if (mode === "gate" && summary.state === "failure" && originalContexts.length === 0) {
     core.setFailed(summary.description);
   }
 }

@@ -68,11 +68,11 @@ export async function listLatestCommitStatuses(args: {
   owner: string;
   repo: string;
   sha: string;
-}): Promise<Array<{ context: string; state: string }>> {
+}): Promise<Array<{ context: string; state: string; description?: string }>> {
   if (!args.token) return [];
   try {
     const octokit = new RetryingOctokit(getOctokitOptions(args.token));
-    const latest = new Map<string, string>();
+    const latest = new Map<string, { state: string; description?: string }>();
     for await (const page of octokit.paginate.iterator(
       octokit.rest.repos.listCommitStatusesForRef,
       {
@@ -84,10 +84,17 @@ export async function listLatestCommitStatuses(args: {
     )) {
       for (const s of page.data) {
         if (!s.context || latest.has(s.context)) continue;
-        latest.set(s.context, s.state);
+        latest.set(s.context, {
+          state: s.state,
+          description: s.description ?? undefined,
+        });
       }
     }
-    return [...latest.entries()].map(([context, state]) => ({ context, state }));
+    return [...latest.entries()].map(([context, v]) => ({
+      context,
+      state: v.state,
+      description: v.description,
+    }));
   } catch (e) {
     core.warning(`list-commit-statuses: ${(e as Error).message}`);
     return [];

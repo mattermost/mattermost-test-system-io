@@ -1,10 +1,8 @@
 /**
- * When every failure is a waived flake (or pre-existing on the baseline),
- * the required PR check has to go green — otherwise triage is a comment
- * on a still-red merge button.
- *
- * Only `mode: gate` flips the original e2e-test/* contexts. shadow posts
- * e2e-test/ai-triage and leaves the merge-blocking row alone.
+ * Gate mode owns the original e2e-test/* commit status: green when every
+ * failure is a waived flake, otherwise keep it red but rewrite the
+ * description with product-bug vs test-bug blame. Separate ai-triage-*
+ * rows are optional noise — skip them when originals are named.
  */
 
 export function parseContextList(raw: string): string[] {
@@ -14,6 +12,29 @@ export function parseContextList(raw: string): string[] {
     .filter(Boolean);
 }
 
+/** Original e2e-test/* contexts to rewrite after triage (gate only). */
+export function contextsToUpdate(args: {
+  mode: string;
+  hasFailures: boolean;
+  explicit: string[];
+  discovered: Array<{ context: string; state: string }>;
+  triageContext: string;
+}): string[] {
+  if (args.mode !== "gate" || !args.hasFailures) return [];
+  const explicit = args.explicit.filter((c) => c && c !== args.triageContext);
+  if (explicit.length > 0) return [...new Set(explicit)];
+
+  const red = args.discovered.filter(
+    (d) =>
+      d.context.startsWith("e2e-test/") &&
+      d.context !== args.triageContext &&
+      !d.context.startsWith("e2e-test/ai-triage") &&
+      (d.state === "failure" || d.state === "error"),
+  );
+  return [...new Set(red.map((d) => d.context))];
+}
+
+/** @deprecated use contextsToUpdate — flip only when waived */
 export function contextsToFlip(args: {
   mode: string;
   waived: boolean;
@@ -22,22 +43,72 @@ export function contextsToFlip(args: {
   discovered: Array<{ context: string; state: string }>;
   triageContext: string;
 }): string[] {
-  if (args.mode !== "gate" || !args.waived || !args.hasFailures) return [];
-  const explicit = args.explicit.filter((c) => c && c !== args.triageContext);
-  if (explicit.length > 0) return [...new Set(explicit)];
-
-  const red = args.discovered.filter(
-    (d) =>
-      d.context.startsWith("e2e-test/") &&
-      d.context !== args.triageContext &&
-      (d.state === "failure" || d.state === "error"),
-  );
-  return [...new Set(red.map((d) => d.context))];
+  if (!args.waived) return [];
+  return contextsToUpdate(args);
 }
 
+export type FailureBlame = "product bug" | "test bug";
+
+/** PR/MAIN regressions are product; everything else that blocks merge is test-side. */
+export function failureBlame(verdict: string): FailureBlame {
+  if (verdict === "PR_REGRESSION" || verdict === "MAIN_REGRESSION") return "product bug";
+  return "test bug";
+}
+
+export interface RunCounts {
+  passed: number;
+  failed: number;
+  skipped?: number;
+}
+
+/** Parse "485 passed, 4 failed, 79 skipped" from an existing commit-status description. */
+export function parseRunCounts(description: string | undefined | null): RunCounts | undefined {
+  if (!description) return undefined;
+  const passed = description.match(/(\d+)\s+passed/i);
+  const failed = description.match(/(\d+)\s+failed/i);
+  if (!passed || !failed) return undefined;
+  const skipped = description.match(/(\d+)\s+skipped/i);
+  return {
+    passed: Number(passed[1]),
+    failed: Number(failed[1]),
+    skipped: skipped ? Number(skipped[1]) : undefined,
+  };
+}
+
+/**
+ * Description for the original e2e-test/* row (GitHub caps at 140 chars).
+ * Prefer keeping the pass/fail counts the summary action already posted.
+ */
+export function originalStatusDescription(args: {
+  counts?: RunCounts;
+  failureCount?: number;
+  waived: boolean;
+  verdict: string;
+}): string {
+  const counts = args.counts;
+  const head = counts
+    ? counts.skipped !== undefined
+      ? `${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`
+      : `${counts.passed} passed, ${counts.failed} failed`
+    : args.failureCount !== undefined
+      ? `${args.failureCount} failed`
+      : "failures";
+
+  if (args.waived) {
+    return truncate(`${head} — waived as flaky`);
+  }
+  return truncate(`${head} — ${failureBlame(args.verdict)}`);
+}
+
+/** Kept for tests / older call sites that mention the triage context. */
 export function flakeSuccessDescription(triageContext: string, summary: string): string {
   const prefix = `verified flaky — see ${triageContext}`;
   if (!summary) return prefix;
   const combined = `${prefix}: ${summary}`;
   return combined.length <= 140 ? combined : prefix;
+}
+
+function truncate(s: string): string {
+  if (s.length <= 140) return s;
+  return `${s.slice(0, 139)}…`;
 }

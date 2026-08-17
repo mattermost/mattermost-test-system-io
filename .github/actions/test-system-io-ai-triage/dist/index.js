@@ -26875,10 +26875,17 @@ async function listLatestCommitStatuses(args) {
     )) {
       for (const s of page.data) {
         if (!s.context || latest.has(s.context)) continue;
-        latest.set(s.context, s.state);
+        latest.set(s.context, {
+          state: s.state,
+          description: s.description ?? void 0
+        });
       }
     }
-    return [...latest.entries()].map(([context2, state]) => ({ context: context2, state }));
+    return [...latest.entries()].map(([context2, v]) => ({
+      context: context2,
+      state: v.state,
+      description: v.description
+    }));
   } catch (e) {
     warning(`list-commit-statuses: ${e.message}`);
     return [];
@@ -26896,20 +26903,42 @@ function truncateDescription(s) {
 function parseContextList(raw) {
   return raw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
 }
-function contextsToFlip(args) {
-  if (args.mode !== "gate" || !args.waived || !args.hasFailures) return [];
+function contextsToUpdate(args) {
+  if (args.mode !== "gate" || !args.hasFailures) return [];
   const explicit = args.explicit.filter((c) => c && c !== args.triageContext);
   if (explicit.length > 0) return [...new Set(explicit)];
   const red = args.discovered.filter(
-    (d) => d.context.startsWith("e2e-test/") && d.context !== args.triageContext && (d.state === "failure" || d.state === "error")
+    (d) => d.context.startsWith("e2e-test/") && d.context !== args.triageContext && !d.context.startsWith("e2e-test/ai-triage") && (d.state === "failure" || d.state === "error")
   );
   return [...new Set(red.map((d) => d.context))];
 }
-function flakeSuccessDescription(triageContext, summary2) {
-  const prefix = `verified flaky \u2014 see ${triageContext}`;
-  if (!summary2) return prefix;
-  const combined = `${prefix}: ${summary2}`;
-  return combined.length <= 140 ? combined : prefix;
+function failureBlame(verdict) {
+  if (verdict === "PR_REGRESSION" || verdict === "MAIN_REGRESSION") return "product bug";
+  return "test bug";
+}
+function parseRunCounts(description) {
+  if (!description) return void 0;
+  const passed = description.match(/(\d+)\s+passed/i);
+  const failed = description.match(/(\d+)\s+failed/i);
+  if (!passed || !failed) return void 0;
+  const skipped = description.match(/(\d+)\s+skipped/i);
+  return {
+    passed: Number(passed[1]),
+    failed: Number(failed[1]),
+    skipped: skipped ? Number(skipped[1]) : void 0
+  };
+}
+function originalStatusDescription(args) {
+  const counts = args.counts;
+  const head = counts ? counts.skipped !== void 0 ? `${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped` : `${counts.passed} passed, ${counts.failed} failed` : args.failureCount !== void 0 ? `${args.failureCount} failed` : "failures";
+  if (args.waived) {
+    return truncate(`${head} \u2014 waived as flaky`);
+  }
+  return truncate(`${head} \u2014 ${failureBlame(args.verdict)}`);
+}
+function truncate(s) {
+  if (s.length <= 140) return s;
+  return `${s.slice(0, 139)}\u2026`;
 }
 
 // src/policy.ts
@@ -27223,47 +27252,69 @@ async function run() {
   await writeStepSummary(pack.clusters || [], decisions, summary2, reportURL);
   if (githubToken) {
     const [owner, repo] = splitRepo(pack.group.repository);
-    await setCommitStatus({
-      token: githubToken,
-      owner,
-      repo,
-      sha: pack.group.commit_sha,
-      state: summary2.state,
-      context: contextName,
-      description: summary2.description,
-      targetURL: reportURL
-    });
-    const discovered = mode === "gate" && summary2.waived && decisions.length > 0 && originalContexts.length === 0 ? await listLatestCommitStatuses({
-      token: githubToken,
-      owner,
-      repo,
-      sha: pack.group.commit_sha
-    }) : [];
-    const flip = contextsToFlip({
-      mode,
-      waived: summary2.waived,
-      hasFailures: decisions.length > 0,
-      explicit: originalContexts,
-      discovered,
-      triageContext: contextName
-    });
-    const flakeDesc = flakeSuccessDescription(contextName, summary2.description);
-    for (const ctx of flip) {
+    const postTriageRow = Boolean(contextName) && originalContexts.length === 0;
+    if (postTriageRow) {
+      await setCommitStatus({
+        token: githubToken,
+        owner,
+        repo,
+        sha: pack.group.commit_sha,
+        state: summary2.state,
+        context: contextName,
+        description: summary2.description,
+        targetURL: reportURL
+      });
+    } else if (contextName && originalContexts.length > 0) {
       await setCommitStatus({
         token: githubToken,
         owner,
         repo,
         sha: pack.group.commit_sha,
         state: "success",
-        context: ctx,
-        description: flakeDesc,
+        context: contextName,
+        description: summary2.waived ? `waived on ${originalContexts[0]}` : `see ${originalContexts[0]}`,
         targetURL: reportURL
       });
     }
-    if (flip.length > 0) {
-      info(`flipped original check(s) to success: ${flip.join(", ")}`);
+    const statusRows = mode === "gate" && decisions.length > 0 ? await listLatestCommitStatuses({
+      token: githubToken,
+      owner,
+      repo,
+      sha: pack.group.commit_sha
+    }) : [];
+    const targets = contextsToUpdate({
+      mode,
+      hasFailures: decisions.length > 0,
+      explicit: originalContexts,
+      discovered: statusRows,
+      triageContext: contextName
+    });
+    const descByContext = new Map(statusRows.map((s) => [s.context, s.description]));
+    for (const ctx of targets) {
+      const counts = parseRunCounts(descByContext.get(ctx));
+      const description = originalStatusDescription({
+        counts,
+        failureCount: pack.failure_count,
+        waived: summary2.waived,
+        verdict: summary2.verdict
+      });
+      await setCommitStatus({
+        token: githubToken,
+        owner,
+        repo,
+        sha: pack.group.commit_sha,
+        state: summary2.waived ? "success" : "failure",
+        context: ctx,
+        description,
+        targetURL: reportURL
+      });
     }
-    setOutput("flipped_contexts", flip.join(","));
+    if (targets.length > 0) {
+      info(
+        `updated original check(s) \u2192 ${summary2.waived ? "success" : "failure"}: ${targets.join(", ")}`
+      );
+    }
+    setOutput("flipped_contexts", summary2.waived ? targets.join(",") : "");
   } else {
     setOutput("flipped_contexts", "");
   }
@@ -27271,7 +27322,7 @@ async function run() {
   setOutput("waived", String(summary2.waived));
   setOutput("verdict", summary2.verdict);
   setOutput("description", summary2.description);
-  if (mode === "gate" && summary2.state === "failure") {
+  if (mode === "gate" && summary2.state === "failure" && originalContexts.length === 0) {
     setFailed(summary2.description);
   }
 }

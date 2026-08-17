@@ -12,8 +12,11 @@ description: >
   commit. A policy engine — not the model — decides whether anything is waived.
   Fail closed.
 
-  Posts `e2e-test/ai-triage`. In `mode: gate`, a waived flake also flips the
-  original e2e-test/* commit status to success so the PR check goes green.
+  Posts an optional triage commit-status when no original contexts are named.
+  In `mode: gate`, always rewrites the original e2e-test/* row: success when
+  every failure is a waived flake, otherwise keeps failure and annotates the
+  description with product-bug vs test-bug blame (using the existing pass/fail
+  counts when available).
 author: Mattermost
 
 inputs:
@@ -42,22 +45,23 @@ inputs:
     default: PR
   mode:
     description: >
-      shadow posts e2e-test/ai-triage but never fails the job and never
-      flips the original e2e-test/* check. gate is the merge path: a
-      waived flake flips the original check to success; an unwaived
-      failure keeps it red and fails this job.
+      shadow never rewrites the original e2e-test/* check. gate rewrites it:
+      waived flakes → success; unwaived → stay failure with product/test-bug
+      description. When original-commit-status-contexts is set, no separate
+      e2e-test/ai-triage-* row is posted.
     required: false
     default: shadow
   commit-status-context:
-    description: Commit-status context for the triage check.
+    description: >
+      Optional triage commit-status context. Ignored (not posted) when
+      original-commit-status-contexts is set — the platform row is the signal.
     required: false
     default: e2e-test/ai-triage
   original-commit-status-contexts:
     description: >
-      Comma-separated original e2e-test/* contexts to flip to success
-      when every failure is a waived flake (mode: gate). Empty means
-      discover red e2e-test/* rows on the commit, excluding the triage
-      context itself. Must match the context the summary action posted.
+      Comma-separated original e2e-test/* contexts to rewrite after triage
+      (mode: gate). Empty means discover red e2e-test/* rows on the commit,
+      excluding ai-triage*. Must match the context the summary action posted.
     required: false
     default: ""
   github-token:

@@ -26639,7 +26639,7 @@ var TOOLS = [
   },
   {
     name: "get_screenshot",
-    description: "Fetch a TSIO failure screenshot (/files/{s3_key}) so you can see the UI. Call this before calling a flake.",
+    description: "Fetch a TSIO failure screenshot (/files/{s3_key}) when keys are listed. Prefer viewing one when available; not required if error/stack already explain the failure.",
     input_schema: {
       type: "object",
       properties: { s3_key: { type: "string" } },
@@ -26707,19 +26707,22 @@ function buildPrompt(cluster, ctx) {
   const hist = f.history ? `runs=${f.history.runs} failed=${f.history.failed} flaky=${f.history.flaky} flips=${f.history.flips} last_pass=${f.history.last_pass_commit ?? "none"} failing_since=${f.history.failing_since_commit ?? "none"} series=${f.history.series.join(",")}` : f.history_error || "not loaded \u2014 call get_history";
   return `You investigate ONE clustered E2E failure. Do not ask for a rerun. 300 identical failures are still one cause.
 
-Call TSIO tools to collect what you need, look at screenshots, then decide.
+Call TSIO tools as needed, then decide. You already have error/stack (and often screenshots) in this prompt \u2014 that IS evidence.
 
 Return ONLY JSON when done:
-{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["screenshot","history",...],"suspect_sha":"optional","suspect_author":"optional"}
+{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional"}
 
-kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits). INCONCLUSIVE if unsure.
+kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
 
 Rules:
-- Look at at least one screenshot before calling a flake.
-- Prefer INCONCLUSIVE over a flake waiver.
-- confidence 0.85+ needs two citations.
-- If history says already failing on the baseline, it is MAIN_REGRESSION, not this PR.
-- If the PR diff overlaps the failing area, do not call a flake.
+- NEVER return INCONCLUSIVE when error_message, error_stack, or screenshot keys are present. Pick FLAKY_* or a bug verdict.
+- Empty history (runs=0) is normal on staging / new tests \u2014 NOT a reason for INCONCLUSIVE. Cite "empty_history" and still decide from error/screenshots.
+- Screenshots: view one when keys are listed; if keys are "(none)", decide from error/stack alone and cite those.
+- confidence \u22650.85 with two citations (e.g. error_message + screenshot, or error_message + empty_history).
+- If history shows already failing on the baseline, MAIN_REGRESSION \u2014 not this PR.
+- PR_REGRESSION only when this PR changed product code or the failing spec that explains the failure. Files under .github/, detox/e2e/support/, detox/utils/, *.md are CI/harness \u2014 they do NOT make a UI timeout/login flake into PR_REGRESSION.
+- If the PR only touches CI/harness and the failure is setup/login/timeout/emulator, prefer FLAKY_INFRA or FLAKY_SERVER.
+- If the PR diff overlaps the failing product/spec area, do not call a flake.
 
 Cluster: ${cluster.signature} (${cluster.member_count} tests) \u2014 ${cluster.label}
 Representative: ${f.full_title}
@@ -26920,7 +26923,13 @@ function neverAutoWaive(runType, branch) {
   return b.startsWith("release-") || b.startsWith("release/");
 }
 function isSharedHarness(path) {
-  return path.startsWith("detox/e2e/support/") || path.startsWith("detox/utils/") || path === "detox/create_android_emulator.sh" || /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(path);
+  const p = normalizePath(path);
+  return p.startsWith(".github/") || p.startsWith("detox/e2e/support/") || p.startsWith("detox/utils/") || p === "detox/create_android_emulator.sh" || p.endsWith(".md") || /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(p);
+}
+function isCIOnlyDiff(changedFiles) {
+  const files = changedFiles.map(normalizePath).filter(Boolean);
+  if (files.length === 0) return false;
+  return files.every(isSharedHarness);
 }
 function normalizePath(p) {
   return p.replace(/^\.\//, "").replace(/\\/g, "/");
@@ -26943,13 +26952,19 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function diffOverlaps(changedFiles, specFile, stack) {
-  const files = changedFiles.map(normalizePath).filter((f) => !f.startsWith(".github/") && !f.endsWith(".md") && !isSharedHarness(f));
+  const files = changedFiles.map(normalizePath).filter((f) => !isSharedHarness(f));
   if (specFile) {
     const spec = normalizePath(specFile);
     if (files.some((f) => pathsMatch(spec, f))) return true;
   }
   if (!stack) return false;
   return files.some((f) => stackMentions(stack, f));
+}
+function hasAdjudicationEvidence(failure) {
+  if ((failure.screenshots || []).length > 0) return true;
+  if ((failure.error_message || "").trim().length > 0) return true;
+  if ((failure.error_stack || "").trim().length > 0) return true;
+  return false;
 }
 function canWaive(args) {
   if (neverAutoWaive(args.runType, args.branch)) {
@@ -26982,7 +26997,7 @@ function canWaive(args) {
 function decide(args) {
   const suggested = args.failure.suggested;
   const overlaps = diffOverlaps(args.changedFiles, args.failure.file, args.failure.error_stack);
-  const merged = mergeModel(suggested, args.ai, overlaps);
+  const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
   const waiver = canWaive({
     runType: args.runType,
     branch: args.branch,
@@ -27001,33 +27016,102 @@ function decide(args) {
     member_count: 1
   };
 }
-function mergeModel(suggested, ai, overlaps) {
+function mergeModel(suggested, ai, overlaps, failure, changedFiles) {
+  let merged;
   if (!ai) {
-    return {
+    merged = {
       verdict: suggested.verdict,
       confidence: suggested.confidence,
       reason: suggested.reason,
       citations: suggested.citations,
       source: "history"
     };
-  }
-  if (overlaps && FLAKY.has(ai.verdict)) {
-    return {
+  } else if (overlaps && FLAKY.has(ai.verdict)) {
+    merged = {
       verdict: suggested.verdict === "INCONCLUSIVE" ? "PR_REGRESSION" : suggested.verdict,
       confidence: Math.min(suggested.confidence, 0.6),
       reason: `${ai.reason} \u2014 ignored: PR diff overlaps the failing area`,
       citations: suggested.citations,
       source: "policy"
     };
+  } else {
+    merged = {
+      verdict: ai.verdict,
+      confidence: ai.confidence,
+      reason: ai.reason,
+      citations: unique([...suggested.citations, ...ai.citations]),
+      source: "model"
+    };
   }
-  const citations = unique([...suggested.citations, ...ai.citations]);
-  return {
-    verdict: ai.verdict,
-    confidence: ai.confidence,
-    reason: ai.reason,
-    citations,
-    source: "model"
-  };
+  return enforceDecisiveVerdict(merged, failure, changedFiles, overlaps);
+}
+function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
+  const evidence = hasAdjudicationEvidence(failure);
+  const ciOnly = isCIOnlyDiff(changedFiles);
+  const cites = [...merged.citations];
+  if (evidence && (failure.screenshots || []).length > 0 && !cites.some((c) => /screenshot/i.test(c))) {
+    cites.push("screenshot");
+  }
+  if (evidence && (failure.error_message || "").trim() && !cites.some((c) => /error/i.test(c))) {
+    cites.push("error_message");
+  }
+  if (!overlaps && ciOnly && (merged.verdict === "PR_REGRESSION" || merged.verdict === "TEST_DEBT")) {
+    return {
+      verdict: "FLAKY_INFRA",
+      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      reason: `${merged.reason} \u2014 overridden: PR only touches CI/harness, not product code under test`,
+      citations: unique([...cites, "ci_only_diff"]),
+      source: "policy"
+    };
+  }
+  if (!overlaps && merged.verdict === "PR_REGRESSION" && evidence) {
+    const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
+    return {
+      verdict: flakeKind,
+      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      reason: `${merged.reason} \u2014 overridden: PR does not touch this failure's product/spec area`,
+      citations: unique([...cites, "no_product_overlap"]),
+      source: "policy"
+    };
+  }
+  if (!overlaps && merged.verdict === "TEST_DEBT" && evidence) {
+    const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
+    if (flakeKind === "FLAKY_INFRA" || flakeKind === "FLAKY_SERVER") {
+      return {
+        verdict: flakeKind,
+        confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+        reason: `${merged.reason} \u2014 overridden: infra/server signal with no product overlap`,
+        citations: unique([...cites, "no_product_overlap"]),
+        source: "policy"
+      };
+    }
+  }
+  if (merged.verdict === "INCONCLUSIVE" && evidence) {
+    const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
+    return {
+      verdict: flakeKind,
+      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      reason: `${merged.reason} \u2014 overridden: evidence present (error/screenshots/stack); INCONCLUSIVE forbidden`,
+      citations: unique([...cites, "error_or_screenshot"]),
+      source: "policy"
+    };
+  }
+  return { ...merged, citations: unique(cites) };
+}
+function inferFlakeKind(error2, stack) {
+  const text = `${error2}
+${stack}`.toLowerCase();
+  if (/enotfound|econnrefused|etimedout|dns|socket hang up|network request failed|server.*unreachable/.test(
+    text
+  )) {
+    return "FLAKY_SERVER";
+  }
+  if (/emulator|simulator|metro|adb|device offline|bootstrap|connecttoserver|loginavailable|waitfor.*timeout/.test(
+    text
+  )) {
+    return "FLAKY_INFRA";
+  }
+  return "FLAKY_TEST";
 }
 function unique(xs) {
   return [...new Set(xs.filter(Boolean))];

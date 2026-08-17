@@ -108,7 +108,50 @@ test("MVP: three waived flake clusters flip e2e-test/detox-ios in gate mode", ()
   );
 });
 
-test("MVP: one INCONCLUSIVE cluster keeps the original check red (fail closed)", () => {
+test("MVP: AI INCONCLUSIVE with screenshots/error is overridden to a waived flake", () => {
+  const d = decide({
+    failure: histFlaky({
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "history empty",
+        citations: [],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: PR_9996_CHANGED.filter((f) => !f.endsWith(".e2e.ts")),
+    ai: {
+      verdict: "INCONCLUSIVE",
+      confidence: 0.4,
+      reason: "no history, unsure",
+      citations: [],
+    },
+  });
+  assert.equal(d.waived, true, d.reason);
+  assert.match(d.verdict, /^FLAKY_/);
+  assert.equal(d.source, "policy");
+});
+
+test("MVP: AI PR_REGRESSION without product overlap on this failure is overridden to flake", () => {
+  const d = decide({
+    failure: histFlaky(),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: PR_9996_CHANGED, // includes another .e2e.ts, not channel_list
+    ai: {
+      verdict: "PR_REGRESSION",
+      confidence: 0.9,
+      reason: "CI workflow changed",
+      citations: ["changed_files"],
+    },
+  });
+  assert.equal(d.waived, true, d.reason);
+  assert.match(d.verdict, /^FLAKY_/);
+});
+
+test("MVP: true no-evidence INCONCLUSIVE keeps the original check red (fail closed)", () => {
   const ok = decide({
     failure: histFlaky(),
     runType: "PR",
@@ -121,23 +164,30 @@ test("MVP: one INCONCLUSIVE cluster keeps the original check red (fail closed)",
       citations: ["screenshot", "history"],
     },
   });
+  const bare: EvidenceFailure = {
+    full_title: "Mystery › no artifacts",
+    title: "no artifacts",
+    status: "failed",
+    retry_count: 0,
+    duration_ms: 1,
+    screenshots: [],
+    suggested: {
+      verdict: "INCONCLUSIVE",
+      confidence: 0,
+      needs_ai: true,
+      reason: "nothing to go on",
+      citations: [],
+    },
+  };
   const bad = decide({
-    failure: histFlaky({
-      suggested: {
-        verdict: "INCONCLUSIVE",
-        confidence: 0,
-        needs_ai: true,
-        reason: "history does not decide",
-        citations: [],
-      },
-    }),
+    failure: bare,
     runType: "PR",
     branch: "feat/x",
-    changedFiles: PR_9996_CHANGED,
-    // agent parse failure → no ai
+    changedFiles: [],
   });
   assert.equal(ok.waived, true);
   assert.equal(bad.waived, false);
+  assert.equal(bad.verdict, "INCONCLUSIVE");
   const summary = rollup([ok, bad]);
   assert.equal(summary.waived, false);
   assert.deepEqual(

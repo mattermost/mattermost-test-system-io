@@ -41,7 +41,7 @@ const TOOLS = [
   {
     name: "get_screenshot",
     description:
-      "Fetch a TSIO failure screenshot (/files/{s3_key}) so you can see the UI. Call this before calling a flake.",
+      "Fetch a TSIO failure screenshot (/files/{s3_key}) when keys are listed. Prefer viewing one when available; not required if error/stack already explain the failure.",
     input_schema: {
       type: "object",
       properties: { s3_key: { type: "string" } },
@@ -121,19 +121,22 @@ function buildPrompt(cluster: EvidenceCluster, ctx: AgentContext): string {
     : f.history_error || "not loaded — call get_history";
   return `You investigate ONE clustered E2E failure. Do not ask for a rerun. 300 identical failures are still one cause.
 
-Call TSIO tools to collect what you need, look at screenshots, then decide.
+Call TSIO tools as needed, then decide. You already have error/stack (and often screenshots) in this prompt — that IS evidence.
 
 Return ONLY JSON when done:
-{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["screenshot","history",...],"suspect_sha":"optional","suspect_author":"optional"}
+{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional"}
 
-kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits). INCONCLUSIVE if unsure.
+kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
 
 Rules:
-- Look at at least one screenshot before calling a flake.
-- Prefer INCONCLUSIVE over a flake waiver.
-- confidence 0.85+ needs two citations.
-- If history says already failing on the baseline, it is MAIN_REGRESSION, not this PR.
-- If the PR diff overlaps the failing area, do not call a flake.
+- NEVER return INCONCLUSIVE when error_message, error_stack, or screenshot keys are present. Pick FLAKY_* or a bug verdict.
+- Empty history (runs=0) is normal on staging / new tests — NOT a reason for INCONCLUSIVE. Cite "empty_history" and still decide from error/screenshots.
+- Screenshots: view one when keys are listed; if keys are "(none)", decide from error/stack alone and cite those.
+- confidence ≥0.85 with two citations (e.g. error_message + screenshot, or error_message + empty_history).
+- If history shows already failing on the baseline, MAIN_REGRESSION — not this PR.
+- PR_REGRESSION only when this PR changed product code or the failing spec that explains the failure. Files under .github/, detox/e2e/support/, detox/utils/, *.md are CI/harness — they do NOT make a UI timeout/login flake into PR_REGRESSION.
+- If the PR only touches CI/harness and the failure is setup/login/timeout/emulator, prefer FLAKY_INFRA or FLAKY_SERVER.
+- If the PR diff overlaps the failing product/spec area, do not call a flake.
 
 Cluster: ${cluster.signature} (${cluster.member_count} tests) — ${cluster.label}
 Representative: ${f.full_title}

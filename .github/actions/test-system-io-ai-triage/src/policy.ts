@@ -25,13 +25,23 @@ export function isProtectedRun(runType: string, branch: string): boolean {
 }
 
 /** Paths that every Detox run touches; editing them must not block flake waivers. */
-function isSharedHarness(path: string): boolean {
+export function isSharedHarness(path: string): boolean {
+  const p = normalizePath(path);
   return (
-    path.startsWith("detox/e2e/support/") ||
-    path.startsWith("detox/utils/") ||
-    path === "detox/create_android_emulator.sh" ||
-    /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(path)
+    p.startsWith(".github/") ||
+    p.startsWith("detox/e2e/support/") ||
+    p.startsWith("detox/utils/") ||
+    p === "detox/create_android_emulator.sh" ||
+    p.endsWith(".md") ||
+    /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(p)
   );
+}
+
+/** True when the PR only touched CI/harness/docs — not product or the failing spec. */
+export function isCIOnlyDiff(changedFiles: string[]): boolean {
+  const files = changedFiles.map(normalizePath).filter(Boolean);
+  if (files.length === 0) return false;
+  return files.every(isSharedHarness);
 }
 
 function normalizePath(p: string): string {
@@ -53,7 +63,6 @@ function stackMentions(stack: string, changed: string): boolean {
   if (stack.includes(changed)) return true;
   const base = changed.split("/").pop() || "";
   if (base.length < 8 || !base.includes(".")) return false;
-  // Require a path-ish neighbour so "Draft.ts" does not match random prose.
   return new RegExp(`(?:^|[\\s(/])${escapeRegExp(base)}(?::\\d|\\)|$)`, "m").test(stack);
 }
 
@@ -62,15 +71,20 @@ function escapeRegExp(s: string): string {
 }
 
 export function diffOverlaps(changedFiles: string[], specFile?: string, stack?: string): boolean {
-  const files = changedFiles
-    .map(normalizePath)
-    .filter((f) => !f.startsWith(".github/") && !f.endsWith(".md") && !isSharedHarness(f));
+  const files = changedFiles.map(normalizePath).filter((f) => !isSharedHarness(f));
   if (specFile) {
     const spec = normalizePath(specFile);
     if (files.some((f) => pathsMatch(spec, f))) return true;
   }
   if (!stack) return false;
   return files.some((f) => stackMentions(stack, f));
+}
+
+export function hasAdjudicationEvidence(failure: EvidenceFailure): boolean {
+  if ((failure.screenshots || []).length > 0) return true;
+  if ((failure.error_message || "").trim().length > 0) return true;
+  if ((failure.error_stack || "").trim().length > 0) return true;
+  return false;
 }
 
 export function canWaive(args: {
@@ -119,7 +133,7 @@ export function decide(args: {
 }): Decision {
   const suggested: Suggestion = args.failure.suggested;
   const overlaps = diffOverlaps(args.changedFiles, args.failure.file, args.failure.error_stack);
-  const merged = mergeModel(suggested, args.ai, overlaps);
+  const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
   const waiver = canWaive({
     runType: args.runType,
     branch: args.branch,
@@ -143,6 +157,8 @@ function mergeModel(
   suggested: Suggestion,
   ai: ClaudeVerdict | undefined,
   overlaps: boolean,
+  failure: EvidenceFailure,
+  changedFiles: string[],
 ): {
   verdict: string;
   confidence: number;
@@ -150,37 +166,145 @@ function mergeModel(
   citations: string[];
   source: Decision["source"];
 } {
+  let merged: {
+    verdict: string;
+    confidence: number;
+    reason: string;
+    citations: string[];
+    source: Decision["source"];
+  };
+
   if (!ai) {
-    return {
+    merged = {
       verdict: suggested.verdict,
       confidence: suggested.confidence,
       reason: suggested.reason,
       citations: suggested.citations,
       source: "history",
     };
-  }
-
-  // A model cannot green a failure the PR's own diff touches. History-backed
-  // MAIN_REGRESSION (already failing on baseline) is still allowed through
-  // canWaive; this only blocks an AI-invented flake reading.
-  if (overlaps && FLAKY.has(ai.verdict)) {
-    return {
+  } else if (overlaps && FLAKY.has(ai.verdict)) {
+    merged = {
       verdict: suggested.verdict === "INCONCLUSIVE" ? "PR_REGRESSION" : suggested.verdict,
       confidence: Math.min(suggested.confidence, 0.6),
       reason: `${ai.reason} — ignored: PR diff overlaps the failing area`,
       citations: suggested.citations,
       source: "policy",
     };
+  } else {
+    merged = {
+      verdict: ai.verdict,
+      confidence: ai.confidence,
+      reason: ai.reason,
+      citations: unique([...suggested.citations, ...ai.citations]),
+      source: "model",
+    };
   }
 
-  const citations = unique([...suggested.citations, ...ai.citations]);
-  return {
-    verdict: ai.verdict,
-    confidence: ai.confidence,
-    reason: ai.reason,
-    citations,
-    source: "model",
-  };
+  return enforceDecisiveVerdict(merged, failure, changedFiles, overlaps);
+}
+
+/**
+ * With screenshots / error / stack in hand, refuse to leave the run as
+ * INCONCLUSIVE. Also refuse PR_REGRESSION / TEST_DEBT when the PR only
+ * touched CI/harness — that was poisoning #9996 dogfood.
+ */
+export function enforceDecisiveVerdict(
+  merged: {
+    verdict: string;
+    confidence: number;
+    reason: string;
+    citations: string[];
+    source: Decision["source"];
+  },
+  failure: EvidenceFailure,
+  changedFiles: string[],
+  overlaps: boolean,
+): {
+  verdict: string;
+  confidence: number;
+  reason: string;
+  citations: string[];
+  source: Decision["source"];
+} {
+  const evidence = hasAdjudicationEvidence(failure);
+  const ciOnly = isCIOnlyDiff(changedFiles);
+  const cites = [...merged.citations];
+
+  if (evidence && (failure.screenshots || []).length > 0 && !cites.some((c) => /screenshot/i.test(c))) {
+    cites.push("screenshot");
+  }
+  if (evidence && (failure.error_message || "").trim() && !cites.some((c) => /error/i.test(c))) {
+    cites.push("error_message");
+  }
+
+  // CI-only PR cannot be a product PR_REGRESSION / TEST_DEBT for a UI failure.
+  if (!overlaps && ciOnly && (merged.verdict === "PR_REGRESSION" || merged.verdict === "TEST_DEBT")) {
+    return {
+      verdict: "FLAKY_INFRA",
+      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      reason: `${merged.reason} — overridden: PR only touches CI/harness, not product code under test`,
+      citations: unique([...cites, "ci_only_diff"]),
+      source: "policy",
+    };
+  }
+
+  // PR_REGRESSION means "this PR caused it" — impossible without product/spec overlap.
+  if (!overlaps && merged.verdict === "PR_REGRESSION" && evidence) {
+    const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
+    return {
+      verdict: flakeKind,
+      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      reason: `${merged.reason} — overridden: PR does not touch this failure's product/spec area`,
+      citations: unique([...cites, "no_product_overlap"]),
+      source: "policy",
+    };
+  }
+
+  // Mis-labeled TEST_DEBT on infra/server timeouts when this PR did not touch the failure.
+  if (!overlaps && merged.verdict === "TEST_DEBT" && evidence) {
+    const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
+    if (flakeKind === "FLAKY_INFRA" || flakeKind === "FLAKY_SERVER") {
+      return {
+        verdict: flakeKind,
+        confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+        reason: `${merged.reason} — overridden: infra/server signal with no product overlap`,
+        citations: unique([...cites, "no_product_overlap"]),
+        source: "policy",
+      };
+    }
+  }
+
+  if (merged.verdict === "INCONCLUSIVE" && evidence) {
+    const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
+    return {
+      verdict: flakeKind,
+      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      reason: `${merged.reason} — overridden: evidence present (error/screenshots/stack); INCONCLUSIVE forbidden`,
+      citations: unique([...cites, "error_or_screenshot"]),
+      source: "policy",
+    };
+  }
+
+  return { ...merged, citations: unique(cites) };
+}
+
+function inferFlakeKind(error: string, stack: string): string {
+  const text = `${error}\n${stack}`.toLowerCase();
+  if (
+    /enotfound|econnrefused|etimedout|dns|socket hang up|network request failed|server.*unreachable/.test(
+      text,
+    )
+  ) {
+    return "FLAKY_SERVER";
+  }
+  if (
+    /emulator|simulator|metro|adb|device offline|bootstrap|connecttoserver|loginavailable|waitfor.*timeout/.test(
+      text,
+    )
+  ) {
+    return "FLAKY_INFRA";
+  }
+  return "FLAKY_TEST";
 }
 
 function unique(xs: string[]): string[] {

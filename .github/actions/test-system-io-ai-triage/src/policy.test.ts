@@ -229,3 +229,58 @@ test("decide uses history suggestion when no model call", () => {
   assert.equal(d.waived, true);
   assert.equal(d.source, "history");
 });
+
+test("AI INCONCLUSIVE with error text is overridden to a waived flake", () => {
+  const d = decide({
+    failure: failure({
+      error_message: "Wait for LoginAvailable timed out",
+      screenshots: [],
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "no history",
+        citations: [],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: [".github/workflows/e2e.yml"],
+    ai: {
+      verdict: "INCONCLUSIVE",
+      confidence: 0.3,
+      reason: "no screenshots",
+      citations: [],
+    },
+  });
+  assert.equal(d.waived, true, d.reason);
+  assert.equal(d.verdict, "FLAKY_INFRA");
+  assert.equal(d.source, "policy");
+});
+
+test("AI PR_REGRESSION on CI-only PR is overridden to FLAKY_INFRA", () => {
+  const d = decide({
+    failure: failure({
+      file: "detox/e2e/test/login.e2e.ts",
+      error_message: "ConnectToServer timed out",
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "unknown",
+        citations: [],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: [".github/workflows/e2e-detox-pr.yml", "detox/e2e/support/quarantine.ts"],
+    ai: {
+      verdict: "PR_REGRESSION",
+      confidence: 0.95,
+      reason: "workflow changed",
+      citations: ["changed_files"],
+    },
+  });
+  assert.equal(d.waived, true, d.reason);
+  assert.equal(d.verdict, "FLAKY_INFRA");
+});

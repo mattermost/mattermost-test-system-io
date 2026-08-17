@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	maxEvidenceFailures = 50
-	maxHistoryLookups   = 25
+	maxEvidenceRows   = 2000
+	maxHistoryLookups = 15
 )
 
 type evidenceGroup struct {
@@ -86,22 +86,25 @@ func (h *Handlers) Evidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	failures, truncated, err := h.loadEvidenceFailures(ctx, g.ID)
+	failures, rowTruncated, err := h.loadEvidenceFailures(ctx, g.ID)
 	if err != nil {
 		h.logError("triage evidence failures", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
 
+	clusters, clusterTruncated := clusterFailures(failures)
 	lookups := 0
 	excludePR := -1
 	if g.GHPRNumber != nil {
 		excludePR = *g.GHPRNumber
 	}
-	for i := range failures {
-		f := &failures[i]
+	for i := range clusters {
+		c := &clusters[i]
+		f := &c.Representative
 		if f.ExternalTestID == nil || lookups >= maxHistoryLookups {
-			f.Suggested = Suggest(signalsFor(f))
+			c.Suggested = Suggest(signalsFor(f))
+			f.Suggested = c.Suggested
 			continue
 		}
 		lookups++
@@ -122,15 +125,18 @@ func (h *Handlers) Evidence(w http.ResponseWriter, r *http.Request) {
 		if amErr == nil {
 			f.Amnesty = &am
 		}
-		f.Suggested = Suggest(signalsFor(f))
+		c.Suggested = Suggest(signalsFor(f))
+		f.Suggested = c.Suggested
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"group":       g,
-		"failures":    failures,
-		"truncated":   truncated,
-		"lookups":     lookups,
-		"max_lookups": maxHistoryLookups,
+		"group":         g,
+		"failure_count": len(failures),
+		"cluster_count": len(clusters),
+		"clusters":      clusters,
+		"truncated":     rowTruncated || clusterTruncated,
+		"lookups":       lookups,
+		"max_lookups":   maxHistoryLookups,
 	})
 }
 
@@ -232,7 +238,8 @@ func (h *Handlers) loadEvidenceFailures(ctx context.Context, groupID string) ([]
 		WHERE r.report_group_id = $1::uuid
 		  AND tc.status IN ('failed', 'timedOut', 'interrupted', 'flaky')
 		ORDER BY s.ordinal, tc.ordinal
-	`, groupID)
+		LIMIT $2
+	`, groupID, maxEvidenceRows+1)
 	if err != nil {
 		return nil, false, err
 	}
@@ -274,9 +281,9 @@ func (h *Handlers) loadEvidenceFailures(ctx context.Context, groupID string) ([]
 		return nil, false, err
 	}
 
-	truncated := len(order) > maxEvidenceFailures
+	truncated := len(order) > maxEvidenceRows
 	if truncated {
-		order = order[:maxEvidenceFailures]
+		order = order[:maxEvidenceRows]
 	}
 	out := make([]evidenceFailure, 0, len(order))
 	for _, k := range order {

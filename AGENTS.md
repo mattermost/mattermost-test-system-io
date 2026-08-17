@@ -33,7 +33,7 @@ Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or 
 - `GET /api/v1/tests/history` — outcome series for one test (public)
 - `GET /api/v1/tests/flakiness` — stability leaderboard (public)
 - `GET /api/v1/tests/failing-elsewhere` — same test failing on other PRs (public)
-- `GET /api/v1/triage/evidence` — one-shot flake-classification pack: this run's failures + screenshots + history + deterministic suggestion (public)
+- `GET /api/v1/triage/evidence` — clustered flake-classification pack: this run's failures grouped by error signature + screenshots + history + deterministic suggestion (public). Cost scales with distinct causes, not failure count.
 - `GET /api/v1/triage/amnesty` — may this test be auto-waived again? (public)
 - `GET /api/v1/triage/accuracy` — false-green count (public)
 - `POST /api/v1/triage/verdicts` — upsert a run's triage verdicts (auth)

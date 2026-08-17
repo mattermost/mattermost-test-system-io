@@ -14,6 +14,7 @@
 package triage
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -336,17 +337,15 @@ func (h *Handlers) Amnesty(w http.ResponseWriter, r *http.Request) {
 	maxFailureRate := parseFloat(q.Get("max_failure_rate"), 0.10)
 	baselineBranch := orDefault(q.Get("branch"), "main")
 
-	waiverSince, err := parseSince(waiverWindow)
+	resp, err := h.amnestyFor(r.Context(), testID, repo, baselineBranch, waiverWindow, rateWindow, maxWaivers, maxFailureRate)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
-	rateSince, err := parseSince(rateWindow)
-	if err != nil {
-		api.WriteError(w, r, err)
-		return
-	}
+	writeJSON(w, http.StatusOK, resp)
+}
 
+func (h *Handlers) amnestyFor(ctx context.Context, testID, repo, baselineBranch, waiverWindow, rateWindow string, maxWaivers int, maxFailureRate float64) (amnestyResponse, error) {
 	resp := amnestyResponse{
 		TestID:         testID,
 		Repository:     repo,
@@ -355,8 +354,16 @@ func (h *Handlers) Amnesty(w http.ResponseWriter, r *http.Request) {
 		MaxFailureRate: maxFailureRate,
 		RateWindow:     rateWindow,
 	}
+	waiverSince, err := parseSince(waiverWindow)
+	if err != nil {
+		return resp, err
+	}
+	rateSince, err := parseSince(rateWindow)
+	if err != nil {
+		return resp, err
+	}
 
-	if err := h.Pool.QueryRow(r.Context(), `
+	if err := h.Pool.QueryRow(ctx, `
 		SELECT count(*)::int, min(created_at), max(created_at)
 		FROM triage_verdicts
 		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
@@ -365,14 +372,13 @@ func (h *Handlers) Amnesty(w http.ResponseWriter, r *http.Request) {
 		  AND created_at >= $3::timestamptz
 	`, repo, testID, waiverSince).Scan(&resp.WaiversInWindow, &resp.FirstWaiverAt, &resp.LastWaiverAt); err != nil {
 		h.logError("triage amnesty waiver count", err)
-		api.WriteError(w, r, api.ErrInternal)
-		return
+		return resp, api.ErrInternal
 	}
 
 	// Failure rate on the baseline branch. Same group rollup the history endpoint
 	// uses: a test that both passed and failed inside one group is flaky, and
 	// flaky counts toward the failure rate because it did not cleanly pass.
-	if err := h.Pool.QueryRow(r.Context(), `
+	if err := h.Pool.QueryRow(ctx, `
 		WITH matched AS (
 			SELECT g.id, tc.status
 			FROM report_groups g
@@ -396,24 +402,20 @@ func (h *Handlers) Amnesty(w http.ResponseWriter, r *http.Request) {
 		           count(*) FILTER (WHERE ever_failed)::float
 		               / nullif(count(*), 0)::float,
 		           0)
-		-- Groups where the test neither passed nor failed were skipped, and a
-		-- skip says nothing about stability. Counting them would dilute the
-		-- denominator, and dilution here is the dangerous direction: it lowers
-		-- the apparent failure rate and so makes amnesty easier to grant. This
-		-- is the same population /tests/flakiness aggregates over.
 		FROM rolled
 		WHERE ever_passed OR ever_failed
 	`, repo, testID, baselineBranch, rateSince).Scan(&resp.Runs, &resp.FailureRate); err != nil {
 		h.logError("triage amnesty failure rate", err)
-		api.WriteError(w, r, api.ErrInternal)
-		return
+		return resp, api.ErrInternal
 	}
 
+	applyAmnestyLimits(&resp, baselineBranch, maxWaivers, maxFailureRate, waiverWindow, rateWindow)
+	return resp, nil
+}
+
+func applyAmnestyLimits(resp *amnestyResponse, baselineBranch string, maxWaivers int, maxFailureRate float64, waiverWindow, rateWindow string) {
 	// Both limits are inclusive: reaching max_waivers or max_failure_rate denies
-	// amnesty, it does not sit just inside it. The two were inconsistent (>= and
-	// >), which meant a test exactly at the rate limit was waivable while one
-	// exactly at the waiver limit was not. Inclusive on both is the fail-closed
-	// reading, and waiving is the direction that costs more to get wrong.
+	// amnesty. Inclusive on both is the fail-closed reading.
 	switch {
 	case resp.WaiversInWindow >= maxWaivers:
 		resp.Granted = false
@@ -427,8 +429,6 @@ func (h *Handlers) Amnesty(w http.ResponseWriter, r *http.Request) {
 		resp.Granted = true
 		resp.Reason = "within flake tolerance"
 	}
-
-	writeJSON(w, http.StatusOK, resp)
 }
 
 // ---------- GET /api/v1/triage/verdicts ----------

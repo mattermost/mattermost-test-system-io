@@ -49,6 +49,11 @@ Reads are public. Writes and admin endpoints require `X-API-Key`, `Authorization
 | `POST /api/v1/orchestration/screenshots` | Upload an orchestration-flow screenshot; resolvable via `/files/{key}` (auth required) |
 | `GET /api/v1/orchestration/status` | Poll a run's status by composite identity (auth required) |
 | `GET /api/v1/ws` | WebSocket for live ingest progress and orchestration events; clients send a `subscribe.orchestration` frame to receive run-scoped events (anonymous) |
+| `GET /api/v1/tests/history` | Per-test outcome series across commits (public) |
+| `GET /api/v1/tests/flakiness` | Stability leaderboard (public) |
+| `GET /api/v1/tests/failing-elsewhere` | Same test failing on other PRs (public) |
+| `GET /api/v1/triage/evidence` | Failures + screenshots + history + deterministic flake suggestion (public) |
+| `POST /api/v1/triage/verdicts` | Upsert a run's triage verdicts (auth required) |
 | `POST /api/v1/auth/github/start`, `GET /api/v1/auth/github/callback` | GitHub OAuth sign-in |
 | `POST /api/v1/auth/logout` | Clear session |
 | `/swagger-ui/` | Interactive OpenAPI browser |

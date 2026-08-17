@@ -1,0 +1,78 @@
+name: Test System IO — AI flake triage
+description: >
+  Classify a run's E2E failures as flakes or regressions using Test System IO
+  history, screenshots, logs, and the PR diff. Does not rerun tests.
+
+  GET /api/v1/triage/evidence supplies the pack. Deterministic history rules
+  decide the obvious cases (recovered in-run, already failing on main, isolated
+  new failure). Residue is sent to Claude with screenshots. A policy engine —
+  not the model — decides whether anything is waived. Fail closed.
+
+  Posts `e2e-test/ai-triage` and writes verdicts to the TSIO ledger. Does not
+  flip the original e2e-test/* contexts.
+author: Mattermost
+
+inputs:
+  use-staging:
+    description: When true, target staging instead of production.
+    required: false
+    default: "false"
+  oidc-audience:
+    description: OIDC audience claim that the orchestrator expects.
+    required: false
+    default: mattermost-test-system-io
+  composite-identity:
+    description: Composite identity JSON (same payload the begin action received).
+    required: true
+  group-id:
+    description: Report-group UUID. Optional; composite-identity is enough.
+    required: false
+    default: ""
+  baseline-branch:
+    description: Branch history is measured on (not the PR branch).
+    required: false
+    default: main
+  run-type:
+    description: PR | MAIN | RELEASE. Anything but PR never auto-waives.
+    required: false
+    default: PR
+  mode:
+    description: >
+      shadow posts the triage status but never fails the job on unwaived
+      failures. gate exits non-zero when any failure is unwaived.
+    required: false
+    default: shadow
+  commit-status-context:
+    description: Commit-status context for the triage check.
+    required: false
+    default: e2e-test/ai-triage
+  github-token:
+    description: Token for commit status and (on PRs) listing changed files.
+    required: false
+    default: ${{ github.token }}
+  anthropic-api-key:
+    description: >
+      Optional. When set, residue failures are sent to Claude with screenshots.
+      When absent, residue stays INCONCLUSIVE (red).
+    required: false
+    default: ""
+  claude-model:
+    description: Claude model id.
+    required: false
+    default: claude-sonnet-4-6
+
+outputs:
+  state:
+    description: Final triage check state (success | failure).
+  waived:
+    description: Whether every failure was waived.
+  verdict:
+    description: Worst remaining verdict (empty when there were no failures).
+  description:
+    description: Single-line commit-status description.
+  report_url:
+    description: Test System IO report URL for this run.
+
+runs:
+  using: node24
+  main: dist/index.js

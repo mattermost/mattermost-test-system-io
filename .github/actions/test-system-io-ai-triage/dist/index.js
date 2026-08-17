@@ -26831,12 +26831,57 @@ async function setCommitStatus(args) {
     warning(`update-commit-status: ${e.message}`);
   }
 }
+async function listLatestCommitStatuses(args) {
+  if (!args.token) return [];
+  try {
+    const octokit = new RetryingOctokit(getOctokitOptions(args.token));
+    const latest = /* @__PURE__ */ new Map();
+    for await (const page of octokit.paginate.iterator(
+      octokit.rest.repos.listCommitStatusesForRef,
+      {
+        owner: args.owner,
+        repo: args.repo,
+        ref: args.sha,
+        per_page: 100
+      }
+    )) {
+      for (const s of page.data) {
+        if (!s.context || latest.has(s.context)) continue;
+        latest.set(s.context, s.state);
+      }
+    }
+    return [...latest.entries()].map(([context2, state]) => ({ context: context2, state }));
+  } catch (e) {
+    warning(`list-commit-statuses: ${e.message}`);
+    return [];
+  }
+}
 function truncateDescription(s) {
   if (s.length <= DESCRIPTION_MAX) return s;
   warning(
     `update-commit-status: description is ${s.length} chars; truncating to GitHub's ${DESCRIPTION_MAX}-char limit.`
   );
   return `${s.slice(0, DESCRIPTION_MAX - 1)}\u2026`;
+}
+
+// src/flip.ts
+function parseContextList(raw) {
+  return raw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+}
+function contextsToFlip(args) {
+  if (args.mode !== "gate" || !args.waived || !args.hasFailures) return [];
+  const explicit = args.explicit.filter((c) => c && c !== args.triageContext);
+  if (explicit.length > 0) return [...new Set(explicit)];
+  const red = args.discovered.filter(
+    (d) => d.context.startsWith("e2e-test/") && d.context !== args.triageContext && (d.state === "failure" || d.state === "error")
+  );
+  return [...new Set(red.map((d) => d.context))];
+}
+function flakeSuccessDescription(triageContext, summary2) {
+  const prefix = `verified flaky \u2014 see ${triageContext}`;
+  if (!summary2) return prefix;
+  const combined = `${prefix}: ${summary2}`;
+  return combined.length <= 140 ? combined : prefix;
 }
 
 // src/policy.ts
@@ -26989,6 +27034,7 @@ async function run() {
   const runType = getInput("run-type") || "PR";
   const mode = (getInput("mode") || "shadow").toLowerCase();
   const contextName = getInput("commit-status-context") || "e2e-test/ai-triage";
+  const originalContexts = parseContextList(getInput("original-commit-status-contexts"));
   const githubToken = getInput("github-token");
   const anthropicKey = getInput("anthropic-api-key");
   const model = getInput("claude-model") || "claude-sonnet-4-6";
@@ -27055,6 +27101,39 @@ async function run() {
       description: summary2.description,
       targetURL: reportURL
     });
+    const discovered = mode === "gate" && summary2.waived && decisions.length > 0 && originalContexts.length === 0 ? await listLatestCommitStatuses({
+      token: githubToken,
+      owner,
+      repo,
+      sha: pack.group.commit_sha
+    }) : [];
+    const flip = contextsToFlip({
+      mode,
+      waived: summary2.waived,
+      hasFailures: decisions.length > 0,
+      explicit: originalContexts,
+      discovered,
+      triageContext: contextName
+    });
+    const flakeDesc = flakeSuccessDescription(contextName, summary2.description);
+    for (const ctx of flip) {
+      await setCommitStatus({
+        token: githubToken,
+        owner,
+        repo,
+        sha: pack.group.commit_sha,
+        state: "success",
+        context: ctx,
+        description: flakeDesc,
+        targetURL: reportURL
+      });
+    }
+    if (flip.length > 0) {
+      info(`flipped original check(s) to success: ${flip.join(", ")}`);
+    }
+    setOutput("flipped_contexts", flip.join(","));
+  } else {
+    setOutput("flipped_contexts", "");
   }
   setOutput("state", summary2.state);
   setOutput("waived", String(summary2.waived));

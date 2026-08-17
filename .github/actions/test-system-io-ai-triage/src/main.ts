@@ -15,7 +15,12 @@ import {
   resolveSuspectRange,
   type CompareCommit,
 } from "./blame.ts";
-import { setCommitStatus, type CommitStatusState } from "./commit-status.ts";
+import {
+  setCommitStatus,
+  listLatestCommitStatuses,
+  type CommitStatusState,
+} from "./commit-status.ts";
+import { contextsToFlip, flakeSuccessDescription, parseContextList } from "./flip.ts";
 import { decide, rollup } from "./policy.ts";
 import { buildReportURL } from "./report_url.ts";
 import { retryFetch } from "./retry-fetch.ts";
@@ -35,6 +40,7 @@ export async function run(): Promise<void> {
   const runType = core.getInput("run-type") || "PR";
   const mode = (core.getInput("mode") || "shadow").toLowerCase();
   const contextName = core.getInput("commit-status-context") || "e2e-test/ai-triage";
+  const originalContexts = parseContextList(core.getInput("original-commit-status-contexts"));
   const githubToken = core.getInput("github-token");
   const anthropicKey = core.getInput("anthropic-api-key");
   const model = core.getInput("claude-model") || "claude-sonnet-4-6";
@@ -112,6 +118,43 @@ export async function run(): Promise<void> {
       description: summary.description,
       targetURL: reportURL,
     });
+
+    const discovered =
+      mode === "gate" && summary.waived && decisions.length > 0 && originalContexts.length === 0
+        ? await listLatestCommitStatuses({
+            token: githubToken,
+            owner,
+            repo,
+            sha: pack.group.commit_sha,
+          })
+        : [];
+    const flip = contextsToFlip({
+      mode,
+      waived: summary.waived,
+      hasFailures: decisions.length > 0,
+      explicit: originalContexts,
+      discovered,
+      triageContext: contextName,
+    });
+    const flakeDesc = flakeSuccessDescription(contextName, summary.description);
+    for (const ctx of flip) {
+      await setCommitStatus({
+        token: githubToken,
+        owner,
+        repo,
+        sha: pack.group.commit_sha,
+        state: "success",
+        context: ctx,
+        description: flakeDesc,
+        targetURL: reportURL,
+      });
+    }
+    if (flip.length > 0) {
+      core.info(`flipped original check(s) to success: ${flip.join(", ")}`);
+    }
+    core.setOutput("flipped_contexts", flip.join(","));
+  } else {
+    core.setOutput("flipped_contexts", "");
   }
 
   core.setOutput("state", summary.state);

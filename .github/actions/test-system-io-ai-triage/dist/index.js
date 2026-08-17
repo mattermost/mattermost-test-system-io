@@ -26668,7 +26668,18 @@ async function investigate(cluster, ctx) {
     const toolUses = blocks.filter((b) => b.type === "tool_use");
     const text = blocks.find((b) => b.type === "text")?.text || "";
     if (toolUses.length === 0) {
-      return parseVerdict(text);
+      try {
+        return parseVerdict(text);
+      } catch (err) {
+        if (round === MAX_ROUNDS - 1) throw err;
+        warning(`agent JSON unusable (${err.message}); asking once more for JSON only`);
+        messages.push({ role: "assistant", content: blocks });
+        messages.push({
+          role: "user",
+          content: "Your last reply was not valid JSON. Reply with ONLY one JSON object matching the schema. No markdown, no prose."
+        });
+        continue;
+      }
     }
     messages.push({ role: "assistant", content: blocks });
     const results = [];

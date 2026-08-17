@@ -9,7 +9,7 @@
     "format": "npx oxfmt src --write",
     "format:check": "npx oxfmt src --check",
     "lint": "npx oxlint src",
-    "test": "node --experimental-strip-types --test src/policy.test.ts src/claude.test.ts src/blame.test.ts src/flip.test.ts"
+    "test": "node --experimental-strip-types --test src/policy.test.ts src/claude.test.ts src/blame.test.ts src/flip.test.ts src/mvp_dogfood.test.ts"
   },
   "dependencies": {
     "@actions/core": "3.0.1",

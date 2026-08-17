@@ -63,6 +63,37 @@ export async function setCommitStatus(args: CommitStatusArgs): Promise<void> {
   }
 }
 
+export async function listLatestCommitStatuses(args: {
+  token: string;
+  owner: string;
+  repo: string;
+  sha: string;
+}): Promise<Array<{ context: string; state: string }>> {
+  if (!args.token) return [];
+  try {
+    const octokit = new RetryingOctokit(getOctokitOptions(args.token));
+    const latest = new Map<string, string>();
+    for await (const page of octokit.paginate.iterator(
+      octokit.rest.repos.listCommitStatusesForRef,
+      {
+        owner: args.owner,
+        repo: args.repo,
+        ref: args.sha,
+        per_page: 100,
+      },
+    )) {
+      for (const s of page.data) {
+        if (!s.context || latest.has(s.context)) continue;
+        latest.set(s.context, s.state);
+      }
+    }
+    return [...latest.entries()].map(([context, state]) => ({ context, state }));
+  } catch (e) {
+    core.warning(`list-commit-statuses: ${(e as Error).message}`);
+    return [];
+  }
+}
+
 function truncateDescription(s: string): string {
   if (s.length <= DESCRIPTION_MAX) return s;
   core.warning(

@@ -12,8 +12,8 @@ description: >
   commit. A policy engine — not the model — decides whether anything is waived.
   Fail closed.
 
-  Posts `e2e-test/ai-triage` and writes verdicts to the TSIO ledger. Does not
-  flip the original e2e-test/* contexts.
+  Posts `e2e-test/ai-triage`. In `mode: gate`, a waived flake also flips the
+  original e2e-test/* commit status to success so the PR check goes green.
 author: Mattermost
 
 inputs:
@@ -42,14 +42,24 @@ inputs:
     default: PR
   mode:
     description: >
-      shadow posts the triage status but never fails the job on unwaived
-      failures. gate exits non-zero when any failure is unwaived.
+      shadow posts e2e-test/ai-triage but never fails the job and never
+      flips the original e2e-test/* check. gate is the merge path: a
+      waived flake flips the original check to success; an unwaived
+      failure keeps it red and fails this job.
     required: false
     default: shadow
   commit-status-context:
     description: Commit-status context for the triage check.
     required: false
     default: e2e-test/ai-triage
+  original-commit-status-contexts:
+    description: >
+      Comma-separated original e2e-test/* contexts to flip to success
+      when every failure is a waived flake (mode: gate). Empty means
+      discover red e2e-test/* rows on the commit, excluding the triage
+      context itself. Must match the context the summary action posted.
+    required: false
+    default: ""
   github-token:
     description: Token for commit status, PR file list, and blame compare.
     required: false
@@ -77,6 +87,8 @@ outputs:
     description: Single-line commit-status description.
   report_url:
     description: Test System IO report URL for this run.
+  flipped_contexts:
+    description: Original e2e-test/* contexts flipped to success (empty unless mode is gate and every failure was waived).
 
 runs:
   using: node24

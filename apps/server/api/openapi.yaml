@@ -1138,10 +1138,10 @@ paths:
       tags: [tests]
       summary: Per-test stability aggregates over a window, most unstable first
       description: |
-        Drives the flake-amnesty thresholds and the weekly flake rollup. Unlike
-        /tests/history this is not scoped to a single test, so the rollup happens
-        in SQL — returning every run row for every test in the window would be
-        unbounded.
+        Leaderboard of unstable tests over a window. Unlike /tests/history this
+        is not scoped to a single test, so the rollup happens in SQL — returning
+        every run row for every test in the window would be unbounded. Amnesty
+        computes its own failure-rate check; this endpoint is for humans.
       security: []
       parameters:
         - in: query
@@ -1325,9 +1325,8 @@ paths:
       tags: [triage]
       summary: Upsert a run's triage verdicts
       description: |
-        Upsert rather than insert: a re-triage (the job retried, or better
-        evidence arrived from a rerun) must correct the record for that run
-        rather than append a second, contradictory row.
+        Upsert rather than insert: a retry of the triage job must correct the
+        record for that run rather than append a second, contradictory row.
       requestBody:
         required: true
         content:
@@ -1372,11 +1371,9 @@ paths:
                 corrected_reason: { type: string }
               # corrected_by is deliberately absent, and additional properties are
               # not accepted in its place: attribution comes from the
-              # authenticated principal, never from the body. Leaving it required
-              # here would have rejected every correction the toolkit sends —
-              # request validation runs before the handler derives identity — so
-              # the schema and the handler have to agree that the caller does not
-              # supply it.
+              # authenticated principal, never from the body. Request validation
+              # runs before the handler derives identity, so the schema and the
+              # handler have to agree that the caller does not supply it.
               additionalProperties: false
       responses:
         '200':
@@ -2710,7 +2707,7 @@ components:
         root_cause: { type: string }
         evidence:
           type: array
-          description: Free-form evidence references (rerun results, history, log excerpts, screenshots).
+          description: Free-form evidence references (history, log excerpts, screenshots).
           items: { type: object }
         suspect_commit: { type: string }
         check_state:
@@ -2732,11 +2729,6 @@ components:
         gh_run_id: { type: string }
         gh_pr_number: { type: integer }
         model: { type: string }
-        tier:
-          type: integer
-          minimum: 0
-          maximum: 4
-          description: Volume tier the triage ran at; records how much evidence was affordable.
         verdicts:
           type: array
           minItems: 1
@@ -2758,7 +2750,6 @@ components:
         member_count: { type: integer }
         verdict: { $ref: '#/components/schemas/TriageVerdictType' }
         confidence: { type: number }
-        tier: { type: integer }
         root_cause: { type: string }
         suspect_commit: { type: string }
         check_state: { type: string, enum: [success, failure, pending, error] }

@@ -65,8 +65,6 @@ CREATE TABLE triage_verdicts (
                                       'FLAKY_INFRA','FLAKY_SERVER','BUILD_OR_ENV_ERROR',
                                       'TEST_DEBT','INCONCLUSIVE')),
     confidence        numeric(4,3) NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
-    -- Volume tier the triage ran at (0-4); records how much evidence was affordable.
-    tier              smallint    CHECK (tier IS NULL OR (tier >= 0 AND tier <= 4)),
     root_cause        text,
     evidence          jsonb       NOT NULL DEFAULT '[]'
                                   CHECK (jsonb_typeof(evidence) = 'array'),

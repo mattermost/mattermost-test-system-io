@@ -230,7 +230,11 @@ export function enforceDecisiveVerdict(
   const ciOnly = isCIOnlyDiff(changedFiles);
   const cites = [...merged.citations];
 
-  if (evidence && (failure.screenshots || []).length > 0 && !cites.some((c) => /screenshot/i.test(c))) {
+  if (
+    evidence &&
+    (failure.screenshots || []).length > 0 &&
+    !cites.some((c) => /screenshot/i.test(c))
+  ) {
     cites.push("screenshot");
   }
   if (evidence && (failure.error_message || "").trim() && !cites.some((c) => /error/i.test(c))) {
@@ -238,7 +242,11 @@ export function enforceDecisiveVerdict(
   }
 
   // CI-only PR cannot be a product PR_REGRESSION / TEST_DEBT for a UI failure.
-  if (!overlaps && ciOnly && (merged.verdict === "PR_REGRESSION" || merged.verdict === "TEST_DEBT")) {
+  if (
+    !overlaps &&
+    ciOnly &&
+    (merged.verdict === "PR_REGRESSION" || merged.verdict === "TEST_DEBT")
+  ) {
     return {
       verdict: "FLAKY_INFRA",
       confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),

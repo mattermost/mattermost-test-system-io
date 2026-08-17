@@ -28,17 +28,13 @@ test("parseContextList splits commas and newlines", () => {
 });
 
 test("shadow never updates the original PR check", () => {
-  assert.deepEqual(
-    contextsToUpdate({ mode: "shadow", hasFailures: true, ...base }),
-    [],
-  );
+  assert.deepEqual(contextsToUpdate({ mode: "shadow", hasFailures: true, ...base }), []);
 });
 
 test("gate updates original even when unwaived (annotate failure)", () => {
-  assert.deepEqual(
-    contextsToUpdate({ mode: "gate", hasFailures: true, ...base }),
-    ["e2e-test/ios"],
-  );
+  assert.deepEqual(contextsToUpdate({ mode: "gate", hasFailures: true, ...base }), [
+    "e2e-test/ios",
+  ]);
 });
 
 test("no classified failures does not touch a red check", () => {

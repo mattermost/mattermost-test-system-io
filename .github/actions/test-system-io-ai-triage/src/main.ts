@@ -20,7 +20,12 @@ import {
   listLatestCommitStatuses,
   type CommitStatusState,
 } from "./commit-status.ts";
-import { contextsToUpdate, originalStatusDescription, parseContextList, parseRunCounts } from "./flip.ts";
+import {
+  contextsToUpdate,
+  originalStatusDescription,
+  parseContextList,
+  parseRunCounts,
+} from "./flip.ts";
 import { decide, rollup } from "./policy.ts";
 import { buildReportURL } from "./report_url.ts";
 import { retryFetch } from "./retry-fetch.ts";

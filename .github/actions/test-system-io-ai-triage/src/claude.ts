@@ -35,8 +35,24 @@ export function parseVerdict(raw: string): ClaudeVerdict {
 }
 
 function extractJSON(raw: string): Record<string, unknown> {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] || raw).trim();
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
   if (start < 0 || end <= start) throw new Error("model response was not JSON");
-  return JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
+  const slice = candidate.slice(start, end + 1);
+  try {
+    return JSON.parse(slice) as Record<string, unknown>;
+  } catch (first) {
+    // Models sometimes emit trailing commas or smart quotes; try a light clean-up.
+    const cleaned = slice
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .replace(/,\s*([}\]])/g, "$1");
+    try {
+      return JSON.parse(cleaned) as Record<string, unknown>;
+    } catch {
+      throw first;
+    }
+  }
 }

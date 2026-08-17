@@ -122,6 +122,30 @@ test("diffOverlaps matches spec path and stack frames", () => {
     true,
   );
   assert.equal(diffOverlaps(["README.md"], "detox/e2e/login.e2e.ts", "boom"), false);
+  assert.equal(
+    diffOverlaps(
+      ["detox/e2e/test/login.e2e.ts"],
+      "detox/e2e/test/login.e2e.ts",
+      "Error: boom",
+    ),
+    true,
+  );
+});
+
+test("diffOverlaps ignores shared harness and unit-test edits", () => {
+  const harness = [
+    "detox/e2e/support/quarantine.ts",
+    "detox/e2e/support/test_config.ts",
+    "detox/utils/tsio-report-status.js",
+    "app/utils/keyboard.test.ts",
+  ];
+  const stack =
+    "Error: scroll failed\n    at load (detox/e2e/support/test_config.ts:12)\n    at detox/e2e/test/channels/list.e2e.ts:40";
+  assert.equal(diffOverlaps(harness, "detox/e2e/test/channels/list.e2e.ts", stack), false);
+});
+
+test("diffOverlaps does not treat short path fragments as matches", () => {
+  assert.equal(diffOverlaps(["app"], "detox/e2e/test/app_login.e2e.ts", "boom"), false);
 });
 
 test("one unwaived failure keeps the run red", () => {

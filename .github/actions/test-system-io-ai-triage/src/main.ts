@@ -97,7 +97,9 @@ export async function run(): Promise<void> {
     decisions.push(blamed);
     core.info(
       `${cluster.signature} ×${cluster.member_count}: kind=${blamed.kind} ${blamed.verdict} ` +
-        `waived=${blamed.waived}` +
+        `waived=${blamed.waived} conf=${blamed.confidence} ` +
+        `cites=${blamed.citations.join(",") || "-"} ` +
+        `reason=${blamed.reason}` +
         (blamed.suspect_author ? ` author=@${blamed.suspect_author}` : ""),
     );
   }

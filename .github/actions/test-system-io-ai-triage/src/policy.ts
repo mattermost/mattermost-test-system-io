@@ -13,14 +13,53 @@ export function isProtectedRun(runType: string, branch: string): boolean {
   return b === "main" || b === "master" || b.startsWith("release-") || b.startsWith("release/");
 }
 
+/** Paths that every Detox run touches; editing them must not block flake waivers. */
+function isSharedHarness(path: string): boolean {
+  return (
+    path.startsWith("detox/e2e/support/") ||
+    path.startsWith("detox/utils/") ||
+    path === "detox/create_android_emulator.sh" ||
+    /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(path)
+  );
+}
+
+function normalizePath(p: string): string {
+  return p.replace(/^\.\//, "").replace(/\\/g, "/");
+}
+
+/** True when the PR changed the failing spec itself (not a vague substring). */
+function pathsMatch(spec: string, changed: string): boolean {
+  if (spec === changed) return true;
+  if (spec.endsWith("/" + changed) || changed.endsWith("/" + spec)) return true;
+  const specBase = spec.split("/").pop() || "";
+  const changedBase = changed.split("/").pop() || "";
+  return Boolean(specBase) && specBase === changedBase && specBase.includes(".");
+}
+
+/** Stack frames mention the changed file as a path, not as an accidental substring. */
+function stackMentions(stack: string, changed: string): boolean {
+  if (changed.length < 8) return false;
+  if (stack.includes(changed)) return true;
+  const base = changed.split("/").pop() || "";
+  if (base.length < 8 || !base.includes(".")) return false;
+  // Require a path-ish neighbour so "Draft.ts" does not match random prose.
+  return new RegExp(`(?:^|[\\s(/])${escapeRegExp(base)}(?::\\d|\\)|$)`, "m").test(stack);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function diffOverlaps(changedFiles: string[], specFile?: string, stack?: string): boolean {
-  const files = changedFiles.filter((f) => !f.startsWith(".github/") && !f.endsWith(".md"));
+  const files = changedFiles
+    .map(normalizePath)
+    .filter((f) => !f.startsWith(".github/") && !f.endsWith(".md") && !isSharedHarness(f));
   if (specFile) {
-    const spec = specFile.replace(/^\.\//, "");
-    if (files.some((f) => spec.endsWith(f) || f.endsWith(spec) || spec.includes(f))) return true;
+    const spec = normalizePath(specFile);
+    if (files.some((f) => pathsMatch(spec, f))) return true;
   }
   if (!stack) return false;
-  return files.some((f) => stack.includes(f));
+  return files.some((f) => stackMentions(stack, f));
 }
 
 export function canWaive(args: {

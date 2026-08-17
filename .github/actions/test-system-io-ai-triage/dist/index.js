@@ -26466,10 +26466,22 @@ function parseVerdict(raw) {
   };
 }
 function extractJSON(raw) {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = (fenced?.[1] || raw).trim();
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
   if (start < 0 || end <= start) throw new Error("model response was not JSON");
-  return JSON.parse(raw.slice(start, end + 1));
+  const slice = candidate.slice(start, end + 1);
+  try {
+    return JSON.parse(slice);
+  } catch (first) {
+    const cleaned = slice.replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/,\s*([}\]])/g, "$1");
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      throw first;
+    }
+  }
 }
 
 // src/blame.ts
@@ -26894,14 +26906,37 @@ function isProtectedRun(runType, branch) {
   const b = (branch || "").toLowerCase();
   return b === "main" || b === "master" || b.startsWith("release-") || b.startsWith("release/");
 }
+function isSharedHarness(path) {
+  return path.startsWith("detox/e2e/support/") || path.startsWith("detox/utils/") || path === "detox/create_android_emulator.sh" || /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(path);
+}
+function normalizePath(p) {
+  return p.replace(/^\.\//, "").replace(/\\/g, "/");
+}
+function pathsMatch(spec, changed) {
+  if (spec === changed) return true;
+  if (spec.endsWith("/" + changed) || changed.endsWith("/" + spec)) return true;
+  const specBase = spec.split("/").pop() || "";
+  const changedBase = changed.split("/").pop() || "";
+  return Boolean(specBase) && specBase === changedBase && specBase.includes(".");
+}
+function stackMentions(stack, changed) {
+  if (changed.length < 8) return false;
+  if (stack.includes(changed)) return true;
+  const base = changed.split("/").pop() || "";
+  if (base.length < 8 || !base.includes(".")) return false;
+  return new RegExp(`(?:^|[\\s(/])${escapeRegExp(base)}(?::\\d|\\)|$)`, "m").test(stack);
+}
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 function diffOverlaps(changedFiles, specFile, stack) {
-  const files = changedFiles.filter((f) => !f.startsWith(".github/") && !f.endsWith(".md"));
+  const files = changedFiles.map(normalizePath).filter((f) => !f.startsWith(".github/") && !f.endsWith(".md") && !isSharedHarness(f));
   if (specFile) {
-    const spec = specFile.replace(/^\.\//, "");
-    if (files.some((f) => spec.endsWith(f) || f.endsWith(spec) || spec.includes(f))) return true;
+    const spec = normalizePath(specFile);
+    if (files.some((f) => pathsMatch(spec, f))) return true;
   }
   if (!stack) return false;
-  return files.some((f) => stack.includes(f));
+  return files.some((f) => stackMentions(stack, f));
 }
 function canWaive(args) {
   if (isProtectedRun(args.runType, args.branch)) {
@@ -27083,7 +27118,7 @@ async function run() {
     const blamed = await attachBlame(d, cluster, githubToken, pack.group.repository);
     decisions.push(blamed);
     info(
-      `${cluster.signature} \xD7${cluster.member_count}: kind=${blamed.kind} ${blamed.verdict} waived=${blamed.waived}` + (blamed.suspect_author ? ` author=@${blamed.suspect_author}` : "")
+      `${cluster.signature} \xD7${cluster.member_count}: kind=${blamed.kind} ${blamed.verdict} waived=${blamed.waived} conf=${blamed.confidence} cites=${blamed.citations.join(",") || "-"} reason=${blamed.reason}` + (blamed.suspect_author ? ` author=@${blamed.suspect_author}` : "")
     );
   }
   const summary2 = rollup(decisions);

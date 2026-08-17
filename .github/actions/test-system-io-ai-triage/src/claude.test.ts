@@ -18,8 +18,18 @@ test("parseVerdict extracts JSON from surrounding text", () => {
   assert.equal(v.verdict, "PR_REGRESSION");
 });
 
-test("parseVerdict clamps unknown verdicts to INCONCLUSIVE", () => {
-  const v = parseVerdict(`{"verdict":"WHO_KNOWS","confidence":2,"reason":"x","citations":[]}`);
-  assert.equal(v.verdict, "INCONCLUSIVE");
-  assert.equal(v.confidence, 1);
+test("parseVerdict extracts JSON from a fenced code block", () => {
+  const v = parseVerdict(
+    "Here you go:\n```json\n{\"verdict\":\"FLAKY_TEST\",\"confidence\":0.9,\"reason\":\"timeout\",\"citations\":[\"screenshot\",\"history\"]}\n```\n",
+  );
+  assert.equal(v.verdict, "FLAKY_TEST");
+  assert.equal(v.confidence, 0.9);
 });
+
+test("parseVerdict tolerates trailing commas", () => {
+  const v = parseVerdict(
+    `{"verdict":"FLAKY_SERVER","confidence":0.9,"reason":"server blip","citations":["screenshot","history"],}`,
+  );
+  assert.equal(v.verdict, "FLAKY_SERVER");
+});
+

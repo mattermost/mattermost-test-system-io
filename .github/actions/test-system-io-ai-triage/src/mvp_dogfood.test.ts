@@ -153,6 +153,37 @@ test("MVP: one INCONCLUSIVE cluster keeps the original check red (fail closed)",
   );
 });
 
+test("MVP: MAIN flake waiver flips e2e-test/detox-ios (release-branch source commit)", () => {
+  const decisions = ["a", "b"].map((title) =>
+    decide({
+      failure: histFlaky({ title, full_title: `Channels › ${title}` }),
+      runType: "MAIN",
+      branch: "main",
+      changedFiles: [],
+      ai: {
+        verdict: "FLAKY_TEST",
+        confidence: 0.9,
+        reason: "flake on main",
+        citations: ["screenshot", "history"],
+      },
+    }),
+  );
+  for (const d of decisions) assert.equal(d.waived, true, d.reason);
+  const summary = rollup(decisions);
+  assert.equal(summary.waived, true);
+  assert.deepEqual(
+    contextsToFlip({
+      mode: "gate",
+      waived: summary.waived,
+      hasFailures: true,
+      explicit: ["e2e-test/detox-ios"],
+      discovered: [],
+      triageContext: "e2e-test/ai-triage-detox-ios",
+    }),
+    ["e2e-test/detox-ios"],
+  );
+});
+
 test("MVP: changing the failing e2e spec itself still blocks a flake waiver", () => {
   const d = decide({
     failure: histFlaky({

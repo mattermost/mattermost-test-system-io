@@ -6,11 +6,22 @@ export const WAIVE_CONFIDENCE = 0.85;
 const FLAKY = new Set(["FLAKY_TEST", "FLAKY_INFRA", "FLAKY_SERVER"]);
 const NEVER_WAIVE = new Set(["PR_REGRESSION", "INCONCLUSIVE", "TEST_DEBT", "BUILD_OR_ENV_ERROR"]);
 
-export function isProtectedRun(runType: string, branch: string): boolean {
+/**
+ * RELEASE / release-* never auto-waive (CMT / release trains stay fail-closed).
+ * MAIN may waive confirmed flakes so required e2e-test/* checks on main go
+ * green — otherwise Create Release Branches cannot push release-* from a
+ * flaky main commit (no PR labels apply to that path).
+ */
+export function neverAutoWaive(runType: string, branch: string): boolean {
   const t = (runType || "").toUpperCase();
-  if (t === "MAIN" || t === "MASTER" || t === "RELEASE") return true;
+  if (t === "RELEASE") return true;
   const b = (branch || "").toLowerCase();
-  return b === "main" || b === "master" || b.startsWith("release-") || b.startsWith("release/");
+  return b.startsWith("release-") || b.startsWith("release/");
+}
+
+/** @deprecated use neverAutoWaive — kept for call sites during rename */
+export function isProtectedRun(runType: string, branch: string): boolean {
+  return neverAutoWaive(runType, branch);
 }
 
 /** Paths that every Detox run touches; editing them must not block flake waivers. */
@@ -71,8 +82,8 @@ export function canWaive(args: {
   amnestyGranted?: boolean;
   diffOverlapsFailure: boolean;
 }): { waived: boolean; reason: string } {
-  if (isProtectedRun(args.runType, args.branch)) {
-    return { waived: false, reason: "baseline/release runs never auto-waive" };
+  if (neverAutoWaive(args.runType, args.branch)) {
+    return { waived: false, reason: "release runs never auto-waive" };
   }
   if (NEVER_WAIVE.has(args.verdict)) {
     return { waived: false, reason: `${args.verdict} is not waivable` };

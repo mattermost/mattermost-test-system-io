@@ -37,7 +37,7 @@ inputs:
     required: false
     default: main
   run-type:
-    description: PR | MAIN | RELEASE. Anything but PR never auto-waives.
+    description: PR | MAIN | RELEASE. RELEASE never auto-waives; PR and MAIN may waive confirmed flakes.
     required: false
     default: PR
   mode:

@@ -26913,11 +26913,11 @@ function flakeSuccessDescription(triageContext, summary2) {
 var WAIVE_CONFIDENCE = 0.85;
 var FLAKY = /* @__PURE__ */ new Set(["FLAKY_TEST", "FLAKY_INFRA", "FLAKY_SERVER"]);
 var NEVER_WAIVE = /* @__PURE__ */ new Set(["PR_REGRESSION", "INCONCLUSIVE", "TEST_DEBT", "BUILD_OR_ENV_ERROR"]);
-function isProtectedRun(runType, branch) {
+function neverAutoWaive(runType, branch) {
   const t = (runType || "").toUpperCase();
-  if (t === "MAIN" || t === "MASTER" || t === "RELEASE") return true;
+  if (t === "RELEASE") return true;
   const b = (branch || "").toLowerCase();
-  return b === "main" || b === "master" || b.startsWith("release-") || b.startsWith("release/");
+  return b.startsWith("release-") || b.startsWith("release/");
 }
 function isSharedHarness(path) {
   return path.startsWith("detox/e2e/support/") || path.startsWith("detox/utils/") || path === "detox/create_android_emulator.sh" || /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(path);
@@ -26952,8 +26952,8 @@ function diffOverlaps(changedFiles, specFile, stack) {
   return files.some((f) => stackMentions(stack, f));
 }
 function canWaive(args) {
-  if (isProtectedRun(args.runType, args.branch)) {
-    return { waived: false, reason: "baseline/release runs never auto-waive" };
+  if (neverAutoWaive(args.runType, args.branch)) {
+    return { waived: false, reason: "release runs never auto-waive" };
   }
   if (NEVER_WAIVE.has(args.verdict)) {
     return { waived: false, reason: `${args.verdict} is not waivable` };

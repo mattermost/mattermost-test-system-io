@@ -5,6 +5,7 @@ import {
   decide,
   diffOverlaps,
   isProtectedRun,
+  neverAutoWaive,
   rollup,
   WAIVE_CONFIDENCE,
 } from "./policy.ts";
@@ -30,11 +31,30 @@ function failure(over: Partial<EvidenceFailure> = {}): EvidenceFailure {
   };
 }
 
-test("main/release runs never auto-waive", () => {
-  assert.equal(isProtectedRun("MAIN", "feat/x"), true);
-  assert.equal(isProtectedRun("PR", "main"), true);
-  assert.equal(isProtectedRun("PR", "release-11.4"), true);
-  assert.equal(isProtectedRun("PR", "feat/x"), false);
+test("RELEASE runs never auto-waive; MAIN and PR may", () => {
+  assert.equal(neverAutoWaive("RELEASE", "feat/x"), true);
+  assert.equal(neverAutoWaive("PR", "release-11.4"), true);
+  assert.equal(neverAutoWaive("PR", "release/2.44"), true);
+  assert.equal(neverAutoWaive("MAIN", "main"), false);
+  assert.equal(neverAutoWaive("MASTER", "main"), false);
+  assert.equal(neverAutoWaive("PR", "main"), false);
+  assert.equal(neverAutoWaive("PR", "feat/x"), false);
+  // alias kept for callers
+  assert.equal(isProtectedRun("RELEASE", "main"), true);
+  assert.equal(isProtectedRun("MAIN", "main"), false);
+});
+
+test("MAIN run waives a confirmed flake so required checks can go green", () => {
+  const w = canWaive({
+    runType: "MAIN",
+    branch: "main",
+    verdict: "FLAKY_TEST",
+    confidence: 0.92,
+    citations: ["screenshot", "history"],
+    amnestyGranted: true,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, true);
 });
 
 test("in-run recovery waives on a PR", () => {

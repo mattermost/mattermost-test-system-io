@@ -36,7 +36,8 @@ This also posts `e2e-test/ai-triage`. Run it **after** `test-system-io-summary` 
 - **0.85 to waive.** A false red costs a glance; a false green ships a bug.
 - **Two independent citations**, or in-run recovery (measurement).
 - **PR diff overlap cannot be waived as a flake** — attribution is ambiguous.
-- **MAIN / RELEASE never auto-waive.**
+- **RELEASE / `release-*` never auto-waive** (CMT stays fail-closed).
+- **MAIN may auto-waive** confirmed flakes (same 0.85 / citations / amnesty bar as PR) so required `e2e-test/*` checks on `main` go green — needed for Create Release Branches, which pushes `release-*` from a main commit with no PR labels.
 - **Amnesty is server-side.** A test that has already been waived too often stays red.
 - **Blame is GitHub compare, not git bisect.** Name an author only when the suspect range is a single non-merge commit.
 - **Green only what was classified.** `mode: shadow` never flips the merge-blocking row. `mode: gate` flips it only when every failure was waived.

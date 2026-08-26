@@ -26918,13 +26918,23 @@ function failureBlame(verdict) {
 }
 function parseRunCounts(description) {
   if (!description) return void 0;
-  const passed = description.match(/(\d+)\s+passed/i);
-  const failed = description.match(/(\d+)\s+failed/i);
-  if (!passed || !failed) return void 0;
+  let passed;
+  let failed;
+  const ratio = description.match(/\((\d+)\/(\d+)\)/);
+  if (ratio) {
+    passed = Number(ratio[1]);
+    failed = Number(ratio[2]) - passed;
+  } else {
+    const p = description.match(/(\d+)\s+passed/i);
+    if (p) passed = Number(p[1]);
+  }
+  const f = description.match(/(\d+)\s+failed/i);
+  if (f) failed = Number(f[1]);
+  if (passed === void 0 || failed === void 0) return void 0;
   const skipped = description.match(/(\d+)\s+skipped/i);
   return {
-    passed: Number(passed[1]),
-    failed: Number(failed[1]),
+    passed,
+    failed,
     skipped: skipped ? Number(skipped[1]) : void 0
   };
 }

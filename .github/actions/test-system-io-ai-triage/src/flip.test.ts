@@ -88,6 +88,17 @@ test("parseRunCounts reads summary action descriptions", () => {
     failed: 4,
     skipped: 79,
   });
+  // test-system-io-summary writes a rate headline: passed/(passed+failed).
+  assert.deepEqual(parseRunCounts("99.8% passed (485/487), 2 failed, 5 specs"), {
+    passed: 485,
+    failed: 2,
+    skipped: undefined,
+  });
+  assert.deepEqual(parseRunCounts("⚠ run incomplete, 97.9% passed (477/487), 10 failed, 6 specs"), {
+    passed: 477,
+    failed: 10,
+    skipped: undefined,
+  });
   assert.equal(parseRunCounts("unwaived failures"), undefined);
 });
 

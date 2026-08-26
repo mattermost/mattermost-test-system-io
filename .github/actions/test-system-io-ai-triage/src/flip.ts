@@ -61,16 +61,35 @@ export interface RunCounts {
   skipped?: number;
 }
 
-/** Parse "485 passed, 4 failed, 79 skipped" from an existing commit-status description. */
+/**
+ * Parse pass/fail counts from an existing commit-status description so the
+ * rewritten row keeps them. Two producers exist:
+ *
+ *   test-system-io-summary:  "99.8% passed (485/487), 2 failed, 5 specs"
+ *   mobile tsio-report-status: "485 passed, 4 failed, 79 skipped"
+ *
+ * The ratio format is what the webapp's e2e-test/* rows carry — the headline
+ * rate is `passed/(passed+failed)`, so failed = denominator − numerator.
+ */
 export function parseRunCounts(description: string | undefined | null): RunCounts | undefined {
   if (!description) return undefined;
-  const passed = description.match(/(\d+)\s+passed/i);
-  const failed = description.match(/(\d+)\s+failed/i);
-  if (!passed || !failed) return undefined;
+  let passed: number | undefined;
+  let failed: number | undefined;
+  const ratio = description.match(/\((\d+)\/(\d+)\)/);
+  if (ratio) {
+    passed = Number(ratio[1]);
+    failed = Number(ratio[2]) - passed;
+  } else {
+    const p = description.match(/(\d+)\s+passed/i);
+    if (p) passed = Number(p[1]);
+  }
+  const f = description.match(/(\d+)\s+failed/i);
+  if (f) failed = Number(f[1]);
+  if (passed === undefined || failed === undefined) return undefined;
   const skipped = description.match(/(\d+)\s+skipped/i);
   return {
-    passed: Number(passed[1]),
-    failed: Number(failed[1]),
+    passed,
+    failed,
     skipped: skipped ? Number(skipped[1]) : undefined,
   };
 }

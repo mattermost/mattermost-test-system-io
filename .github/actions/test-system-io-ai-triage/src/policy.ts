@@ -7,6 +7,30 @@ const FLAKY = new Set(["FLAKY_TEST", "FLAKY_INFRA", "FLAKY_SERVER"]);
 const NEVER_WAIVE = new Set(["PR_REGRESSION", "INCONCLUSIVE", "TEST_DEBT", "BUILD_OR_ENV_ERROR"]);
 
 /**
+ * Error text showing the product DELIBERATELY refusing an input (business-rule
+ * rejection). Not infrastructure flake — the server answered correctly; the
+ * test (or the environment) created input the product must refuse. Human
+ * review required, regardless of model confidence.
+ *
+ * Patterns are deliberately narrow: they must describe the product saying
+ * "no" to the action, not transport failures or filesystem EACCES noise.
+ */
+const PRODUCT_REJECTION: RegExp[] = [
+  /would remove your access/i,
+  /you cannot (?:save|delete|remove|deactivate|archive|update|change)\b/i,
+  /you (?:do not|don't|dont) have permission/i,
+  /not permitted to/i,
+  /insufficient permission/i,
+  /action is not allowed/i,
+  /permission_required/i,
+];
+
+export function isProductRejection(error?: string, stack?: string): boolean {
+  const text = `${error ?? ""}\n${stack ?? ""}`;
+  return PRODUCT_REJECTION.some((re) => re.test(text));
+}
+
+/**
  * RELEASE / release-* never auto-waive (CMT / release trains stay fail-closed).
  * MAIN may waive confirmed flakes so required e2e-test/* checks on main go
  * green — otherwise Create Release Branches cannot push release-* from a
@@ -111,12 +135,20 @@ export function canWaive(args: {
   citations: string[];
   amnestyGranted?: boolean;
   diffOverlapsFailure: boolean;
+  productRejection?: boolean;
 }): { waived: boolean; reason: string } {
   if (neverAutoWaive(args.runType, args.branch)) {
     return { waived: false, reason: "release runs never auto-waive" };
   }
   if (NEVER_WAIVE.has(args.verdict)) {
     return { waived: false, reason: `${args.verdict} is not waivable` };
+  }
+  if (FLAKY.has(args.verdict) && args.productRejection) {
+    return {
+      waived: false,
+      reason:
+        "error shows the product deliberately refusing the action — not flake, needs human review",
+    };
   }
   if (args.diffOverlapsFailure && FLAKY.has(args.verdict)) {
     return { waived: false, reason: "PR diff touches the failing area — attribution is ambiguous" };
@@ -149,6 +181,7 @@ export function decide(args: {
 }): Decision {
   const suggested: Suggestion = args.failure.suggested;
   const overlaps = diffOverlaps(args.changedFiles, args.failure.file, args.failure.error_stack);
+  const rejection = isProductRejection(args.failure.error_message, args.failure.error_stack);
   const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
   const waiver = canWaive({
     runType: args.runType,
@@ -158,6 +191,7 @@ export function decide(args: {
     citations: merged.citations,
     amnestyGranted: args.failure.amnesty?.granted,
     diffOverlapsFailure: overlaps,
+    productRejection: rejection,
   });
   const d: Decision = {
     ...merged,
@@ -167,9 +201,15 @@ export function decide(args: {
     kind: kindOf(merged.verdict),
     member_count: 1,
     chronic: args.ai?.chronic === true,
+    // A waiver granted at the minimum confidence is a coin flip — surface it
+    // for a human eyeball even when it goes green.
+    borderline: waiver.waived && merged.confidence < BORDERLINE_CONFIDENCE,
   };
   return d;
 }
+
+/** Waivers at or below this confidence are flagged as borderline in summaries. */
+export const BORDERLINE_CONFIDENCE = 0.9;
 
 function mergeModel(
   suggested: Suggestion,

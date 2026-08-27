@@ -4,6 +4,7 @@ import {
   canWaive,
   decide,
   diffOverlaps,
+  isProductRejection,
   isProtectedRun,
   neverAutoWaive,
   rollup,
@@ -321,6 +322,97 @@ test("PR that edits the failing spec cannot have its bug waived as CI-only", () 
   assert.equal(d.verdict, "PR_REGRESSION", d.reason);
   assert.equal(d.waived, false, "spec-touching bug verdicts fail closed");
   assert.equal(d.check_state, "failure");
+});
+
+test("product-rejection errors are never waived as flake, regardless of confidence", () => {
+  const d = decide({
+    failure: failure({
+      status: "failed",
+      retry_count: 1,
+      error_message:
+        "TimeoutError waiting for .TeamPolicyConfirmationModal: server said: You cannot save these rules because they would remove your access to this policy",
+      suggested: {
+        verdict: "FLAKY_SERVER",
+        confidence: 0.85,
+        needs_ai: true,
+        reason: "recovered on retry",
+        citations: ["this_run_recovered"],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: [],
+    ai: {
+      verdict: "FLAKY_SERVER",
+      confidence: 1,
+      reason: "recovered, no product overlap",
+      citations: ["this_run_recovered", "history"],
+    },
+  });
+  assert.equal(d.verdict, "FLAKY_SERVER");
+  assert.equal(d.waived, false, "rejection must stay red for human review");
+  assert.ok(d.reason.includes("deliberately refusing"), d.reason);
+});
+
+test("filesystem EACCES is infra noise, not a product rejection", () => {
+  assert.equal(isProductRejection("EACCES: permission denied, open '/tmp/app.db'"), false);
+  assert.equal(
+    isProductRejection("You cannot save these rules because they would remove your access"),
+    true,
+  );
+  assert.equal(isProductRejection(undefined, undefined), false);
+});
+
+test("waivers at the confidence floor are flagged borderline", () => {
+  const floor = decide({
+    failure: failure(),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: [],
+    ai: {
+      verdict: "FLAKY_TEST",
+      confidence: 0.85,
+      reason: "timing race",
+      citations: ["screenshot", "history", "this_run_recovered"],
+    },
+  });
+  assert.equal(floor.waived, true);
+  assert.equal(floor.borderline, true);
+
+  const solid = decide({
+    failure: failure(),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: [],
+    ai: {
+      verdict: "FLAKY_TEST",
+      confidence: 0.95,
+      reason: "timing race",
+      citations: ["screenshot", "history", "this_run_recovered"],
+    },
+  });
+  assert.equal(solid.waived, true);
+  assert.equal(solid.borderline, false);
+
+  // Unwaived decisions are never borderline — the row is already red.
+  const red = decide({
+    failure: failure({
+      status: "failed",
+      retry_count: 0,
+      suggested: {
+        verdict: "TEST_DEBT",
+        confidence: 0.9,
+        needs_ai: false,
+        reason: "stayed red",
+        citations: ["error_message"],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: [],
+  });
+  assert.equal(red.waived, false);
+  assert.equal(red.borderline, false);
 });
 
 test("AI PR_REGRESSION on CI-only PR is overridden to FLAKY_INFRA", () => {

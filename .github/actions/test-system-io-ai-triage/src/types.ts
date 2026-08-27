@@ -105,6 +105,8 @@ export interface Decision {
   suspect_sha?: string;
   suspect_author?: string;
   chronic?: boolean;
+  /** Waived at near-minimum confidence — flagged for human review. */
+  borderline?: boolean;
 }
 
 export interface ClaudeVerdict {

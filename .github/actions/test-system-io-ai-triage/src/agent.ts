@@ -134,6 +134,7 @@ RETRY-RECOVERY RULE (status=flaky or retry_count>0 — the test failed once then
 - Waive FLAKY_* only when recovery is corroborated by at least ONE of: past flaky/recovered outcomes in baseline history, the same test failing-and-recovering on other PRs, or a pure timing/timeout error signature with no wrong product state.
 - Recovery + screenshot or error showing a WRONG PRODUCT STATE (wrong data, corrupted content, broken layout, incorrect business logic) is a BUG — return PR_REGRESSION or MAIN_REGRESSION, not flake.
 - If get_history shows this test flaked/recovered ≥3 times in the last 20 baseline runs, set "chronic":true and start the reason with "chronic flake (n/20)" — a human must track it even though it is waived.
+- If the error/stack shows the product DELIBERATELY refusing the action ("you cannot save…", "would remove your access", permission/authorization rejections), that is NOT flake — the server answered correctly. Return TEST_DEBT or PR_REGRESSION as appropriate; flake waivers for such errors are blocked by policy.
 
 Rules:
 - NEVER return INCONCLUSIVE when error_message, error_stack, or screenshot keys are present. Pick FLAKY_* or a bug verdict.

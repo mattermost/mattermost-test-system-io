@@ -114,6 +114,7 @@ export async function run(): Promise<void> {
         `cites=${blamed.citations.join(",") || "-"} ` +
         `reason=${blamed.reason}` +
         (blamed.chronic ? ` [CHRONIC]` : "") +
+        (blamed.borderline ? ` [BORDERLINE — needs eyeball]` : "") +
         (blamed.suspect_author ? ` author=@${blamed.suspect_author}` : ""),
     );
   }
@@ -460,8 +461,9 @@ async function writeStepSummary(
     const author = d.suspect_author
       ? `@${d.suspect_author} (\`${(d.suspect_sha || "").slice(0, 7)}\`)`
       : "—";
+    const flag = d.chronic ? " ⚠️ chronic" : d.borderline ? " ⚖️ borderline" : "";
     lines.push(
-      `| ${d.kind} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict}${d.chronic ? " ⚠️ chronic" : ""} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`,
+      `| ${d.kind} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict}${flag} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`,
     );
   }
   if (decisions.length === 0) {

@@ -26721,6 +26721,7 @@ RETRY-RECOVERY RULE (status=flaky or retry_count>0 \u2014 the test failed once t
 - Waive FLAKY_* only when recovery is corroborated by at least ONE of: past flaky/recovered outcomes in baseline history, the same test failing-and-recovering on other PRs, or a pure timing/timeout error signature with no wrong product state.
 - Recovery + screenshot or error showing a WRONG PRODUCT STATE (wrong data, corrupted content, broken layout, incorrect business logic) is a BUG \u2014 return PR_REGRESSION or MAIN_REGRESSION, not flake.
 - If get_history shows this test flaked/recovered \u22653 times in the last 20 baseline runs, set "chronic":true and start the reason with "chronic flake (n/20)" \u2014 a human must track it even though it is waived.
+- If the error/stack shows the product DELIBERATELY refusing the action ("you cannot save\u2026", "would remove your access", permission/authorization rejections), that is NOT flake \u2014 the server answered correctly. Return TEST_DEBT or PR_REGRESSION as appropriate; flake waivers for such errors are blocked by policy.
 
 Rules:
 - NEVER return INCONCLUSIVE when error_message, error_stack, or screenshot keys are present. Pick FLAKY_* or a bug verdict.
@@ -26968,6 +26969,20 @@ function truncate(s) {
 var WAIVE_CONFIDENCE = 0.85;
 var FLAKY = /* @__PURE__ */ new Set(["FLAKY_TEST", "FLAKY_INFRA", "FLAKY_SERVER"]);
 var NEVER_WAIVE = /* @__PURE__ */ new Set(["PR_REGRESSION", "INCONCLUSIVE", "TEST_DEBT", "BUILD_OR_ENV_ERROR"]);
+var PRODUCT_REJECTION = [
+  /would remove your access/i,
+  /you cannot (?:save|delete|remove|deactivate|archive|update|change)\b/i,
+  /you (?:do not|don't|dont) have permission/i,
+  /not permitted to/i,
+  /insufficient permission/i,
+  /action is not allowed/i,
+  /permission_required/i
+];
+function isProductRejection(error2, stack) {
+  const text = `${error2 ?? ""}
+${stack ?? ""}`;
+  return PRODUCT_REJECTION.some((re) => re.test(text));
+}
 function neverAutoWaive(runType, branch) {
   const t = (runType || "").toUpperCase();
   if (t === "RELEASE") return true;
@@ -27031,6 +27046,12 @@ function canWaive(args) {
   if (NEVER_WAIVE.has(args.verdict)) {
     return { waived: false, reason: `${args.verdict} is not waivable` };
   }
+  if (FLAKY.has(args.verdict) && args.productRejection) {
+    return {
+      waived: false,
+      reason: "error shows the product deliberately refusing the action \u2014 not flake, needs human review"
+    };
+  }
   if (args.diffOverlapsFailure && FLAKY.has(args.verdict)) {
     return { waived: false, reason: "PR diff touches the failing area \u2014 attribution is ambiguous" };
   }
@@ -27055,6 +27076,7 @@ function canWaive(args) {
 function decide(args) {
   const suggested = args.failure.suggested;
   const overlaps = diffOverlaps(args.changedFiles, args.failure.file, args.failure.error_stack);
+  const rejection = isProductRejection(args.failure.error_message, args.failure.error_stack);
   const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
   const waiver = canWaive({
     runType: args.runType,
@@ -27063,7 +27085,8 @@ function decide(args) {
     confidence: merged.confidence,
     citations: merged.citations,
     amnestyGranted: args.failure.amnesty?.granted,
-    diffOverlapsFailure: overlaps
+    diffOverlapsFailure: overlaps,
+    productRejection: rejection
   });
   const d = {
     ...merged,
@@ -27072,10 +27095,14 @@ function decide(args) {
     reason: waiver.waived ? merged.reason : `${merged.reason} (${waiver.reason})`,
     kind: kindOf(merged.verdict),
     member_count: 1,
-    chronic: args.ai?.chronic === true
+    chronic: args.ai?.chronic === true,
+    // A waiver granted at the minimum confidence is a coin flip — surface it
+    // for a human eyeball even when it goes green.
+    borderline: waiver.waived && merged.confidence < BORDERLINE_CONFIDENCE
   };
   return d;
 }
+var BORDERLINE_CONFIDENCE = 0.9;
 function mergeModel(suggested, ai, overlaps, failure, changedFiles) {
   let merged;
   if (!ai) {
@@ -27278,7 +27305,7 @@ async function run() {
     const blamed = await attachBlame(d, cluster, githubToken, pack.group.repository);
     decisions.push(blamed);
     info(
-      `${cluster.signature} \xD7${cluster.member_count}: kind=${blamed.kind} ${blamed.verdict} waived=${blamed.waived} conf=${blamed.confidence} cites=${blamed.citations.join(",") || "-"} reason=${blamed.reason}` + (blamed.chronic ? ` [CHRONIC]` : "") + (blamed.suspect_author ? ` author=@${blamed.suspect_author}` : "")
+      `${cluster.signature} \xD7${cluster.member_count}: kind=${blamed.kind} ${blamed.verdict} waived=${blamed.waived} conf=${blamed.confidence} cites=${blamed.citations.join(",") || "-"} reason=${blamed.reason}` + (blamed.chronic ? ` [CHRONIC]` : "") + (blamed.borderline ? ` [BORDERLINE \u2014 needs eyeball]` : "") + (blamed.suspect_author ? ` author=@${blamed.suspect_author}` : "")
     );
   }
   const summary2 = rollup(decisions);
@@ -27552,8 +27579,9 @@ async function writeStepSummary(clusters, decisions, summary2, reportURL) {
     const d = decisions[i];
     const c = clusters[i];
     const author = d.suspect_author ? `@${d.suspect_author} (\`${(d.suspect_sha || "").slice(0, 7)}\`)` : "\u2014";
+    const flag = d.chronic ? " \u26A0\uFE0F chronic" : d.borderline ? " \u2696\uFE0F borderline" : "";
     lines.push(
-      `| ${d.kind} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict}${d.chronic ? " \u26A0\uFE0F chronic" : ""} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`
+      `| ${d.kind} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict}${flag} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`
     );
   }
   if (decisions.length === 0) {

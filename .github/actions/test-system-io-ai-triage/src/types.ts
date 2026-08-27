@@ -104,6 +104,7 @@ export interface Decision {
   member_count: number;
   suspect_sha?: string;
   suspect_author?: string;
+  chronic?: boolean;
 }
 
 export interface ClaudeVerdict {
@@ -113,4 +114,6 @@ export interface ClaudeVerdict {
   citations: string[];
   suspect_sha?: string;
   suspect_author?: string;
+  /** True when baseline history shows this test flaking repeatedly. */
+  chronic?: boolean;
 }

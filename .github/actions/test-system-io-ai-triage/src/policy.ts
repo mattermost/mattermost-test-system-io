@@ -26,14 +26,22 @@ export function isProtectedRun(runType: string, branch: string): boolean {
 
 /** Paths that every Detox run touches; editing them must not block flake waivers. */
 export function isSharedHarness(path: string): boolean {
+  return isMetaHarness(path) || /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(normalizePath(path));
+}
+
+/**
+ * Pure CI/harness paths that genuinely cannot affect a product failure.
+ * Deliberately EXCLUDES e2e spec files (*.spec.ts, *.e2e.ts): a PR that edits
+ * the failing spec is editing the failure's own area, never "CI-only".
+ */
+export function isMetaHarness(path: string): boolean {
   const p = normalizePath(path);
   return (
     p.startsWith(".github/") ||
     p.startsWith("detox/e2e/support/") ||
     p.startsWith("detox/utils/") ||
     p === "detox/create_android_emulator.sh" ||
-    p.endsWith(".md") ||
-    /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(p)
+    p.endsWith(".md")
   );
 }
 
@@ -41,7 +49,14 @@ export function isSharedHarness(path: string): boolean {
 export function isCIOnlyDiff(changedFiles: string[]): boolean {
   const files = changedFiles.map(normalizePath).filter(Boolean);
   if (files.length === 0) return false;
-  return files.every(isSharedHarness);
+  return files.every(isMetaHarness);
+}
+
+/** True when the PR changed the failing spec itself — the failure's own area. */
+function touchesFailingSpec(changedFiles: string[], specFile?: string): boolean {
+  if (!specFile) return false;
+  const spec = normalizePath(specFile);
+  return changedFiles.map(normalizePath).some((f) => pathsMatch(spec, f));
 }
 
 function normalizePath(p: string): string {
@@ -71,13 +86,14 @@ function escapeRegExp(s: string): string {
 }
 
 export function diffOverlaps(changedFiles: string[], specFile?: string, stack?: string): boolean {
-  const files = changedFiles.map(normalizePath).filter((f) => !isSharedHarness(f));
-  if (specFile) {
-    const spec = normalizePath(specFile);
-    if (files.some((f) => pathsMatch(spec, f))) return true;
-  }
+  const files = changedFiles.map(normalizePath);
+  // The failing spec itself is always overlapping — even though isSharedHarness
+  // treats unit tests and specs as harness, a PR editing the failing spec is
+  // editing the failure's own area.
+  if (touchesFailingSpec(files, specFile)) return true;
+  const product = files.filter((f) => !isSharedHarness(f));
   if (!stack) return false;
-  return files.some((f) => stackMentions(stack, f));
+  return product.some((f) => stackMentions(stack, f));
 }
 
 export function hasAdjudicationEvidence(failure: EvidenceFailure): boolean {
@@ -143,14 +159,16 @@ export function decide(args: {
     amnestyGranted: args.failure.amnesty?.granted,
     diffOverlapsFailure: overlaps,
   });
-  return {
+  const d: Decision = {
     ...merged,
     waived: waiver.waived,
     check_state: waiver.waived ? "success" : "failure",
     reason: waiver.waived ? merged.reason : `${merged.reason} (${waiver.reason})`,
     kind: kindOf(merged.verdict),
     member_count: 1,
+    chronic: args.ai?.chronic === true,
   };
+  return d;
 }
 
 function mergeModel(
@@ -228,6 +246,7 @@ export function enforceDecisiveVerdict(
 } {
   const evidence = hasAdjudicationEvidence(failure);
   const ciOnly = isCIOnlyDiff(changedFiles);
+  const specTouched = touchesFailingSpec(changedFiles, failure.file);
   const cites = [...merged.citations];
 
   if (
@@ -242,8 +261,11 @@ export function enforceDecisiveVerdict(
   }
 
   // CI-only PR cannot be a product PR_REGRESSION / TEST_DEBT for a UI failure.
+  // But a PR that edits the failing spec is NOT ci-only for that failure —
+  // the model's bug verdict stands.
   if (
     !overlaps &&
+    !specTouched &&
     ciOnly &&
     (merged.verdict === "PR_REGRESSION" || merged.verdict === "TEST_DEBT")
   ) {
@@ -257,7 +279,7 @@ export function enforceDecisiveVerdict(
   }
 
   // PR_REGRESSION means "this PR caused it" — impossible without product/spec overlap.
-  if (!overlaps && merged.verdict === "PR_REGRESSION" && evidence) {
+  if (!overlaps && !specTouched && merged.verdict === "PR_REGRESSION" && evidence) {
     const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
     return {
       verdict: flakeKind,
@@ -269,7 +291,7 @@ export function enforceDecisiveVerdict(
   }
 
   // Mis-labeled TEST_DEBT on infra/server timeouts when this PR did not touch the failure.
-  if (!overlaps && merged.verdict === "TEST_DEBT" && evidence) {
+  if (!overlaps && !specTouched && merged.verdict === "TEST_DEBT" && evidence) {
     const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
     if (flakeKind === "FLAKY_INFRA" || flakeKind === "FLAKY_SERVER") {
       return {

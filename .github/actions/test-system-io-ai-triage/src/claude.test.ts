@@ -32,3 +32,14 @@ test("parseVerdict tolerates trailing commas", () => {
   );
   assert.equal(v.verdict, "FLAKY_SERVER");
 });
+
+test("parseVerdict reads the chronic flag", () => {
+  const v = parseVerdict(
+    `{"verdict":"FLAKY_TEST","confidence":0.9,"reason":"chronic flake (5/20)","citations":["history","this_run_recovered"],"chronic":true}`,
+  );
+  assert.equal(v.chronic, true);
+  const plain = parseVerdict(
+    `{"verdict":"FLAKY_TEST","confidence":0.9,"reason":"one-off","citations":["screenshot"]}`,
+  );
+  assert.equal(plain.chronic, false);
+});

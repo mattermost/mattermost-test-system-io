@@ -21,7 +21,7 @@ const TOOLS = [
   {
     name: "get_history",
     description:
-      "GET /api/v1/tests/history — outcome series on the baseline branch. Use this to see if the test was already failing, flipping, or clean.",
+      "GET /api/v1/tests/history — outcome series on the baseline branch. MANDATORY before any FLAKY_* verdict: compare past errors and outcomes for this exact test. Use this to see if the test was already failing, flipping, or clean, and how often it flaked.",
     input_schema: {
       type: "object",
       properties: { test_id: { type: "string" } },
@@ -31,7 +31,7 @@ const TOOLS = [
   {
     name: "get_failing_elsewhere",
     description:
-      "GET /api/v1/tests/failing-elsewhere — is the same test failing on other open PRs right now?",
+      "GET /api/v1/tests/failing-elsewhere — is the same test failing on other open PRs right now? MANDATORY before any FLAKY_* verdict: the same failure on a different diff is strong evidence against PR_REGRESSION.",
     input_schema: {
       type: "object",
       properties: { test_id: { type: "string" } },
@@ -119,14 +119,21 @@ function buildPrompt(cluster: EvidenceCluster, ctx: AgentContext): string {
   const hist = f.history
     ? `runs=${f.history.runs} failed=${f.history.failed} flaky=${f.history.flaky} flips=${f.history.flips} last_pass=${f.history.last_pass_commit ?? "none"} failing_since=${f.history.failing_since_commit ?? "none"} series=${f.history.series.join(",")}`
     : f.history_error || "not loaded — call get_history";
-  return `You investigate ONE clustered E2E failure. Do not ask for a rerun. 300 identical failures are still one cause.
+  return `You investigate ONE clustered E2E failure exactly as a careful human triager would: read the error and stack, view the failure screenshot, check this test's PAST failures on the baseline branch, check whether the same test is failing on other PRs right now, and read what this PR changed. Then decide. Do not ask for a rerun. 300 identical failures are still one cause.
 
 Call TSIO tools as needed, then decide. You already have error/stack (and often screenshots) in this prompt — that IS evidence.
 
 Return ONLY JSON when done:
-{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional"}
+{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional","chronic":false}
 
 kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
+
+RETRY-RECOVERY RULE (status=flaky or retry_count>0 — the test failed once then passed on retry with no code change):
+- Recovery is NECESSARY but NOT SUFFICIENT for FLAKY_*. A timing-sensitive product bug also passes on retry.
+- Before ANY FLAKY_* verdict you MUST call get_history AND get_failing_elsewhere, and view the screenshot when keys are listed. Cite them ("history", "failing_elsewhere", "screenshot").
+- Waive FLAKY_* only when recovery is corroborated by at least ONE of: past flaky/recovered outcomes in baseline history, the same test failing-and-recovering on other PRs, or a pure timing/timeout error signature with no wrong product state.
+- Recovery + screenshot or error showing a WRONG PRODUCT STATE (wrong data, corrupted content, broken layout, incorrect business logic) is a BUG — return PR_REGRESSION or MAIN_REGRESSION, not flake.
+- If get_history shows this test flaked/recovered ≥3 times in the last 20 baseline runs, set "chronic":true and start the reason with "chronic flake (n/20)" — a human must track it even though it is waived.
 
 Rules:
 - NEVER return INCONCLUSIVE when error_message, error_stack, or screenshot keys are present. Pick FLAKY_* or a bug verdict.
@@ -136,12 +143,12 @@ Rules:
 - If history shows already failing on the baseline, MAIN_REGRESSION — not this PR.
 - PR_REGRESSION only when this PR changed product code or the failing spec that explains the failure. Files under .github/, detox/e2e/support/, detox/utils/, *.md are CI/harness — they do NOT make a UI timeout/login flake into PR_REGRESSION.
 - If the PR only touches CI/harness and the failure is setup/login/timeout/emulator, prefer FLAKY_INFRA or FLAKY_SERVER.
-- If the PR diff overlaps the failing product/spec area, do not call a flake.
+- If the PR diff overlaps the failing product/spec area, do not call a flake — even if it recovered on retry.
 
 Cluster: ${cluster.signature} (${cluster.member_count} tests) — ${cluster.label}
 Representative: ${f.full_title}
 File: ${f.file || "unknown"}
-Status: ${f.status}
+Status: ${f.status} (retry_count=${f.retry_count}${f.retry_count > 0 ? " — recovered in this run, apply the RETRY-RECOVERY RULE above" : ""})
 external_test_id: ${f.external_test_id || "none"}
 Error: ${(f.error_message || "").slice(0, 3000) || "(none)"}
 Stack: ${(f.error_stack || "").slice(0, 2000) || "(none)"}
@@ -149,7 +156,7 @@ History: ${hist}
 Other PRs failing: ${f.distinct_prs ?? "unknown"}
 Screenshot keys (get_screenshot): ${shots}
 PR changed files: ${ctx.changedFiles.slice(0, 40).join(", ") || "(none)"}
-Deterministic hint: ${cluster.suggested.verdict} — ${cluster.suggested.reason}`;
+Deterministic hint: ${cluster.suggested.verdict} — ${cluster.suggested.reason} (hint citations: ${cluster.suggested.citations.join(", ") || "none"})`;
 }
 
 type ClaudeBlock = { type: string; text?: string; name?: string; id?: string; input?: unknown };

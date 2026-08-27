@@ -26462,7 +26462,8 @@ function parseVerdict(raw) {
     reason: reason || "model returned no reason",
     citations,
     suspect_sha: suspectSha,
-    suspect_author: suspectAuthor
+    suspect_author: suspectAuthor,
+    chronic: json.chronic === true
   };
 }
 function extractJSON(raw) {
@@ -26621,7 +26622,7 @@ var MAX_BYTES = 2 * 1024 * 1024;
 var TOOLS = [
   {
     name: "get_history",
-    description: "GET /api/v1/tests/history \u2014 outcome series on the baseline branch. Use this to see if the test was already failing, flipping, or clean.",
+    description: "GET /api/v1/tests/history \u2014 outcome series on the baseline branch. MANDATORY before any FLAKY_* verdict: compare past errors and outcomes for this exact test. Use this to see if the test was already failing, flipping, or clean, and how often it flaked.",
     input_schema: {
       type: "object",
       properties: { test_id: { type: "string" } },
@@ -26630,7 +26631,7 @@ var TOOLS = [
   },
   {
     name: "get_failing_elsewhere",
-    description: "GET /api/v1/tests/failing-elsewhere \u2014 is the same test failing on other open PRs right now?",
+    description: "GET /api/v1/tests/failing-elsewhere \u2014 is the same test failing on other open PRs right now? MANDATORY before any FLAKY_* verdict: the same failure on a different diff is strong evidence against PR_REGRESSION.",
     input_schema: {
       type: "object",
       properties: { test_id: { type: "string" } },
@@ -26705,14 +26706,21 @@ function buildPrompt(cluster, ctx) {
   const f = cluster.representative;
   const shots = (f.screenshots || []).map((s) => s.s3_key).join(", ") || "(none)";
   const hist = f.history ? `runs=${f.history.runs} failed=${f.history.failed} flaky=${f.history.flaky} flips=${f.history.flips} last_pass=${f.history.last_pass_commit ?? "none"} failing_since=${f.history.failing_since_commit ?? "none"} series=${f.history.series.join(",")}` : f.history_error || "not loaded \u2014 call get_history";
-  return `You investigate ONE clustered E2E failure. Do not ask for a rerun. 300 identical failures are still one cause.
+  return `You investigate ONE clustered E2E failure exactly as a careful human triager would: read the error and stack, view the failure screenshot, check this test's PAST failures on the baseline branch, check whether the same test is failing on other PRs right now, and read what this PR changed. Then decide. Do not ask for a rerun. 300 identical failures are still one cause.
 
 Call TSIO tools as needed, then decide. You already have error/stack (and often screenshots) in this prompt \u2014 that IS evidence.
 
 Return ONLY JSON when done:
-{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional"}
+{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional","chronic":false}
 
 kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
+
+RETRY-RECOVERY RULE (status=flaky or retry_count>0 \u2014 the test failed once then passed on retry with no code change):
+- Recovery is NECESSARY but NOT SUFFICIENT for FLAKY_*. A timing-sensitive product bug also passes on retry.
+- Before ANY FLAKY_* verdict you MUST call get_history AND get_failing_elsewhere, and view the screenshot when keys are listed. Cite them ("history", "failing_elsewhere", "screenshot").
+- Waive FLAKY_* only when recovery is corroborated by at least ONE of: past flaky/recovered outcomes in baseline history, the same test failing-and-recovering on other PRs, or a pure timing/timeout error signature with no wrong product state.
+- Recovery + screenshot or error showing a WRONG PRODUCT STATE (wrong data, corrupted content, broken layout, incorrect business logic) is a BUG \u2014 return PR_REGRESSION or MAIN_REGRESSION, not flake.
+- If get_history shows this test flaked/recovered \u22653 times in the last 20 baseline runs, set "chronic":true and start the reason with "chronic flake (n/20)" \u2014 a human must track it even though it is waived.
 
 Rules:
 - NEVER return INCONCLUSIVE when error_message, error_stack, or screenshot keys are present. Pick FLAKY_* or a bug verdict.
@@ -26722,12 +26730,12 @@ Rules:
 - If history shows already failing on the baseline, MAIN_REGRESSION \u2014 not this PR.
 - PR_REGRESSION only when this PR changed product code or the failing spec that explains the failure. Files under .github/, detox/e2e/support/, detox/utils/, *.md are CI/harness \u2014 they do NOT make a UI timeout/login flake into PR_REGRESSION.
 - If the PR only touches CI/harness and the failure is setup/login/timeout/emulator, prefer FLAKY_INFRA or FLAKY_SERVER.
-- If the PR diff overlaps the failing product/spec area, do not call a flake.
+- If the PR diff overlaps the failing product/spec area, do not call a flake \u2014 even if it recovered on retry.
 
 Cluster: ${cluster.signature} (${cluster.member_count} tests) \u2014 ${cluster.label}
 Representative: ${f.full_title}
 File: ${f.file || "unknown"}
-Status: ${f.status}
+Status: ${f.status} (retry_count=${f.retry_count}${f.retry_count > 0 ? " \u2014 recovered in this run, apply the RETRY-RECOVERY RULE above" : ""})
 external_test_id: ${f.external_test_id || "none"}
 Error: ${(f.error_message || "").slice(0, 3e3) || "(none)"}
 Stack: ${(f.error_stack || "").slice(0, 2e3) || "(none)"}
@@ -26735,7 +26743,7 @@ History: ${hist}
 Other PRs failing: ${f.distinct_prs ?? "unknown"}
 Screenshot keys (get_screenshot): ${shots}
 PR changed files: ${ctx.changedFiles.slice(0, 40).join(", ") || "(none)"}
-Deterministic hint: ${cluster.suggested.verdict} \u2014 ${cluster.suggested.reason}`;
+Deterministic hint: ${cluster.suggested.verdict} \u2014 ${cluster.suggested.reason} (hint citations: ${cluster.suggested.citations.join(", ") || "none"})`;
 }
 async function callClaude(ctx, messages) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -26967,13 +26975,21 @@ function neverAutoWaive(runType, branch) {
   return b.startsWith("release-") || b.startsWith("release/");
 }
 function isSharedHarness(path) {
+  return isMetaHarness(path) || /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(normalizePath(path));
+}
+function isMetaHarness(path) {
   const p = normalizePath(path);
-  return p.startsWith(".github/") || p.startsWith("detox/e2e/support/") || p.startsWith("detox/utils/") || p === "detox/create_android_emulator.sh" || p.endsWith(".md") || /\.(test|spec)\.(ts|tsx|js|jsx)$/.test(p);
+  return p.startsWith(".github/") || p.startsWith("detox/e2e/support/") || p.startsWith("detox/utils/") || p === "detox/create_android_emulator.sh" || p.endsWith(".md");
 }
 function isCIOnlyDiff(changedFiles) {
   const files = changedFiles.map(normalizePath).filter(Boolean);
   if (files.length === 0) return false;
-  return files.every(isSharedHarness);
+  return files.every(isMetaHarness);
+}
+function touchesFailingSpec(changedFiles, specFile) {
+  if (!specFile) return false;
+  const spec = normalizePath(specFile);
+  return changedFiles.map(normalizePath).some((f) => pathsMatch(spec, f));
 }
 function normalizePath(p) {
   return p.replace(/^\.\//, "").replace(/\\/g, "/");
@@ -26996,13 +27012,11 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function diffOverlaps(changedFiles, specFile, stack) {
-  const files = changedFiles.map(normalizePath).filter((f) => !isSharedHarness(f));
-  if (specFile) {
-    const spec = normalizePath(specFile);
-    if (files.some((f) => pathsMatch(spec, f))) return true;
-  }
+  const files = changedFiles.map(normalizePath);
+  if (touchesFailingSpec(files, specFile)) return true;
+  const product = files.filter((f) => !isSharedHarness(f));
   if (!stack) return false;
-  return files.some((f) => stackMentions(stack, f));
+  return product.some((f) => stackMentions(stack, f));
 }
 function hasAdjudicationEvidence(failure) {
   if ((failure.screenshots || []).length > 0) return true;
@@ -27051,14 +27065,16 @@ function decide(args) {
     amnestyGranted: args.failure.amnesty?.granted,
     diffOverlapsFailure: overlaps
   });
-  return {
+  const d = {
     ...merged,
     waived: waiver.waived,
     check_state: waiver.waived ? "success" : "failure",
     reason: waiver.waived ? merged.reason : `${merged.reason} (${waiver.reason})`,
     kind: kindOf(merged.verdict),
-    member_count: 1
+    member_count: 1,
+    chronic: args.ai?.chronic === true
   };
+  return d;
 }
 function mergeModel(suggested, ai, overlaps, failure, changedFiles) {
   let merged;
@@ -27092,6 +27108,7 @@ function mergeModel(suggested, ai, overlaps, failure, changedFiles) {
 function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
   const evidence = hasAdjudicationEvidence(failure);
   const ciOnly = isCIOnlyDiff(changedFiles);
+  const specTouched = touchesFailingSpec(changedFiles, failure.file);
   const cites = [...merged.citations];
   if (evidence && (failure.screenshots || []).length > 0 && !cites.some((c) => /screenshot/i.test(c))) {
     cites.push("screenshot");
@@ -27099,7 +27116,7 @@ function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
   if (evidence && (failure.error_message || "").trim() && !cites.some((c) => /error/i.test(c))) {
     cites.push("error_message");
   }
-  if (!overlaps && ciOnly && (merged.verdict === "PR_REGRESSION" || merged.verdict === "TEST_DEBT")) {
+  if (!overlaps && !specTouched && ciOnly && (merged.verdict === "PR_REGRESSION" || merged.verdict === "TEST_DEBT")) {
     return {
       verdict: "FLAKY_INFRA",
       confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
@@ -27108,7 +27125,7 @@ function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
       source: "policy"
     };
   }
-  if (!overlaps && merged.verdict === "PR_REGRESSION" && evidence) {
+  if (!overlaps && !specTouched && merged.verdict === "PR_REGRESSION" && evidence) {
     const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
     return {
       verdict: flakeKind,
@@ -27118,7 +27135,7 @@ function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
       source: "policy"
     };
   }
-  if (!overlaps && merged.verdict === "TEST_DEBT" && evidence) {
+  if (!overlaps && !specTouched && merged.verdict === "TEST_DEBT" && evidence) {
     const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
     if (flakeKind === "FLAKY_INFRA" || flakeKind === "FLAKY_SERVER") {
       return {
@@ -27227,8 +27244,10 @@ async function run() {
   );
   const decisions = [];
   for (const cluster of pack.clusters || []) {
+    const recovered = cluster.representative.retry_count > 0 || cluster.representative.status === "flaky";
+    const needsAI = cluster.suggested.needs_ai || recovered;
     let ai = void 0;
-    if (cluster.suggested.needs_ai && anthropicKey && agentCalls(decisions) < MAX_AGENT_CLUSTERS) {
+    if (needsAI && anthropicKey && agentCalls(decisions) < MAX_AGENT_CLUSTERS) {
       info(
         `agent: ${cluster.signature} \xD7${cluster.member_count} (${cluster.label.slice(0, 80)})`
       );
@@ -27245,7 +27264,7 @@ async function run() {
       } catch (err) {
         warning(`agent failed: ${err.message}; failing closed`);
       }
-    } else if (cluster.suggested.needs_ai && !anthropicKey) {
+    } else if (needsAI && !anthropicKey) {
       info(`no anthropic key; leaving cluster ${cluster.signature} on history suggestion`);
     }
     const d = decide({
@@ -27259,7 +27278,7 @@ async function run() {
     const blamed = await attachBlame(d, cluster, githubToken, pack.group.repository);
     decisions.push(blamed);
     info(
-      `${cluster.signature} \xD7${cluster.member_count}: kind=${blamed.kind} ${blamed.verdict} waived=${blamed.waived} conf=${blamed.confidence} cites=${blamed.citations.join(",") || "-"} reason=${blamed.reason}` + (blamed.suspect_author ? ` author=@${blamed.suspect_author}` : "")
+      `${cluster.signature} \xD7${cluster.member_count}: kind=${blamed.kind} ${blamed.verdict} waived=${blamed.waived} conf=${blamed.confidence} cites=${blamed.citations.join(",") || "-"} reason=${blamed.reason}` + (blamed.chronic ? ` [CHRONIC]` : "") + (blamed.suspect_author ? ` author=@${blamed.suspect_author}` : "")
     );
   }
   const summary2 = rollup(decisions);
@@ -27534,7 +27553,7 @@ async function writeStepSummary(clusters, decisions, summary2, reportURL) {
     const c = clusters[i];
     const author = d.suspect_author ? `@${d.suspect_author} (\`${(d.suspect_sha || "").slice(0, 7)}\`)` : "\u2014";
     lines.push(
-      `| ${d.kind} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`
+      `| ${d.kind} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict}${d.chronic ? " \u26A0\uFE0F chronic" : ""} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`
     );
   }
   if (decisions.length === 0) {

@@ -68,8 +68,15 @@ export async function run(): Promise<void> {
   const decisions: Decision[] = [];
 
   for (const cluster of pack.clusters || []) {
+    // Retry-recovered clusters (server sets needs_ai=false for them) MUST also
+    // get AI adjudication — recovery alone cannot distinguish flake from a
+    // timing-sensitive product bug. Human triagers look at history, other PRs,
+    // and the screenshot; the agent must too.
+    const recovered =
+      cluster.representative.retry_count > 0 || cluster.representative.status === "flaky";
+    const needsAI = cluster.suggested.needs_ai || recovered;
     let ai = undefined;
-    if (cluster.suggested.needs_ai && anthropicKey && agentCalls(decisions) < MAX_AGENT_CLUSTERS) {
+    if (needsAI && anthropicKey && agentCalls(decisions) < MAX_AGENT_CLUSTERS) {
       core.info(
         `agent: ${cluster.signature} ×${cluster.member_count} (${cluster.label.slice(0, 80)})`,
       );
@@ -87,7 +94,7 @@ export async function run(): Promise<void> {
       } catch (err) {
         core.warning(`agent failed: ${(err as Error).message}; failing closed`);
       }
-    } else if (cluster.suggested.needs_ai && !anthropicKey) {
+    } else if (needsAI && !anthropicKey) {
       core.info(`no anthropic key; leaving cluster ${cluster.signature} on history suggestion`);
     }
 
@@ -106,6 +113,7 @@ export async function run(): Promise<void> {
         `waived=${blamed.waived} conf=${blamed.confidence} ` +
         `cites=${blamed.citations.join(",") || "-"} ` +
         `reason=${blamed.reason}` +
+        (blamed.chronic ? ` [CHRONIC]` : "") +
         (blamed.suspect_author ? ` author=@${blamed.suspect_author}` : ""),
     );
   }
@@ -453,7 +461,7 @@ async function writeStepSummary(
       ? `@${d.suspect_author} (\`${(d.suspect_sha || "").slice(0, 7)}\`)`
       : "—";
     lines.push(
-      `| ${d.kind} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`,
+      `| ${d.kind} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict}${d.chronic ? " ⚠️ chronic" : ""} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`,
     );
   }
   if (decisions.length === 0) {

@@ -70,6 +70,43 @@ test("in-run recovery waives on a PR", () => {
   assert.equal(w.waived, true);
 });
 
+test("AI bug verdict on a recovered test is never re-flipped to flaky", () => {
+  const d = decide({
+    failure: failure(),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: ["e2e-tests/playwright/specs/login.spec.ts"],
+    ai: {
+      verdict: "PR_REGRESSION",
+      confidence: 0.9,
+      reason: "recovery hides a real bug — screenshot shows corrupted post content",
+      citations: ["screenshot", "history"],
+    },
+  });
+  assert.equal(d.verdict, "PR_REGRESSION");
+  assert.equal(d.waived, false);
+  assert.equal(d.check_state, "failure");
+  assert.equal(d.kind, "bug");
+});
+
+test("chronic flag from the model survives decide()", () => {
+  const d = decide({
+    failure: failure(),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: [],
+    ai: {
+      verdict: "FLAKY_TEST",
+      confidence: 0.95,
+      reason: "chronic flake (5/20) — same modal timeout on other PRs",
+      citations: ["history", "failing_elsewhere", "this_run_recovered"],
+      chronic: true,
+    },
+  });
+  assert.equal(d.chronic, true);
+  assert.equal(d.waived, true);
+});
+
 test("waiver requires 0.85 confidence", () => {
   const w = canWaive({
     runType: "PR",
@@ -256,6 +293,34 @@ test("AI INCONCLUSIVE with error text is overridden to a waived flake", () => {
   assert.equal(d.waived, true, d.reason);
   assert.equal(d.verdict, "FLAKY_INFRA");
   assert.equal(d.source, "policy");
+});
+
+test("PR that edits the failing spec cannot have its bug waived as CI-only", () => {
+  const d = decide({
+    failure: failure({
+      file: "e2e-tests/playwright/specs/functional/login.spec.ts",
+      error_message: "expect(locator).toBeVisible() failed",
+      suggested: {
+        verdict: "FLAKY_TEST",
+        confidence: 1,
+        needs_ai: false,
+        reason: "recovered",
+        citations: ["this_run_recovered"],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: ["e2e-tests/playwright/specs/functional/login.spec.ts"],
+    ai: {
+      verdict: "PR_REGRESSION",
+      confidence: 0.9,
+      reason: "PR modified the failing spec; screenshot shows wrong product state",
+      citations: ["screenshot", "changed_files"],
+    },
+  });
+  assert.equal(d.verdict, "PR_REGRESSION", d.reason);
+  assert.equal(d.waived, false, "spec-touching bug verdicts fail closed");
+  assert.equal(d.check_state, "failure");
 });
 
 test("AI PR_REGRESSION on CI-only PR is overridden to FLAKY_INFRA", () => {

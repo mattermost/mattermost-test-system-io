@@ -31,6 +31,7 @@ export function parseVerdict(raw: string): ClaudeVerdict {
     citations,
     suspect_sha: suspectSha,
     suspect_author: suspectAuthor,
+    chronic: json.chronic === true,
   };
 }
 

@@ -26940,7 +26940,12 @@ function parseRunCounts(description) {
 }
 function originalStatusDescription(args) {
   const counts = args.counts;
-  const head = counts ? counts.skipped !== void 0 ? `${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped` : `${counts.passed} passed, ${counts.failed} failed` : args.failureCount !== void 0 ? `${args.failureCount} failed` : "failures";
+  const head = counts ? [
+    `${counts.passed} passed`,
+    counts.flaky ? `${counts.flaky} flaky` : void 0,
+    `${counts.failed} failed`,
+    counts.skipped ? `${counts.skipped} skipped` : void 0
+  ].filter((s) => s !== void 0).join(", ") : args.failureCount !== void 0 ? `${args.failureCount} failed` : "failures";
   if (args.waived) {
     return truncate(`${head} \u2014 waived as flaky`);
   }
@@ -27300,8 +27305,9 @@ async function run() {
       triageContext: contextName
     });
     const descByContext = new Map(statusRows.map((s) => [s.context, s.description]));
+    const tsioCounts = await fetchReportCounts(baseURL, pack.group.id);
     for (const ctx of targets) {
-      const counts = parseRunCounts(descByContext.get(ctx));
+      const counts = tsioCounts ?? parseRunCounts(descByContext.get(ctx));
       const description = originalStatusDescription({
         counts,
         failureCount: pack.failure_count,
@@ -27338,6 +27344,23 @@ async function run() {
 }
 function agentCalls(decisions) {
   return decisions.filter((d) => d.source === "model").length;
+}
+async function fetchReportCounts(baseURL, groupID) {
+  if (!groupID) return void 0;
+  try {
+    const res = await retryFetch(`${baseURL}/api/v1/reports/${groupID}`, {}, "reports/:id");
+    if (!res.ok) {
+      warning(`report stats HTTP ${res.status}; falling back to status description`);
+      return void 0;
+    }
+    const report = await res.json();
+    const t = report.orchestration?.tests || report.test_stats;
+    if (!t || typeof t.passed !== "number" || typeof t.failed !== "number") return void 0;
+    return { passed: t.passed, failed: t.failed, flaky: t.flaky, skipped: t.skipped };
+  } catch (err) {
+    warning(`report stats: ${err.message}; falling back to status description`);
+    return void 0;
+  }
 }
 async function attachBlame(d, cluster, githubToken, repository) {
   d.kind = kindOf(d.verdict);

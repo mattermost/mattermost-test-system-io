@@ -129,6 +129,25 @@ test("originalStatusDescription keeps counts and adds blame", () => {
   );
 });
 
+test("originalStatusDescription surfaces flaky counts and omits zero segments", () => {
+  assert.equal(
+    originalStatusDescription({
+      counts: { passed: 960, failed: 1, flaky: 5, skipped: 137 },
+      waived: true,
+      verdict: "FLAKY_TEST",
+    }),
+    "960 passed, 5 flaky, 1 failed, 137 skipped — waived as flaky",
+  );
+  assert.equal(
+    originalStatusDescription({
+      counts: { passed: 485, failed: 4, flaky: 0, skipped: 0 },
+      waived: false,
+      verdict: "PR_REGRESSION",
+    }),
+    "485 passed, 4 failed — product bug",
+  );
+});
+
 test("flakeSuccessDescription stays under GitHub's 140-char cap", () => {
   const d = flakeSuccessDescription(
     "e2e-test/ai-triage",

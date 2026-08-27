@@ -25,6 +25,7 @@ import {
   originalStatusDescription,
   parseContextList,
   parseRunCounts,
+  type RunCounts,
 } from "./flip.ts";
 import { decide, rollup } from "./policy.ts";
 import { buildReportURL } from "./report_url.ts";
@@ -163,8 +164,11 @@ export async function run(): Promise<void> {
       triageContext: contextName,
     });
     const descByContext = new Map(statusRows.map((s) => [s.context, s.description]));
+    // Unique counts from TSIO's deduped rollup beat anything parsed from a
+    // status description (which folds flaky into passed and drops skipped).
+    const tsioCounts = await fetchReportCounts(baseURL, pack.group.id);
     for (const ctx of targets) {
-      const counts = parseRunCounts(descByContext.get(ctx));
+      const counts = tsioCounts ?? parseRunCounts(descByContext.get(ctx));
       const description = originalStatusDescription({
         counts,
         failureCount: pack.failure_count,
@@ -206,6 +210,32 @@ export async function run(): Promise<void> {
 
 function agentCalls(decisions: Decision[]): number {
   return decisions.filter((d) => d.source === "model").length;
+}
+
+/**
+ * Unique per-test counts for the report group. Prefers the orchestration
+ * rollup (one row per dispatched unit — retries collapse into flaky) and
+ * falls back to test_stats, then to undefined (caller parses descriptions).
+ */
+async function fetchReportCounts(baseURL: string, groupID: string): Promise<RunCounts | undefined> {
+  if (!groupID) return undefined;
+  try {
+    const res = await retryFetch(`${baseURL}/api/v1/reports/${groupID}`, {}, "reports/:id");
+    if (!res.ok) {
+      core.warning(`report stats HTTP ${res.status}; falling back to status description`);
+      return undefined;
+    }
+    const report = (await res.json()) as {
+      orchestration?: { tests?: RunCounts };
+      test_stats?: RunCounts;
+    };
+    const t = report.orchestration?.tests || report.test_stats;
+    if (!t || typeof t.passed !== "number" || typeof t.failed !== "number") return undefined;
+    return { passed: t.passed, failed: t.failed, flaky: t.flaky, skipped: t.skipped };
+  } catch (err) {
+    core.warning(`report stats: ${(err as Error).message}; falling back to status description`);
+    return undefined;
+  }
 }
 
 async function attachBlame(

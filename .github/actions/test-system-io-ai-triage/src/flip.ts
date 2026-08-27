@@ -58,6 +58,7 @@ export function failureBlame(verdict: string): FailureBlame {
 export interface RunCounts {
   passed: number;
   failed: number;
+  flaky?: number;
   skipped?: number;
 }
 
@@ -96,7 +97,8 @@ export function parseRunCounts(description: string | undefined | null): RunCount
 
 /**
  * Description for the original e2e-test/* row (GitHub caps at 140 chars).
- * Prefer keeping the pass/fail counts the summary action already posted.
+ * Prefer TSIO's deduped test stats (orchestration.tests) so flaky and skipped
+ * survive the rewrite; parseRunCounts is only a fallback.
  */
 export function originalStatusDescription(args: {
   counts?: RunCounts;
@@ -106,9 +108,14 @@ export function originalStatusDescription(args: {
 }): string {
   const counts = args.counts;
   const head = counts
-    ? counts.skipped !== undefined
-      ? `${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`
-      : `${counts.passed} passed, ${counts.failed} failed`
+    ? [
+        `${counts.passed} passed`,
+        counts.flaky ? `${counts.flaky} flaky` : undefined,
+        `${counts.failed} failed`,
+        counts.skipped ? `${counts.skipped} skipped` : undefined,
+      ]
+        .filter((s) => s !== undefined)
+        .join(", ")
     : args.failureCount !== undefined
       ? `${args.failureCount} failed`
       : "failures";

@@ -269,7 +269,7 @@ async function getJSON(url: string): Promise<unknown> {
   return res.json();
 }
 
-async function loadShot(
+export async function loadShot(
   baseURL: string,
   key: string,
 ): Promise<{ mediaType: "image/png" | "image/jpeg"; data: string } | undefined> {

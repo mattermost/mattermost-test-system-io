@@ -205,6 +205,7 @@ export function decide(args: {
     kind: kindOf(merged.verdict),
     member_count: 1,
     chronic: args.ai?.chronic === true,
+    refusal: rejection,
     // A waiver granted at the minimum confidence is a coin flip — surface it
     // for a human eyeball even when it goes green.
     borderline: waiver.waived && merged.confidence < BORDERLINE_CONFIDENCE,

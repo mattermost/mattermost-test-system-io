@@ -28,9 +28,22 @@ import {
   type RunCounts,
 } from "./flip.ts";
 import { decide, rollup } from "./policy.ts";
+import {
+  collectFixTargets,
+  runFixer,
+  MAX_FIX_TARGETS,
+  type FixerContext,
+  type FixResult,
+} from "./fixer.ts";
 import { buildReportURL } from "./report_url.ts";
 import { retryFetch } from "./retry-fetch.ts";
-import type { CompositeIdentity, Decision, EvidenceCluster, EvidencePack } from "./types.ts";
+import type {
+  CompositeIdentity,
+  Decision,
+  EvidenceCluster,
+  EvidencePack,
+  FixTarget,
+} from "./types.ts";
 
 const PRODUCTION_URL = "https://test-io.test.mattermost.com";
 const STAGING_URL = "https://staging-test-io.test.mattermost.com";
@@ -53,6 +66,25 @@ export async function run(): Promise<void> {
 
   const reportURL = buildReportURL(baseURL, identity);
   core.setOutput("report_url", reportURL);
+
+  // Fix mode: a checked-out workspace + triage's fixable-cluster JSON from the
+  // triage pass. The agent edits the spec in the workspace, pushes to the PR
+  // branch, and the standard CI loop validates the fix.
+  const fixClusters = core.getInput("fix-clusters");
+  if (fixClusters) {
+    await runFixMode(baseURL, fixClusters, {
+      apiKey: anthropicKey,
+      model,
+      workspace: core.getInput("workspace") || process.env.GITHUB_WORKSPACE || ".",
+      token: githubToken,
+      repository: identity.repository,
+      prBranch: core.getInput("pr-branch", { required: true }),
+      prNumber: identity.gh_pr_number ? Number(identity.gh_pr_number) : undefined,
+      baseURL,
+      maxTargets: Number(core.getInput("autofix-max")) || MAX_FIX_TARGETS,
+    });
+    return;
+  }
 
   const pack = await fetchEvidence(baseURL, identity, groupID, baseline);
   core.info(
@@ -122,6 +154,13 @@ export async function run(): Promise<void> {
   const summary = rollup(decisions);
   await writeLedger(baseURL, audience, pack, decisions, model);
   await writeStepSummary(pack.clusters || [], decisions, summary, reportURL);
+
+  // Export test-bug clusters the fixer may repair (TEST_DEBT / refusal-blocked
+  // flakes on pre-existing specs). The ai-autofix job consumes this JSON.
+  core.setOutput(
+    "fixable_clusters",
+    JSON.stringify(collectFixTargets(pack.clusters || [], decisions, changedFiles)),
+  );
 
   if (githubToken) {
     const [owner, repo] = splitRepo(pack.group.repository);
@@ -219,6 +258,78 @@ export async function run(): Promise<void> {
 
 function agentCalls(decisions: Decision[]): number {
   return decisions.filter((d) => d.source === "model").length;
+}
+
+/**
+ * Fix mode: repair each target in the PR checkout, push, and comment on the
+ * PR with the diffs so a human can review what the agent changed.
+ */
+async function runFixMode(baseURL: string, fixClusters: string, ctx: FixerContext): Promise<void> {
+  let targets;
+  try {
+    targets = JSON.parse(fixClusters) as FixTarget[];
+  } catch (err) {
+    core.setFailed(`fix-clusters is not valid JSON: ${(err as Error).message}`);
+    return;
+  }
+  if (!ctx.apiKey) {
+    core.warning("no anthropic key; autofix skipped");
+    return;
+  }
+  targets = targets.slice(0, ctx.maxTargets);
+  core.info(
+    `autofix: ${targets.length} cluster(s) — ${targets.map((t) => t.signature.slice(0, 8)).join(", ")}`,
+  );
+  const results = await runFixer(targets, ctx);
+
+  for (const r of results) {
+    core.info(`autofix ${r.signature.slice(0, 8)}: ${r.status} — ${r.summary.slice(0, 200)}`);
+  }
+  const fixed = results.filter((r) => r.status === "fixed");
+  core.setOutput("fixed_count", String(fixed.length));
+  core.setOutput("fixed_signatures", fixed.map((r) => r.signature).join(","));
+
+  if (ctx.prNumber && ctx.token && results.length > 0) {
+    await commentFixes(ctx, ctx.prNumber, results);
+  }
+}
+
+async function commentFixes(
+  ctx: FixerContext,
+  prNumber: number,
+  results: FixResult[],
+): Promise<void> {
+  const [owner, repo] = splitRepo(ctx.repository);
+  const octokit = new RetryingOctokit(getOctokitOptions(ctx.token));
+  const lines = [
+    `## 🤖 AI test autofix — ${results.filter((r) => r.status === "fixed").length}/${results.length} fixed`,
+    ``,
+    `Fixes were pushed to the PR branch and will be validated by the next E2E run + re-triage.`,
+    ``,
+  ];
+  for (const r of results) {
+    const icon = r.status === "fixed" ? "✅" : r.status === "skipped" ? "⏭️" : "❌";
+    lines.push(`### ${icon} \`${r.signature.slice(0, 8)}\` — ${r.status}`);
+    lines.push(r.summary.slice(0, 1200));
+    if (r.files.length > 0) lines.push(`Files: ${r.files.map((f) => `\`${f}\``).join(", ")}`);
+    if (r.commit_sha) lines.push(`Commit: \`${r.commit_sha.slice(0, 7)}\``);
+    if (r.diff)
+      lines.push(
+        `<details><summary>diff</summary>\n\n\`\`\`diff\n${r.diff.slice(0, 20000)}\n\`\`\`\n</details>`,
+      );
+    lines.push(``);
+  }
+  try {
+    const c = await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: prNumber,
+      body: lines.join("\n"),
+    });
+    core.setOutput("comment_url", c.data.html_url);
+  } catch (err) {
+    core.warning(`PR comment failed: ${(err as Error).message}`);
+  }
 }
 
 /**

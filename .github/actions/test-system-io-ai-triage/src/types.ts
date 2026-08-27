@@ -107,6 +107,11 @@ export interface Decision {
   chronic?: boolean;
   /** Waived at near-minimum confidence — flagged for human review. */
   borderline?: boolean;
+  /**
+   * Product deliberately refused the action (error text or model-observed
+   * screenshot evidence). Blocks flake waivers; the fix belongs in the test.
+   */
+  refusal?: boolean;
 }
 
 export interface ClaudeVerdict {
@@ -123,4 +128,18 @@ export interface ClaudeVerdict {
    * the action (rejection banner, permission dialog). Blocks flake waivers.
    */
   product_refusal?: boolean;
+}
+
+/** A test-bug cluster the fixer agent may repair. */
+export interface FixTarget {
+  signature: string;
+  external_test_id?: string;
+  full_title: string;
+  file: string;
+  error_message?: string;
+  error_stack?: string;
+  /** Root-cause reason from triage (why this is not a product regression). */
+  reason: string;
+  confidence: number;
+  screenshots: string[];
 }

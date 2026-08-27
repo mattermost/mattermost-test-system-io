@@ -324,6 +324,36 @@ test("PR that edits the failing spec cannot have its bug waived as CI-only", () 
   assert.equal(d.check_state, "failure");
 });
 
+test("model-observed screenshot refusal blocks flake waivers (MM-67594_13 case)", () => {
+  const d = decide({
+    failure: failure({
+      status: "failed",
+      retry_count: 1,
+      // The banner text is ONLY in the screenshot — error text is a bare timeout.
+      error_message: "TimeoutError: locator.waitFor: Timeout 30000ms exceeded.",
+      suggested: {
+        verdict: "FLAKY_INFRA",
+        confidence: 0.92,
+        needs_ai: true,
+        reason: "recovered on retry",
+        citations: ["this_run_recovered"],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: [],
+    ai: {
+      verdict: "FLAKY_INFRA",
+      confidence: 0.92,
+      reason: "screenshot shows red server rejection banner",
+      citations: ["screenshot", "this_run_recovered"],
+      product_refusal: true,
+    },
+  });
+  assert.equal(d.waived, false, "screenshot-observed refusal must stay red");
+  assert.ok(d.reason.includes("deliberately refusing"), d.reason);
+});
+
 test("product-rejection errors are never waived as flake, regardless of confidence", () => {
   const d = decide({
     failure: failure({

@@ -42,4 +42,9 @@ test("parseVerdict reads the chronic flag", () => {
     `{"verdict":"FLAKY_TEST","confidence":0.9,"reason":"one-off","citations":["screenshot"]}`,
   );
   assert.equal(plain.chronic, false);
+  const refusal = parseVerdict(
+    `{"verdict":"TEST_DEBT","confidence":0.95,"reason":"server refused the save","citations":["screenshot"],"product_refusal":true}`,
+  );
+  assert.equal(refusal.product_refusal, true);
+  assert.equal(plain.product_refusal, false);
 });

@@ -181,7 +181,11 @@ export function decide(args: {
 }): Decision {
   const suggested: Suggestion = args.failure.suggested;
   const overlaps = diffOverlaps(args.changedFiles, args.failure.file, args.failure.error_stack);
-  const rejection = isProductRejection(args.failure.error_message, args.failure.error_stack);
+  // Rejection is visible in text evidence OR in the screenshot the model viewed —
+  // the MM-67594_13 case: the banner text appears only in the screenshot.
+  const rejection =
+    isProductRejection(args.failure.error_message, args.failure.error_stack) ||
+    args.ai?.product_refusal === true;
   const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
   const waiver = canWaive({
     runType: args.runType,

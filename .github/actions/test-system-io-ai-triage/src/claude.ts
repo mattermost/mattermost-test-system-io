@@ -32,6 +32,7 @@ export function parseVerdict(raw: string): ClaudeVerdict {
     suspect_sha: suspectSha,
     suspect_author: suspectAuthor,
     chronic: json.chronic === true,
+    product_refusal: json.product_refusal === true,
   };
 }
 

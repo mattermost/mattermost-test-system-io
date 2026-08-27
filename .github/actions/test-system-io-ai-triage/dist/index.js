@@ -26463,7 +26463,8 @@ function parseVerdict(raw) {
     citations,
     suspect_sha: suspectSha,
     suspect_author: suspectAuthor,
-    chronic: json.chronic === true
+    chronic: json.chronic === true,
+    product_refusal: json.product_refusal === true
   };
 }
 function extractJSON(raw) {
@@ -26711,7 +26712,18 @@ function buildPrompt(cluster, ctx) {
 Call TSIO tools as needed, then decide. You already have error/stack (and often screenshots) in this prompt \u2014 that IS evidence.
 
 Return ONLY JSON when done:
-{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional","chronic":false}
+{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional","chronic":false,"product_refusal":false}
+
+kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
+
+DETERMINISTIC CLASSIFICATION \u2014 identical evidence must yield the identical verdict. Classify by the FIRST matching rule:
+1. Screenshot or error shows the product deliberately refusing the action (red error banner, "you cannot save\u2026", "would remove your access", permission/authorization dialog) \u2192 bug verdict (TEST_DEBT or PR_REGRESSION), product_refusal=true. The server answered correctly \u2014 never FLAKY_*.
+2. Screenshot or error shows a WRONG PRODUCT STATE (wrong data persisted, corrupted content, broken layout, incorrect business logic) \u2192 bug verdict (PR_REGRESSION if the PR overlaps the area, else MAIN_REGRESSION).
+3. Blank/unrendered page, mid-load capture, environment/bootstrap/login timeout, emulator/device signals \u2192 FLAKY_INFRA.
+4. Network transport failures (DNS, ECONNREFUSED, 5xx, socket hang up) \u2192 FLAKY_SERVER.
+5. UI timing race with CORRECT product state in the screenshot (element rendered but too slow, animation/transition race) \u2192 FLAKY_TEST.
+6. Only if no rule matches and evidence is contradictory \u2192 INCONCLUSIVE.
+Do not oscillate between FLAKY_INFRA/FLAKY_SERVER/FLAKY_TEST for the same error signature \u2014 apply the table.
 
 kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
 
@@ -26721,7 +26733,7 @@ RETRY-RECOVERY RULE (status=flaky or retry_count>0 \u2014 the test failed once t
 - Waive FLAKY_* only when recovery is corroborated by at least ONE of: past flaky/recovered outcomes in baseline history, the same test failing-and-recovering on other PRs, or a pure timing/timeout error signature with no wrong product state.
 - Recovery + screenshot or error showing a WRONG PRODUCT STATE (wrong data, corrupted content, broken layout, incorrect business logic) is a BUG \u2014 return PR_REGRESSION or MAIN_REGRESSION, not flake.
 - If get_history shows this test flaked/recovered \u22653 times in the last 20 baseline runs, set "chronic":true and start the reason with "chronic flake (n/20)" \u2014 a human must track it even though it is waived.
-- If the error/stack shows the product DELIBERATELY refusing the action ("you cannot save\u2026", "would remove your access", permission/authorization rejections), that is NOT flake \u2014 the server answered correctly. Return TEST_DEBT or PR_REGRESSION as appropriate; flake waivers for such errors are blocked by policy.
+- If the error/stack shows the product DELIBERATELY refusing the action ("you cannot save\u2026", "would remove your access", permission/authorization rejections), that is NOT flake \u2014 the server answered correctly. Set "product_refusal":true and return TEST_DEBT; flake waivers for such errors are blocked by policy.
 
 Rules:
 - NEVER return INCONCLUSIVE when error_message, error_stack, or screenshot keys are present. Pick FLAKY_* or a bug verdict.
@@ -27076,7 +27088,7 @@ function canWaive(args) {
 function decide(args) {
   const suggested = args.failure.suggested;
   const overlaps = diffOverlaps(args.changedFiles, args.failure.file, args.failure.error_stack);
-  const rejection = isProductRejection(args.failure.error_message, args.failure.error_stack);
+  const rejection = isProductRejection(args.failure.error_message, args.failure.error_stack) || args.ai?.product_refusal === true;
   const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
   const waiver = canWaive({
     runType: args.runType,

@@ -118,4 +118,9 @@ export interface ClaudeVerdict {
   suspect_author?: string;
   /** True when baseline history shows this test flaking repeatedly. */
   chronic?: boolean;
+  /**
+   * True when the screenshot/error shows the product deliberately refusing
+   * the action (rejection banner, permission dialog). Blocks flake waivers.
+   */
+  product_refusal?: boolean;
 }

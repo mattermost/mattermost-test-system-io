@@ -124,7 +124,18 @@ function buildPrompt(cluster: EvidenceCluster, ctx: AgentContext): string {
 Call TSIO tools as needed, then decide. You already have error/stack (and often screenshots) in this prompt — that IS evidence.
 
 Return ONLY JSON when done:
-{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional","chronic":false}
+{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional","chronic":false,"product_refusal":false}
+
+kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
+
+DETERMINISTIC CLASSIFICATION — identical evidence must yield the identical verdict. Classify by the FIRST matching rule:
+1. Screenshot or error shows the product deliberately refusing the action (red error banner, "you cannot save…", "would remove your access", permission/authorization dialog) → bug verdict (TEST_DEBT or PR_REGRESSION), product_refusal=true. The server answered correctly — never FLAKY_*.
+2. Screenshot or error shows a WRONG PRODUCT STATE (wrong data persisted, corrupted content, broken layout, incorrect business logic) → bug verdict (PR_REGRESSION if the PR overlaps the area, else MAIN_REGRESSION).
+3. Blank/unrendered page, mid-load capture, environment/bootstrap/login timeout, emulator/device signals → FLAKY_INFRA.
+4. Network transport failures (DNS, ECONNREFUSED, 5xx, socket hang up) → FLAKY_SERVER.
+5. UI timing race with CORRECT product state in the screenshot (element rendered but too slow, animation/transition race) → FLAKY_TEST.
+6. Only if no rule matches and evidence is contradictory → INCONCLUSIVE.
+Do not oscillate between FLAKY_INFRA/FLAKY_SERVER/FLAKY_TEST for the same error signature — apply the table.
 
 kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
 
@@ -134,7 +145,7 @@ RETRY-RECOVERY RULE (status=flaky or retry_count>0 — the test failed once then
 - Waive FLAKY_* only when recovery is corroborated by at least ONE of: past flaky/recovered outcomes in baseline history, the same test failing-and-recovering on other PRs, or a pure timing/timeout error signature with no wrong product state.
 - Recovery + screenshot or error showing a WRONG PRODUCT STATE (wrong data, corrupted content, broken layout, incorrect business logic) is a BUG — return PR_REGRESSION or MAIN_REGRESSION, not flake.
 - If get_history shows this test flaked/recovered ≥3 times in the last 20 baseline runs, set "chronic":true and start the reason with "chronic flake (n/20)" — a human must track it even though it is waived.
-- If the error/stack shows the product DELIBERATELY refusing the action ("you cannot save…", "would remove your access", permission/authorization rejections), that is NOT flake — the server answered correctly. Return TEST_DEBT or PR_REGRESSION as appropriate; flake waivers for such errors are blocked by policy.
+- If the error/stack shows the product DELIBERATELY refusing the action ("you cannot save…", "would remove your access", permission/authorization rejections), that is NOT flake — the server answered correctly. Set "product_refusal":true and return TEST_DEBT; flake waivers for such errors are blocked by policy.
 
 Rules:
 - NEVER return INCONCLUSIVE when error_message, error_stack, or screenshot keys are present. Pick FLAKY_* or a bug verdict.

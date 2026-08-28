@@ -338,9 +338,12 @@ async function runFixMode(baseURL: string, fixClusters: string, ctx: FixerContex
   // fixer must push to the PR's REAL head branch, so resolve it then.
   if (/^pr-\d+$/.test(ctx.prBranch) && ctx.prNumber && ctx.token) {
     try {
-      const res = await fetch(`https://api.github.com/repos/${ctx.repository}/pulls/${ctx.prNumber}`, {
-        headers: { authorization: `Bearer ${ctx.token}`, accept: "application/vnd.github+json" },
-      });
+      const res = await fetch(
+        `https://api.github.com/repos/${ctx.repository}/pulls/${ctx.prNumber}`,
+        {
+          headers: { authorization: `Bearer ${ctx.token}`, accept: "application/vnd.github+json" },
+        },
+      );
       if (res.ok) {
         const head = ((await res.json()) as { head?: { ref?: string } }).head?.ref;
         if (head) {

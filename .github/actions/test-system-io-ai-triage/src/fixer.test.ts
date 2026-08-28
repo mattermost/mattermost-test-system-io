@@ -317,10 +317,21 @@ test("collectBisectTargets: only unwaived MAIN_REGRESSION >= 0.85 with a playwri
     } as never as EvidenceCluster["representative"],
   });
   const mkd = (sig: string, conf: number, waived: boolean): Decision =>
-    ({ signature: sig, verdict: "MAIN_REGRESSION", confidence: conf, waived, kind: "bug" }) as never as Decision;
+    ({
+      signature: sig,
+      verdict: "MAIN_REGRESSION",
+      confidence: conf,
+      waived,
+      kind: "bug",
+    }) as never as Decision;
   const targets = collectBisectTargets(
     [cCulprit, cLow, cCypress, cWaived],
-    [mkd("culprit1", 0.9, false), mkd("lowconf", 0.7, false), mkd("cypress1", 0.95, false), mkd("waived1", 0.99, true)],
+    [
+      mkd("culprit1", 0.9, false),
+      mkd("lowconf", 0.7, false),
+      mkd("cypress1", 0.95, false),
+      mkd("waived1", 0.99, true),
+    ],
   );
   assert.equal(targets.length, 1, "only the confident, unwaived, playwright-scope cluster bisects");
   assert.equal(targets[0].signature, "culprit1");

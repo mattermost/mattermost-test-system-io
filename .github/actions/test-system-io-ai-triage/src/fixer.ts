@@ -581,7 +581,10 @@ export function collectBisectTargets(
       // cypress specs are *_spec.(ts|js); bisect's runner is playwright-shaped
       const file =
         candidates.find(
-          (x) => x.startsWith("e2e-tests/playwright/") && !x.endsWith("_spec.js") && !x.endsWith("_spec.ts"),
+          (x) =>
+            x.startsWith("e2e-tests/playwright/") &&
+            !x.endsWith("_spec.js") &&
+            !x.endsWith("_spec.ts"),
         ) || "";
       return {
         signature: c.signature,

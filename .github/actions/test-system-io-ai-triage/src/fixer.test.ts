@@ -284,22 +284,43 @@ test("applyEditFile: unique match applies, ambiguous and missing old_text error 
 });
 
 test("collectBisectTargets: only unwaived MAIN_REGRESSION >= 0.85 with a playwright file", () => {
-  const mk = (sig: string, file: string) => cluster({
-    representative: { external_test_id: "x", full_title: sig, file } as Partial<EvidenceCluster["representative"]>,
-  }) as ReturnType<typeof cluster>;
-  const cCulprit = mk("culprit1", "functional/channels/team_settings/team_settings_policy_editor.spec.ts") as never as EvidenceCluster;
-  const cLow = mk("lowconf", "functional/channels/team_settings/team_settings_policy_editor.spec.ts") as never as EvidenceCluster;
-  const cCypress = mk("cypress1", "tests/integration/invite_modal_spec.ts") as never as EvidenceCluster;
-  const cWaived = mk("waived1", "functional/flake.spec.ts") as never as EvidenceCluster;
-  cLow!.representative.error_message = "boom";
+  const cCulprit = cluster({
+    signature: "culprit1",
+    representative: {
+      external_test_id: "x",
+      full_title: "Policy editor",
+      file: "functional/channels/team_settings/team_settings_policy_editor.spec.ts",
+    } as never as EvidenceCluster["representative"],
+  });
+  const cLow = cluster({
+    signature: "lowconf",
+    representative: {
+      external_test_id: "x",
+      full_title: "Policy editor",
+      file: "functional/channels/team_settings/team_settings_policy_editor.spec.ts",
+    } as never as EvidenceCluster["representative"],
+  });
+  const cCypress = cluster({
+    signature: "cypress1",
+    representative: {
+      external_test_id: "x",
+      full_title: "Invite modal",
+      file: "tests/integration/invite_modal_spec.ts",
+    } as never as EvidenceCluster["representative"],
+  });
+  const cWaived = cluster({
+    signature: "waived1",
+    representative: {
+      external_test_id: "x",
+      full_title: "Flake",
+      file: "functional/flake.spec.ts",
+    } as never as EvidenceCluster["representative"],
+  });
+  const mkd = (sig: string, conf: number, waived: boolean): Decision =>
+    ({ signature: sig, verdict: "MAIN_REGRESSION", confidence: conf, waived, kind: "bug" }) as never as Decision;
   const targets = collectBisectTargets(
     [cCulprit, cLow, cCypress, cWaived],
-    [
-      { signature: "culprit1", verdict: "MAIN_REGRESSION", confidence: 0.9, waived: false, kind: "bug" },
-      { signature: "lowconf", verdict: "MAIN_REGRESSION", confidence: 0.7, waived: false, kind: "bug" },
-      { signature: "cypress1", verdict: "MAIN_REGRESSION", confidence: 0.95, waived: false, kind: "bug" },
-      { signature: "waived1", verdict: "MAIN_REGRESSION", confidence: 0.99, waived: true, kind: "bug" },
-    ] as never as Decision[],
+    [mkd("culprit1", 0.9, false), mkd("lowconf", 0.7, false), mkd("cypress1", 0.95, false), mkd("waived1", 0.99, true)],
   );
   assert.equal(targets.length, 1, "only the confident, unwaived, playwright-scope cluster bisects");
   assert.equal(targets[0].signature, "culprit1");

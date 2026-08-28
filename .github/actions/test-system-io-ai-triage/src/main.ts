@@ -334,6 +334,24 @@ async function runFixMode(baseURL: string, fixClusters: string, ctx: FixerContex
   core.info(
     `autofix: ${targets.length} cluster(s) — ${targets.map((t) => t.signature.slice(0, 8)).join(", ")}`,
   );
+  // The unified-ci dispatch names synthetic dashboard branches (pr-N); the
+  // fixer must push to the PR's REAL head branch, so resolve it then.
+  if (/^pr-\d+$/.test(ctx.prBranch) && ctx.prNumber && ctx.token) {
+    try {
+      const res = await fetch(`https://api.github.com/repos/${ctx.repository}/pulls/${ctx.prNumber}`, {
+        headers: { authorization: `Bearer ${ctx.token}`, accept: "application/vnd.github+json" },
+      });
+      if (res.ok) {
+        const head = ((await res.json()) as { head?: { ref?: string } }).head?.ref;
+        if (head) {
+          core.info(`fixer: synthetic branch ${ctx.prBranch} → real PR head ${head}`);
+          ctx.prBranch = head;
+        }
+      }
+    } catch (err) {
+      core.warning(`fixer: PR head lookup failed (${(err as Error).message})`);
+    }
+  }
   const results = await runFixer(targets, ctx);
 
   for (const r of results) {

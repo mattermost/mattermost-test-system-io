@@ -27977,6 +27977,22 @@ async function runFixMode(baseURL, fixClusters, ctx) {
   info(
     `autofix: ${targets.length} cluster(s) \u2014 ${targets.map((t) => t.signature.slice(0, 8)).join(", ")}`
   );
+  if (/^pr-\d+$/.test(ctx.prBranch) && ctx.prNumber && ctx.token) {
+    try {
+      const res = await fetch(`https://api.github.com/repos/${ctx.repository}/pulls/${ctx.prNumber}`, {
+        headers: { authorization: `Bearer ${ctx.token}`, accept: "application/vnd.github+json" }
+      });
+      if (res.ok) {
+        const head = (await res.json()).head?.ref;
+        if (head) {
+          info(`fixer: synthetic branch ${ctx.prBranch} \u2192 real PR head ${head}`);
+          ctx.prBranch = head;
+        }
+      }
+    } catch (err) {
+      warning(`fixer: PR head lookup failed (${err.message})`);
+    }
+  }
   const results = await runFixer(targets, ctx);
   for (const r of results) {
     info(`autofix ${r.signature.slice(0, 8)}: ${r.status} \u2014 ${r.summary.slice(0, 200)}`);

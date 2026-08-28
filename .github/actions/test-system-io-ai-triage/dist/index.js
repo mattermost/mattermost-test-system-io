@@ -27247,7 +27247,29 @@ var MAX_FIX_TARGETS = 2;
 var MAX_EDIT_FILES = 4;
 var MAX_DIFF_BYTES = 60 * 1024;
 var MAX_ROUNDS2 = 12;
+var MAX_AUTOFIX_COMMITS_PER_PR = 4;
 var ALLOWED_PREFIXES = ["e2e-tests/"];
+function autofixState(cwd) {
+  try {
+    const commits = Number(
+      git(cwd, ["rev-list", "--count", "-F", "--grep=[ai-triage autofix]", "HEAD"])
+    );
+    const names = git(cwd, [
+      "log",
+      "-F",
+      "--grep=[ai-triage autofix]",
+      "--name-only",
+      "--format="
+    ]);
+    return {
+      commits,
+      files: names.split("\n").map((l) => l.trim()).filter(Boolean)
+    };
+  } catch (err) {
+    warning(`autofix state unavailable (${err.message}); assuming fresh branch`);
+    return { commits: 0, files: [] };
+  }
+}
 function isFixable(d, cluster, changedFiles) {
   if (d.waived) return false;
   if (d.kind !== "bug" && !d.refusal) return false;
@@ -27283,7 +27305,34 @@ function collectFixTargets(clusters, decisions, changedFiles, max = MAX_FIX_TARG
 }
 async function runFixer(targets, ctx) {
   const results = [];
+  const state = autofixState(ctx.workspace);
+  info(
+    `fixer loop guard: ${state.commits}/${MAX_AUTOFIX_COMMITS_PER_PR} autofix commits on branch, ${state.files.length} spec file(s) already attempted`
+  );
   for (const target of targets) {
+    if (state.commits >= MAX_AUTOFIX_COMMITS_PER_PR) {
+      results.push({
+        signature: target.signature,
+        status: "skipped",
+        skip_code: "branch_cap",
+        summary: `loop guard: this branch already carries ${state.commits} autofix commits (cap ${MAX_AUTOFIX_COMMITS_PER_PR}) \u2014 pausing to avoid an AI\u2194CI fix loop; needs human review`,
+        files: []
+      });
+      continue;
+    }
+    const touched = state.files.some(
+      (f) => f === target.file || target.file.endsWith(f) || f.endsWith(target.file)
+    );
+    if (touched) {
+      results.push({
+        signature: target.signature,
+        status: "skipped",
+        skip_code: "already_autofixed",
+        summary: "a previous autofix already edited this spec on this PR \u2014 the latest E2E run is the validation of that fix; if it still fails, needs human review (spec is now in the PR diff and protected)",
+        files: []
+      });
+      continue;
+    }
     results.push(await fixOne(target, ctx));
   }
   return results;
@@ -27728,8 +27777,11 @@ async function runFixMode(baseURL, fixClusters, ctx) {
     info(`autofix ${r.signature.slice(0, 8)}: ${r.status} \u2014 ${r.summary.slice(0, 200)}`);
   }
   const fixed = results.filter((r) => r.status === "fixed");
+  const blocked = results.filter((r) => r.status === "skipped" && r.skip_code);
   setOutput("fixed_count", String(fixed.length));
   setOutput("fixed_signatures", fixed.map((r) => r.signature).join(","));
+  setOutput("needs_human", blocked.map((r) => r.signature).join(","));
+  writeFixSummary(results);
   if (ctx.prNumber && ctx.token && results.length > 0) {
     await commentFixes(ctx, ctx.prNumber, results);
   }
@@ -27737,27 +27789,51 @@ async function runFixMode(baseURL, fixClusters, ctx) {
 async function commentFixes(ctx, prNumber, results) {
   const [owner, repo] = splitRepo(ctx.repository);
   const octokit = new RetryingOctokit2(getOctokitOptions(ctx.token));
+  const fixed = results.filter((r) => r.status === "fixed");
+  const blocked = results.filter((r) => r.status === "skipped" && r.skip_code);
+  const other = results.filter(
+    (r) => !(r.status === "fixed" || r.status === "skipped" && r.skip_code)
+  );
   const lines = [
-    `## \u{1F916} AI test autofix \u2014 ${results.filter((r) => r.status === "fixed").length}/${results.length} fixed`,
+    `## \u{1F916} AI test autofix \u2014 ${fixed.length}/${results.length} fixed`,
     ``,
-    `Fixes were pushed to the PR branch and will be validated by the next E2E run + re-triage.`,
+    `Fixes were pushed to this PR branch (never a new PR) and will be validated by the next E2E run + re-triage.`,
     ``
   ];
-  for (const r of results) {
-    const icon = r.status === "fixed" ? "\u2705" : r.status === "skipped" ? "\u23ED\uFE0F" : "\u274C";
-    lines.push(`### ${icon} \`${r.signature.slice(0, 8)}\` \u2014 ${r.status}`);
-    lines.push(r.summary.slice(0, 1200));
-    if (r.files.length > 0) lines.push(`Files: ${r.files.map((f) => `\`${f}\``).join(", ")}`);
-    if (r.commit_sha) lines.push(`Commit: \`${r.commit_sha.slice(0, 7)}\``);
-    if (r.diff)
+  if (fixed.length > 0) {
+    lines.push(`### What the AI fixed`, ``);
+    for (const r of fixed) {
       lines.push(
-        `<details><summary>diff</summary>
+        `#### \u2705 \`${r.signature.slice(0, 8)}\` \u2014 commit \`${(r.commit_sha || "").slice(0, 7)}\``
+      );
+      lines.push(r.summary.slice(0, 1200));
+      if (r.files.length > 0) lines.push(`Files: ${r.files.map((f) => `\`${f}\``).join(", ")}`);
+      if (r.diff)
+        lines.push(
+          `<details><summary>diff</summary>
 
 \`\`\`diff
 ${r.diff.slice(0, 2e4)}
 \`\`\`
 </details>`
+        );
+      lines.push(``);
+    }
+  }
+  if (blocked.length > 0) {
+    lines.push(`### \u{1F512} Needs human review (autofix loop guard)`, ``);
+    for (const r of blocked) {
+      lines.push(`- \`${r.signature.slice(0, 8)}\` \u2014 ${r.summary.slice(0, 400)}`);
+    }
+    lines.push(``);
+  }
+  if (other.length > 0) {
+    lines.push(`### \u26A0\uFE0F Not fixed \u2014 needs human`, ``);
+    for (const r of other) {
+      lines.push(
+        `- ${r.status === "failed" ? "\u274C" : "\u23ED\uFE0F"} \`${r.signature.slice(0, 8)}\` \u2014 ${r.summary.slice(0, 400)}`
       );
+    }
     lines.push(``);
   }
   try {
@@ -27946,14 +28022,21 @@ async function writeLedger(baseURL, audience, pack, decisions, model) {
   }
 }
 async function writeStepSummary(clusters, decisions, summary2, reportURL) {
+  const productBugs = decisions.filter(
+    (d) => d.verdict === "PR_REGRESSION" || d.verdict === "MAIN_REGRESSION"
+  );
+  const testBugs = decisions.filter((d) => d.kind === "bug" && !productBugs.includes(d));
+  const label = productBugs.length > 0 ? `\u{1F534} **PRODUCT BUG** \u2014 code broke the product; AI will not touch this. Needs a human.` : testBugs.length > 0 ? `\u{1F7E1} **TEST BUG** \u2014 test-side issue; eligible clusters go to AI autofix.` : `\u2705 **NO REGRESSION** \u2014 all failures waived as flake/infra.`;
   const lines = [
     `## E2E flake triage`,
+    ``,
+    label,
     ``,
     `**Outcome:** \`${summary2.description}\` \u2014 [report](${reportURL})`,
     ``,
     `No rerun. Cost scales with distinct error signatures, not failure count.`,
     ``,
-    `| Kind | Cluster | n | Verdict | Author | Waived | Why |`,
+    `| Classification | Cluster | n | Verdict | Author | Waived | Why |`,
     `|---|---|---:|---|---|---|---|`
   ];
   for (let i = 0; i < decisions.length; i++) {
@@ -27961,12 +28044,61 @@ async function writeStepSummary(clusters, decisions, summary2, reportURL) {
     const c = clusters[i];
     const author = d.suspect_author ? `@${d.suspect_author} (\`${(d.suspect_sha || "").slice(0, 7)}\`)` : "\u2014";
     const flag = d.chronic ? " \u26A0\uFE0F chronic" : d.borderline ? " \u2696\uFE0F borderline" : "";
+    const classification = productBugs.includes(d) ? "\u{1F534} product bug" : d.kind === "bug" ? "\u{1F7E1} test bug" : "flake/infra";
     lines.push(
-      `| ${d.kind} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict}${flag} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`
+      `| ${classification} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict}${flag} | ${author} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`
     );
   }
   if (decisions.length === 0) {
     lines.push(`| \u2014 | \u2014 | \u2014 | \u2014 | \u2014 | \u2014 | no failures |`);
+  }
+  if (productBugs.length > 0 || testBugs.some((d) => !d.waived)) {
+    lines.push(``, `### Needs a human`, ``);
+    for (const d of productBugs) {
+      lines.push(
+        `- \u{1F534} **${d.verdict}** \u2014 ${d.reason.replace(/\n/g, " ").slice(0, 300)}` + (d.suspect_author ? ` (suspect: @${d.suspect_author})` : "") + ` \u2014 [report](${reportURL})`
+      );
+    }
+    if (testBugs.some((d) => !d.waived)) {
+      lines.push(
+        `- \u{1F7E1} ${testBugs.filter((d) => !d.waived).length} unwaived test bug(s) \u2014 the AI autofix job will attempt repair on pre-existing specs, or a maintainer can override via \`/e2e-triage-override\`.`
+      );
+    }
+  }
+  const file = process.env.GITHUB_STEP_SUMMARY;
+  if (file) fs4.appendFileSync(file, lines.join("\n") + "\n");
+}
+function writeFixSummary(results) {
+  const fixed = results.filter((r) => r.status === "fixed");
+  const blocked = results.filter((r) => r.status === "skipped" && r.skip_code);
+  const other = results.filter(
+    (r) => !(r.status === "fixed" || r.status === "skipped" && r.skip_code)
+  );
+  const lines = [
+    `## \u{1F916} AI test autofix`,
+    ``,
+    fixed.length > 0 ? `\u2705 **${fixed.length} test fix(es) pushed to the PR branch** \u2014 the next E2E run is the validation.` : `No fixes pushed this run.`,
+    ``
+  ];
+  for (const r of fixed) {
+    lines.push(
+      `- \u2705 \`${r.signature.slice(0, 8)}\` \u2014 commit \`${(r.commit_sha || "").slice(0, 7)}\` \u2014 ${r.files.join(", ")}
+  ${r.summary.replace(/\n/g, " ").slice(0, 300)}`
+    );
+  }
+  if (blocked.length > 0) {
+    lines.push(``, `### Needs a human (loop guard)`, ``);
+    for (const r of blocked) {
+      lines.push(`- \u{1F512} \`${r.signature.slice(0, 8)}\` \u2014 ${r.summary.slice(0, 300)}`);
+    }
+  }
+  if (other.length > 0) {
+    lines.push(``, `### Not fixed`, ``);
+    for (const r of other) {
+      lines.push(
+        `- ${r.status === "failed" ? "\u274C" : "\u23ED\uFE0F"} \`${r.signature.slice(0, 8)}\` \u2014 ${r.summary.slice(0, 300)}`
+      );
+    }
   }
   const file = process.env.GITHUB_STEP_SUMMARY;
   if (file) fs4.appendFileSync(file, lines.join("\n") + "\n");

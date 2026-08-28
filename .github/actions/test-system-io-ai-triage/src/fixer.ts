@@ -8,6 +8,13 @@
  * Safety rails: only e2e-tests/** may be written; ≤ MAX_FIX_TARGETS clusters
  * per run; ≤ MAX_EDIT_FILES files and ≤ MAX_DIFF_BYTES per fix; push falls
  * back to a PR comment on any git failure.
+ *
+ * Loop prevention (the fixer must never fight CI against itself): fixes are
+ * pushed to the PR's own branch — the fixer NEVER opens a PR — and a fixed
+ * spec lands in the PR diff, where the changed-files rule makes it permanently
+ * ineligible for a second attempt. A git-log guard enforces that even if the
+ * changed-files snapshot is stale, plus a hard cap on autofix commits per
+ * branch. Everything the guard blocks is surfaced as "needs human review".
  */
 
 import { execFileSync } from "node:child_process";
@@ -21,6 +28,8 @@ export const MAX_FIX_TARGETS = 2;
 const MAX_EDIT_FILES = 4;
 const MAX_DIFF_BYTES = 60 * 1024;
 const MAX_ROUNDS = 12;
+/** Max autofix commits per PR branch, lifetime — the hard loop breaker. */
+export const MAX_AUTOFIX_COMMITS_PER_PR = 4;
 const ALLOWED_PREFIXES = ["e2e-tests/"];
 
 export interface FixerContext {
@@ -40,8 +49,41 @@ export interface FixResult {
   status: "fixed" | "skipped" | "failed";
   summary: string;
   files: string[];
+  /** Why the fixer refused to run (loop guard) — drives "needs human" callouts. */
+  skip_code?: "already_autofixed" | "branch_cap";
   diff?: string;
   commit_sha?: string;
+}
+
+/**
+ * Loop-guard state: how many autofix commits the branch already carries and
+ * which files a previous attempt touched. Read from git so it survives across
+ * runs (each autofix push re-enters this job on the fresh checkout).
+ */
+export function autofixState(cwd: string): { commits: number; files: string[] } {
+  try {
+    // -F: the marker contains regex metacharacters ([ ]) — match literally.
+    const commits = Number(
+      git(cwd, ["rev-list", "--count", "-F", "--grep=[ai-triage autofix]", "HEAD"]),
+    );
+    const names = git(cwd, [
+      "log",
+      "-F",
+      "--grep=[ai-triage autofix]",
+      "--name-only",
+      "--format=",
+    ]);
+    return {
+      commits,
+      files: names
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean),
+    };
+  } catch (err) {
+    core.warning(`autofix state unavailable (${(err as Error).message}); assuming fresh branch`);
+    return { commits: 0, files: [] };
+  }
 }
 
 /**
@@ -91,7 +133,43 @@ export function collectFixTargets(
 
 export async function runFixer(targets: FixTarget[], ctx: FixerContext): Promise<FixResult[]> {
   const results: FixResult[] = [];
+  const state = autofixState(ctx.workspace);
+  core.info(
+    `fixer loop guard: ${state.commits}/${MAX_AUTOFIX_COMMITS_PER_PR} autofix commits on branch, ` +
+      `${state.files.length} spec file(s) already attempted`,
+  );
   for (const target of targets) {
+    if (state.commits >= MAX_AUTOFIX_COMMITS_PER_PR) {
+      results.push({
+        signature: target.signature,
+        status: "skipped",
+        skip_code: "branch_cap",
+        summary:
+          `loop guard: this branch already carries ${state.commits} autofix commits ` +
+          `(cap ${MAX_AUTOFIX_COMMITS_PER_PR}) — pausing to avoid an AI↔CI fix loop; needs human review`,
+        files: [],
+      });
+      continue;
+    }
+    // One attempt per spec per PR: a previous autofix commit already touched
+    // this file, so the current run is the validation of that fix. Re-fixing
+    // blind would loop CI against itself — hand it to a human instead.
+    const touched = state.files.some(
+      (f) => f === target.file || target.file.endsWith(f) || f.endsWith(target.file),
+    );
+    if (touched) {
+      results.push({
+        signature: target.signature,
+        status: "skipped",
+        skip_code: "already_autofixed",
+        summary:
+          "a previous autofix already edited this spec on this PR — the latest E2E run is the " +
+          "validation of that fix; if it still fails, needs human review (spec is now in the " +
+          "PR diff and protected)",
+        files: [],
+      });
+      continue;
+    }
     results.push(await fixOne(target, ctx));
   }
   return results;

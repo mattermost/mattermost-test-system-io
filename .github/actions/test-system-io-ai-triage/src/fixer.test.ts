@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { test } from "node:test";
-import type { Decision, EvidenceCluster } from "./types.ts";
-import { collectFixTargets, isFixable } from "./fixer.ts";
+import type { Decision, EvidenceCluster, FixTarget } from "./types.ts";
+import {
+  autofixState,
+  collectFixTargets,
+  isFixable,
+  MAX_AUTOFIX_COMMITS_PER_PR,
+  runFixer,
+  type FixerContext,
+} from "./fixer.ts";
 
 function decision(over: Partial<Decision> = {}): Decision {
   return {
@@ -107,4 +118,97 @@ test("collectFixTargets caps at max and skips ineligible", () => {
   assert.equal(targets[0]!.signature, "abcd1234efgh5678");
   assert.equal(targets[1]!.signature, "33333333");
   assert.equal(targets[0]!.screenshots.join(","), "orchestration/x.png");
+});
+
+
+// ---------------------------------------------------------------------------
+// Fixer loop-guard fixtures: a scratch git repo standing in for the PR checkout
+// ---------------------------------------------------------------------------
+
+function mkFixRepo(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fixer-test-"));
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  execFileSync("git", ["config", "user.email", "t@t"], { cwd: dir });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: dir });
+  fs.mkdirSync(path.join(dir, "e2e-tests/playwright/specs/abac"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "e2e-tests/playwright/specs/abac/join_channel.spec.ts"), "test('seed', () => {});\n");
+  execFileSync("git", ["add", "-A"], { cwd: dir });
+  execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: dir });
+  return dir;
+}
+
+function mkctx(): FixerContext {
+  return {
+    apiKey: "unused",
+    model: "unused",
+    workspace: mkFixRepo(),
+    token: "unused",
+    repository: "o/r",
+    prBranch: "pr",
+    prNumber: 1,
+    baseURL: "http://localhost",
+    maxTargets: 2,
+  };
+}
+
+function target(over: Partial<FixTarget> = {}): FixTarget {
+  return {
+    signature: "abcd1234efgh5678",
+    external_test_id: "MM-T5795",
+    full_title: "MM-T5795 User can be added by admin after attribute added",
+    file: "e2e-tests/playwright/specs/abac/join_channel.spec.ts",
+    error_message: "User does not have required attributes to join the channel",
+    reason: "test drives product into unsupported state",
+    confidence: 0.9,
+    screenshots: [],
+    ...over,
+  };
+}
+
+test("autofixState reads the loop-guard counters from git history", () => {
+  const ctx = mkctx();
+  execFileSync(
+    "git",
+    ["commit", "--allow-empty", "-m", "fix(e2e-test): [ai-triage autofix] stabilize prior"],
+    { cwd: ctx.workspace },
+  );
+  const st = autofixState(ctx.workspace);
+  assert.equal(st.commits, 1);
+  assert.deepEqual(st.files, []);
+});
+
+test("runFixer skips specs a previous autofix already touched (one attempt per spec)", async () => {
+  const ctx = mkctx();
+  execFileSync("git", ["commit", "--allow-empty", "-m", "x"], { cwd: ctx.workspace });
+  // Pretend an earlier autofix commit touched the target spec.
+  fs.writeFileSync(path.join(ctx.workspace, "e2e-tests/playwright/specs/abac/join_channel.spec.ts"), "old content\n");
+  execFileSync("git", ["add", "--", "e2e-tests"], { cwd: ctx.workspace });
+  execFileSync(
+    "git",
+    ["commit", "-m", "fix(e2e-test): [ai-triage autofix] stabilize MM-T5795"],
+    { cwd: ctx.workspace },
+  );
+
+  const results = await runFixer([target()], ctx);
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.status, "skipped");
+  assert.equal(results[0]!.skip_code, "already_autofixed");
+  assert.match(results[0]!.summary, /previous autofix/);
+});
+
+test("runFixer refuses everything once the branch hits the autofix commit cap", async () => {
+  const ctx = mkctx();
+  for (let i = 0; i < MAX_AUTOFIX_COMMITS_PER_PR; i++) {
+    execFileSync(
+      "git",
+      ["commit", "--allow-empty", "-m", `fix(e2e-test): [ai-triage autofix] fix ${i}`],
+      { cwd: ctx.workspace },
+    );
+  }
+
+  const results = await runFixer([target()], ctx);
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.status, "skipped");
+  assert.equal(results[0]!.skip_code, "branch_cap");
+  assert.match(results[0]!.summary, /loop guard/);
 });

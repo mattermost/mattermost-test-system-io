@@ -118,6 +118,8 @@ outputs:
     description: Fix mode — clusters successfully fixed and pushed.
   fixed_signatures:
     description: Comma-separated cluster signatures that were fixed.
+  needs_human:
+    description: Fix mode — signatures the loop guard blocked; a human must review these.
   comment_url:
     description: URL of the PR comment describing the fixes.
 

@@ -27,6 +27,7 @@ import {
   parseRunCounts,
   type RunCounts,
 } from "./flip.ts";
+import { formatTriageComment, upsertTriageComment } from "./triage-comment.ts";
 import { decide, rollup } from "./policy.ts";
 import {
   collectFixTargets,
@@ -61,6 +62,9 @@ export async function run(): Promise<void> {
   const contextName = core.getInput("commit-status-context") || "e2e-test/ai-triage";
   const originalContexts = parseContextList(core.getInput("original-commit-status-contexts"));
   const githubToken = core.getInput("github-token");
+  // PAT for privileged GitHub ops (PR comments) — the reusable-workflow GITHUB_TOKEN
+  // is often capped at contents:read + statuses, which cannot post comments.
+  const prToken = core.getInput("pr-token") || githubToken;
   const anthropicKey = core.getInput("anthropic-api-key");
   const model = core.getInput("claude-model") || "claude-sonnet-4-6";
 
@@ -242,6 +246,48 @@ export async function run(): Promise<void> {
     core.setOutput("flipped_contexts", summary.waived ? targets.join(",") : "");
   } else {
     core.setOutput("flipped_contexts", "");
+  }
+
+  // MVP #1: regressions must reach the PR author — commit statuses and the
+  // Actions page are invisible to authors. One idempotent comment, @-tagging
+  // the PR author only when this PR is the suspect. All-waived stays silent.
+  if (
+    mode === "gate" &&
+    githubToken &&
+    identity.gh_pr_number &&
+    decisions.some((d) => d.verdict === "PR_REGRESSION" || d.verdict === "MAIN_REGRESSION")
+  ) {
+    const [owner, repo] = splitRepo(pack.group.repository);
+    let prAuthor: string | undefined;
+    try {
+      const prRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${identity.gh_pr_number}`,
+        {
+          headers: { authorization: `Bearer ${prToken}`, accept: "application/vnd.github+json" },
+        },
+      );
+      if (prRes.ok) {
+        prAuthor = ((await prRes.json()) as { user?: { login?: string } }).user?.login;
+      }
+    } catch (err) {
+      core.warning(`PR author lookup failed: ${(err as Error).message}`);
+    }
+    const commentBody = formatTriageComment({
+      prAuthor,
+      decisions,
+      clusters: pack.clusters || [],
+      reportURL,
+    });
+    if (commentBody) {
+      const url = await upsertTriageComment({
+        token: prToken,
+        owner,
+        repo,
+        prNumber: Number(identity.gh_pr_number),
+        body: commentBody,
+      });
+      if (url) core.info(`triage verdict comment: ${url}`);
+    }
   }
 
   core.setOutput("state", summary.state);

@@ -68,6 +68,13 @@ inputs:
     description: Token for commit status, PR file list, and blame compare.
     required: false
     default: ${{ github.token }}
+  pr-token:
+    description: >
+      Optional PAT for privileged GitHub ops (PR comments). The reusable-workflow
+      GITHUB_TOKEN is often capped (contents:read + statuses) and cannot comment;
+      falls back to github-token when unset.
+    required: false
+    default: ""
   anthropic-api-key:
     description: >
       Optional. When set, residue clusters are investigated by an agent with

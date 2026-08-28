@@ -26977,6 +26977,82 @@ function truncate(s) {
   return `${s.slice(0, 139)}\u2026`;
 }
 
+// src/triage-comment.ts
+var VERDICT_COMMENT_MARKER = "<!-- tsio:ai-triage-verdict -->";
+function formatTriageComment(args) {
+  if (args.decisions.length === 0) return null;
+  const productBugs = args.decisions.filter(
+    (d) => d.verdict === "PR_REGRESSION" || d.verdict === "MAIN_REGRESSION"
+  );
+  if (productBugs.length === 0) return null;
+  const prRegressions = productBugs.filter((d) => d.verdict === "PR_REGRESSION");
+  const mainRegressions = productBugs.filter((d) => d.verdict === "MAIN_REGRESSION");
+  const lines = [VERDICT_COMMENT_MARKER, `## \u{1F916} E2E triage \u2014 human action needed`, ``];
+  if (prRegressions.length > 0) {
+    const tag = args.prAuthor ? `@${args.prAuthor}` : "PR author";
+    lines.push(
+      `**${tag}: the failures below look caused by this PR's changes.** Fix them in this PR before merge. If the triage is wrong (test was already broken before this PR), a maintainer can override with \`/e2e-triage-override\`.` + (prRegressions.some((d) => d.suspect_author) ? ` Suspect test-file authors (spec last touched): ${[
+        ...new Set(
+          prRegressions.map((d) => d.suspect_author).filter(Boolean).map((a) => `@${a}`)
+        )
+      ].join(", ")}.` : ""),
+      ``
+    );
+  }
+  if (mainRegressions.length > 0) {
+    lines.push(
+      `**${mainRegressions.length} failure cluster(s) look like an existing bug on master** \u2014 not caused by this PR (same failures occur on PRs without these changes / on master). Culprit-commit attribution (git bisect) is queued; the bisect report will tag the responsible author. Meanwhile, a maintainer can \`/e2e-triage-override\` to unblock this PR if the red check is a known issue.`,
+      ``
+    );
+  }
+  lines.push(
+    `| Classification | Cluster | n | Verdict | Suspect | Waived | Why |`,
+    `|---|---|---:|---|---|---|---|`
+  );
+  for (let i = 0; i < args.decisions.length; i++) {
+    const d = args.decisions[i];
+    const c = args.clusters[i];
+    const classification = d.verdict === "PR_REGRESSION" ? `\u{1F534} your PR` : d.verdict === "MAIN_REGRESSION" ? `\u{1F534} master` : d.kind === "bug" ? `\u{1F7E1} test bug` : `flake/infra`;
+    const suspect = d.suspect_author ? `@${d.suspect_author} (\`${(d.suspect_sha || "").slice(0, 7)}\`)` : "\u2014";
+    lines.push(
+      `| ${classification} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict} | ${suspect} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`
+    );
+  }
+  lines.push(``, `[Full report with screenshots](${args.reportURL})`);
+  return lines.join("\n");
+}
+async function upsertTriageComment(args) {
+  const api = (args.apiURL || "https://api.github.com").replace(/\/$/, "");
+  const headers = {
+    authorization: `Bearer ${args.token}`,
+    "content-type": "application/json",
+    accept: "application/vnd.github+json"
+  };
+  try {
+    const listRes = await fetch(
+      `${api}/repos/${args.owner}/${args.repo}/issues/${args.prNumber}/comments?per_page=100`,
+      { headers }
+    );
+    if (!listRes.ok) throw new Error(`list comments HTTP ${listRes.status}`);
+    const comments = await listRes.json();
+    const existing = comments.find((c) => c.body.includes(VERDICT_COMMENT_MARKER));
+    const res = await fetch(
+      existing ? `${api}/repos/${args.owner}/${args.repo}/issues/comments/${existing.id}` : `${api}/repos/${args.owner}/${args.repo}/issues/${args.prNumber}/comments`,
+      {
+        method: existing ? "PATCH" : "POST",
+        headers,
+        body: JSON.stringify({ body: args.body })
+      }
+    );
+    if (!res.ok) throw new Error(`upsert comment HTTP ${res.status} ${await res.text()}`);
+    const created = await res.json();
+    return created.html_url ?? null;
+  } catch (err) {
+    warning(`triage comment failed: ${err.message}`);
+    return null;
+  }
+}
+
 // src/policy.ts
 var WAIVE_CONFIDENCE = 0.85;
 var FLAKY = /* @__PURE__ */ new Set(["FLAKY_TEST", "FLAKY_INFRA", "FLAKY_SERVER"]);
@@ -27675,6 +27751,7 @@ async function run() {
   const contextName = getInput("commit-status-context") || "e2e-test/ai-triage";
   const originalContexts = parseContextList(getInput("original-commit-status-contexts"));
   const githubToken = getInput("github-token");
+  const prToken = getInput("pr-token") || githubToken;
   const anthropicKey = getInput("anthropic-api-key");
   const model = getInput("claude-model") || "claude-sonnet-4-6";
   const reportURL = buildReportURL(baseURL, identity);
@@ -27817,6 +27894,39 @@ async function run() {
     setOutput("flipped_contexts", summary2.waived ? targets.join(",") : "");
   } else {
     setOutput("flipped_contexts", "");
+  }
+  if (mode === "gate" && githubToken && identity.gh_pr_number && decisions.some((d) => d.verdict === "PR_REGRESSION" || d.verdict === "MAIN_REGRESSION")) {
+    const [owner, repo] = splitRepo(pack.group.repository);
+    let prAuthor;
+    try {
+      const prRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls/${identity.gh_pr_number}`,
+        {
+          headers: { authorization: `Bearer ${prToken}`, accept: "application/vnd.github+json" }
+        }
+      );
+      if (prRes.ok) {
+        prAuthor = (await prRes.json()).user?.login;
+      }
+    } catch (err) {
+      warning(`PR author lookup failed: ${err.message}`);
+    }
+    const commentBody = formatTriageComment({
+      prAuthor,
+      decisions,
+      clusters: pack.clusters || [],
+      reportURL
+    });
+    if (commentBody) {
+      const url = await upsertTriageComment({
+        token: prToken,
+        owner,
+        repo,
+        prNumber: Number(identity.gh_pr_number),
+        body: commentBody
+      });
+      if (url) info(`triage verdict comment: ${url}`);
+    }
   }
   setOutput("state", summary2.state);
   setOutput("waived", String(summary2.waived));

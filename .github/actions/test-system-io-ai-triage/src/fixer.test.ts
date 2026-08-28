@@ -8,6 +8,7 @@ import type { Decision, EvidenceCluster, FixTarget } from "./types.ts";
 import {
   applyEditFile,
   autofixState,
+  collectBisectTargets,
   collectFixTargets,
   isFixable,
   MAX_AUTOFIX_COMMITS_PER_PR,
@@ -280,4 +281,28 @@ test("applyEditFile: unique match applies, ambiguous and missing old_text error 
     applyEditFile(ctx.workspace, spec, "const a = 1;", "const a = 2;"),
     /appears 2 times/,
   );
+});
+
+test("collectBisectTargets: only unwaived MAIN_REGRESSION >= 0.85 with a playwright file", () => {
+  const mk = (sig: string, file: string) => cluster({
+    representative: { external_test_id: "x", full_title: sig, file } as Partial<EvidenceCluster["representative"]>,
+  }) as ReturnType<typeof cluster>;
+  const cCulprit = mk("culprit1", "functional/channels/team_settings/team_settings_policy_editor.spec.ts") as never as EvidenceCluster;
+  const cLow = mk("lowconf", "functional/channels/team_settings/team_settings_policy_editor.spec.ts") as never as EvidenceCluster;
+  const cCypress = mk("cypress1", "tests/integration/invite_modal_spec.ts") as never as EvidenceCluster;
+  const cWaived = mk("waived1", "functional/flake.spec.ts") as never as EvidenceCluster;
+  cLow!.representative.error_message = "boom";
+  const targets = collectBisectTargets(
+    [cCulprit, cLow, cCypress, cWaived],
+    [
+      { signature: "culprit1", verdict: "MAIN_REGRESSION", confidence: 0.9, waived: false, kind: "bug" },
+      { signature: "lowconf", verdict: "MAIN_REGRESSION", confidence: 0.7, waived: false, kind: "bug" },
+      { signature: "cypress1", verdict: "MAIN_REGRESSION", confidence: 0.95, waived: false, kind: "bug" },
+      { signature: "waived1", verdict: "MAIN_REGRESSION", confidence: 0.99, waived: true, kind: "bug" },
+    ] as never as Decision[],
+  );
+  assert.equal(targets.length, 1, "only the confident, unwaived, playwright-scope cluster bisects");
+  assert.equal(targets[0].signature, "culprit1");
+  assert.ok(targets[0].file.startsWith("e2e-tests/playwright/"), targets[0].file);
+  assert.ok(targets[0].file.endsWith("team_settings_policy_editor.spec.ts"));
 });

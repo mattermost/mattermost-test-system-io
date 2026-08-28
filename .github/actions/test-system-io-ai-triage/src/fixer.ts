@@ -578,7 +578,11 @@ export function collectBisectTargets(
     )
     .map(({ d, c }) => {
       const candidates = repoRelSpecCandidates(c.representative.file || "");
-      const file = candidates.find((x) => x.startsWith("e2e-tests/playwright/")) || "";
+      // cypress specs are *_spec.(ts|js); bisect's runner is playwright-shaped
+      const file =
+        candidates.find(
+          (x) => x.startsWith("e2e-tests/playwright/") && !x.endsWith("_spec.js") && !x.endsWith("_spec.ts"),
+        ) || "";
       return {
         signature: c.signature,
         external_test_id: c.representative.external_test_id || "",

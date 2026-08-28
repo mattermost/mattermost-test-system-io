@@ -27249,6 +27249,15 @@ var MAX_DIFF_BYTES = 60 * 1024;
 var MAX_ROUNDS2 = 12;
 var MAX_AUTOFIX_COMMITS_PER_PR = 4;
 var ALLOWED_PREFIXES = ["e2e-tests/"];
+var SPEC_ROOTS = ["e2e-tests/playwright/specs/", "e2e-tests/cypress/tests/integration/"];
+function repoRelSpecCandidates(file) {
+  const norm = file.replace(/^\.\//, "").replace(/^\/+/, "");
+  if (norm.startsWith("e2e-tests/")) return [norm];
+  if (!/\.(spec|test)\.(ts|tsx|js|mjs)$/.test(norm) && !/_spec\.(js|ts)$/.test(norm)) {
+    return [];
+  }
+  return SPEC_ROOTS.map((root) => root + norm);
+}
 function autofixState(cwd) {
   try {
     const commits = Number(
@@ -27271,9 +27280,12 @@ function isFixable(d, cluster, changedFiles) {
   if (d.confidence < 0.85) return false;
   const file = cluster.representative.file;
   if (!file) return false;
-  const norm = file.replace(/^\.\//, "");
-  if (!ALLOWED_PREFIXES.some((p) => norm.startsWith(p))) return false;
-  if (changedFiles.some((f) => f === norm || f.endsWith(norm))) return false;
+  const candidates = repoRelSpecCandidates(file);
+  if (candidates.length === 0) return false;
+  if (!candidates.every((c) => ALLOWED_PREFIXES.some((p) => c.startsWith(p)))) return false;
+  if (changedFiles.some((f) => candidates.some((c) => f === c || f.endsWith(c) || c.endsWith(f)))) {
+    return false;
+  }
   return true;
 }
 function collectFixTargets(clusters, decisions, changedFiles, max = MAX_FIX_TARGETS) {
@@ -27332,19 +27344,20 @@ async function runFixer(targets, ctx) {
   return results;
 }
 async function fixOne(target, ctx) {
-  const abs = path.resolve(ctx.workspace, target.file);
-  if (!fs3.existsSync(abs)) {
+  const rel = resolveSpecFile(ctx.workspace, target.file);
+  if (!rel) {
     return {
       signature: target.signature,
       status: "skipped",
-      summary: `file not found: ${target.file}`,
+      summary: `file not found in checkout under any known spec root: ${target.file}`,
       files: []
     };
   }
-  info(`fixer: ${target.signature} \u2014 ${target.full_title.slice(0, 100)}`);
+  const abs = path.resolve(ctx.workspace, rel);
+  info(`fixer: ${target.signature} \u2014 ${target.full_title.slice(0, 100)} (${rel})`);
   let summary2;
   try {
-    summary2 = await fixWithAgent(target, ctx);
+    summary2 = await fixWithAgent(target, ctx, rel);
   } catch (err) {
     return {
       signature: target.signature,
@@ -27448,9 +27461,15 @@ var FIX_TOOLS = [
     }
   }
 ];
-async function fixWithAgent(target, ctx) {
+function resolveSpecFile(workspace, file) {
+  for (const candidate of repoRelSpecCandidates(file)) {
+    if (fs3.existsSync(path.resolve(workspace, candidate))) return candidate;
+  }
+  return null;
+}
+async function fixWithAgent(target, ctx, specFile) {
   const messages = [
-    { role: "user", content: fixerPrompt(target) }
+    { role: "user", content: fixerPrompt(target, specFile) }
   ];
   for (let round = 0; round < MAX_ROUNDS2; round++) {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -27526,14 +27545,14 @@ async function fixWithAgent(target, ctx) {
   }
   throw new Error(`fixer hit ${MAX_ROUNDS2} rounds without finishing`);
 }
-function fixerPrompt(t) {
+function fixerPrompt(t, specFile) {
   return `You repair ONE failing E2E test in this repo checkout. The triage stage already proved this is a TEST bug, not a product regression, so fix the TEST CODE \u2014 never invent product workarounds that change what is being verified.
 
 Diagnosis from triage (root cause, confidence ${t.confidence}):
 ${t.reason.slice(0, 1500)}
 
 Failing test: ${t.full_title}
-Spec file: ${t.file}
+Spec file: ${specFile}
 Error: ${(t.error_message || "").slice(0, 2500)}
 Stack: ${(t.error_stack || "").slice(0, 1500)}
 

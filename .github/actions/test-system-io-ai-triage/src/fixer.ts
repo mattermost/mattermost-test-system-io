@@ -32,6 +32,32 @@ const MAX_ROUNDS = 12;
 export const MAX_AUTOFIX_COMMITS_PER_PR = 4;
 const ALLOWED_PREFIXES = ["e2e-tests/"];
 
+/**
+ * Framework spec roots, repo-relative. TSIO ingests Playwright/Cypress JSON
+ * with paths relative to the framework's spec dir (e.g. playwright's testDir
+ * e2e-tests/playwright/specs), so evidence files like
+ * "functional/channels/team_settings/team_settings_policy_editor.spec.ts"
+ * must be re-rooted before any e2e-tests/** path check or workspace read.
+ */
+export const SPEC_ROOTS = ["e2e-tests/playwright/specs/", "e2e-tests/cypress/tests/integration/"];
+
+/**
+ * Re-root a report's spec path to repo-relative. Deterministic (no fs): every
+ * candidate root lives under e2e-tests/, so any mapping stays inside the
+ * writable prefix. When several candidate files could exist, the fixer
+ * resolves the real one against the checkout (resolveSpecFile).
+ */
+export function repoRelSpecCandidates(file: string): string[] {
+  const norm = file.replace(/^\.\//, "").replace(/^\/+/, "");
+  if (norm.startsWith("e2e-tests/")) return [norm];
+  // Only re-root plausible spec files — anything else (product sources,
+  // stray data) must never become a fixer target.
+  if (!/\.(spec|test)\.(ts|tsx|js|mjs)$/.test(norm) && !/_spec\.(js|ts)$/.test(norm)) {
+    return [];
+  }
+  return SPEC_ROOTS.map((root) => root + norm);
+}
+
 export interface FixerContext {
   apiKey: string;
   model: string;
@@ -92,9 +118,14 @@ export function isFixable(d: Decision, cluster: EvidenceCluster, changedFiles: s
   if (d.confidence < 0.85) return false;
   const file = cluster.representative.file;
   if (!file) return false;
-  const norm = file.replace(/^\.\//, "");
-  if (!ALLOWED_PREFIXES.some((p) => norm.startsWith(p))) return false;
-  if (changedFiles.some((f) => f === norm || f.endsWith(norm))) return false;
+  // Report paths are spec-root-relative; compare every repo-rooted candidate
+  // against the PR diff (exact or suffix — changedFiles are repo-rooted).
+  const candidates = repoRelSpecCandidates(file);
+  if (candidates.length === 0) return false;
+  if (!candidates.every((c) => ALLOWED_PREFIXES.some((p) => c.startsWith(p)))) return false;
+  if (changedFiles.some((f) => candidates.some((c) => f === c || f.endsWith(c) || c.endsWith(f)))) {
+    return false;
+  }
   return true;
 }
 
@@ -110,6 +141,8 @@ export function collectFixTargets(
     const c = clusters[i]!;
     if (!isFixable(d, c, changedFiles)) continue;
     const f = c.representative;
+    // file stays spec-root-relative (as ingested); fixOne re-roots it against
+    // the checkout where the real framework root can be verified on disk.
     targets.push({
       signature: c.signature,
       external_test_id: f.external_test_id,
@@ -170,20 +203,21 @@ export async function runFixer(targets: FixTarget[], ctx: FixerContext): Promise
 }
 
 async function fixOne(target: FixTarget, ctx: FixerContext): Promise<FixResult> {
-  const abs = path.resolve(ctx.workspace, target.file);
-  if (!fs.existsSync(abs)) {
+  const rel = resolveSpecFile(ctx.workspace, target.file);
+  if (!rel) {
     return {
       signature: target.signature,
       status: "skipped",
-      summary: `file not found: ${target.file}`,
+      summary: `file not found in checkout under any known spec root: ${target.file}`,
       files: [],
     };
   }
+  const abs = path.resolve(ctx.workspace, rel);
 
-  core.info(`fixer: ${target.signature} — ${target.full_title.slice(0, 100)}`);
+  core.info(`fixer: ${target.signature} — ${target.full_title.slice(0, 100)} (${rel})`);
   let summary: string;
   try {
-    summary = await fixWithAgent(target, ctx);
+    summary = await fixWithAgent(target, ctx, rel);
   } catch (err) {
     return {
       signature: target.signature,
@@ -298,9 +332,26 @@ const FIX_TOOLS = [
   },
 ];
 
-async function fixWithAgent(target: FixTarget, ctx: FixerContext): Promise<string> {
+/**
+ * Map a report's spec-root-relative path to a repo-relative path that exists
+ * in the checkout. Returns null when no candidate exists on disk (the caller
+ * skips instead of guessing). Repo-relative results are always under
+ * e2e-tests/, the fixer's writable prefix.
+ */
+export function resolveSpecFile(workspace: string, file: string): string | null {
+  for (const candidate of repoRelSpecCandidates(file)) {
+    if (fs.existsSync(path.resolve(workspace, candidate))) return candidate;
+  }
+  return null;
+}
+
+async function fixWithAgent(
+  target: FixTarget,
+  ctx: FixerContext,
+  specFile: string,
+): Promise<string> {
   const messages: Array<{ role: string; content: unknown }> = [
-    { role: "user", content: fixerPrompt(target) },
+    { role: "user", content: fixerPrompt(target, specFile) },
   ];
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -384,14 +435,14 @@ async function fixWithAgent(target: FixTarget, ctx: FixerContext): Promise<strin
   throw new Error(`fixer hit ${MAX_ROUNDS} rounds without finishing`);
 }
 
-function fixerPrompt(t: FixTarget): string {
+function fixerPrompt(t: FixTarget, specFile: string): string {
   return `You repair ONE failing E2E test in this repo checkout. The triage stage already proved this is a TEST bug, not a product regression, so fix the TEST CODE — never invent product workarounds that change what is being verified.
 
 Diagnosis from triage (root cause, confidence ${t.confidence}):
 ${t.reason.slice(0, 1500)}
 
 Failing test: ${t.full_title}
-Spec file: ${t.file}
+Spec file: ${specFile}
 Error: ${(t.error_message || "").slice(0, 2500)}
 Stack: ${(t.error_stack || "").slice(0, 1500)}
 

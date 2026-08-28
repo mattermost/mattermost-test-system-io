@@ -10,6 +10,7 @@ import {
   collectFixTargets,
   isFixable,
   MAX_AUTOFIX_COMMITS_PER_PR,
+  resolveSpecFile,
   runFixer,
   type FixerContext,
 } from "./fixer.ts";
@@ -214,4 +215,50 @@ test("runFixer refuses everything once the branch hits the autofix commit cap", 
   assert.equal(results[0]!.status, "skipped");
   assert.equal(results[0]!.skip_code, "branch_cap");
   assert.match(results[0]!.summary, /loop guard/);
+});
+
+test("isFixable re-roots spec-relative report paths under e2e-tests/", () => {
+  // TSIO ingests playwright JSON with paths relative to the spec dir — this
+  // is the exact shape of the MM-67594_13 evidence that shipped as '[]'.
+  const c = cluster({
+    representative: {
+      file: "functional/channels/team_settings/team_settings_policy_editor.spec.ts",
+    } as Partial<EvidenceCluster["representative"]>,
+  });
+  assert.equal(
+    isFixable(
+      decision({ verdict: "FLAKY_INFRA", kind: "flaky", refusal: true, confidence: 0.93 }),
+      c,
+      [],
+    ),
+    true,
+  );
+});
+
+test("demo protection works with spec-relative report paths too", () => {
+  const c = cluster({
+    representative: {
+      file: "functional/ai_triage_demo.spec.ts",
+    } as Partial<EvidenceCluster["representative"]>,
+  });
+  assert.equal(
+    isFixable(decision(), c, ["e2e-tests/playwright/specs/functional/ai_triage_demo.spec.ts"]),
+    false,
+  );
+});
+
+test("resolveSpecFile re-roots to the spec root that exists in the checkout", () => {
+  const ctx = mkctx();
+  // fixture repo has e2e-tests/playwright/specs/abac/join_channel.spec.ts
+  assert.equal(
+    resolveSpecFile(ctx.workspace, "abac/join_channel.spec.ts"),
+    "e2e-tests/playwright/specs/abac/join_channel.spec.ts",
+  );
+  // repo-relative input passes through untouched
+  assert.equal(
+    resolveSpecFile(ctx.workspace, "e2e-tests/playwright/specs/abac/join_channel.spec.ts"),
+    "e2e-tests/playwright/specs/abac/join_channel.spec.ts",
+  );
+  // nothing matches -> null (caller skips)
+  assert.equal(resolveSpecFile(ctx.workspace, "does/not/exist.spec.ts"), null);
 });

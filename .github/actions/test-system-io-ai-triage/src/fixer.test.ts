@@ -120,7 +120,6 @@ test("collectFixTargets caps at max and skips ineligible", () => {
   assert.equal(targets[0]!.screenshots.join(","), "orchestration/x.png");
 });
 
-
 // ---------------------------------------------------------------------------
 // Fixer loop-guard fixtures: a scratch git repo standing in for the PR checkout
 // ---------------------------------------------------------------------------
@@ -131,7 +130,10 @@ function mkFixRepo(): string {
   execFileSync("git", ["config", "user.email", "t@t"], { cwd: dir });
   execFileSync("git", ["config", "user.name", "t"], { cwd: dir });
   fs.mkdirSync(path.join(dir, "e2e-tests/playwright/specs/abac"), { recursive: true });
-  fs.writeFileSync(path.join(dir, "e2e-tests/playwright/specs/abac/join_channel.spec.ts"), "test('seed', () => {});\n");
+  fs.writeFileSync(
+    path.join(dir, "e2e-tests/playwright/specs/abac/join_channel.spec.ts"),
+    "test('seed', () => {});\n",
+  );
   execFileSync("git", ["add", "-A"], { cwd: dir });
   execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: dir });
   return dir;
@@ -181,13 +183,14 @@ test("runFixer skips specs a previous autofix already touched (one attempt per s
   const ctx = mkctx();
   execFileSync("git", ["commit", "--allow-empty", "-m", "x"], { cwd: ctx.workspace });
   // Pretend an earlier autofix commit touched the target spec.
-  fs.writeFileSync(path.join(ctx.workspace, "e2e-tests/playwright/specs/abac/join_channel.spec.ts"), "old content\n");
-  execFileSync("git", ["add", "--", "e2e-tests"], { cwd: ctx.workspace });
-  execFileSync(
-    "git",
-    ["commit", "-m", "fix(e2e-test): [ai-triage autofix] stabilize MM-T5795"],
-    { cwd: ctx.workspace },
+  fs.writeFileSync(
+    path.join(ctx.workspace, "e2e-tests/playwright/specs/abac/join_channel.spec.ts"),
+    "old content\n",
   );
+  execFileSync("git", ["add", "--", "e2e-tests"], { cwd: ctx.workspace });
+  execFileSync("git", ["commit", "-m", "fix(e2e-test): [ai-triage autofix] stabilize MM-T5795"], {
+    cwd: ctx.workspace,
+  });
 
   const results = await runFixer([target()], ctx);
   assert.equal(results.length, 1);

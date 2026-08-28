@@ -66,13 +66,7 @@ export function autofixState(cwd: string): { commits: number; files: string[] } 
     const commits = Number(
       git(cwd, ["rev-list", "--count", "-F", "--grep=[ai-triage autofix]", "HEAD"]),
     );
-    const names = git(cwd, [
-      "log",
-      "-F",
-      "--grep=[ai-triage autofix]",
-      "--name-only",
-      "--format=",
-    ]);
+    const names = git(cwd, ["log", "-F", "--grep=[ai-triage autofix]", "--name-only", "--format="]);
     return {
       commits,
       files: names

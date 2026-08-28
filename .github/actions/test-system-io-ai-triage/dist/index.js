@@ -27246,7 +27246,7 @@ var path = __toESM(require("path"));
 var MAX_FIX_TARGETS = 2;
 var MAX_EDIT_FILES = 4;
 var MAX_DIFF_BYTES = 60 * 1024;
-var MAX_ROUNDS2 = 12;
+var MAX_ROUNDS2 = 16;
 var MAX_AUTOFIX_COMMITS_PER_PR = 4;
 var ALLOWED_PREFIXES = ["e2e-tests/"];
 var SPEC_ROOTS = ["e2e-tests/playwright/specs/", "e2e-tests/cypress/tests/integration/"];
@@ -27442,8 +27442,24 @@ var FIX_TOOLS = [
     }
   },
   {
+    name: "edit_file",
+    description: "Apply a targeted search/replace edit to a file (e2e-tests/** only). old_text must appear EXACTLY ONCE in the file. Prefer this for targeted changes \u2014 it is far more reliable than rewriting whole files.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        old_text: {
+          type: "string",
+          description: "Exact existing text to replace (must be unique in the file)."
+        },
+        new_text: { type: "string", description: "Replacement text." }
+      },
+      required: ["path", "old_text", "new_text"]
+    }
+  },
+  {
     name: "write_file",
-    description: "Overwrite a file with the full new content (e2e-tests/** only). Keep the test's intent; fix the setup/assertions that hit unsupported product states.",
+    description: "Overwrite a whole file with new content (e2e-tests/** only). Prefer edit_file for existing files \u2014 write only NEW files or tiny files.",
     input_schema: {
       type: "object",
       properties: { path: { type: "string" }, content: { type: "string" } },
@@ -27460,6 +27476,20 @@ var FIX_TOOLS = [
     }
   }
 ];
+function applyEditFile(workspace, rel, oldText, newText) {
+  const p = guard(rel, workspace);
+  const content = fs3.readFileSync(p, "utf8");
+  if (!oldText) return "error: old_text required";
+  const occurrences = content.split(oldText).length - 1;
+  if (occurrences === 0) {
+    return `error: old_text not found in ${rel} \u2014 copy the exact text (including indentation) from read_file output`;
+  }
+  if (occurrences > 1) {
+    return `error: old_text appears ${occurrences} times in ${rel} \u2014 include more surrounding lines to make it unique`;
+  }
+  fs3.writeFileSync(p, content.replace(oldText, newText));
+  return `edited ${rel} (+${Buffer.byteLength(newText)} / -${Buffer.byteLength(oldText)} bytes)`;
+}
 function resolveSpecFile(workspace, file) {
   for (const candidate of repoRelSpecCandidates(file)) {
     if (fs3.existsSync(path.resolve(workspace, candidate))) return candidate;
@@ -27480,7 +27510,7 @@ async function fixWithAgent(target, ctx, specFile) {
       },
       body: JSON.stringify({
         model: ctx.model,
-        max_tokens: 8192,
+        max_tokens: 16384,
         tools: FIX_TOOLS,
         messages
       })
@@ -27490,6 +27520,19 @@ async function fixWithAgent(target, ctx, specFile) {
     const blocks = body.content || [];
     const toolUses = blocks.filter((b) => b.type === "tool_use");
     const text = blocks.find((b) => b.type === "text")?.text || "";
+    if (body.stop_reason === "max_tokens" && toolUses.length > 0) {
+      messages.push({ role: "assistant", content: blocks });
+      messages.push({
+        role: "user",
+        content: toolUses.map((tu) => ({
+          type: "tool_result",
+          tool_use_id: String(tu.id),
+          is_error: true,
+          content: "your response was truncated by the output limit \u2014 the tool call never ran. Apply SMALL edits instead: use edit_file with the smallest unique old_text that covers your change. Never emit whole-file writes."
+        }))
+      });
+      continue;
+    }
     if (toolUses.length === 0) {
       try {
         const parsed = JSON.parse(text.replace(/^```(?:json)?|```$/g, "").trim());
@@ -27509,6 +27552,13 @@ async function fixWithAgent(target, ctx, specFile) {
           payload = fs3.readFileSync(guard(input.path, ctx.workspace), "utf8").slice(0, 48e3);
         } else if (name === "list_dir") {
           payload = fs3.readdirSync(guard(input.path, ctx.workspace)).join("\n").slice(0, 4e3);
+        } else if (name === "edit_file") {
+          payload = applyEditFile(
+            ctx.workspace,
+            input.path,
+            input.old_text ?? "",
+            input.new_text ?? ""
+          );
         } else if (name === "write_file") {
           const p = guard(input.path, ctx.workspace);
           fs3.writeFileSync(p, input.content ?? "");
@@ -27561,7 +27611,7 @@ Fix principles, in order of preference:
 3. If state leaks from a previous test (leftover modal/dialog/selection), clean it up in this test's setup or the suite's beforeEach.
 4. Keep the test's original intent and assertions otherwise intact. Do not delete coverage, do not lower expectations, do not skip the test.
 
-Workflow: read the spec file, read nearby helpers/support files it imports, then write the fix. Prefer the smallest change that removes the unsupported state or the race. When done, reply with ONLY JSON: {"summary":"what you changed and why the failure cannot recur","confidence":0.0}`;
+Workflow: read the spec file, read nearby helpers/support files it imports, then apply the fix with edit_file (unique old_text; the smallest change that removes the unsupported state or the race). Use write_file only for brand-new files. Keep edits small \u2014 never emit whole-file rewrites of large specs. When done, reply with ONLY JSON: {"summary":"what you changed and why the failure cannot recur","confidence":0.0}`;
 }
 function guard(rel, workspace) {
   if (!rel) throw new Error("path required");

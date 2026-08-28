@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import type { Decision, EvidenceCluster, FixTarget } from "./types.ts";
 import {
+  applyEditFile,
   autofixState,
   collectFixTargets,
   isFixable,
@@ -261,4 +262,22 @@ test("resolveSpecFile re-roots to the spec root that exists in the checkout", ()
   );
   // nothing matches -> null (caller skips)
   assert.equal(resolveSpecFile(ctx.workspace, "does/not/exist.spec.ts"), null);
+});
+
+test("applyEditFile: unique match applies, ambiguous and missing old_text error out", () => {
+  const ctx = mkctx();
+  const spec = "e2e-tests/playwright/specs/abac/join_channel.spec.ts";
+  assert.equal(
+    applyEditFile(ctx.workspace, spec, "test('seed', () => {});", "test('fixed', () => {});"),
+    `edited ${spec} (+24 / -23 bytes)`,
+  );
+  assert.match(fs.readFileSync(path.join(ctx.workspace, spec), "utf8"), /test\('fixed'/);
+  // no match
+  assert.match(applyEditFile(ctx.workspace, spec, "nope-not-here", "x"), /old_text not found/);
+  // ambiguous
+  fs.writeFileSync(path.join(ctx.workspace, spec), "const a = 1;\nconst a = 1;\n");
+  assert.match(
+    applyEditFile(ctx.workspace, spec, "const a = 1;", "const a = 2;"),
+    /appears 2 times/,
+  );
 });

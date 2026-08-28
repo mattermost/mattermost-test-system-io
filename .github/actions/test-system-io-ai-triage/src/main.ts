@@ -30,6 +30,7 @@ import {
 import { formatTriageComment, upsertTriageComment } from "./triage-comment.ts";
 import { decide, rollup } from "./policy.ts";
 import {
+  collectBisectTargets,
   collectFixTargets,
   runFixer,
   MAX_FIX_TARGETS,
@@ -164,6 +165,13 @@ export async function run(): Promise<void> {
   core.setOutput(
     "fixable_clusters",
     JSON.stringify(collectFixTargets(pack.clusters || [], decisions, changedFiles)),
+  );
+
+  // MVP #2: confidently-attributed master regressions go to the bisect
+  // pipeline (finds the culprit commit on master, root-causes, tags author).
+  core.setOutput(
+    "bisect_clusters",
+    JSON.stringify(collectBisectTargets(pack.clusters || [], decisions)),
   );
 
   if (githubToken) {

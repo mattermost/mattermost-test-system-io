@@ -75,7 +75,7 @@ export interface FixResult {
   status: "fixed" | "skipped" | "failed";
   summary: string;
   files: string[];
-  /** Why the fixer refused to run (loop guard) — drives "needs human" callouts. */
+  /** Why the fixer refused to run (loop guard) — drives "needs human" callouts. (loop guard) — drives "needs human" callouts. */
   skip_code?: "already_autofixed" | "branch_cap";
   diff?: string;
   commit_sha?: string;
@@ -552,4 +552,41 @@ function git(cwd: string, args: string[]): string {
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 10 * 1024 * 1024,
   }).trim();
+}
+
+/**
+ * MVP #2: MAIN_REGRESSION clusters above the confidence floor for the bisect
+ * pipeline. Playwright specs only (the image-bisect runner is SERVER_IMAGE
+ * driven; cypress has a different runner shape).
+ */
+export function collectBisectTargets(
+  clusters: EvidenceCluster[],
+  decisions: Decision[],
+): Array<{
+  signature: string;
+  external_test_id: string;
+  full_title: string;
+  file: string;
+  error_message: string;
+  confidence: number;
+}> {
+  return decisions
+    .map((d, i) => ({ d, c: clusters[i] }))
+    .filter(
+      ({ d, c }) =>
+        d.verdict === "MAIN_REGRESSION" && Number(d.confidence) >= 0.85 && !!c && !d.waived,
+    )
+    .map(({ d, c }) => {
+      const candidates = repoRelSpecCandidates(c.representative.file || "");
+      const file = candidates.find((x) => x.startsWith("e2e-tests/playwright/")) || "";
+      return {
+        signature: c.signature,
+        external_test_id: c.representative.external_test_id || "",
+        full_title: c.representative.full_title,
+        file,
+        error_message: c.representative.error_message || "",
+        confidence: d.confidence,
+      };
+    })
+    .filter((t) => !!t.file);
 }

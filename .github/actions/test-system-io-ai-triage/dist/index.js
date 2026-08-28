@@ -27720,6 +27720,22 @@ function git(cwd, args) {
     maxBuffer: 10 * 1024 * 1024
   }).trim();
 }
+function collectBisectTargets(clusters, decisions) {
+  return decisions.map((d, i) => ({ d, c: clusters[i] })).filter(
+    ({ d, c }) => d.verdict === "MAIN_REGRESSION" && Number(d.confidence) >= 0.85 && !!c && !d.waived
+  ).map(({ d, c }) => {
+    const candidates = repoRelSpecCandidates(c.representative.file || "");
+    const file = candidates.find((x) => x.startsWith("e2e-tests/playwright/")) || "";
+    return {
+      signature: c.signature,
+      external_test_id: c.representative.external_test_id || "",
+      full_title: c.representative.full_title,
+      file,
+      error_message: c.representative.error_message || "",
+      confidence: d.confidence
+    };
+  }).filter((t) => !!t.file);
+}
 
 // src/report_url.ts
 function encodeBranchPathSegment(branch) {
@@ -27825,6 +27841,10 @@ async function run() {
   setOutput(
     "fixable_clusters",
     JSON.stringify(collectFixTargets(pack.clusters || [], decisions, changedFiles))
+  );
+  setOutput(
+    "bisect_clusters",
+    JSON.stringify(collectBisectTargets(pack.clusters || [], decisions))
   );
   if (githubToken) {
     const [owner, repo] = splitRepo(pack.group.repository);

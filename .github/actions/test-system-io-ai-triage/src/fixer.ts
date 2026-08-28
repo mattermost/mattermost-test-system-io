@@ -392,6 +392,7 @@ async function fixWithAgent(
   const messages: Array<{ role: string; content: unknown }> = [
     { role: "user", content: fixerPrompt(target, specFile) },
   ];
+  const toolTrail: string[] = [];
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -494,11 +495,21 @@ async function fixWithAgent(
       } catch (err) {
         payload = `tool error: ${(err as Error).message}`;
       }
+      if (name === "edit_file" || name === "write_file") {
+        core.info(`fixer round ${round}: ${name} → ${String(payload).slice(0, 160)}`);
+      }
+      toolTrail.push(`${name}(${JSON.stringify(input.path || "").slice(0, 80)})`);
+      if (toolTrail.length > 6) toolTrail.shift();
       results.push({ type: "tool_result", tool_use_id: String(tu.id), content: String(payload) });
     }
     messages.push({ role: "user", content: results });
   }
-  throw new Error(`fixer hit ${MAX_ROUNDS} rounds without finishing`);
+  core.error(
+    `fixer exhausted ${MAX_ROUNDS} rounds. Last tool calls: ${toolTrail.join(" → ") || "none"}`,
+  );
+  throw new Error(
+    `fixer hit ${MAX_ROUNDS} rounds without finishing (last: ${toolTrail.join(" → ") || "none"})`,
+  );
 }
 
 function fixerPrompt(t: FixTarget, specFile: string): string {

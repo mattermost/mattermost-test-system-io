@@ -27500,6 +27500,7 @@ async function fixWithAgent(target, ctx, specFile) {
   const messages = [
     { role: "user", content: fixerPrompt(target, specFile) }
   ];
+  const toolTrail = [];
   for (let round = 0; round < MAX_ROUNDS2; round++) {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -27588,11 +27589,21 @@ async function fixWithAgent(target, ctx, specFile) {
       } catch (err) {
         payload = `tool error: ${err.message}`;
       }
+      if (name === "edit_file" || name === "write_file") {
+        info(`fixer round ${round}: ${name} \u2192 ${String(payload).slice(0, 160)}`);
+      }
+      toolTrail.push(`${name}(${JSON.stringify(input.path || "").slice(0, 80)})`);
+      if (toolTrail.length > 6) toolTrail.shift();
       results.push({ type: "tool_result", tool_use_id: String(tu.id), content: String(payload) });
     }
     messages.push({ role: "user", content: results });
   }
-  throw new Error(`fixer hit ${MAX_ROUNDS2} rounds without finishing`);
+  error(
+    `fixer exhausted ${MAX_ROUNDS2} rounds. Last tool calls: ${toolTrail.join(" \u2192 ") || "none"}`
+  );
+  throw new Error(
+    `fixer hit ${MAX_ROUNDS2} rounds without finishing (last: ${toolTrail.join(" \u2192 ") || "none"})`
+  );
 }
 function fixerPrompt(t, specFile) {
   return `You repair ONE failing E2E test in this repo checkout. The triage stage already proved this is a TEST bug, not a product regression, so fix the TEST CODE \u2014 never invent product workarounds that change what is being verified.

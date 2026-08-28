@@ -27353,7 +27353,6 @@ async function fixOne(target, ctx) {
       files: []
     };
   }
-  const abs = path.resolve(ctx.workspace, rel);
   info(`fixer: ${target.signature} \u2014 ${target.full_title.slice(0, 100)} (${rel})`);
   let summary2;
   try {

@@ -212,8 +212,6 @@ async function fixOne(target: FixTarget, ctx: FixerContext): Promise<FixResult> 
       files: [],
     };
   }
-  const abs = path.resolve(ctx.workspace, rel);
-
   core.info(`fixer: ${target.signature} — ${target.full_title.slice(0, 100)} (${rel})`);
   let summary: string;
   try {

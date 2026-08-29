@@ -27979,9 +27979,12 @@ async function runFixMode(baseURL, fixClusters, ctx) {
   );
   if (/^pr-\d+$/.test(ctx.prBranch) && ctx.prNumber && ctx.token) {
     try {
-      const res = await fetch(`https://api.github.com/repos/${ctx.repository}/pulls/${ctx.prNumber}`, {
-        headers: { authorization: `Bearer ${ctx.token}`, accept: "application/vnd.github+json" }
-      });
+      const res = await fetch(
+        `https://api.github.com/repos/${ctx.repository}/pulls/${ctx.prNumber}`,
+        {
+          headers: { authorization: `Bearer ${ctx.token}`, accept: "application/vnd.github+json" }
+        }
+      );
       if (res.ok) {
         const head = (await res.json()).head?.ref;
         if (head) {

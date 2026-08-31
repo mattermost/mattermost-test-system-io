@@ -27000,8 +27000,9 @@ function formatTriageComment(args) {
     );
   }
   if (mainRegressions.length > 0) {
+    const n = mainRegressions.length;
     lines.push(
-      `**${mainRegressions.length} cluster(s) look like an existing bug on master, not this PR** \u2014 bisect is queued and will tag the culprit author. Maintainer shortcut: \`/e2e-triage-override\`.`
+      `**${n} failure cluster${n === 1 ? "" : "s"} look${n === 1 ? "s" : ""} like an existing bug on master, not this PR** \u2014 bisect is queued and will tag the culprit author. Maintainer shortcut: \`/e2e-triage-override\`.`
     );
   }
   lines.push(``);
@@ -27023,7 +27024,9 @@ function formatTriageComment(args) {
     const d = args.decisions[i];
     const c = args.clusters[i];
     lines.push(
-      `| \`${c.signature.slice(0, 8)}\` | ${d.verdict}\`${Math.round(d.confidence * 100)}%\` | ${d.waived ? "\u2705" : "\u2014"} | ${(d.gist || firstSentence(d.reason, 120)).replace(/\|/g, " ")} |`
+      `| \`${c.signature.slice(0, 8)}\` | ${d.verdict} ${Math.round(d.confidence * 100)}% | ${d.waived ? "\u2705" : "\u2014"} | $(
+        d.gist || firstSentence(d.reason, 120)
+      ).replace(/|/g, " ")} |`
     );
   }
   lines.push(``, `</details>`, ``, `[Full report with screenshots](${args.reportURL})`);

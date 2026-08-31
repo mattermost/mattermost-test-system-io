@@ -26,63 +26,69 @@ export function formatTriageComment(args: {
 
   const prRegressions = productBugs.filter((d) => d.verdict === "PR_REGRESSION");
   const mainRegressions = productBugs.filter((d) => d.verdict === "MAIN_REGRESSION");
+  const waived = args.decisions.filter((d) => d.waived).length;
 
-  const lines: string[] = [VERDICT_COMMENT_MARKER, `## 🤖 E2E triage — human action needed`, ``];
+  const lines: string[] = [VERDICT_COMMENT_MARKER, `## 🤖 E2E AI triage`, ``];
 
+  // The gist: one sentence per headline, no stories.
   if (prRegressions.length > 0) {
     const tag = args.prAuthor ? `@${args.prAuthor}` : "PR author";
     lines.push(
-      `**${tag}: the failures below look caused by this PR's changes.** ` +
-        `Fix them in this PR before merge. If the triage is wrong (test was already broken ` +
-        `before this PR), a maintainer can override with \`/e2e-triage-override\`.` +
-        (prRegressions.some((d) => d.suspect_author)
-          ? ` Suspect test-file authors (spec last touched): ${[
-              ...new Set(
-                prRegressions
-                  .map((d) => d.suspect_author)
-                  .filter(Boolean)
-                  .map((a) => `@${a}`),
-              ),
-            ].join(", ")}.`
-          : ""),
-      ``,
+      `${tag} — ${prRegressions.length} cluster(s) look caused by this PR. Fix here; ` +
+        `if the triage is wrong, a maintainer can \`/e2e-triage-override\`.`,
     );
   }
   if (mainRegressions.length > 0) {
     lines.push(
-      `**${mainRegressions.length} failure cluster(s) look like an existing bug on master** — ` +
-        `not caused by this PR (same failures occur on PRs without these changes / on master). ` +
-        `Culprit-commit attribution (git bisect) is queued; the bisect report will tag the responsible author. ` +
-        `Meanwhile, a maintainer can \`/e2e-triage-override\` to unblock this PR if the red check is a known issue.`,
-      ``,
+      `**${mainRegressions.length} cluster(s) look like an existing bug on master, not this PR** — ` +
+        `bisect is queued and will tag the culprit author. Maintainer shortcut: \`/e2e-triage-override\`.`,
+    );
+  }
+  lines.push(``);
+
+  for (let i = 0; i < args.decisions.length; i++) {
+    const d = args.decisions[i]!;
+    if (d.verdict !== "PR_REGRESSION" && d.verdict !== "MAIN_REGRESSION") continue;
+    const c = args.clusters[i]!;
+    lines.push(
+      `- \`${c.signature.slice(0, 8)}\` **${clusterTitle(c, 64)}** ×${d.member_count} — ${d.verdict}` +
+        `${d.suspect_author ? `, suspect @${d.suspect_author}` : ""} (${d.gist || firstSentence(d.reason, 120)})`,
     );
   }
 
   lines.push(
-    `| Classification | Cluster | n | Verdict | Suspect | Waived | Why |`,
-    `|---|---|---:|---|---|---|---|`,
+    ``,
+    `<details><summary>All ${args.decisions.length} cluster(s) (${waived} waived as flaky)</summary>`,
+    ``,
   );
+  lines.push(`| Cluster | Verdict | Waived | Gist |`, `|---|---|:--:|---|`);
   for (let i = 0; i < args.decisions.length; i++) {
     const d = args.decisions[i]!;
     const c = args.clusters[i]!;
-    const classification =
-      d.verdict === "PR_REGRESSION"
-        ? `🔴 your PR`
-        : d.verdict === "MAIN_REGRESSION"
-          ? `🔴 master`
-          : d.kind === "bug"
-            ? `🟡 test bug`
-            : `flake/infra`;
-    const suspect = d.suspect_author
-      ? `@${d.suspect_author} (\`${(d.suspect_sha || "").slice(0, 7)}\`)`
-      : "—";
     lines.push(
-      `| ${classification} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict} | ${suspect} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`,
+      `| \`${c.signature.slice(0, 8)}\` | ${d.verdict}\`${Math.round(d.confidence * 100)}%\` | ${d.waived ? "✅" : "—"} | ${(
+        d.gist || firstSentence(d.reason, 120)
+      ).replace(/\|/g, " ")} |`,
     );
   }
-
-  lines.push(``, `[Full report with screenshots](${args.reportURL})`);
+  lines.push(``, `</details>`, ``, `[Full report with screenshots](${args.reportURL})`);
   return lines.join("\n");
+}
+
+/** First sentence, cut at a word boundary — never mid-word "half" text. */
+export function firstSentence(text: string, max: number): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= max) return clean;
+  const cut = clean.slice(0, max);
+  const sp = cut.lastIndexOf(" ");
+  return `${sp > max * 0.5 ? cut.slice(0, sp) : cut}…`;
+}
+
+function clusterTitle(c: EvidenceCluster, max: number): string {
+  const label = (c.label || "").replace(/\|/g, " ").trim();
+  if (label.length <= max) return label;
+  const sp = label.lastIndexOf(" ", max);
+  return `${sp > max * 0.5 ? label.slice(0, sp) : label.slice(0, max)}…`;
 }
 
 /**

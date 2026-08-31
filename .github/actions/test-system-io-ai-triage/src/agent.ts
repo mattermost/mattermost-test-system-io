@@ -124,7 +124,9 @@ function buildPrompt(cluster: EvidenceCluster, ctx: AgentContext): string {
 Call TSIO tools as needed, then decide. You already have error/stack (and often screenshots) in this prompt — that IS evidence.
 
 Return ONLY JSON when done:
-{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional","chronic":false,"product_refusal":false}
+{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","gist":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional","chronic":false,"product_refusal":false}
+
+"gist" is the ONE sentence (≤120 chars, plain language, no citation tags) that humans read in the PR comment: what the test saw and what it means. Example: "Badge shows 3 mentions after unchecking suppress — wrong product state, not a timing race."
 
 kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
 

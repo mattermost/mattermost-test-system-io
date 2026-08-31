@@ -37,7 +37,7 @@ test("PR_REGRESSION tags the PR author with override instructions", () => {
   assert.ok(body);
   assert.ok(body.startsWith(VERDICT_COMMENT_MARKER), "marker must lead for idempotent upsert");
   assert.match(body, /@octocat/);
-  assert.match(body, /caused by this PR's changes/);
+  assert.match(body, /look caused by this PR/);
   assert.match(body, /\/e2e-triage-override/);
   assert.ok(!body.includes("undefined"));
 });
@@ -51,8 +51,27 @@ test("MAIN_REGRESSION blames master, never the PR author, bisect queued", () => 
   });
   assert.ok(body);
   assert.ok(!body.includes("@octocat"), "PR author must NOT be tagged for master bugs");
-  assert.match(body, /already on master|existing bug on master/);
-  assert.match(body, /git bisect/);
+  assert.match(body, /existing bug on master/);
+  assert.match(body, /bisect is queued/);
+  assert.match(body, /invite modal race|invite modal/); // gist falls back to reason
+});
+
+test("gist is preferred over the long reason and stays one line", () => {
+  const body = formatTriageComment({
+    prAuthor: "octocat",
+    decisions: [
+      decision({
+        verdict: "MAIN_REGRESSION",
+        reason: "long forensic story — 500 chars of citation chain nobody reads",
+        gist: "Badge shows 3 mentions after unchecking suppress — wrong product state.",
+      }),
+    ],
+    clusters: [cluster("sig6", "Unread mention badge")],
+    reportURL: "https://r.example",
+  });
+  assert.ok(body);
+  assert.match(body, /Badge shows 3 mentions after unchecking suppress/);
+  assert.ok(!body.includes("forensic story"));
 });
 
 test("all-waived outcome stays silent — silence is the unblock", () => {
@@ -78,6 +97,6 @@ test("mixed: one unwaived master bug still comments and shows waived truthfully"
     reportURL: "https://r.example",
   });
   assert.ok(body);
-  assert.match(body, /1 failure cluster\(s\) look like an existing bug on master/);
-  assert.match(body, /\| yes \|/);
+  assert.match(body, /1 cluster\(s\) look like an existing bug on master/);
+  assert.match(body, /✅/); // waived truthfully in the details table
 });

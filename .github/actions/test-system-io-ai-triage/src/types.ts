@@ -96,6 +96,8 @@ export interface Decision {
   verdict: string;
   confidence: number;
   reason: string;
+  /** One plain-language sentence (≤120 chars) a human reads in the PR comment. */
+  gist?: string;
   citations: string[];
   waived: boolean;
   source: "history" | "model" | "policy";
@@ -118,6 +120,8 @@ export interface ClaudeVerdict {
   verdict: string;
   confidence: number;
   reason: string;
+  /** One plain-language sentence (≤120 chars) a human reads in the PR comment. */
+  gist?: string;
   citations: string[];
   suspect_sha?: string;
   suspect_author?: string;

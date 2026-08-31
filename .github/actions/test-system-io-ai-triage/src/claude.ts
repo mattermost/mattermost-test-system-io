@@ -24,10 +24,12 @@ export function parseVerdict(raw: string): ClaudeVerdict {
     : [];
   const suspectSha = json.suspect_sha ? String(json.suspect_sha) : undefined;
   const suspectAuthor = json.suspect_author ? String(json.suspect_author) : undefined;
+  const gist = json.gist ? String(json.gist).slice(0, 160) : undefined;
   return {
     verdict: VERDICTS.has(verdict) ? verdict : "INCONCLUSIVE",
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : 0,
     reason: reason || "model returned no reason",
+    gist: gist || undefined,
     citations,
     suspect_sha: suspectSha,
     suspect_author: suspectAuthor,

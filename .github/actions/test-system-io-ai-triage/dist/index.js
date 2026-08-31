@@ -26456,10 +26456,12 @@ function parseVerdict(raw) {
   const citations = Array.isArray(json.citations) ? json.citations.map((c) => String(c)).filter(Boolean).slice(0, 8) : [];
   const suspectSha = json.suspect_sha ? String(json.suspect_sha) : void 0;
   const suspectAuthor = json.suspect_author ? String(json.suspect_author) : void 0;
+  const gist = json.gist ? String(json.gist).slice(0, 160) : void 0;
   return {
     verdict: VERDICTS.has(verdict) ? verdict : "INCONCLUSIVE",
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : 0,
     reason: reason || "model returned no reason",
+    gist: gist || void 0,
     citations,
     suspect_sha: suspectSha,
     suspect_author: suspectAuthor,
@@ -26712,7 +26714,9 @@ function buildPrompt(cluster, ctx) {
 Call TSIO tools as needed, then decide. You already have error/stack (and often screenshots) in this prompt \u2014 that IS evidence.
 
 Return ONLY JSON when done:
-{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional","chronic":false,"product_refusal":false}
+{"verdict":"FLAKY_TEST|FLAKY_INFRA|FLAKY_SERVER|PR_REGRESSION|MAIN_REGRESSION|TEST_DEBT|INCONCLUSIVE","confidence":0.0,"reason":"...","gist":"...","citations":["error_message","screenshot",...],"suspect_sha":"optional","suspect_author":"optional","chronic":false,"product_refusal":false}
+
+"gist" is the ONE sentence (\u2264120 chars, plain language, no citation tags) that humans read in the PR comment: what the test saw and what it means. Example: "Badge shows 3 mentions after unchecking suppress \u2014 wrong product state, not a timing race."
 
 kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
 
@@ -26987,39 +26991,56 @@ function formatTriageComment(args) {
   if (productBugs.length === 0) return null;
   const prRegressions = productBugs.filter((d) => d.verdict === "PR_REGRESSION");
   const mainRegressions = productBugs.filter((d) => d.verdict === "MAIN_REGRESSION");
-  const lines = [VERDICT_COMMENT_MARKER, `## \u{1F916} E2E triage \u2014 human action needed`, ``];
+  const waived = args.decisions.filter((d) => d.waived).length;
+  const lines = [VERDICT_COMMENT_MARKER, `## \u{1F916} E2E AI triage`, ``];
   if (prRegressions.length > 0) {
     const tag = args.prAuthor ? `@${args.prAuthor}` : "PR author";
     lines.push(
-      `**${tag}: the failures below look caused by this PR's changes.** Fix them in this PR before merge. If the triage is wrong (test was already broken before this PR), a maintainer can override with \`/e2e-triage-override\`.` + (prRegressions.some((d) => d.suspect_author) ? ` Suspect test-file authors (spec last touched): ${[
-        ...new Set(
-          prRegressions.map((d) => d.suspect_author).filter(Boolean).map((a) => `@${a}`)
-        )
-      ].join(", ")}.` : ""),
-      ``
+      `${tag} \u2014 ${prRegressions.length} cluster(s) look caused by this PR. Fix here; if the triage is wrong, a maintainer can \`/e2e-triage-override\`.`
     );
   }
   if (mainRegressions.length > 0) {
     lines.push(
-      `**${mainRegressions.length} failure cluster(s) look like an existing bug on master** \u2014 not caused by this PR (same failures occur on PRs without these changes / on master). Culprit-commit attribution (git bisect) is queued; the bisect report will tag the responsible author. Meanwhile, a maintainer can \`/e2e-triage-override\` to unblock this PR if the red check is a known issue.`,
-      ``
+      `**${mainRegressions.length} cluster(s) look like an existing bug on master, not this PR** \u2014 bisect is queued and will tag the culprit author. Maintainer shortcut: \`/e2e-triage-override\`.`
+    );
+  }
+  lines.push(``);
+  for (let i = 0; i < args.decisions.length; i++) {
+    const d = args.decisions[i];
+    if (d.verdict !== "PR_REGRESSION" && d.verdict !== "MAIN_REGRESSION") continue;
+    const c = args.clusters[i];
+    lines.push(
+      `- \`${c.signature.slice(0, 8)}\` **${clusterTitle(c, 64)}** \xD7${d.member_count} \u2014 ${d.verdict}${d.suspect_author ? `, suspect @${d.suspect_author}` : ""} (${d.gist || firstSentence(d.reason, 120)})`
     );
   }
   lines.push(
-    `| Classification | Cluster | n | Verdict | Suspect | Waived | Why |`,
-    `|---|---|---:|---|---|---|---|`
+    ``,
+    `<details><summary>All ${args.decisions.length} cluster(s) (${waived} waived as flaky)</summary>`,
+    ``
   );
+  lines.push(`| Cluster | Verdict | Waived | Gist |`, `|---|---|:--:|---|`);
   for (let i = 0; i < args.decisions.length; i++) {
     const d = args.decisions[i];
     const c = args.clusters[i];
-    const classification = d.verdict === "PR_REGRESSION" ? `\u{1F534} your PR` : d.verdict === "MAIN_REGRESSION" ? `\u{1F534} master` : d.kind === "bug" ? `\u{1F7E1} test bug` : `flake/infra`;
-    const suspect = d.suspect_author ? `@${d.suspect_author} (\`${(d.suspect_sha || "").slice(0, 7)}\`)` : "\u2014";
     lines.push(
-      `| ${classification} | \`${c.signature.slice(0, 8)}\` ${c.label.replace(/\|/g, " ").slice(0, 60)} | ${d.member_count} | ${d.verdict} | ${suspect} | ${d.waived ? "yes" : "no"} | ${d.reason.replace(/\|/g, " ").slice(0, 140)} |`
+      `| \`${c.signature.slice(0, 8)}\` | ${d.verdict}\`${Math.round(d.confidence * 100)}%\` | ${d.waived ? "\u2705" : "\u2014"} | ${(d.gist || firstSentence(d.reason, 120)).replace(/\|/g, " ")} |`
     );
   }
-  lines.push(``, `[Full report with screenshots](${args.reportURL})`);
+  lines.push(``, `</details>`, ``, `[Full report with screenshots](${args.reportURL})`);
   return lines.join("\n");
+}
+function firstSentence(text, max) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= max) return clean;
+  const cut = clean.slice(0, max);
+  const sp = cut.lastIndexOf(" ");
+  return `${sp > max * 0.5 ? cut.slice(0, sp) : cut}\u2026`;
+}
+function clusterTitle(c, max) {
+  const label = (c.label || "").replace(/\|/g, " ").trim();
+  if (label.length <= max) return label;
+  const sp = label.lastIndexOf(" ", max);
+  return `${sp > max * 0.5 ? label.slice(0, sp) : label.slice(0, max)}\u2026`;
 }
 async function upsertTriageComment(args) {
   const api = (args.apiURL || "https://api.github.com").replace(/\/$/, "");
@@ -27215,6 +27236,7 @@ function mergeModel(suggested, ai, overlaps, failure, changedFiles) {
       verdict: ai.verdict,
       confidence: ai.confidence,
       reason: ai.reason,
+      gist: ai.gist,
       citations: unique([...suggested.citations, ...ai.citations]),
       source: "model"
     };
@@ -27237,6 +27259,7 @@ function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
       verdict: "FLAKY_INFRA",
       confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
       reason: `${merged.reason} \u2014 overridden: PR only touches CI/harness, not product code under test`,
+      gist: merged.gist,
       citations: unique([...cites, "ci_only_diff"]),
       source: "policy"
     };
@@ -27247,6 +27270,7 @@ function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
       verdict: flakeKind,
       confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
       reason: `${merged.reason} \u2014 overridden: PR does not touch this failure's product/spec area`,
+      gist: merged.gist,
       citations: unique([...cites, "no_product_overlap"]),
       source: "policy"
     };
@@ -27258,6 +27282,7 @@ function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
         verdict: flakeKind,
         confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
         reason: `${merged.reason} \u2014 overridden: infra/server signal with no product overlap`,
+        gist: merged.gist,
         citations: unique([...cites, "no_product_overlap"]),
         source: "policy"
       };
@@ -27269,6 +27294,7 @@ function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
       verdict: flakeKind,
       confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
       reason: `${merged.reason} \u2014 overridden: evidence present (error/screenshots/stack); INCONCLUSIVE forbidden`,
+      gist: merged.gist,
       citations: unique([...cites, "error_or_screenshot"]),
       source: "policy"
     };

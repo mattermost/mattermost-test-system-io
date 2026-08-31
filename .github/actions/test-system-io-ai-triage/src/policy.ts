@@ -226,6 +226,7 @@ function mergeModel(
   verdict: string;
   confidence: number;
   reason: string;
+  gist?: string;
   citations: string[];
   source: Decision["source"];
 } {
@@ -233,6 +234,7 @@ function mergeModel(
     verdict: string;
     confidence: number;
     reason: string;
+    gist?: string;
     citations: string[];
     source: Decision["source"];
   };
@@ -258,6 +260,7 @@ function mergeModel(
       verdict: ai.verdict,
       confidence: ai.confidence,
       reason: ai.reason,
+      gist: ai.gist,
       citations: unique([...suggested.citations, ...ai.citations]),
       source: "model",
     };
@@ -276,6 +279,7 @@ export function enforceDecisiveVerdict(
     verdict: string;
     confidence: number;
     reason: string;
+    gist?: string;
     citations: string[];
     source: Decision["source"];
   },
@@ -286,6 +290,7 @@ export function enforceDecisiveVerdict(
   verdict: string;
   confidence: number;
   reason: string;
+  gist?: string;
   citations: string[];
   source: Decision["source"];
 } {
@@ -318,6 +323,7 @@ export function enforceDecisiveVerdict(
       verdict: "FLAKY_INFRA",
       confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
       reason: `${merged.reason} — overridden: PR only touches CI/harness, not product code under test`,
+      gist: merged.gist,
       citations: unique([...cites, "ci_only_diff"]),
       source: "policy",
     };
@@ -330,6 +336,7 @@ export function enforceDecisiveVerdict(
       verdict: flakeKind,
       confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
       reason: `${merged.reason} — overridden: PR does not touch this failure's product/spec area`,
+      gist: merged.gist,
       citations: unique([...cites, "no_product_overlap"]),
       source: "policy",
     };
@@ -343,6 +350,7 @@ export function enforceDecisiveVerdict(
         verdict: flakeKind,
         confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
         reason: `${merged.reason} — overridden: infra/server signal with no product overlap`,
+        gist: merged.gist,
         citations: unique([...cites, "no_product_overlap"]),
         source: "policy",
       };
@@ -355,6 +363,7 @@ export function enforceDecisiveVerdict(
       verdict: flakeKind,
       confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
       reason: `${merged.reason} — overridden: evidence present (error/screenshots/stack); INCONCLUSIVE forbidden`,
+      gist: merged.gist,
       citations: unique([...cites, "error_or_screenshot"]),
       source: "policy",
     };

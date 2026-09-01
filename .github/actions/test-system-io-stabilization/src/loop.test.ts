@@ -16,6 +16,7 @@ function deps(over: Partial<LoopDeps> = {}): LoopDeps {
     async openPRCount() { return 0; },
     async attemptsForTest() { return 0; },
     async repair() { return { summary: "timing race; polling assertion", editedFiles: ["e2e-tests/a.spec.ts"], routed: false }; },
+    async resetWorkspace() {},
     async stageEdits() {},
     hasStagedChanges() { return true; },
     async selfCheck() { return { passed: true, violations: [] }; },
@@ -73,6 +74,7 @@ test("product-bug diagnosis routes, never fixes", async () => {
 test("self-check rejection stops the push and records the rejection", async () => {
   const recorded: string[] = [];
   const d = deps({
+    async resetWorkspace() {},
     async stageEdits() {},
     hasStagedChanges() { return true; },
     async selfCheck() {
@@ -99,6 +101,7 @@ test("M16: a no-op repair is recorded and skipped, never retried blindly", async
   const recorded: string[] = [];
   let opened = false;
   const d = deps({
+    async resetWorkspace() {},
     async stageEdits() {},
     hasStagedChanges() { return false; },
     async recordAttempt(_t, n, outcome) { recorded.push(`${n}:${outcome}`); },
@@ -124,4 +127,30 @@ test("M11: a test in both promoted and ranked is processed once", async () => {
   const actions = await runLoop(d, BASE);
   assert.equal(openedFor.length, 1);
   assert.equal(actions.filter((a) => a.kind === "fix_pr").length, 1);
+});
+
+test("R2-4 + M3: resetWorkspace runs before every entry — one rejected edit cannot poison the next", async () => {
+  const resets: string[] = [];
+  let calls = 0;
+  const d = deps({
+    async fetchQueue() {
+      return { promoted: [], ranked: [entry("MM-T1"), entry("MM-T2")] };
+    },
+    async resetWorkspace() { resets.push(`before-${++calls}`); },
+    async stageEdits() {},
+    hasStagedChanges() { return true; },
+    async selfCheck() {
+      // T1's repair is banned; T2's is clean — but only if the index was
+      // reset between them (round-2 major 3: the staged violation persisted).
+      return calls === 1
+        ? { passed: false, violations: [{ rule: "ban-bare-wait", file: "e2e-tests/a.spec.ts", message: "x" }] }
+        : { passed: true, violations: [] };
+    },
+    async openPR(e2) { return { branch: `b-${e2.test_id}`, prNumber: 1 }; },
+  });
+  const actions = await runLoop(d, { ...BASE, concurrency: 2 });
+  assert.deepEqual(resets, ["before-1", "before-2"]);
+  // T1 rejected, T2 opened — the poisoning would have rejected both.
+  assert.equal(actions[0]!.kind, "skipped");
+  assert.equal(actions[1]!.kind, "fix_pr");
 });

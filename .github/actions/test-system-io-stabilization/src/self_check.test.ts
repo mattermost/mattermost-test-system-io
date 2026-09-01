@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { checkOwnDiff } from "./self_check.ts";
+import { checkOwnDiff, assertBundledChecker } from "./self_check.ts";
 
 function gitWorkspace(): string {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "selfcheck-"));
@@ -54,4 +54,23 @@ test("M14: an unstaged banned edit is NOT yet in the check (staging is the loop'
   execFileSync("git", ["-C", ws, "add", "-A"]);
   assert.equal(checkOwnDiff(ws).passed, false);
   fs.rmSync(ws, { recursive: true, force: true });
+});
+
+test("R2 minor: the vendored ban checker is byte-identical to the canonical copy", () => {
+  // Self-containment has a cost: the copy can drift. Pin it.
+  const vendored = fs.readFileSync(
+    path.join(import.meta.dirname, "vendor", "ban-checker.js"),
+  );
+  const canonical = fs.readFileSync(
+    path.resolve(import.meta.dirname, "..", "..", "..", "..", "scripts", "lib", "stabilization-ban-checker.js"),
+  );
+  assert.ok(vendored.equals(canonical), "src/vendor/ban-checker.js has drifted from scripts/lib — re-sync it");
+});
+
+test("R2 minor: assertBundledChecker guards the B6 regression (runs against dist when built)", () => {
+  const dist = path.resolve(import.meta.dirname, "..", "..", "dist");
+  if (!fs.existsSync(path.join(dist, "index.js"))) {
+    return; // dist not built in this environment — CI builds first
+  }
+  assertBundledChecker(dist);
 });

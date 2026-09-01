@@ -20341,16 +20341,25 @@ function guardEditable(workspace, target) {
   }
   const rootReal = fs3.realpathSync(workspace);
   let anc = resolved;
-  while (!fs3.existsSync(anc)) {
+  while (!fs3.lstatSync(anc, { throwIfNoEntry: false })) {
     anc = path.dirname(anc);
   }
-  const ancReal = fs3.realpathSync(anc);
+  let ancReal;
+  try {
+    ancReal = fs3.realpathSync(anc);
+  } catch {
+    throw new Error(`dangling symlink on the write path: ${target}`);
+  }
   if (ancReal !== rootReal && !ancReal.startsWith(rootReal + path.sep)) {
     throw new Error(`path escapes workspace (symlink?): ${target}`);
   }
   const relReal = path.relative(rootReal, ancReal);
   if (relReal !== "" && relReal !== "e2e-tests" && !relReal.startsWith("e2e-tests" + path.sep)) {
     throw new Error(`path resolves outside e2e-tests/ (symlink?): ${target}`);
+  }
+  const finalLstat = fs3.lstatSync(resolved, { throwIfNoEntry: false });
+  if (finalLstat?.isSymbolicLink()) {
+    throw new Error(`refusing to write through a symlink: ${target}`);
   }
   return resolved;
 }
@@ -20387,6 +20396,7 @@ async function runLoop(deps, cfg) {
   for (const entry of queue) {
     if (taken >= slots) break;
     const testID = entry.test_id;
+    await deps.resetWorkspace();
     const prior = await deps.attemptsForTest(cfg.repo, testID);
     if (attemptsExhausted(prior, cfg.maxAttemptsPerTest)) {
       actions.push({
@@ -20472,18 +20482,16 @@ function stageEdits(git) {
   git.run(["add", "--", "e2e-tests/"]);
 }
 function commitAndPush(git, branch, message) {
-  git.run(["fetch", "origin", "master"]);
-  git.run(["checkout", "-B", branch, "origin/master"]);
-  git.run(["add", "--", "e2e-tests/"]);
+  git.run(["checkout", "-B", branch]);
   git.run(["commit", "-m", message, "--no-verify"]);
   git.run(["push", "origin", `HEAD:${branch}`]);
 }
-async function openStabilizationPR(api, repo, branch, title, body, label) {
+async function openStabilizationPR(api, repo, branch, title, body, label, baseBranch) {
   const pr = await api("POST", `/repos/${repo}/pulls`, {
     title,
     body,
     head: branch,
-    base: "master"
+    base: baseBranch
   });
   if (!pr.number) throw new Error(`PR opened but no number returned for ${branch}`);
   await api("POST", `/repos/${repo}/issues/${pr.number}/labels`, { labels: [label] });
@@ -20703,6 +20711,7 @@ async function main() {
   const repo = getInput("repo");
   const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
   const depth = Number(getInput("queue-depth")) || 10;
+  const baseBranch = getInput("base-branch") || "master";
   const dryRun = getInput("dry-run") === "true";
   const model = getInput("claude-model") || "claude-sonnet-4-6";
   const cfg = {
@@ -20717,10 +20726,19 @@ async function main() {
   const git = gitDeps(workspace);
   const commitSHA = git.run(["rev-parse", "HEAD"]).trim();
   const deps = {
+    // R2-2: B7 moved the queue behind RequireAuth — fetch with the same
+    // OIDC bearer the ledger writes use, or the loop dies on its first call.
     async fetchQueue(b, r) {
-      const res = await fetch(queueURL(b, r));
-      if (!res.ok) throw new Error(`queue fetch: ${res.status}`);
-      return await res.json();
+      const url = queueURL(b, r);
+      try {
+        const bearer = await getIDToken(getInput("oidc-audience") || "mattermost-test-system-io");
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${bearer}` } });
+        if (!res.ok) throw new Error(`queue fetch: ${res.status}`);
+        return await res.json();
+      } catch (err) {
+        warning(`queue fetch failed (${err.message}) \u2014 standing down this run`);
+        return { promoted: [], ranked: [] };
+      }
     },
     async monthlyAttemptsUsed(r) {
       const monthStart = /* @__PURE__ */ new Date();
@@ -20759,6 +20777,16 @@ async function main() {
     selfCheck() {
       return checkOwnDiff(workspace);
     },
+    // R2-4: pristine base per entry. Fetch the EXPLICIT remote ref —
+    // `git fetch origin master` writes only FETCH_HEAD and never creates
+    // refs/remotes/origin/master, which actions/checkout's narrow refspec
+    // may not have created either.
+    async resetWorkspace() {
+      git.run(["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+      git.run(["checkout", "-f", "-B", baseBranch, `refs/remotes/origin/${baseBranch}`]);
+      git.run(["reset", "--hard"]);
+      git.run(["clean", "-fd"]);
+    },
     stageEdits() {
       stageEdits(git);
     },
@@ -20788,7 +20816,7 @@ ${summary2}`);
         "",
         `Queue: ${queueURL(baseURL, repo)}`
       ].join("\n");
-      const prNumber = await openStabilizationPR(gh, repo, branch, title, body, STABILIZATION_LABEL);
+      const prNumber = await openStabilizationPR(gh, repo, branch, title, body, STABILIZATION_LABEL, baseBranch);
       return { branch, prNumber };
     },
     async routeToOwner(entry, reason) {

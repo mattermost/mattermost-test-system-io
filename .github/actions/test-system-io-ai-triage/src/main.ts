@@ -194,7 +194,11 @@ export async function run(): Promise<void> {
     JSON.stringify(collectBisectTargets(pack.clusters || [], decisions)),
   );
 
-  if (githubToken) {
+  // Round-2 major 6: EVERY status write belongs to the gate. In shadow mode a
+  // failed ledger was tolerated and this block still posted
+  // summary.state=success — a green e2e-test/*-prefixed row with no ledger
+  // row. Shadow observes and comments; it writes no check rows at all.
+  if (githubToken && mode === "gate") {
     const [owner, repo] = splitRepo(pack.group.repository);
     // When callers name the original platform check, rewrite that row and skip
     // a separate e2e-test/ai-triage-* failure — PR Checks stay one row per suite.
@@ -683,18 +687,27 @@ async function writeLedger(
     }),
   };
 
-  const res = await retryFetch(
-    `${baseURL}/api/v1/triage/verdicts`,
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${bearer}`,
-        "content-type": "application/json",
+  let res: Awaited<ReturnType<typeof retryFetch>>;
+  try {
+    res = await retryFetch(
+      `${baseURL}/api/v1/triage/verdicts`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${bearer}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    },
-    "triage/verdicts",
-  );
+      "triage/verdicts",
+    );
+  } catch (err) {
+    // Round-2 major 6: retryFetch THROWS past its retries (network error,
+    // exhausted 5xx). That must be a ledger failure (gate refuses, shadow
+    // tolerates) — not an unhandled crash that masks the refusal.
+    core.warning(`ledger write failed: ${(err as Error).message}`);
+    return false;
+  }
   if (!res.ok) {
     core.warning(`ledger write HTTP ${res.status} ${await res.text()}`);
     return false;

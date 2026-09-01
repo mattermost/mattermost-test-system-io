@@ -46,6 +46,12 @@ inputs:
     description: Working queue scope (plan default: top 10)
     required: false
     default: "10"
+  base-branch:
+    description: >-
+      The branch stabilization PRs target and the workspace resets to.
+      Not hardcoded: mobile uses master, the monorepo uses master today.
+    required: false
+    default: "master"
   dry-run:
     description: Investigate and report, but open no PR and touch nothing
     required: false

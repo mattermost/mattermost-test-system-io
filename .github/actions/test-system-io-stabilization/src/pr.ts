@@ -25,12 +25,12 @@ export function branchName(testID: string, now = new Date()): string {
 }
 
 /**
- * M12: every stabilization PR branches from origin/master, NOT from the
- * current HEAD. The loop runs serially in one workspace — branching from
- * HEAD made PR #2 contain PR #1's commit, and approving #2 approved #1's
- * unreviewed edit. M14: stage e2e-tests/ FIRST so the self-check's
- * --cached diff sees exactly what will be committed (untracked files
- * included, banned or not).
+ * R2-4: the workspace reset (resetWorkspace) is what puts HEAD on a pristine
+ * base BEFORE each entry — this fn no longer fetches or force-checkouts at
+ * commit time (that aborted on a dirty tree and died when the narrow
+ * checkout refspec had never created origin/<base>). It branches off
+ * whatever clean base resetWorkspace left, so PR #2 can never contain PR
+ * #1's commit and no unreviewed edit rides along.
  */
 export function stageEdits(git: GitDeps): void {
   git.run(["add", "--", "e2e-tests/"]);
@@ -41,11 +41,7 @@ export function commitAndPush(
   branch: string,
   message: string,
 ): void {
-  git.run(["fetch", "origin", "master"]);
-  git.run(["checkout", "-B", branch, "origin/master"]);
-  // Branch switched — the staged index follows the switch; re-stage in case
-  // the checkout touched paths, then commit only what the self-check saw.
-  git.run(["add", "--", "e2e-tests/"]);
+  git.run(["checkout", "-B", branch]);
   git.run(["commit", "-m", message, "--no-verify"]);
   git.run(["push", "origin", `HEAD:${branch}`]);
 }
@@ -61,12 +57,13 @@ export async function openStabilizationPR(
   title: string,
   body: string,
   label: string,
+  baseBranch: string,
 ): Promise<number> {
   const pr = await api("POST", `/repos/${repo}/pulls`, {
     title,
     body,
     head: branch,
-    base: "master",
+    base: baseBranch,
   });
   if (!pr.number) throw new Error(`PR opened but no number returned for ${branch}`);
   await api("POST", `/repos/${repo}/issues/${pr.number}/labels`, { labels: [label] });

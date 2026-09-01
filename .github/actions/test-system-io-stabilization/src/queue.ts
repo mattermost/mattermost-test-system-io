@@ -26,7 +26,10 @@ export function take(items: QueueEntry[], n: number): QueueEntry[] {
   return items.slice(0, Math.max(0, n));
 }
 
-/** The queue URL — public read, same as the other triage reads. */
+/**
+ * The queue URL — AUTHENTICATED read (B7: it returns row-level data). The
+ * caller must send the OIDC bearer; see main.ts fetchQueue.
+ */
 export function queueURL(baseURL: string, repo: string): string {
   const params = new URLSearchParams({ repo, window: "30d" });
   return `${baseURL}/api/v1/triage/stabilization/queue?${params.toString()}`;

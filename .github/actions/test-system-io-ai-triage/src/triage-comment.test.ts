@@ -97,6 +97,6 @@ test("mixed: one unwaived master bug still comments and shows waived truthfully"
     reportURL: "https://r.example",
   });
   assert.ok(body);
-  assert.match(body, /1 cluster\(s\) look like an existing bug on master/);
+  assert.match(body, /1 failure cluster looks like an existing bug on master/);
   assert.match(body, /✅/); // waived truthfully in the details table
 });

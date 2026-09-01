@@ -34,6 +34,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 )
 
@@ -296,7 +299,7 @@ type masterAlertData struct {
 	series   map[string][]outcomePoint // per test, ascending by time
 }
 
-func (h *Handlers) loadMasterAlertData(ctx context.Context, repo, branch string, since time.Time) (masterAlertData, error) {
+func (h *Handlers) loadMasterAlertData(ctx context.Context, q dbtx, repo, branch string, since time.Time) (masterAlertData, error) {
 	var d masterAlertData
 	d.series = map[string][]outcomePoint{}
 
@@ -304,7 +307,7 @@ func (h *Handlers) loadMasterAlertData(ctx context.Context, repo, branch string,
 	// pass rate), but the streak rule reads master points while cross-PR
 	// reads PR points — a branch filter here made cross_pr_cluster dead:
 	// master runs have gh_pr_number NULL by construction.
-	rows, err := h.Pool.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		WITH matched AS (
 			SELECT g.id, g.created_at, g.gh_pr_number, g.branch,
 			       coalesce(tc.external_test_id, 't:' || coalesce(nullif(tc.full_title, ''), tc.title)) AS test_key,
@@ -395,16 +398,19 @@ func (d masterAlertData) inputsAsOf(repo string, asOf time.Time, floor float64, 
 			if p.At.After(asOf) {
 				continue
 			}
-			total++
 			isMaster := p.Branch == "main" || p.Branch == "master"
+			// Round-2 major 1: the streak rule is ">= 3 consecutive MASTER
+			// runs" — PR failures must not advance it, and total (the
+			// MinRuns new-spec exclusion denominator) counts master runs.
 			if isMaster {
+				total++
 				sawMasterPoint = true
-			}
-			if !seenPreStreak {
-				if p.Failed {
-					streak++
-				} else {
-					seenPreStreak = true
+				if !seenPreStreak {
+					if p.Failed {
+						streak++
+					} else {
+						seenPreStreak = true
+					}
 				}
 			}
 			if p.Failed && p.PR != nil && p.At.After(asOf.Add(-7*24*time.Hour)) {
@@ -441,8 +447,8 @@ func (d masterAlertData) inputsAsOf(repo string, asOf time.Time, floor float64, 
 // AlertEvaluation serves GET /api/v1/triage/alerts/evaluation?repo= — the dry
 // view: rules, candidate alerts, and what dedup WOULD do. No side effects.
 func (h *Handlers) AlertEvaluation(w http.ResponseWriter, r *http.Request) {
-	repo := normalizeAlertRepo(r.URL.Query().Get("repo"))
-	if repo == repoFallbackOwner {
+	repoRaw := r.URL.Query().Get("repo")
+	if repoRaw == "" {
 		api.WriteError(w, r, errRepoRequired())
 		return
 	}
@@ -453,16 +459,16 @@ func (h *Handlers) AlertEvaluation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.loadMasterAlertData(r.Context(), repo, branch, time.Now().Add(-45*24*time.Hour))
+	data, err := h.loadMasterAlertData(r.Context(), h.Pool, repoRaw, branch, time.Now().Add(-45*24*time.Hour))
 	if err != nil {
 		h.logError("alerts load", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
-	in := data.inputsAsOf(repo, time.Now(), floor, minRuns)
+	in := data.inputsAsOf(repoRaw, time.Now(), floor, minRuns)
 	alerts := EvaluateMasterAlerts(in)
 
-	records, err := h.loadFiringRecords(r.Context(), repo)
+	records, err := h.loadFiringRecords(r.Context(), h.Pool, repoRaw)
 	if err != nil {
 		h.logError("alerts firing records", err)
 		api.WriteError(w, r, api.ErrInternal)
@@ -475,7 +481,7 @@ func (h *Handlers) AlertEvaluation(w http.ResponseWriter, r *http.Request) {
 	plan := ApplyAlertDedup(alerts, sim, time.Now())
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"repo":    repo,
+		"repo":    repoRaw,
 		"inputs":  in,
 		"alerts":  alerts,
 		"dedup":   plan,
@@ -483,15 +489,24 @@ func (h *Handlers) AlertEvaluation(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// dbtx is what both a pool and a transaction provide — the alerting
+// critical section runs on a tx so the advisory lock actually covers it.
+type dbtx interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 // AlertEvaluate serves POST /api/v1/triage/alerts/evaluate?repo= — the
 // scheduled job's call: evaluate, dedup, post to the channel, open/update
 // issues, record firings. Authenticated (a forged alert is spam at scale).
 func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
-	repo := normalizeAlertRepo(r.URL.Query().Get("repo"))
-	if repo == repoFallbackOwner {
+	repoRaw := r.URL.Query().Get("repo")
+	if repoRaw == "" {
 		api.WriteError(w, r, errRepoRequired())
 		return
 	}
+	repo := normalizeAlertRepo(repoRaw)
 	branch := orDefault(r.URL.Query().Get("branch"), "main")
 	floor, minRuns, cfgErr := alertConfigFromQuery(r)
 	if cfgErr != nil {
@@ -501,18 +516,25 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// M8: overlapping evaluations read-modify-write the same firing rows and
-	// both post despite the 24h cooldown. One evaluation per repo at a time —
-	// a held lock means another job is mid-flight; report and stand down.
-	locked, err := h.Pool.Exec(ctx, `SELECT pg_try_advisory_lock(hashtext($1))`, repo)
-	if err != nil || locked.RowsAffected() == 0 {
+	// R2-1: the WHOLE read-modify-write critical section runs inside one
+	// transaction guarded by a TRANSACTION-scoped advisory lock (a session
+	// lock on a pooled connection covers none of the subsequent queries and
+	// leaks). Commit releases the lock — self-healing, no unlock path.
+	tx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		h.logError("alerts tx begin", err)
+		api.WriteError(w, r, api.ErrInternal)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after commit
+
+	var locked bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtext($1))`, repo).Scan(&locked); err != nil || !locked {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "alert evaluation already in flight for this repo"})
 		return
 	}
-	defer func() {
-		_, _ = h.Pool.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext($1))`, repo)
-	}()
-	data, err := h.loadMasterAlertData(ctx, repo, branch, time.Now().Add(-45*24*time.Hour))
+
+	data, err := h.loadMasterAlertData(ctx, tx, repo, branch, time.Now().Add(-45*24*time.Hour))
 	if err != nil {
 		h.logError("alerts load", err)
 		api.WriteError(w, r, api.ErrInternal)
@@ -521,7 +543,7 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	alerts := EvaluateMasterAlerts(data.inputsAsOf(repo, now, floor, minRuns))
 
-	records, err := h.loadFiringRecords(ctx, repo)
+	records, err := h.loadFiringRecords(ctx, tx, repo)
 	if err != nil {
 		h.logError("alerts firing records", err)
 		api.WriteError(w, r, api.ErrInternal)
@@ -529,12 +551,19 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 	}
 	plan := ApplyAlertDedup(alerts, records, now)
 
-	// B9: persist the decision (fire counts, channel posts, issue CLAIMS)
-	// BEFORE any side effect. A crash after this point leaves a durable
-	// record that the issue was claimed — the next run updates instead of
-	// opening a duplicate.
-	if err := h.recordFirings(ctx, repo, records); err != nil {
+	// B9/R2-1: persist fire counts and issue CLAIMS — inside the locked tx,
+	// BEFORE any side effect, and WITHOUT the channel-post fields (round-2
+	// major 4: burning the 24h cooldown before the webhook is attempted would
+	// let one transient 5xx silence a critical alert for a day). Committing
+	// here makes the claims durable; a crash afterwards can never produce a
+	// duplicate issue.
+	if err := h.recordFirings(ctx, tx, repo, records, false); err != nil {
 		h.logError("alerts record firings (pre-notify)", err)
+		api.WriteError(w, r, api.ErrInternal)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		h.logError("alerts tx commit", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
@@ -542,7 +571,7 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 	posted, issuesOpened, issuesUpdated := 0, 0, 0
 	if len(plan.ToPost) > 0 {
 		if err := h.postAlertWebhook(ctx, repo, plan.ToPost); err != nil {
-			h.logError("alerts webhook post", err) // fail open on notify: recording still happens
+			h.logError("alerts webhook post", err) // fail open on notify: the cooldown was NOT pre-burned
 		} else {
 			posted = len(plan.ToPost)
 		}
@@ -573,9 +602,11 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 		issuesUpdated++
 	}
 
-	// Second pass: persist the GitHub URLs/numbers onto the claimed rows.
-	if err := h.recordFirings(ctx, repo, records); err != nil {
-		h.logError("alerts record firings (post-notify)", err) // claims already durable; URLs retry next run
+	// Second pass, outside the lock: persist channel posts and the GitHub
+	// URLs/numbers onto the claimed rows. Claims already survive a crash
+	// here; a failed channel post simply is not recorded as posted.
+	if err := h.recordFirings(ctx, h.Pool, repo, records, true); err != nil {
+		h.logError("alerts record firings (post-notify)", err)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -595,8 +626,8 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 // reviewer sign-off) needs production history and a human — this endpoint is
 // the tool that produces the replay output for that review.
 func (h *Handlers) AlertReplay(w http.ResponseWriter, r *http.Request) {
-	repo := normalizeAlertRepo(r.URL.Query().Get("repo"))
-	if repo == repoFallbackOwner {
+	repoRaw := r.URL.Query().Get("repo")
+	if repoRaw == "" {
 		api.WriteError(w, r, errRepoRequired())
 		return
 	}
@@ -612,7 +643,7 @@ func (h *Handlers) AlertReplay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.loadMasterAlertData(r.Context(), repo, branch, time.Now().Add(-time.Duration(days+15)*24*time.Hour))
+	data, err := h.loadMasterAlertData(r.Context(), h.Pool, repoRaw, branch, time.Now().Add(-time.Duration(days+15)*24*time.Hour))
 	if err != nil {
 		h.logError("alerts replay load", err)
 		api.WriteError(w, r, api.ErrInternal)
@@ -650,7 +681,7 @@ func (h *Handlers) AlertReplay(w http.ResponseWriter, r *http.Request) {
 		}
 		lastDay = day
 
-		alerts := EvaluateMasterAlerts(data.inputsAsOf(repo, day.Add(23*time.Hour), floor, minRuns))
+		alerts := EvaluateMasterAlerts(data.inputsAsOf(repoRaw, day.Add(23*time.Hour), floor, minRuns))
 		plan := ApplyAlertDedup(alerts, sim, day)
 		totalPosted += len(plan.ToPost)
 		out = append(out, dayFired{Day: day.Format("2006-01-02"), Alerts: alerts, Posted: len(plan.ToPost)})
@@ -661,7 +692,7 @@ func (h *Handlers) AlertReplay(w http.ResponseWriter, r *http.Request) {
 		weeks = span / 7
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"repo":           repo,
+		"repo":           repoRaw,
 		"days":           days,
 		"days_with_data": len(out),
 		"total_posts":    totalPosted,
@@ -686,8 +717,8 @@ func alertConfigFromQuery(r *http.Request) (floor float64, minRuns int, err erro
 	return floor, minRuns, nil
 }
 
-func (h *Handlers) loadFiringRecords(ctx context.Context, repo string) (map[string]FiringRecord, error) {
-	rows, err := h.Pool.Query(ctx, `
+func (h *Handlers) loadFiringRecords(ctx context.Context, q dbtx, repo string) (map[string]FiringRecord, error) {
+	rows, err := q.Query(ctx, `
 		SELECT rule, subject, first_fired_at, last_fired_at, last_channel_post,
 		       channel_posts, issue_url, issue_number, last_issue_update, fire_count,
 		       issue_claimed
@@ -712,24 +743,36 @@ func (h *Handlers) loadFiringRecords(ctx context.Context, repo string) (map[stri
 	return out, rows.Err()
 }
 
-func (h *Handlers) recordFirings(ctx context.Context, repo string, records map[string]FiringRecord) error {
+// recordFirings persists the in-memory dedup records.
+//
+// persistChannel=false is the PRE-NOTIFY pass (inside the locked tx): fire
+// counts and issue claims are durable before any side effect, and the
+// channel-post fields are NOT written — burning the 24h cooldown before the
+// webhook is attempted would let one transient 5xx silence an alert for a day
+// (round-2 major 4). persistChannel=true is the post-notify pass.
+func (h *Handlers) recordFirings(ctx context.Context, q dbtx, repo string, records map[string]FiringRecord, persistChannel bool) error {
 	for _, rec := range records {
-		_, err := h.Pool.Exec(ctx, `
+		lastPost, posts := rec.LastChannelPost, rec.ChannelPosts
+		if !persistChannel {
+			lastPost, posts = nil, 0
+		}
+		_, err := q.Exec(ctx, `
 			INSERT INTO alert_firings (repository, rule, subject, first_fired_at, last_fired_at,
 			                           last_channel_post, channel_posts, issue_url, issue_number,
-			                           last_issue_update, fire_count)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			                           last_issue_update, fire_count, issue_claimed)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 			ON CONFLICT (repository, rule, subject) WHERE resolved_at IS NULL
 			DO UPDATE SET last_fired_at = EXCLUDED.last_fired_at,
 			              last_channel_post = coalesce(EXCLUDED.last_channel_post, alert_firings.last_channel_post),
-			              channel_posts = EXCLUDED.channel_posts,
+			              channel_posts = greatest(alert_firings.channel_posts, EXCLUDED.channel_posts),
 			              issue_url = coalesce(EXCLUDED.issue_url, alert_firings.issue_url),
-			              issue_number = EXCLUDED.issue_number,
+			              issue_number = coalesce(EXCLUDED.issue_number, alert_firings.issue_number),
 			              last_issue_update = coalesce(EXCLUDED.last_issue_update, alert_firings.last_issue_update),
-			              fire_count = EXCLUDED.fire_count
+			              fire_count = EXCLUDED.fire_count,
+			              issue_claimed = coalesce(EXCLUDED.issue_claimed, alert_firings.issue_claimed)
 		`, repo, rec.Rule, rec.Subject, rec.FirstFiredAt, rec.LastFiredAt,
-			rec.LastChannelPost, rec.ChannelPosts, rec.IssueURL, rec.IssueNumber,
-			rec.LastIssueUpdate, rec.FireCount)
+			lastPost, posts, rec.IssueURL, rec.IssueNumber,
+			rec.LastIssueUpdate, rec.FireCount, rec.IssueClaimed)
 		if err != nil {
 			return err
 		}

@@ -77,7 +77,7 @@ export function formatTriageComment(args: {
     const d = args.decisions[i]!;
     const c = args.clusters[i]!;
     lines.push(
-      `| \`${c.signature.slice(0, 8)}\` | ${d.verdict} ${Math.round(d.confidence * 100)}% | ${d.waived ? "✅" : "—"} | $(
+      `| \`${c.signature.slice(0, 8)}\` | ${d.verdict} ${Math.round(d.confidence * 100)}% | ${d.waived ? "✅" : "—"} | ${(
         d.gist || firstSentence(d.reason, 120)
       ).replace(/\|/g, " ")} |`,
     );

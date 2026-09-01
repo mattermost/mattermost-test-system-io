@@ -27034,9 +27034,7 @@ function formatTriageComment(args) {
     const d = args.decisions[i];
     const c = args.clusters[i];
     lines.push(
-      `| \`${c.signature.slice(0, 8)}\` | ${d.verdict} ${Math.round(d.confidence * 100)}% | ${d.waived ? "\u2705" : "\u2014"} | $(
-        d.gist || firstSentence(d.reason, 120)
-      ).replace(/|/g, " ")} |`
+      `| \`${c.signature.slice(0, 8)}\` | ${d.verdict} ${Math.round(d.confidence * 100)}% | ${d.waived ? "\u2705" : "\u2014"} | ${(d.gist || firstSentence(d.reason, 120)).replace(/\|/g, " ")} |`
     );
   }
   lines.push(``, `</details>`, ``, `[Full report with screenshots](${args.reportURL})`);
@@ -27787,8 +27785,13 @@ function guard(rel, workspace) {
   }
   const rootReal = fs3.realpathSync(workspace);
   let anc = abs;
-  while (!fs3.existsSync(anc)) anc = path.dirname(anc);
-  const ancReal = fs3.realpathSync(anc);
+  while (!fs3.lstatSync(anc, { throwIfNoEntry: false })) anc = path.dirname(anc);
+  let ancReal;
+  try {
+    ancReal = fs3.realpathSync(anc);
+  } catch {
+    throw new Error(`dangling symlink on the write path: ${rel}`);
+  }
   if (ancReal !== rootReal && !ancReal.startsWith(rootReal + path.sep)) {
     throw new Error(`path escapes workspace (symlink?): ${rel}`);
   }
@@ -27796,6 +27799,10 @@ function guard(rel, workspace) {
   const rootOk = ALLOWED_PREFIXES.some((p) => normReal === p.slice(0, -1) || normReal.startsWith(p));
   if (!rootOk) {
     throw new Error(`path resolves outside the writable prefixes (symlink?): ${rel}`);
+  }
+  const finalLstat = fs3.lstatSync(abs, { throwIfNoEntry: false });
+  if (finalLstat?.isSymbolicLink()) {
+    throw new Error(`refusing to write through a symlink: ${rel}`);
   }
   return abs;
 }
@@ -27949,7 +27956,7 @@ async function run() {
     "bisect_clusters",
     JSON.stringify(collectBisectTargets(pack.clusters || [], decisions))
   );
-  if (githubToken) {
+  if (githubToken && mode === "gate") {
     const [owner, repo] = splitRepo(pack.group.repository);
     const postTriageRow = Boolean(contextName) && originalContexts.length === 0;
     if (postTriageRow) {
@@ -28346,18 +28353,24 @@ async function writeLedger(baseURL, audience, pack, decisions, model) {
       };
     })
   };
-  const res = await retryFetch(
-    `${baseURL}/api/v1/triage/verdicts`,
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${bearer}`,
-        "content-type": "application/json"
+  let res;
+  try {
+    res = await retryFetch(
+      `${baseURL}/api/v1/triage/verdicts`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${bearer}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify(body)
       },
-      body: JSON.stringify(body)
-    },
-    "triage/verdicts"
-  );
+      "triage/verdicts"
+    );
+  } catch (err) {
+    warning(`ledger write failed: ${err.message}`);
+    return false;
+  }
   if (!res.ok) {
     warning(`ledger write HTTP ${res.status} ${await res.text()}`);
     return false;

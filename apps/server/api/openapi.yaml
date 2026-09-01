@@ -1794,7 +1794,7 @@ paths:
               properties:
                 test_id: { type: string }
                 reason: { type: string }
-                source: { type: string, enum: [release-guard, sla-breach, amnesty-expired, manual] }
+                source: { type: string, enum: [release-guard, sla-breach, amnesty-expired, manual, override] }
       responses:
         '201':
           description: Promoted (upsert on the live row)
@@ -3268,7 +3268,7 @@ components:
         flake_rate: { type: number }
         promoted: { type: boolean }
         promoted_by: { type: string }
-        promotion_source: { type: string, enum: [release-guard, sla-breach, amnesty-expired, manual] }
+        promotion_source: { type: string, enum: [release-guard, sla-breach, amnesty-expired, manual, override] }
         promotion_reason: { type: string }
 
     TriageSuggestion:

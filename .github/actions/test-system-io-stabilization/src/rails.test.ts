@@ -50,3 +50,18 @@ test("M13: a symlink under e2e-tests/ pointing outside is rejected", () => {
   assert.ok(guardEditable(ws, "e2e-tests/plain.spec.ts").length > 0);
   fs.rmSync(ws, { recursive: true, force: true });
 });
+
+test("R2-3: a DANGLING symlink under e2e-tests is rejected, not skipped", () => {
+  const ws = workspace();
+  // Dangling link pointing OUTSIDE the workspace entirely.
+  fs.symlinkSync("/tmp/sym/outside/pwn.ts", path.join(ws, "e2e-tests", "dangling.ts"));
+  assert.throws(() => guardEditable(ws, "e2e-tests/dangling.ts"), /symlink|escapes/i);
+  // Dangling link pointing at a product file INSIDE the workspace.
+  fs.symlinkSync(path.join(ws, "newprod.ts"), path.join(ws, "e2e-tests", "dangling2.ts"));
+  assert.throws(() => guardEditable(ws, "e2e-tests/dangling2.ts"), /symlink|outside e2e-tests/i);
+  // And a NON-dangling file link is still rejected.
+  fs.writeFileSync(path.join(ws, "victim.ts"), "product");
+  fs.symlinkSync(path.join(ws, "victim.ts"), path.join(ws, "e2e-tests", "link.ts"));
+  assert.throws(() => guardEditable(ws, "e2e-tests/link.ts"), /symlink/i);
+  fs.rmSync(ws, { recursive: true, force: true });
+});

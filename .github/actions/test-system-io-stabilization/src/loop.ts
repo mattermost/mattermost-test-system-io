@@ -17,6 +17,15 @@ export interface LoopDeps {
   openPRCount(repo: string): Promise<number>;
   attemptsForTest(repo: string, testID: string): Promise<number>;
   repair(entry: QueueEntry): Promise<{ summary: string; editedFiles: string[]; routed: boolean; routingReason?: string }>;
+  /**
+   * R2-4 + round-1 M3: reset the workspace to the pristine base BEFORE each
+   * entry's repair — fetch the explicit remote ref, hard-checkout it, drop
+   * staged/tracked/untracked residue. Fixes three failures at once: the
+   * dirty-tree checkout abort (entry 2 + entry 1's branch), the staged-index
+   * poisoning (a self-check rejection leaving entry 1's banned edit staged
+   * for entry 2), and co-mingled commits.
+   */
+  resetWorkspace(): void | Promise<void>;
   /** M14/M16: stage e2e-tests/ edits so the self-check sees exactly what
    * will be committed (untracked included). */
   stageEdits(): void | Promise<void>;
@@ -70,6 +79,9 @@ export async function runLoop(deps: LoopDeps, cfg: LoopConfig): Promise<LoopActi
   for (const entry of queue) {
     if (taken >= slots) break;
     const testID = entry.test_id;
+
+    // Fresh base for every entry — see resetWorkspace.
+    await deps.resetWorkspace();
 
     // Attempts-per-test cap: escalate with the diagnosis, never a 4th PR.
     const prior = await deps.attemptsForTest(cfg.repo, testID);

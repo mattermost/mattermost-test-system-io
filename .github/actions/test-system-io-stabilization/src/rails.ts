@@ -30,11 +30,21 @@ export function guardEditable(workspace: string, target: string): string {
   }
 
   const rootReal = fs.realpathSync(workspace);
+  // R2-3: lstat, NOT existsSync — a DANGLING symlink stats as nonexistent
+  // through the link, so the old walk skipped past it to a legit parent and
+  // the write went through the link. A dangling link must count as EXISTING
+  // here so realpath throws on it.
   let anc = resolved;
-  while (!fs.existsSync(anc)) {
+  while (!fs.lstatSync(anc, { throwIfNoEntry: false })) {
     anc = path.dirname(anc);
   }
-  const ancReal = fs.realpathSync(anc);
+  let ancReal: string;
+  try {
+    ancReal = fs.realpathSync(anc);
+  } catch {
+    // realpath through a dangling symlink — the exact R2-3 attack.
+    throw new Error(`dangling symlink on the write path: ${target}`);
+  }
   if (ancReal !== rootReal && !ancReal.startsWith(rootReal + path.sep)) {
     throw new Error(`path escapes workspace (symlink?): ${target}`);
   }
@@ -42,6 +52,11 @@ export function guardEditable(workspace: string, target: string): string {
   // The editable root itself ("e2e-tests") is fine — new files land in it.
   if (relReal !== "" && relReal !== "e2e-tests" && !relReal.startsWith("e2e-tests" + path.sep)) {
     throw new Error(`path resolves outside e2e-tests/ (symlink?): ${target}`);
+  }
+  // The final component itself must not be a symlink (dangling or not).
+  const finalLstat = fs.lstatSync(resolved, { throwIfNoEntry: false });
+  if (finalLstat?.isSymbolicLink()) {
+    throw new Error(`refusing to write through a symlink: ${target}`);
   }
   return resolved;
 }

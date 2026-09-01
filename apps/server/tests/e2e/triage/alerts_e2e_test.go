@@ -8,6 +8,7 @@ package triage
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/tests/e2e/testenv"
 )
@@ -97,6 +98,34 @@ func TestMasterAlertingFiresAndDedups(t *testing.T) {
 	}
 	if channelPosts != 1 {
 		t.Fatalf("channel_posts = %d, want 1 (deduped)", channelPosts)
+	}
+
+	// R2-1 gate: the issue CLAIM persists across a crash — backdate the
+	// firing past the 48h persistence bar, evaluate again, and assert the
+	// claim row exists even though no GitHub token is configured (no URL).
+	_, err := env.Pool.Exec(t.Context(), `
+		UPDATE alert_firings
+		SET first_fired_at = now() - interval '3 days'
+		WHERE repository = 'mattermost/mattermost' AND rule = 'new_failing_streak'
+		  AND subject = 'MM-T7001' AND resolved_at IS NULL
+	`)
+	if err != nil {
+		t.Fatalf("backdate firing: %v", err)
+	}
+	third := postJSON(t, env, key, "/api/v1/triage/alerts/evaluate?repo=mattermost", map[string]any{})
+	if third["status"].(float64) != 200 {
+		t.Fatalf("evaluate #3: status %v", third["status"])
+	}
+	var claimed *time.Time
+	if err := env.Pool.QueryRow(t.Context(), `
+		SELECT issue_claimed FROM alert_firings
+		WHERE repository = 'mattermost/mattermost' AND rule = 'new_failing_streak'
+		  AND subject = 'MM-T7001' AND resolved_at IS NULL
+	`).Scan(&claimed); err != nil {
+		t.Fatalf("read issue_claimed: %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("issue_claimed is NULL after a persistent firing planned an open — the claim must persist before the side effect")
 	}
 
 	// Replay: walks the window, reports structure + posts-per-week under the

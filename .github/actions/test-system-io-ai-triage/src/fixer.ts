@@ -532,7 +532,7 @@ Fix principles, in order of preference:
 Workflow: read the spec file, read nearby helpers/support files it imports, then apply the fix with edit_file (unique old_text; the smallest change that removes the unsupported state or the race). Use write_file only for brand-new files. Keep edits small — never emit whole-file rewrites of large specs. When done, reply with ONLY JSON: {"summary":"what you changed and why the failure cannot recur","confidence":0.0}`;
 }
 
-function guard(rel: string | undefined, workspace: string): string {
+export function guard(rel: string | undefined, workspace: string): string {
   if (!rel) throw new Error("path required");
   const abs = path.resolve(workspace, rel);
   if (!abs.startsWith(path.resolve(workspace) + path.sep)) {
@@ -542,13 +542,21 @@ function guard(rel: string | undefined, workspace: string): string {
   if (!ALLOWED_PREFIXES.some((p) => norm.startsWith(p))) {
     throw new Error(`only ${ALLOWED_PREFIXES.join(", ")} paths are writable, got ${norm}`);
   }
-  // M13 (Opus): lexical checks pass a symlink under an allowed prefix that
-  // points elsewhere inside the workspace. Follow the deepest existing
-  // ancestor and re-assert BOTH containment and the prefix physically.
+  // M13/R2-3 (Opus): lexical checks pass a symlink under an allowed prefix
+  // that points elsewhere. Follow the deepest existing ancestor (lstat, not
+  // existsSync — a DANGLING link must count as existing so realpath rejects
+  // it, not the walk skipping it) and re-assert BOTH containment and the
+  // prefix physically. This guard is reachable from a PR: write_file calls
+  // it before every write, so a planted link cannot exfiltrate the edit.
   const rootReal = fs.realpathSync(workspace);
   let anc = abs;
-  while (!fs.existsSync(anc)) anc = path.dirname(anc);
-  const ancReal = fs.realpathSync(anc);
+  while (!fs.lstatSync(anc, { throwIfNoEntry: false })) anc = path.dirname(anc);
+  let ancReal: string;
+  try {
+    ancReal = fs.realpathSync(anc);
+  } catch {
+    throw new Error(`dangling symlink on the write path: ${rel}`);
+  }
   if (ancReal !== rootReal && !ancReal.startsWith(rootReal + path.sep)) {
     throw new Error(`path escapes workspace (symlink?): ${rel}`);
   }
@@ -556,6 +564,10 @@ function guard(rel: string | undefined, workspace: string): string {
   const rootOk = ALLOWED_PREFIXES.some((p) => normReal === p.slice(0, -1) || normReal.startsWith(p));
   if (!rootOk) {
     throw new Error(`path resolves outside the writable prefixes (symlink?): ${rel}`);
+  }
+  const finalLstat = fs.lstatSync(abs, { throwIfNoEntry: false });
+  if (finalLstat?.isSymbolicLink()) {
+    throw new Error(`refusing to write through a symlink: ${rel}`);
   }
   return abs;
 }

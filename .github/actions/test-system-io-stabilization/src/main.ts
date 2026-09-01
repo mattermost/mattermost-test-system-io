@@ -59,6 +59,7 @@ async function main(): Promise<void> {
   const repo = core.getInput("repo");
   const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
   const depth = Number(core.getInput("queue-depth")) || 10;
+  const baseBranch = core.getInput("base-branch") || "master";
   const dryRun = core.getInput("dry-run") === "true";
   const model = core.getInput("claude-model") || "claude-sonnet-4-6";
 
@@ -76,10 +77,19 @@ async function main(): Promise<void> {
   const commitSHA = git.run(["rev-parse", "HEAD"]).trim();
 
   const deps: LoopDeps = {
+    // R2-2: B7 moved the queue behind RequireAuth — fetch with the same
+    // OIDC bearer the ledger writes use, or the loop dies on its first call.
     async fetchQueue(b, r) {
-      const res = await fetch(queueURL(b, r));
-      if (!res.ok) throw new Error(`queue fetch: ${res.status}`);
-      return (await res.json()) as { promoted: QueueEntry[]; ranked: QueueEntry[] };
+      const url = queueURL(b, r);
+      try {
+        const bearer = await core.getIDToken(core.getInput("oidc-audience") || "mattermost-test-system-io");
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${bearer}` } });
+        if (!res.ok) throw new Error(`queue fetch: ${res.status}`);
+        return (await res.json()) as { promoted: QueueEntry[]; ranked: QueueEntry[] };
+      } catch (err) {
+        core.warning(`queue fetch failed (${(err as Error).message}) — standing down this run`);
+        return { promoted: [], ranked: [] };
+      }
     },
     async monthlyAttemptsUsed(r) {
       const monthStart = new Date();
@@ -120,6 +130,16 @@ async function main(): Promise<void> {
     selfCheck() {
       return checkOwnDiff(workspace);
     },
+    // R2-4: pristine base per entry. Fetch the EXPLICIT remote ref —
+    // `git fetch origin master` writes only FETCH_HEAD and never creates
+    // refs/remotes/origin/master, which actions/checkout's narrow refspec
+    // may not have created either.
+    async resetWorkspace() {
+      git.run(["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+      git.run(["checkout", "-f", "-B", baseBranch, `refs/remotes/origin/${baseBranch}`]);
+      git.run(["reset", "--hard"]);
+      git.run(["clean", "-fd"]);
+    },
     stageEdits() {
       stageEditsForCommit(git);
     },
@@ -147,7 +167,7 @@ async function main(): Promise<void> {
         "",
         `Queue: ${queueURL(baseURL, repo)}`,
       ].join("\n");
-      const prNumber = await openStabilizationPR(gh as never, repo, branch, title, body, STABILIZATION_LABEL);
+      const prNumber = await openStabilizationPR(gh as never, repo, branch, title, body, STABILIZATION_LABEL, baseBranch);
       return { branch, prNumber };
     },
     async routeToOwner(entry, reason) {

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import type { Decision, EvidenceCluster, FixTarget } from "./types.ts";
 import {
   applyEditFile,
+  guard,
   autofixState,
   collectBisectTargets,
   collectFixTargets,
@@ -337,4 +338,20 @@ test("collectBisectTargets: only unwaived MAIN_REGRESSION >= 0.85 with a playwri
   assert.equal(targets[0].signature, "culprit1");
   assert.ok(targets[0].file.startsWith("e2e-tests/playwright/"), targets[0].file);
   assert.ok(targets[0].file.endsWith("team_settings_policy_editor.spec.ts"));
+});
+
+test("R2-3: guard rejects dangling symlinks planted under an allowed prefix", () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "fixer-guard-"));
+  fs.mkdirSync(path.join(ws, "e2e-tests"), { recursive: true });
+  // Dangling link pointing outside the workspace.
+  fs.symlinkSync("/tmp/sym/outside/pwn.ts", path.join(ws, "e2e-tests", "dangling.ts"));
+  assert.throws(() => guard("e2e-tests/dangling.ts", ws), /dangling symlink|symlink/i);
+  // Dangling link at a product file inside the workspace.
+  fs.symlinkSync(path.join(ws, "server.go"), path.join(ws, "e2e-tests", "dangling2.ts"));
+  assert.throws(() => guard("e2e-tests/dangling2.ts", ws), /dangling symlink|outside the writable prefixes/i);
+  // Non-dangling file link still rejected.
+  fs.writeFileSync(path.join(ws, "victim.go"), "package x");
+  fs.symlinkSync(path.join(ws, "victim.go"), path.join(ws, "e2e-tests", "link.ts"));
+  assert.throws(() => guard("e2e-tests/link.ts", ws), /symlink/i);
+  fs.rmSync(ws, { recursive: true, force: true });
 });

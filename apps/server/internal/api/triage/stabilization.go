@@ -87,7 +87,7 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 	// failure_rate is a real rate instead of degenerating to 0.0/1.0.
 	rows, err := h.Pool.Query(r.Context(), `
 		WITH matched AS (
-			SELECT g.id AS group_id, tc.external_test_id, tc.status, tc.full_title
+			SELECT g.id AS group_id, tc.external_test_id, tc.status
 			FROM report_groups g
 			JOIN reports r ON r.report_group_id = g.id
 			JOIN suites s ON s.report_id = r.id
@@ -99,7 +99,6 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 		),
 		rolled AS (
 			SELECT group_id, external_test_id,
-			       array_agg(DISTINCT coalesce(nullif(full_title, ''), '')) AS titles,
 			       bool_or(status IN ('passed', 'flaky'))                   AS ever_passed,
 			       bool_or(status IN ('failed', 'timedOut', 'interrupted')) AS ever_failed,
 			       bool_or(status = 'flaky')                                AS had_flaky
@@ -107,19 +106,17 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 			GROUP BY group_id, external_test_id
 		)
 		SELECT external_test_id,
-		       coalesce(array_agg(DISTINCT x.t) FILTER (WHERE x.t <> ''), '{}') AS titles,
-		       count(*)::int                                            AS runs,
-		       count(*) FILTER (WHERE r2.ever_failed)::int               AS failed,
-		       count(*) FILTER (WHERE r2.had_flaky)::int                 AS flaky,
+		       count(*)::int                                                AS runs,
+		       count(*) FILTER (WHERE r2.ever_failed)::int                   AS failed,
+		       count(*) FILTER (WHERE r2.had_flaky)::int                     AS flaky,
 		       count(*) FILTER (WHERE r2.ever_passed AND r2.ever_failed)::int AS flips
 		FROM rolled r2
-		CROSS JOIN LATERAL (SELECT unnest(r2.titles) AS t) AS x
 		GROUP BY external_test_id
-		HAVING bool_or(r2.ever_failed) OR bool_or(r2.ever_passed AND NOT r2.ever_failed)
+		HAVING bool_or(r2.ever_failed)
 		ORDER BY count(*) FILTER (WHERE r2.ever_failed) DESC,
 		         count(*) FILTER (WHERE r2.ever_passed AND r2.ever_failed) DESC
 		LIMIT $3
-	`, repo, since, StabilizationQueueDepth+len(promoted))
+		`, repo, since, StabilizationQueueDepth+len(promoted))
 	if err != nil {
 		h.logError("stabilization queue ranking", err)
 		api.WriteError(w, r, api.ErrInternal)
@@ -135,16 +132,15 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 	ranked := []queueEntry{}
 	for rows.Next() {
 		var e queueEntry
-		// B8 fix: the column is text[] — scan into []string, the same shape
-		// the flakiness handler scans (a *[]byte target is not an ArraySetter
-		// under pgx v5's binary negotiation and 500s on any non-empty row).
-		var titles []string
-		if err := rows.Scan(&e.TestID, &titles, &e.Runs, &e.Failed, &e.Flaky, &e.Flips); err != nil {
+		// B8 fix: no titles in the ranking projection — round-2 major 2: the
+		// CROSS JOIN LATERAL unnest multiplied every counter by the title
+		// count; the ranking is counters-only now (the agent reads titles
+		// from the spec files themselves).
+		if err := rows.Scan(&e.TestID, &e.Runs, &e.Failed, &e.Flaky, &e.Flips); err != nil {
 			h.logError("stabilization queue scan", err)
 			api.WriteError(w, r, api.ErrInternal)
 			return
 		}
-		e.Titles = titles
 		if promotedSet[e.TestID] {
 			continue
 		}

@@ -20,7 +20,7 @@ import {
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   formatDuration,
-  calculatePassRate,
+  calculateRawPassRate,
   getPassRateColorClass,
 } from '@/components/report_card_parts';
 import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
@@ -48,7 +48,7 @@ function IndividualReportCard({ report }: { report: IndividualReportSummary }) {
   // a row IS the group, is the place to consult orchestration counts.
   const stats = report.test_stats && report.test_stats.total > 0 ? report.test_stats : null;
   const hasStats = !!stats && stats.total > 0;
-  const rate = hasStats ? calculatePassRate(stats) : null;
+  const rate = hasStats ? calculateRawPassRate(stats) : null;
   const rateColorClass = getPassRateColorClass(rate);
   const repoName = report.repository?.split('/').pop() || '';
   const branch = report.branch?.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '') || '';

@@ -2,7 +2,7 @@ export {
   formatDateShort,
   formatDateFull,
   formatDuration,
-  calculatePassRate,
+  calculateRawPassRate,
   getPassRateColorClass,
   isRetestName,
   resolveDisplayStats,

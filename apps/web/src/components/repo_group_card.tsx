@@ -15,7 +15,7 @@ import { Link } from 'react-router-dom';
 import type { RepositoryGroup, RunEntry } from '@/types';
 import {
   formatDuration,
-  calculatePassRate,
+  calculateRawPassRate,
   getPassRateColorClass,
   resolveDisplayStats,
 } from '@/components/report_card_parts';
@@ -101,7 +101,7 @@ function run_entry_row({
   // run is associated with this entry.
   const stats = resolveDisplayStats(entry);
   const hasStats = !!stats && stats.total > 0;
-  const rate = hasStats ? calculatePassRate(stats) : null;
+  const rate = hasStats ? calculateRawPassRate(stats) : null;
   const rateColorClass = getPassRateColorClass(rate);
   // Both source branches of `resolveDisplayStats` (test_stats and the
   // orchestration server-side rollup) are at test-case granularity, so

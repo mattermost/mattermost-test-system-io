@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import {
   formatDuration,
-  calculatePassRate,
+  calculateRawPassRate,
   getPassRateColorClass,
   formatTimeline,
 } from '@/components/report_card_parts';
@@ -269,7 +269,7 @@ export function ReportSummary(props: ReportSummaryProps) {
     ghJobId,
   } = props;
 
-  const passRate = calculatePassRate({ passed, failed, flaky });
+  const passRate = calculateRawPassRate({ passed, failed, flaky });
   const passRateColorClass = getPassRateColorClass(passRate);
   const failedLabel = uniqueTitleCounts ? `unique test${failed === 1 ? '' : 's'} failed` : 'failed';
   const totalLabel = uniqueTitleCounts ? `unique test${total === 1 ? '' : 's'}` : 'total';

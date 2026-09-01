@@ -32,7 +32,7 @@ export function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
-export function calculatePassRate(stats: {
+export function calculateRawPassRate(stats: {
   passed: number;
   failed: number;
   flaky: number;

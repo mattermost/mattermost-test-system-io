@@ -1435,6 +1435,37 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TriageAmnesty' }
 
+  /api/v1/triage/pass-rates:
+    get:
+      tags: [triage]
+      summary: Raw and effective pass rates over a window
+      description: |
+        W1 — one labeled source for both numbers. raw_pass_rate counts every
+        rolled outcome that is not a clean pass (flaky included) as a failure;
+        effective_pass_rate subtracts waived failures from the verdict ledger.
+        Alerting and dashboards read raw; check status reads effective. No
+        endpoint may serve an unlabelled pass rate. Master windows count only
+        master-run verdicts (a PR-side waiver never greens master).
+      security: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+        - in: query
+          name: branch
+          schema: { type: string, default: main }
+        - in: query
+          name: window
+          description: Trailing window for both outcomes and verdicts
+          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '7d' }
+      responses:
+        '200':
+          description: Labeled rate pair
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TriagePassRates' }
+
   /api/v1/triage/accuracy:
     get:
       tags: [triage]
@@ -2779,6 +2810,22 @@ components:
         max_failure_rate: { type: number }
         rate_window: { type: string }
         runs: { type: integer, description: Baseline-branch runs the failure rate was computed over. }
+
+    TriagePassRates:
+      type: object
+      required: [repository, branch, window, rolled_outcomes, raw_failures, waived_failures, effective_failures, raw_pass_rate, effective_pass_rate]
+      properties:
+        repository: { type: string }
+        branch: { type: string }
+        window: { type: string }
+        rolled_outcomes: { type: integer, description: Per-test rolled outcomes in the window (flaky collapses to one outcome). }
+        raw_failures:
+          type: integer
+          description: Outcomes that did not cleanly pass — flaky included, waived included.
+        waived_failures: { type: integer, description: Sum of waived verdict member_count in the window. }
+        effective_failures: { type: integer, description: 'raw_failures minus waived_failures, clamped at zero.' }
+        raw_pass_rate: { type: number, description: '(outcomes - raw_failures) / outcomes, percent. Alerting reads this.' }
+        effective_pass_rate: { type: number, description: '(outcomes - effective_failures) / outcomes, percent. Check status reads this.' }
 
     TriageSuggestion:
       type: object

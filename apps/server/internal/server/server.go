@@ -197,6 +197,9 @@ func Build(d Deps) chi.Router {
 		r.Get("/triage/amnesty", triageH.Amnesty)
 		r.Get("/triage/accuracy", triageH.Accuracy)
 		r.Get("/triage/evidence", triageH.Evidence)
+		// W1 — labeled raw/effective pass rates over a window. Alerting reads
+		// raw; check status reads effective. No unlabelled pass rate anywhere.
+		r.Get("/triage/pass-rates", triageH.Rates)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)

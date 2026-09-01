@@ -200,6 +200,12 @@ func Build(d Deps) chi.Router {
 		// W1 — labeled raw/effective pass rates over a window. Alerting reads
 		// raw; check status reads effective. No unlabelled pass rate anywhere.
 		r.Get("/triage/pass-rates", triageH.Rates)
+		// W3 — blind waiver audit: the sample payload omits the AI verdict
+		// (blindness enforced server-side); the reveal happens only after the
+		// reviewer's submit. Sample + agreement are public reads like the other
+		// aggregate reads; submits and per-item reveals are authenticated.
+		r.Get("/triage/audit/sample", triageH.AuditSample)
+		r.Get("/triage/audit/agreement", triageH.AuditAgreement)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
@@ -247,6 +253,10 @@ func Build(d Deps) chi.Router {
 			// it — an audit trail of who did what, which is not the same kind of
 			// data as "how flaky is this test".
 			r.Get("/triage/verdicts", triageH.ListVerdicts)
+			// W3 — blind audit submits + the post-submit reveal are authenticated:
+			// a forged agreement row would corrupt W13's promotion gate.
+			r.Post("/triage/audit/reviews", triageH.SubmitAuditReview)
+			r.Get("/triage/audit/items/{id}", triageH.AuditItemDetail)
 
 			r.Get("/artifacts/{id}", artifactsH.Get)
 

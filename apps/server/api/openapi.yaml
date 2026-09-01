@@ -1466,6 +1466,52 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TriagePassRates' }
 
+  /api/v1/triage/audit/sample:
+    get:
+      tags: [triage]
+      summary: Blind waiver audit — the review queue
+      description: |
+        W3 — stratified sample of recent waived verdicts (5 FLAKY_TEST /
+        3 MAIN_REGRESSION / 2 FLAKY_INFRA from the trailing 7d; short strata
+        refill; small pools take all and report the denominator; prefers
+        items not reviewed in 30d but never lets that shrink the sample).
+        The AI verdict is ABSENT from this payload — blindness is enforced
+        server-side, not by hiding it in the UI. The reveal only happens via
+        the authenticated item detail after the reviewer submits.
+      security: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+      responses:
+        '200':
+          description: Blind sample
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TriageAuditSample' }
+
+  /api/v1/triage/audit/agreement:
+    get:
+      tags: [triage]
+      summary: Pooled blind-audit agreement rate — W13's promotion gate
+      security: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+        - in: query
+          name: weeks
+          description: Trailing weeks to pool over
+          schema: { type: integer, minimum: 1, maximum: 12, default: 4 }
+      responses:
+        '200':
+          description: Agreement rates
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TriageAuditAgreement' }
+
   /api/v1/triage/accuracy:
     get:
       tags: [triage]
@@ -2826,6 +2872,52 @@ components:
         effective_failures: { type: integer, description: 'raw_failures minus waived_failures, clamped at zero.' }
         raw_pass_rate: { type: number, description: '(outcomes - raw_failures) / outcomes, percent. Alerting reads this.' }
         effective_pass_rate: { type: number, description: '(outcomes - effective_failures) / outcomes, percent. Check status reads this.' }
+
+    TriageAuditSampleItem:
+      type: object
+      description: NO verdict/confidence/root_cause fields by design — the reviewer calls it blind.
+      required: [verdict_id, repository, commit_sha, branch, stratum, created_at]
+      properties:
+        verdict_id: { type: string, format: uuid }
+        repository: { type: string }
+        commit_sha: { type: string }
+        branch: { type: string }
+        gh_run_id: { type: string }
+        gh_pr_number: { type: integer }
+        external_test_id: { type: string }
+        stratum: { type: string, enum: [flaky_test, main_regression, flaky_infra, other] }
+        force_included: { type: boolean }
+        evidence: { type: array, items: { type: object } }
+        suspect_commit: { type: string }
+        created_at: { type: string, format: date-time }
+        reviewed: { type: boolean }
+
+    TriageAuditSample:
+      type: object
+      required: [items, target_size, pool_size, shortfall]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/TriageAuditSampleItem' } }
+        target_size: { type: integer }
+        pool_size: { type: integer, description: Waived verdicts available in the window. }
+        shortfall: { type: integer, description: target minus sampled; small pools record the denominator instead of erroring. }
+        note: { type: string }
+
+    TriageAuditAgreement:
+      type: object
+      required: [pooled_weeks, reviews, agree, audit_agreement_rate, per_week]
+      properties:
+        pooled_weeks: { type: integer }
+        reviews: { type: integer }
+        agree: { type: integer }
+        audit_agreement_rate: { type: number, description: Pooled trailing-window human agreement with AI waivers — the W13 promotion gate. }
+        per_week:
+          type: array
+          items:
+            type: object
+            properties:
+              week_start: { type: string }
+              reviews: { type: integer }
+              agreement_rate: { type: number }
 
     TriageSuggestion:
       type: object

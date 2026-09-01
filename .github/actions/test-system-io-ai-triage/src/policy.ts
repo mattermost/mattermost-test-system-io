@@ -127,6 +127,15 @@ export function hasAdjudicationEvidence(failure: EvidenceFailure): boolean {
   return false;
 }
 
+const bystanderPreexisting = (args: {
+  runType: string;
+  verdict: string;
+  citations: string[];
+}): boolean =>
+  args.verdict === "MAIN_REGRESSION" &&
+  args.citations.includes("failing_on_baseline") &&
+  (args.runType || "").toUpperCase() !== "MAIN";
+
 export function canWaive(args: {
   runType: string;
   branch: string;
@@ -139,6 +148,16 @@ export function canWaive(args: {
 }): { waived: boolean; reason: string } {
   if (neverAutoWaive(args.runType, args.branch)) {
     return { waived: false, reason: "release runs never auto-waive" };
+  }
+  // W6: on a MAIN run the baseline IS this run — "pre-existing on the
+  // baseline" is self-referential. Waiving it would green a red master, which
+  // is exactly what the stabilization half exists to prevent. Master red stays
+  // red until the test is fixed.
+  if ((args.runType || "").toUpperCase() === "MAIN" && args.verdict === "MAIN_REGRESSION") {
+    return {
+      waived: false,
+      reason: "MAIN runs never waive MAIN_REGRESSION — the baseline is this run",
+    };
   }
   if (NEVER_WAIVE.has(args.verdict)) {
     return { waived: false, reason: `${args.verdict} is not waivable` };
@@ -153,7 +172,13 @@ export function canWaive(args: {
   if (args.diffOverlapsFailure && FLAKY.has(args.verdict)) {
     return { waived: false, reason: "PR diff touches the failing area — attribution is ambiguous" };
   }
-  if (args.amnestyGranted === false) {
+  // W4 bystander carve-out: amnesty's pain must land on master, not on
+  // bystander PR authors. A PR that hits a failure already failing on the
+  // baseline stays waivable even after the test's amnesty has expired — the
+  // escalation (hard red on master, promotion up the stabilization ranking)
+  // happens on the master side, where the fix is owned. FLAKY_* verdicts on
+  // any run, and everything on a MAIN run, still require amnesty.
+  if (args.amnestyGranted === false && !bystanderPreexisting(args)) {
     return { waived: false, reason: "amnesty denied" };
   }
   if (args.confidence < WAIVE_CONFIDENCE) {
@@ -166,7 +191,7 @@ export function canWaive(args: {
   if (FLAKY.has(args.verdict)) {
     return { waived: true, reason: args.verdict };
   }
-  if (args.verdict === "MAIN_REGRESSION" && args.citations.includes("failing_on_baseline")) {
+  if (bystanderPreexisting(args)) {
     return { waived: true, reason: "pre-existing on the baseline branch" };
   }
   return { waived: false, reason: `${args.verdict} is not waivable` };

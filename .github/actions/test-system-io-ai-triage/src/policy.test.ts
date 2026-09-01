@@ -471,3 +471,61 @@ test("AI PR_REGRESSION on CI-only PR is overridden to FLAKY_INFRA", () => {
   assert.equal(d.waived, true, d.reason);
   assert.equal(d.verdict, "FLAKY_INFRA");
 });
+
+// --- W4/W6: run-type waiver policy + bystander amnesty carve-out ---
+
+test("W6: MAIN never waives MAIN_REGRESSION — the baseline is this run", () => {
+  const w = canWaive({
+    runType: "MAIN",
+    branch: "main",
+    verdict: "MAIN_REGRESSION",
+    confidence: 1,
+    citations: ["failing_on_baseline", "failing_elsewhere"],
+    amnestyGranted: true,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /MAIN runs never waive MAIN_REGRESSION/);
+});
+
+test("W4: bystander PR waives a pre-existing baseline failure even with amnesty expired", () => {
+  const w = canWaive({
+    runType: "PR",
+    branch: "feat/unrelated",
+    verdict: "MAIN_REGRESSION",
+    confidence: 0.95,
+    citations: ["failing_on_baseline", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, true);
+  assert.equal(w.reason, "pre-existing on the baseline branch");
+});
+
+test("W4: expired amnesty still denies FLAKY on a MAIN run — master goes hard red", () => {
+  const w = canWaive({
+    runType: "MAIN",
+    branch: "main",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["history", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, false);
+  assert.equal(w.reason, "amnesty denied");
+});
+
+test("W4: expired amnesty still denies FLAKY on a PR — the PR is not a bystander to its own flake", () => {
+  const w = canWaive({
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["history", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, false);
+  assert.equal(w.reason, "amnesty denied");
+});

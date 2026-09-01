@@ -3,6 +3,34 @@ import { kindOf } from "./blame.ts";
 
 export const WAIVE_CONFIDENCE = 0.85;
 
+/**
+ * W13/W6 — the server's rollout phase caps what a run type may gate.
+ *
+ *   phase 0 (shadow)  → nothing flips, everything observes + comments
+ *   phase 1 (PR gate) → PR checks may green on waived flakes
+ *   phase 2 (master)  → MAIN checks may green on waived confirmed flakes
+ *   phase 3 (loop)    → as 2 (the stabilization loop is separate machinery)
+ *
+ * RELEASE runs "gate" from phase 1 too, but neverAutoWaive means nothing is
+ * waivable there — release trains stay fail-closed by policy, not by phase.
+ */
+export function modeForPhase(runType: string, phase: number): "shadow" | "gate" {
+  if (phase <= 0) return "shadow";
+  const t = (runType || "").toUpperCase();
+  if (t === "MAIN" && phase < 2) return "shadow";
+  return "gate";
+}
+
+/** The full waiver decision: policy (canWaive) AND phase (modeForPhase). */
+export function canWaiveAtPhase(
+  args: Parameters<typeof canWaive>[0] & { phase: number },
+): { waived: boolean; reason: string } {
+  if (modeForPhase(args.runType, args.phase) !== "gate") {
+    return { waived: false, reason: `phase ${args.phase} keeps ${args.runType || "PR"} runs in shadow mode` };
+  }
+  return canWaive(args);
+}
+
 const FLAKY = new Set(["FLAKY_TEST", "FLAKY_INFRA", "FLAKY_SERVER"]);
 const NEVER_WAIVE = new Set(["PR_REGRESSION", "INCONCLUSIVE", "TEST_DEBT", "BUILD_OR_ENV_ERROR"]);
 

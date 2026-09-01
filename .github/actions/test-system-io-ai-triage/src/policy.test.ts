@@ -2,6 +2,8 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
   canWaive,
+  canWaiveAtPhase,
+  modeForPhase,
   decide,
   diffOverlaps,
   isProductRejection,
@@ -528,4 +530,68 @@ test("W4: expired amnesty still denies FLAKY on a PR — the PR is not a bystand
   });
   assert.equal(w.waived, false);
   assert.equal(w.reason, "amnesty denied");
+});
+
+// --- W6/W13 full matrix: 3 run types × 4 phases × the verdict set ---
+
+test("W6 matrix: MAIN never waives MAIN_REGRESSION at any phase", () => {
+  for (const phase of [0, 1, 2, 3]) {
+    const w = canWaiveAtPhase({
+      runType: "MAIN",
+      branch: "main",
+      phase,
+      verdict: "MAIN_REGRESSION",
+      confidence: 1,
+      citations: ["failing_on_baseline", "failing_elsewhere"],
+      amnestyGranted: true,
+      diffOverlapsFailure: false,
+    });
+    assert.equal(w.waived, false, `phase ${phase}`);
+  }
+});
+
+test("W6 matrix: RELEASE waives nothing at any phase", () => {
+  for (const phase of [0, 1, 2, 3]) {
+    for (const verdict of ["FLAKY_TEST", "FLAKY_INFRA", "MAIN_REGRESSION"]) {
+      const w = canWaiveAtPhase({
+        runType: "RELEASE",
+        branch: "release-10.6",
+        phase,
+        verdict,
+        confidence: 1,
+        citations: ["history", "failing_elsewhere"],
+        amnestyGranted: true,
+        diffOverlapsFailure: false,
+      });
+      assert.equal(w.waived, false, `phase ${phase} verdict ${verdict}`);
+    }
+  }
+});
+
+test("W6/W13 matrix: PR gates from phase 1; MAIN confirmed flakes only from phase 2", () => {
+  const prArgs = {
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["history", "failing_elsewhere"],
+    amnestyGranted: true,
+    diffOverlapsFailure: false,
+  };
+  assert.equal(canWaiveAtPhase({ ...prArgs, phase: 0 }).waived, false, "PR shadow at phase 0");
+  assert.equal(canWaiveAtPhase({ ...prArgs, phase: 1 }).waived, true, "PR gates at phase 1");
+
+  const mainArgs = { ...prArgs, runType: "MAIN", branch: "main" };
+  assert.equal(canWaiveAtPhase({ ...mainArgs, phase: 1 }).waived, false, "MAIN still shadow at phase 1");
+  assert.equal(canWaiveAtPhase({ ...mainArgs, phase: 2 }).waived, true, "MAIN gates at phase 2");
+  assert.equal(canWaiveAtPhase({ ...mainArgs, phase: 3 }).waived, true, "MAIN gates at phase 3");
+});
+
+test("W13: modeForPhase ladder", () => {
+  assert.equal(modeForPhase("PR", 0), "shadow");
+  assert.equal(modeForPhase("PR", 1), "gate");
+  assert.equal(modeForPhase("MAIN", 1), "shadow");
+  assert.equal(modeForPhase("MAIN", 2), "gate");
+  assert.equal(modeForPhase("RELEASE", 1), "gate"); // gates, but policy waives nothing
+  assert.equal(modeForPhase("", 0), "shadow");
 });

@@ -39,10 +39,17 @@ const (
 //	state flag1 ... past 1x — weekly review list
 //	state flag2 ... past 2x — owning team's lead notified
 //	state closed . correction recorded or handed to the queue — no clock
-func SlaClock(verdict string, attributed bool, age time.Duration, corrected, promoted bool) (state string, limit time.Duration) {
+//	state none .... no clock applies (test debt, before-merge, advisory blame)
+//
+// advisoryBlame: during M4's advisory period (a dated config flag, not a
+// comment) single-commit blame pings are informational — attribution is
+// being measured, not enforced — so attributed MAIN_REGRESSION runs clockless.
+func SlaClock(verdict string, attributed bool, age time.Duration, corrected, promoted bool, advisoryBlame bool) (state string, limit time.Duration) {
 	switch {
 	case corrected || promoted:
 		return "closed", 0
+	case advisoryBlame && verdict == "MAIN_REGRESSION" && attributed:
+		return "none", 0
 	case verdict == "MAIN_REGRESSION":
 		if attributed {
 			limit = slaMainRegressionAttributed
@@ -84,13 +91,24 @@ type slaRow struct {
 	LimitDays      int       `json:"limit_days"`
 }
 
-// SlaReport serves GET /api/v1/triage/sla?repo= — the past-SLA list the
-// weekly meeting opens. Ordered worst-first (flag2 before flag1 before open).
+// SlaReport serves GET /api/v1/triage/sla?repo=&advisory_until=ISO-date —
+// the past-SLA list the weekly meeting opens. Ordered worst-first (flag2
+// before flag1 before open). advisory_until implements the M4 advisory
+// period: verdicts created before that date carry no blame clock.
 func (h *Handlers) SlaReport(w http.ResponseWriter, r *http.Request) {
 	repo := r.URL.Query().Get("repo")
 	if repo == "" {
 		api.WriteError(w, r, errRepoRequired())
 		return
+	}
+	var advisoryUntil time.Time
+	if v := r.URL.Query().Get("advisory_until"); v != "" {
+		parsed, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			api.WriteError(w, r, errRepoRequiredWith("advisory_until must be an ISO date (YYYY-MM-DD)"))
+			return
+		}
+		advisoryUntil = parsed
 	}
 
 	rows, err := h.Pool.Query(r.Context(), `
@@ -130,7 +148,8 @@ func (h *Handlers) SlaReport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		age := now.Sub(row.CreatedAt)
-		state, limit := SlaClock(row.Verdict, row.Attributed, age, corrected, promoted)
+		advisory := !advisoryUntil.IsZero() && row.CreatedAt.Before(advisoryUntil)
+		state, limit := SlaClock(row.Verdict, row.Attributed, age, corrected, promoted, advisory)
 		if state == "none" || state == "closed" {
 			continue
 		}

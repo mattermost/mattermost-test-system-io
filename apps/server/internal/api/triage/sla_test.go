@@ -31,7 +31,7 @@ func TestSlaClockCategories(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			state, limit := SlaClock(tc.verdict, tc.attributed, tc.age, false, false)
+			state, limit := SlaClock(tc.verdict, tc.attributed, tc.age, false, false, false)
 			if state != tc.wantState {
 				t.Fatalf("state = %q, want %q", state, tc.wantState)
 			}
@@ -43,10 +43,10 @@ func TestSlaClockCategories(t *testing.T) {
 }
 
 func TestSlaClockClosesOnAction(t *testing.T) {
-	if state, _ := SlaClock("MAIN_REGRESSION", true, 9*24*time.Hour, true, false); state != "closed" {
+	if state, _ := SlaClock("MAIN_REGRESSION", true, 9*24*time.Hour, true, false, false); state != "closed" {
 		t.Fatalf("corrected verdict clock = %q, want closed", state)
 	}
-	if state, _ := SlaClock("MAIN_REGRESSION", true, 9*24*time.Hour, false, true); state != "closed" {
+	if state, _ := SlaClock("MAIN_REGRESSION", true, 9*24*time.Hour, false, true, false); state != "closed" {
 		t.Fatalf("queue-promoted verdict clock = %q, want closed", state)
 	}
 }
@@ -67,5 +67,22 @@ func TestSortSlaRowsWorstFirst(t *testing.T) {
 	}
 	if rows[3].State != "open" {
 		t.Fatalf("last = %s, want open", rows[3].State)
+	}
+}
+
+// W15 — the M4 advisory period: attributed blame runs clockless while the
+// attribution precision itself is being measured.
+func TestSlaClockAdvisoryBlame(t *testing.T) {
+	if state, _ := SlaClock("MAIN_REGRESSION", true, 9*24*time.Hour, false, false, true); state != "none" {
+		t.Fatalf("advisory attributed blame state = %q, want none (no clock)", state)
+	}
+	// Unattributed blame still carries the queue clock during advisory (5d
+	// limit; 9d is past 1x, not yet 2x).
+	if state, _ := SlaClock("MAIN_REGRESSION", false, 9*24*time.Hour, false, false, true); state != "flag1" {
+		t.Fatalf("advisory unattributed state = %q, want flag1", state)
+	}
+	// Advisory off: attributed blame clocks at 2 days as usual.
+	if state, _ := SlaClock("MAIN_REGRESSION", true, 3*24*time.Hour, false, false, false); state != "flag1" {
+		t.Fatalf("post-advisory attributed state = %q, want flag1", state)
 	}
 }

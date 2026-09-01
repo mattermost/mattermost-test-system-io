@@ -28,7 +28,7 @@ import {
   type RunCounts,
 } from "./flip.ts";
 import { formatTriageComment, upsertTriageComment } from "./triage-comment.ts";
-import { decide, rollup } from "./policy.ts";
+import { decide, rollup, modeForPhase } from "./policy.ts";
 import {
   collectBisectTargets,
   collectFixTargets,
@@ -59,7 +59,18 @@ export async function run(): Promise<void> {
   const groupID = core.getInput("group-id");
   const baseline = core.getInput("baseline-branch") || "main";
   const runType = core.getInput("run-type") || "PR";
-  const mode = (core.getInput("mode") || "shadow").toLowerCase();
+  let mode = (core.getInput("mode") || "shadow").toLowerCase();
+
+  // W13 — the server's phase value caps the workflow's mode. A workflow may
+  // always run shadow; it may only gate when the phase ladder allows it.
+  // Phase fetch failing is a fail-closed event: shadow, never gate.
+  const phase = await fetchRolloutPhase(baseURL);
+  if (mode === "gate" && modeForPhase(runType, phase) !== "gate") {
+    core.notice(
+      `run-type ${runType} gated to shadow by rollout phase ${phase} (server /triage/phase) — observing only`,
+    );
+    mode = "shadow";
+  }
   const contextName = core.getInput("commit-status-context") || "e2e-test/ai-triage";
   const originalContexts = parseContextList(core.getInput("original-commit-status-contexts"));
   const githubToken = core.getInput("github-token");
@@ -514,6 +525,24 @@ function parseIdentity(raw: string): CompositeIdentity {
   }
   parsed.gh_run_attempt = String(parsed.gh_run_attempt || "1");
   return parsed;
+}
+
+/**
+ * W13 — read the server's rollout phase. Public endpoint, but the fetch is
+ * still best-effort fail-closed: 0 (shadow) on any failure.
+ */
+async function fetchRolloutPhase(baseURL: string): Promise<number> {
+  try {
+    const res = await retryFetch(`${baseURL}/api/v1/triage/phase`, {}, "triage/phase");
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const body = (await res.json()) as { phase?: number };
+    const phase = body.phase ?? 0;
+    if (phase < 0 || phase > 3) return 0;
+    return phase;
+  } catch (err) {
+    core.warning(`rollout phase fetch failed (${(err as Error).message}) — fail closed to shadow (phase 0)`);
+    return 0;
+  }
 }
 
 async function fetchEvidence(

@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -267,10 +268,25 @@ func ApplyAlertDedup(cands []Alert, existing map[string]FiringRecord, now time.T
 
 // ---------- data loading ----------
 
+// normalizeAlertRepo makes ONE slug shape for every query and write in this
+// file (M9): the reads match with split_part(...) = $1, but the writes bound
+// the raw value — a short-form repo could read its own row and then ON
+// CONFLICT miss it and insert a duplicate.
+// repoFallbackOwner prefixes a bare repo name into a full slug.
+const repoFallbackOwner = "mattermost/"
+
+func normalizeAlertRepo(repo string) string {
+	if containsSlash(repo) {
+		return repo
+	}
+	return repoFallbackOwner + repo
+}
+
 type outcomePoint struct {
 	At     time.Time
 	Failed bool
 	PR     *int
+	Branch string
 }
 
 type masterAlertData struct {
@@ -282,9 +298,13 @@ func (h *Handlers) loadMasterAlertData(ctx context.Context, repo, branch string,
 	var d masterAlertData
 	d.series = map[string][]outcomePoint{}
 
+	// M4: the series loads ALL branches. Day-rates stay branch-scoped (master
+	// pass rate), but the streak rule reads master points while cross-PR
+	// reads PR points — a branch filter here made cross_pr_cluster dead:
+	// master runs have gh_pr_number NULL by construction.
 	rows, err := h.Pool.Query(ctx, `
 		WITH matched AS (
-			SELECT g.id, g.created_at, g.gh_pr_number,
+			SELECT g.id, g.created_at, g.gh_pr_number, g.branch,
 			       coalesce(tc.external_test_id, 't:' || coalesce(nullif(tc.full_title, ''), tc.title)) AS test_key,
 			       tc.status
 			FROM report_groups g
@@ -292,21 +312,20 @@ func (h *Handlers) loadMasterAlertData(ctx context.Context, repo, branch string,
 			JOIN suites s ON s.report_id = r.id
 			JOIN test_cases tc ON tc.suite_id = s.id
 			WHERE (g.repository = $1 OR split_part(g.repository, '/', 2) = $1)
-			  AND g.branch = $2
-			  AND g.created_at >= $3::timestamptz
+			  AND g.created_at >= $2::timestamptz
 		),
 		rolled AS (
-			SELECT id, created_at, gh_pr_number, test_key,
+			SELECT id, created_at, gh_pr_number, branch, test_key,
 			       bool_or(status IN ('passed', 'flaky'))                   AS ever_passed,
 			       bool_or(status IN ('failed', 'timedOut', 'interrupted')) AS ever_failed
 			FROM matched
-			GROUP BY id, created_at, gh_pr_number, test_key
+			GROUP BY id, created_at, gh_pr_number, branch, test_key
 		)
-		SELECT created_at::date, test_key, ever_failed, gh_pr_number
+		SELECT created_at::date, test_key, ever_failed, gh_pr_number, branch
 		FROM rolled
 		WHERE ever_passed OR ever_failed
 		ORDER BY created_at ASC
-	`, repo, branch, since)
+	`, repo, since)
 	if err != nil {
 		return d, err
 	}
@@ -319,20 +338,24 @@ func (h *Handlers) loadMasterAlertData(ctx context.Context, repo, branch string,
 		var key string
 		var failed bool
 		var pr *int
-		if err := rows.Scan(&day, &key, &failed, &pr); err != nil {
+		var ptBranch string
+		if err := rows.Scan(&day, &key, &failed, &pr, &ptBranch); err != nil {
 			return d, err
 		}
-		d.series[key] = append(d.series[key], outcomePoint{At: day, Failed: failed, PR: pr})
+		d.series[key] = append(d.series[key], outcomePoint{At: day, Failed: failed, PR: pr, Branch: ptBranch})
 
-		dr, ok := dayAgg[day]
-		if !ok {
-			dr = &DayRate{Day: day}
-			dayAgg[day] = dr
-			dayOrder = append(dayOrder, day)
-		}
-		dr.Outcomes++
-		if failed {
-			dr.Failures++
+		// Day-rates stay scoped to the requested (master) branch.
+		if ptBranch == branch {
+			dr, ok := dayAgg[day]
+			if !ok {
+				dr = &DayRate{Day: day}
+				dayAgg[day] = dr
+				dayOrder = append(dayOrder, day)
+			}
+			dr.Outcomes++
+			if failed {
+				dr.Failures++
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -362,8 +385,8 @@ func (d masterAlertData) inputsAsOf(repo string, asOf time.Time, floor float64, 
 	crossPRs := map[string]map[int]bool{}
 	for key, points := range d.series {
 		var streak int
-		var prevFailed bool
-		var seenInStreak bool
+		var seenPreStreak bool // a pass (or non-failed run) before the streak
+		var sawMasterPoint bool
 		total := 0
 		for i := len(points) - 1; i >= 0; i-- {
 			p := points[i]
@@ -371,12 +394,15 @@ func (d masterAlertData) inputsAsOf(repo string, asOf time.Time, floor float64, 
 				continue
 			}
 			total++
-			if !seenInStreak {
+			isMaster := p.Branch == "main" || p.Branch == "master"
+			if isMaster {
+				sawMasterPoint = true
+			}
+			if !seenPreStreak {
 				if p.Failed {
 					streak++
 				} else {
-					prevFailed = false
-					seenInStreak = true // first non-failed run going back = the pre-streak state
+					seenPreStreak = true
 				}
 			}
 			if p.Failed && p.PR != nil && p.At.After(asOf.Add(-7*24*time.Hour)) {
@@ -386,8 +412,18 @@ func (d masterAlertData) inputsAsOf(repo string, asOf time.Time, floor float64, 
 				crossPRs[key][*p.PR] = true
 			}
 		}
-		if streak >= streakMinRuns {
-			in.Streaks = append(in.Streaks, StreakInput{TestID: key, Streak: streak, PrevFailed: prevFailed, TotalRuns: total})
+		if streak >= streakMinRuns && sawMasterPoint {
+			// M5: a streak that covers EVERY observed point predates the
+			// window — it is not NEWLY entered, and re-firing it daily is
+			// alert spam. Only a streak with a pass (or window start) behind
+			// it counts as newly entering.
+			predatesWindow := !seenPreStreak
+			in.Streaks = append(in.Streaks, StreakInput{
+				TestID:     key,
+				Streak:     streak,
+				PrevFailed: predatesWindow,
+				TotalRuns:  total,
+			})
 		}
 	}
 	for key, prs := range crossPRs {
@@ -403,13 +439,17 @@ func (d masterAlertData) inputsAsOf(repo string, asOf time.Time, floor float64, 
 // AlertEvaluation serves GET /api/v1/triage/alerts/evaluation?repo= — the dry
 // view: rules, candidate alerts, and what dedup WOULD do. No side effects.
 func (h *Handlers) AlertEvaluation(w http.ResponseWriter, r *http.Request) {
-	repo := r.URL.Query().Get("repo")
-	if repo == "" {
+	repo := normalizeAlertRepo(r.URL.Query().Get("repo"))
+	if repo == repoFallbackOwner {
 		api.WriteError(w, r, errRepoRequired())
 		return
 	}
 	branch := orDefault(r.URL.Query().Get("branch"), "main")
-	floor, minRuns := alertConfigFromQuery(r)
+	floor, minRuns, cfgErr := alertConfigFromQuery(r)
+	if cfgErr != nil {
+		api.WriteError(w, r, cfgErr)
+		return
+	}
 
 	data, err := h.loadMasterAlertData(r.Context(), repo, branch, time.Now().Add(-45*24*time.Hour))
 	if err != nil {
@@ -445,15 +485,31 @@ func (h *Handlers) AlertEvaluation(w http.ResponseWriter, r *http.Request) {
 // scheduled job's call: evaluate, dedup, post to the channel, open/update
 // issues, record firings. Authenticated (a forged alert is spam at scale).
 func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
-	repo := r.URL.Query().Get("repo")
-	if repo == "" {
+	repo := normalizeAlertRepo(r.URL.Query().Get("repo"))
+	if repo == repoFallbackOwner {
 		api.WriteError(w, r, errRepoRequired())
 		return
 	}
 	branch := orDefault(r.URL.Query().Get("branch"), "main")
-	floor, minRuns := alertConfigFromQuery(r)
+	floor, minRuns, cfgErr := alertConfigFromQuery(r)
+	if cfgErr != nil {
+		api.WriteError(w, r, cfgErr)
+		return
+	}
 
 	ctx := r.Context()
+
+	// M8: overlapping evaluations read-modify-write the same firing rows and
+	// both post despite the 24h cooldown. One evaluation per repo at a time —
+	// a held lock means another job is mid-flight; report and stand down.
+	locked, err := h.Pool.Exec(ctx, `SELECT pg_try_advisory_lock(hashtext($1))`, repo)
+	if err != nil || locked.RowsAffected() == 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "alert evaluation already in flight for this repo"})
+		return
+	}
+	defer func() {
+		_, _ = h.Pool.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext($1))`, repo)
+	}()
 	data, err := h.loadMasterAlertData(ctx, repo, branch, time.Now().Add(-45*24*time.Hour))
 	if err != nil {
 		h.logError("alerts load", err)
@@ -535,8 +591,8 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 // reviewer sign-off) needs production history and a human — this endpoint is
 // the tool that produces the replay output for that review.
 func (h *Handlers) AlertReplay(w http.ResponseWriter, r *http.Request) {
-	repo := r.URL.Query().Get("repo")
-	if repo == "" {
+	repo := normalizeAlertRepo(r.URL.Query().Get("repo"))
+	if repo == repoFallbackOwner {
 		api.WriteError(w, r, errRepoRequired())
 		return
 	}
@@ -546,7 +602,11 @@ func (h *Handlers) AlertReplay(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, errRepoRequiredWith("days must be between 1 and 90"))
 		return
 	}
-	floor, minRuns := alertConfigFromQuery(r)
+	floor, minRuns, cfgErr := alertConfigFromQuery(r)
+	if cfgErr != nil {
+		api.WriteError(w, r, cfgErr)
+		return
+	}
 
 	data, err := h.loadMasterAlertData(r.Context(), repo, branch, time.Now().Add(-time.Duration(days+15)*24*time.Hour))
 	if err != nil {
@@ -607,10 +667,19 @@ func (h *Handlers) AlertReplay(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func alertConfigFromQuery(r *http.Request) (floor float64, minRuns int) {
-	floor = parseFloat(r.URL.Query().Get("floor"), 0) // unset/0 = floor rule disabled (W12 sets it)
+func alertConfigFromQuery(r *http.Request) (floor float64, minRuns int, err error) {
+	// M3: rates are 0-100, so the floor parser is its own — parseFloat (max 1)
+	// silently discarded every real threshold and permanently disabled the
+	// rule. Out-of-range is a 400, never a silent default.
+	if v := r.URL.Query().Get("floor"); v != "" {
+		f, parseErr := strconv.ParseFloat(v, 64)
+		if parseErr != nil || f < 0 || f > 100 {
+			return 0, 0, errRepoRequiredWith("floor must be a number between 0 and 100 (pass rate points)")
+		}
+		floor = f // 0 = rule disabled (W12 sets it; no hardcoded threshold ships)
+	}
 	minRuns = parseInt(r.URL.Query().Get("min_runs"), streakMinRuns)
-	return floor, minRuns
+	return floor, minRuns, nil
 }
 
 func (h *Handlers) loadFiringRecords(ctx context.Context, repo string) (map[string]FiringRecord, error) {

@@ -120,6 +120,11 @@ func (h *Handlers) Rates(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) loadRolledOutcomes(ctx context.Context, repo, branch string, since time.Time) (outcomes, rawFailures int, err error) {
 	// A test that both passed and failed inside one group is flaky, and flaky
 	// counts toward raw failures: it did not cleanly pass.
+	// M1: the rollup is per (report group, test) — the same unit the waived
+	// count (per-run verdict rows, member_count) subtracts from. Grouping by
+	// test alone made raw_failures count distinct failing tests while waived
+	// counted per-run rows: subtracting those units pinned effective pass
+	// rate to 100% wherever a test was waived twice in a window.
 	err = h.Pool.QueryRow(ctx, `
 		WITH matched AS (
 			SELECT g.id,
@@ -134,11 +139,11 @@ func (h *Handlers) loadRolledOutcomes(ctx context.Context, repo, branch string, 
 			  AND g.created_at >= $3::timestamptz
 		),
 		rolled AS (
-			SELECT test_key,
+			SELECT id, test_key,
 			       bool_or(status IN ('passed', 'flaky'))                   AS ever_passed,
 			       bool_or(status IN ('failed', 'timedOut', 'interrupted')) AS ever_failed
 			FROM matched
-			GROUP BY test_key
+			GROUP BY id, test_key
 		)
 		SELECT count(*)::int,
 		       count(*) FILTER (WHERE ever_failed)::int

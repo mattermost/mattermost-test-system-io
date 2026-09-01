@@ -151,7 +151,7 @@ build-web: ## Build web production bundle
 
 ##@ Test
 
-test: test-server test-web test-infra ## Run unit tests for server + web + infra
+test: test-server test-web test-infra test-scripts ## Run unit tests for server + web + infra + scripts
 
 test-server: ## Run Go unit tests (race)
 	@echo "$(CYAN)Running Go tests with -race...$(RESET)"
@@ -342,3 +342,6 @@ kill-port: ## Kill process on a specific port (usage: make kill-port PORT=1234)
 	else \
 	  echo "$(GREEN)No process on port $(PORT)$(RESET)"; \
 	fi
+
+test-scripts: ## Run node stdlib script tests (parsers, ban checker)
+	node --test scripts/lib/*.test.js

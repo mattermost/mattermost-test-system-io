@@ -177,7 +177,7 @@ const SEED_FIXTURE = path.resolve(
   'forward_message_from_gm_spec.js.json',
 );
 
-test('seed-fixture round-trip: parsed counts match mochawesome stats', () => {
+test('seed-fixture round-trip: parsed counts match mochawesome stats', { skip: !fs.existsSync(SEED_FIXTURE) }, () => {
   const raw = fs.readFileSync(SEED_FIXTURE, 'utf8');
   const json = JSON.parse(raw);
   const { aggregateStatus, testCases } = parseMochawesomeJson(json);

@@ -38,10 +38,17 @@ func seedWaivedVerdicts(t *testing.T, env *testenv.Env) {
 func TestBlindAuditSampleAndReview(t *testing.T) {
 	env := testenv.Start(t)
 	seedWaivedVerdicts(t, env)
+	key := env.IssueAPIKey(t, "w3-auditor")
+
+	// B7: the sample returns rows (verdict-adjacent data) — it is behind
+	// RequireAuth now, and unauthenticated access must be refused.
+	if unauth := getJSONStatus(t, env, "/api/v1/triage/audit/sample?repo=mattermost"); unauth != 401 {
+		t.Fatalf("unauthenticated sample status = %d, want 401", unauth)
+	}
 
 	// Gate: sampler returns the whole small pool (3), records the denominator,
 	// and does not error.
-	sample := getJSON(t, env, "/api/v1/triage/audit/sample?repo=mattermost")
+	sample := authedGet(t, env, key, "/api/v1/triage/audit/sample?repo=mattermost")
 	items := sample["items"].([]any)
 	if len(items) != 3 {
 		t.Fatalf("sampled %d items, want 3 (small pool takes all)", len(items))
@@ -54,24 +61,29 @@ func TestBlindAuditSampleAndReview(t *testing.T) {
 	}
 
 	// Gate: the AI verdict is absent from the API payload — assert on the raw
-	// JSON keys, not the UI.
-	strata := map[string]int{}
+	// JSON keys, not the UI. B1 regression: stratum (a lowercase copy of the
+	// verdict) and suspect_commit (present only for regression-class rows)
+	// are leaks exactly like the verdict itself, and the ordering of a fixed
+	// strata walk would leak by position — so both fields must be absent and
+	// the classes must appear only as aggregate counts.
 	for _, it := range items {
 		m := it.(map[string]any)
-		for _, banned := range []string{"verdict", "confidence", "root_cause", "model"} {
+		for _, banned := range []string{"verdict", "confidence", "root_cause", "model", "stratum", "suspect_commit"} {
 			if _, present := m[banned]; present {
 				t.Fatalf("sample item leaked %q — blindness must be enforced in the payload", banned)
 			}
 		}
-		strata[m["stratum"].(string)]++
 	}
-	if strata["flaky_test"] != 2 || strata["main_regression"] != 1 {
-		t.Fatalf("strata = %v, want flaky_test=2 main_regression=1", strata)
+	counts, ok := sample["strata_counts"].(map[string]any)
+	if !ok {
+		t.Fatal("strata_counts aggregate missing from sample response")
+	}
+	if counts["flaky_test"].(float64) != 2 || counts["main_regression"].(float64) != 1 {
+		t.Fatalf("strata_counts = %v, want flaky_test=2 main_regression=1", counts)
 	}
 
 	// Item detail before review: authenticated caller who has NOT submitted
 	// gets no ai_verdict.
-	key := env.IssueAPIKey(t, "w3-auditor")
 	first := items[0].(map[string]any)
 	verdictID := first["verdict_id"].(string)
 	detail := authedGet(t, env, key, "/api/v1/triage/audit/items/"+verdictID)
@@ -149,4 +161,14 @@ func authedGet(t *testing.T, env *testenv.Env, key, path string) map[string]any 
 		t.Fatalf("GET %s: decode: %v", path, err)
 	}
 	return body
+}
+
+func getJSONStatus(t *testing.T, env *testenv.Env, path string) int {
+	t.Helper()
+	resp, err := http.Get(env.ServerURL + path)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
 }

@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"time"
 
@@ -60,22 +61,26 @@ type auditSampleItem struct {
 	GHRunID      string           `json:"gh_run_id"`
 	GHPRNumber   *int             `json:"gh_pr_number,omitempty"`
 	TestID       *string          `json:"external_test_id,omitempty"`
-	Stratum      string           `json:"stratum"`
 	ForceInclude bool             `json:"force_included"`
 	Evidence     []map[string]any `json:"evidence"`
-	// Deliberately NO verdict / confidence / root_cause fields: the reviewer
-	// must call it blind. The item detail endpoint reveals them after submit.
-	SuspectCommit *string   `json:"suspect_commit,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	Reviewed      bool      `json:"reviewed"`
+	CreatedAt    time.Time        `json:"created_at"`
+	Reviewed     bool             `json:"reviewed"`
+
+	// B1: sampling-internal only. Stratum is a lowercase copy of the verdict,
+	// and suspect_commit's presence marks regression-class rows -- either
+	// serializes the answer into the "blind" payload. Never in JSON.
+	stratum string `json:"-"`
 }
 
 type auditSampleResponse struct {
-	Items      []auditSampleItem `json:"items"`
-	TargetSize int               `json:"target_size"`
-	PoolSize   int               `json:"pool_size"`
-	Shortfall  int               `json:"shortfall"`
-	Note       string            `json:"note,omitempty"`
+	Items []auditSampleItem `json:"items"`
+	// B1: strata as AGGREGATE counts only -- the reviewer sees the shape of
+	// the sample, never which item belongs to which class (items shuffled).
+	StrataCounts map[string]int `json:"strata_counts"`
+	TargetSize   int            `json:"target_size"`
+	PoolSize     int            `json:"pool_size"`
+	Shortfall    int            `json:"shortfall"`
+	Note         string         `json:"note,omitempty"`
 }
 
 // AuditSample serves GET /api/v1/triage/audit/sample?repo= — the blind review
@@ -94,10 +99,18 @@ func (h *Handlers) AuditSample(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
+	// B1: fixed strata order would leak each item's class by position —
+	// shuffle after sampling, and report classes as aggregate counts only.
+	rand.Shuffle(len(items), func(i, j int) { items[i], items[j] = items[j], items[i] })
+	counts := map[string]int{}
+	for _, it := range items {
+		counts[it.stratum]++
+	}
 	resp := auditSampleResponse{
-		Items:      items,
-		TargetSize: auditTargetSize,
-		PoolSize:   pool,
+		Items:        items,
+		StrataCounts: counts,
+		TargetSize:   auditTargetSize,
+		PoolSize:     pool,
 	}
 	if len(items) < auditTargetSize {
 		resp.Shortfall = auditTargetSize - len(items)
@@ -112,7 +125,7 @@ func (h *Handlers) sampleAuditItems(ctx context.Context, repo string, since time
 	rows, err := h.Pool.Query(ctx, `
 		SELECT v.id::text, v.repository, v.commit_sha, v.branch, v.gh_run_id,
 		       v.gh_pr_number, v.external_test_id, v.verdict, v.cluster_signature,
-		       v.suspect_commit, v.created_at,
+		       v.created_at,
 		       EXISTS (
 		           SELECT 1 FROM triage_audit_reviews ar
 		           WHERE ar.verdict_id = v.id AND ar.reviewed_at >= now() - interval '30 days'
@@ -141,11 +154,11 @@ func (h *Handlers) sampleAuditItems(ctx context.Context, repo string, since time
 		var evidence []byte
 		if err := rows.Scan(&c.item.VerdictID, &c.item.Repository, &c.item.CommitSHA,
 			&c.item.Branch, &c.item.GHRunID, &c.item.GHPRNumber, &c.item.TestID,
-			&c.verdict, &clusterSig, &c.item.SuspectCommit, &c.item.CreatedAt,
+			&c.verdict, &clusterSig, &c.item.CreatedAt,
 			&c.recentlyReviewed, &evidence); err != nil {
 			return nil, 0, err
 		}
-		c.item.Stratum = stratumFor(c.verdict)
+		c.item.stratum = stratumFor(c.verdict)
 		c.item.Evidence = decodeEvidence(evidence)
 		_ = clusterSig
 		candidates = append(candidates, c)
@@ -173,7 +186,7 @@ func (h *Handlers) sampleAuditItems(ctx context.Context, repo string, since time
 			if taken >= s.quota {
 				break
 			}
-			if c.item.Stratum == s.label && !c.recentlyReviewed {
+			if c.item.stratum == s.label && !c.recentlyReviewed {
 				pick(c)
 				taken++
 			}
@@ -184,7 +197,7 @@ func (h *Handlers) sampleAuditItems(ctx context.Context, repo string, since time
 			if taken >= s.quota {
 				break
 			}
-			if c.item.Stratum == s.label {
+			if c.item.stratum == s.label {
 				pick(c)
 				taken++
 			}

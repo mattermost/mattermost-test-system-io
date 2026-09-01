@@ -1478,7 +1478,10 @@ paths:
         The AI verdict is ABSENT from this payload — blindness is enforced
         server-side, not by hiding it in the UI. The reveal only happens via
         the authenticated item detail after the reviewer submits.
-      security: []
+      security:
+        - apiKey: []
+        - bearer: []
+        - sessionCookie: []
       parameters:
         - in: query
           name: repo
@@ -1571,7 +1574,10 @@ paths:
     get:
       tags: [triage]
       summary: W5 — waivers active on a commit's master run (release-cut guard, TSIO half)
-      security: []
+      security:
+        - apiKey: []
+        - bearer: []
+        - sessionCookie: []
       parameters:
         - in: query
           name: repo
@@ -1609,7 +1615,10 @@ paths:
     get:
       tags: [triage]
       summary: W14 — the stabilization queue (promotions first, then the flakiness ranking)
-      security: []
+      security:
+        - apiKey: []
+        - bearer: []
+        - sessionCookie: []
       parameters:
         - in: query
           name: repo
@@ -1639,7 +1648,10 @@ paths:
     get:
       tags: [triage]
       summary: W15c — the past-SLA list the weekly review opens (worst first)
-      security: []
+      security:
+        - apiKey: []
+        - bearer: []
+        - sessionCookie: []
       parameters:
         - in: query
           name: repo
@@ -1735,6 +1747,95 @@ paths:
                   total_posts: { type: integer }
                   posts_per_week: { type: number }
                   gate_note: { type: string }
+
+  /api/v1/triage/audit/reviews:
+    post:
+      tags: [triage]
+      summary: Record a blind-audit review (upsert per verdict+reviewer)
+      security:
+        - apiKey: []
+        - bearer: []
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [verdict_id, human_agree]
+              properties:
+                verdict_id: { type: string, format: uuid }
+                human_agree: { type: boolean }
+                note: { type: string }
+      responses:
+        '201':
+          description: Recorded; the response reveals the AI verdict (post-submit reveal)
+
+  /api/v1/triage/stabilization/promote:
+    post:
+      tags: [triage]
+      summary: File a test to the head of the stabilization queue
+      security:
+        - apiKey: []
+        - bearer: []
+        - sessionCookie: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [test_id]
+              properties:
+                test_id: { type: string }
+                reason: { type: string }
+                source: { type: string, enum: [release-guard, sla-breach, amnesty-expired, manual] }
+      responses:
+        '201':
+          description: Promoted (upsert on the live row)
+
+  /api/v1/triage/stabilization/resolve:
+    post:
+      tags: [triage]
+      summary: Mark a promotion resolved — the organic ranking takes over
+      security:
+        - apiKey: []
+        - bearer: []
+        - sessionCookie: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+        - in: query
+          name: test_id
+          schema: { type: string }
+          required: true
+      responses:
+        '200':
+          description: Resolved
+
+  /api/v1/triage/alerts/evaluate:
+    post:
+      tags: [triage]
+      summary: The alerting job's apply — post, open/update issues, record firings
+      security:
+        - apiKey: []
+        - bearer: []
+        - sessionCookie: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+      responses:
+        '200':
+          description: What fired, what was suppressed, what was posted/opened
 
   /api/v1/triage/accuracy:
     get:

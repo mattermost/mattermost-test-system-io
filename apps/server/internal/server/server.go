@@ -204,7 +204,6 @@ func Build(d Deps) chi.Router {
 		// (blindness enforced server-side); the reveal happens only after the
 		// reviewer's submit. Sample + agreement are public reads like the other
 		// aggregate reads; submits and per-item reveals are authenticated.
-		r.Get("/triage/audit/sample", triageH.AuditSample)
 		r.Get("/triage/audit/agreement", triageH.AuditAgreement)
 		// W13 — the single phase value every gating decision reads. Reads are
 		// public (CI jobs + web); writes and the auto-demotion apply are
@@ -212,9 +211,6 @@ func Build(d Deps) chi.Router {
 		r.Get("/triage/phase", triageH.Phase)
 		r.Get("/triage/phase/evaluation", triageH.PhaseEvaluation)
 		// W5/W14/W15c — release-cut guard, stabilization queue, SLA report.
-		r.Get("/triage/release-guard", triageH.ReleaseGuard)
-		r.Get("/triage/stabilization/queue", triageH.StabilizationQueue)
-		r.Get("/triage/sla", triageH.SLAReport)
 		// W7 — master alerting: dry evaluation + replay are public tools; the
 		// firing apply is the scheduled job's authenticated call.
 		r.Get("/triage/alerts/evaluation", triageH.AlertEvaluation)
@@ -266,6 +262,15 @@ func Build(d Deps) chi.Router {
 			// it — an audit trail of who did what, which is not the same kind of
 			// data as "how flaky is this test".
 			r.Get("/triage/verdicts", triageH.ListVerdicts)
+			// B7: these four return ROWS — root_cause free text, suspect
+			// commits (named engineers), OIDC subjects in promoted_by, and
+			// the audit sample itself (which must stay unretrievable without
+			// a credential or an auditor could un-blind themselves by commit
+			// SHA via release-guard). Same standard as ListVerdicts.
+			r.Get("/triage/audit/sample", triageH.AuditSample)
+			r.Get("/triage/release-guard", triageH.ReleaseGuard)
+			r.Get("/triage/stabilization/queue", triageH.StabilizationQueue)
+			r.Get("/triage/sla", triageH.SLAReport)
 			// W3 — blind audit submits + the post-submit reveal are authenticated:
 			// a forged agreement row would corrupt W13's promotion gate.
 			r.Post("/triage/audit/reviews", triageH.SubmitAuditReview)

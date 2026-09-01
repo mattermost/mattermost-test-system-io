@@ -58,6 +58,7 @@ test("MVP: harness edits on #9996 do not block an AI flake waiver", () => {
   const d = decide({
     failure: histFlaky(),
     runType: "PR",
+    phase: 2,
     branch: "claude/ai-e2e-failure-analysis-6e22f4",
     changedFiles: PR_9996_CHANGED,
     ai: {
@@ -77,6 +78,7 @@ test("MVP: three waived flake clusters flip e2e-test/detox-ios in gate mode", ()
     decide({
       failure: histFlaky({ title, full_title: `Channels › ${title}` }),
       runType: "PR",
+      phase: 2,
       branch: "claude/ai-e2e-failure-analysis-6e22f4",
       changedFiles: PR_9996_CHANGED,
       ai: {
@@ -142,6 +144,7 @@ test("MVP: AI PR_REGRESSION without product overlap on this failure is overridde
   const d = decide({
     failure: histFlaky(),
     runType: "PR",
+    phase: 2,
     branch: "feat/x",
     changedFiles: PR_9996_CHANGED, // includes another .e2e.ts, not channel_list
     ai: {
@@ -159,6 +162,7 @@ test("MVP: true no-evidence INCONCLUSIVE keeps the original check red (fail clos
   const ok = decide({
     failure: histFlaky(),
     runType: "PR",
+    phase: 2,
     branch: "feat/x",
     changedFiles: PR_9996_CHANGED,
     ai: {
@@ -186,6 +190,7 @@ test("MVP: true no-evidence INCONCLUSIVE keeps the original check red (fail clos
   const bad = decide({
     failure: bare,
     runType: "PR",
+    phase: 2,
     branch: "feat/x",
     changedFiles: [],
   });
@@ -220,6 +225,7 @@ test("MVP: MAIN flake waiver flips e2e-test/detox-ios (release-branch source com
     decide({
       failure: histFlaky({ title, full_title: `Channels › ${title}` }),
       runType: "MAIN",
+      phase: 2,
       branch: "main",
       changedFiles: [],
       ai: {

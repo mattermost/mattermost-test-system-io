@@ -28,7 +28,7 @@ import {
   type RunCounts,
 } from "./flip.ts";
 import { formatTriageComment, upsertTriageComment } from "./triage-comment.ts";
-import { decide, rollup, modeForPhase } from "./policy.ts";
+import { decide, rollup, modeForPhase, parsePhasePayload, mayFlipChecks } from "./policy.ts";
 import {
   collectBisectTargets,
   collectFixTargets,
@@ -152,6 +152,7 @@ export async function run(): Promise<void> {
       branch: pack.group.branch || identity.branch || "",
       changedFiles,
       ai,
+      phase,
     });
     d.member_count = cluster.member_count;
     const blamed = await attachBlame(d, cluster, githubToken, pack.group.repository);
@@ -168,7 +169,15 @@ export async function run(): Promise<void> {
   }
 
   const summary = rollup(decisions);
-  await writeLedger(baseURL, audience, pack, decisions, model);
+  const ledgerOK = await writeLedger(baseURL, audience, pack, decisions, model);
+  const flip = mayFlipChecks(mode, ledgerOK);
+  if (!flip.allowed) {
+    // B2/B3: refuse to green anything the ledger did not record. The original
+    // checks stay red; the run fails loudly instead of waiving silently.
+    core.setFailed(flip.reason ?? "ledger write failed — refusing to flip");
+    return;
+  }
+  if (flip.reason) core.notice(flip.reason);
   await writeStepSummary(pack.clusters || [], decisions, summary, reportURL);
 
   // Export test-bug clusters the fixer may repair (TEST_DEBT / refusal-blocked
@@ -535,9 +544,11 @@ async function fetchRolloutPhase(baseURL: string): Promise<number> {
   try {
     const res = await retryFetch(`${baseURL}/api/v1/triage/phase`, {}, "triage/phase");
     if (!res.ok) throw new Error(`status ${res.status}`);
-    const body = (await res.json()) as { phase?: number };
-    const phase = body.phase ?? 0;
-    if (phase < 0 || phase > 3) return 0;
+    const body = await res.json();
+    const phase = parsePhasePayload(body);
+    if (phase === 0) {
+      core.warning(`rollout phase payload unconforming (${JSON.stringify(body)}) — fail closed to shadow (phase 0)`);
+    }
     return phase;
   } catch (err) {
     core.warning(`rollout phase fetch failed (${(err as Error).message}) — fail closed to shadow (phase 0)`);
@@ -623,21 +634,28 @@ async function compareCommits(
   }));
 }
 
+/**
+ * B2/B3: the ledger write is a GATE, not a log line. Every waiver must be
+ * recorded before anything greens; a check flip with no ledger row is the
+ * "silently waived" failure mode this system exists to prevent. Returns
+ * false on any failure; the caller must refuse to flip when this is false in
+ * gate mode (and may only tolerate the skip in shadow mode).
+ */
 async function writeLedger(
   baseURL: string,
   audience: string,
   pack: EvidencePack,
   decisions: Decision[],
   model: string,
-): Promise<void> {
-  if (decisions.length === 0) return;
+): Promise<boolean> {
+  if (decisions.length === 0) return true;
   let bearer: string;
   try {
     bearer = await core.getIDToken(audience);
     core.setSecret(bearer);
   } catch (err) {
     core.warning(`ledger skipped (no OIDC token): ${(err as Error).message}`);
-    return;
+    return false;
   }
 
   const body = {
@@ -679,7 +697,9 @@ async function writeLedger(
   );
   if (!res.ok) {
     core.warning(`ledger write HTTP ${res.status} ${await res.text()}`);
+    return false;
   }
+  return true;
 }
 
 async function writeStepSummary(

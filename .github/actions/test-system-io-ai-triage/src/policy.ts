@@ -21,6 +21,34 @@ export function modeForPhase(runType: string, phase: number): "shadow" | "gate" 
   return "gate";
 }
 
+/**
+ * B4: the phase payload parser, fail-closed on any shape but a conforming
+ * integer. A string ("phase-2") or object passes both naive range checks as
+ * falses and must NEVER silently enable gating.
+ */
+export function parsePhasePayload(body: unknown): number {
+  if (typeof body !== "object" || body === null) return 0;
+  const raw = (body as Record<string, unknown>).phase;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 3) {
+    return 0;
+  }
+  return raw;
+}
+
+/**
+ * B2/B3: nothing greens unless the ledger recorded it. Gate mode refuses the
+ * flip on any ledger failure; only shadow mode may observe without a ledger
+ * row (and it flips nothing anyway).
+ */
+export function mayFlipChecks(mode: string, ledgerOK: boolean): { allowed: boolean; reason?: string } {
+  if (ledgerOK) return { allowed: true };
+  if (mode !== "gate") return { allowed: true, reason: "shadow mode observes without flipping — ledger skip tolerated" };
+  return {
+    allowed: false,
+    reason: "ledger write failed — refusing to flip: a waiver without a ledger row is silent",
+  };
+}
+
 /** The full waiver decision: policy (canWaive) AND phase (modeForPhase). */
 export function canWaiveAtPhase(
   args: Parameters<typeof canWaive>[0] & { phase: number },
@@ -231,6 +259,11 @@ export function decide(args: {
   branch: string;
   changedFiles: string[];
   ai?: ClaudeVerdict;
+  /** W13 rollout phase — gates the waiver decision itself (B5 fix): the
+   * decision, the ledger row, and the outputs must all agree with the
+   * phase ladder, not just the local mode variable. REQUIRED — a missing
+   * phase must be a compile error, never a silent default. */
+  phase: number;
 }): Decision {
   const suggested: Suggestion = args.failure.suggested;
   const overlaps = diffOverlaps(args.changedFiles, args.failure.file, args.failure.error_stack);
@@ -240,7 +273,7 @@ export function decide(args: {
     isProductRejection(args.failure.error_message, args.failure.error_stack) ||
     args.ai?.product_refusal === true;
   const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
-  const waiver = canWaive({
+  const waiver = canWaiveAtPhase({
     runType: args.runType,
     branch: args.branch,
     verdict: merged.verdict,
@@ -249,6 +282,7 @@ export function decide(args: {
     amnestyGranted: args.failure.amnesty?.granted,
     diffOverlapsFailure: overlaps,
     productRejection: rejection,
+    phase: args.phase,
   });
   const d: Decision = {
     ...merged,

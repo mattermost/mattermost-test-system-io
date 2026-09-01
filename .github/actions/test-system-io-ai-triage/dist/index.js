@@ -27095,6 +27095,28 @@ function modeForPhase(runType, phase) {
   if (t === "MAIN" && phase < 2) return "shadow";
   return "gate";
 }
+function parsePhasePayload(body) {
+  if (typeof body !== "object" || body === null) return 0;
+  const raw = body.phase;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 3) {
+    return 0;
+  }
+  return raw;
+}
+function mayFlipChecks(mode, ledgerOK) {
+  if (ledgerOK) return { allowed: true };
+  if (mode !== "gate") return { allowed: true, reason: "shadow mode observes without flipping \u2014 ledger skip tolerated" };
+  return {
+    allowed: false,
+    reason: "ledger write failed \u2014 refusing to flip: a waiver without a ledger row is silent"
+  };
+}
+function canWaiveAtPhase(args) {
+  if (modeForPhase(args.runType, args.phase) !== "gate") {
+    return { waived: false, reason: `phase ${args.phase} keeps ${args.runType || "PR"} runs in shadow mode` };
+  }
+  return canWaive(args);
+}
 var FLAKY = /* @__PURE__ */ new Set(["FLAKY_TEST", "FLAKY_INFRA", "FLAKY_SERVER"]);
 var NEVER_WAIVE = /* @__PURE__ */ new Set(["PR_REGRESSION", "INCONCLUSIVE", "TEST_DEBT", "BUILD_OR_ENV_ERROR"]);
 var PRODUCT_REJECTION = [
@@ -27213,7 +27235,7 @@ function decide(args) {
   const overlaps = diffOverlaps(args.changedFiles, args.failure.file, args.failure.error_stack);
   const rejection = isProductRejection(args.failure.error_message, args.failure.error_stack) || args.ai?.product_refusal === true;
   const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
-  const waiver = canWaive({
+  const waiver = canWaiveAtPhase({
     runType: args.runType,
     branch: args.branch,
     verdict: merged.verdict,
@@ -27221,7 +27243,8 @@ function decide(args) {
     citations: merged.citations,
     amnestyGranted: args.failure.amnesty?.granted,
     diffOverlapsFailure: overlaps,
-    productRejection: rejection
+    productRejection: rejection,
+    phase: args.phase
   });
   const d = {
     ...merged,
@@ -27887,7 +27910,8 @@ async function run() {
       runType,
       branch: pack.group.branch || identity.branch || "",
       changedFiles,
-      ai
+      ai,
+      phase
     });
     d.member_count = cluster.member_count;
     const blamed = await attachBlame(d, cluster, githubToken, pack.group.repository);
@@ -27897,7 +27921,13 @@ async function run() {
     );
   }
   const summary2 = rollup(decisions);
-  await writeLedger(baseURL, audience, pack, decisions, model);
+  const ledgerOK = await writeLedger(baseURL, audience, pack, decisions, model);
+  const flip = mayFlipChecks(mode, ledgerOK);
+  if (!flip.allowed) {
+    setFailed(flip.reason ?? "ledger write failed \u2014 refusing to flip");
+    return;
+  }
+  if (flip.reason) notice(flip.reason);
   await writeStepSummary(pack.clusters || [], decisions, summary2, reportURL);
   setOutput(
     "fixable_clusters",
@@ -28199,8 +28229,10 @@ async function fetchRolloutPhase(baseURL) {
     const res = await retryFetch(`${baseURL}/api/v1/triage/phase`, {}, "triage/phase");
     if (!res.ok) throw new Error(`status ${res.status}`);
     const body = await res.json();
-    const phase = body.phase ?? 0;
-    if (phase < 0 || phase > 3) return 0;
+    const phase = parsePhasePayload(body);
+    if (phase === 0) {
+      warning(`rollout phase payload unconforming (${JSON.stringify(body)}) \u2014 fail closed to shadow (phase 0)`);
+    }
     return phase;
   } catch (err) {
     warning(`rollout phase fetch failed (${err.message}) \u2014 fail closed to shadow (phase 0)`);
@@ -28269,14 +28301,14 @@ async function compareCommits(token, repository, base, head) {
   }));
 }
 async function writeLedger(baseURL, audience, pack, decisions, model) {
-  if (decisions.length === 0) return;
+  if (decisions.length === 0) return true;
   let bearer;
   try {
     bearer = await getIDToken(audience);
     setSecret(bearer);
   } catch (err) {
     warning(`ledger skipped (no OIDC token): ${err.message}`);
-    return;
+    return false;
   }
   const body = {
     repository: pack.group.repository,
@@ -28316,7 +28348,9 @@ async function writeLedger(baseURL, audience, pack, decisions, model) {
   );
   if (!res.ok) {
     warning(`ledger write HTTP ${res.status} ${await res.text()}`);
+    return false;
   }
+  return true;
 }
 async function writeStepSummary(clusters, decisions, summary2, reportURL) {
   const productBugs = decisions.filter(

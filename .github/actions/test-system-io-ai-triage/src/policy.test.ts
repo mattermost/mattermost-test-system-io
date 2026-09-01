@@ -4,6 +4,8 @@ import {
   canWaive,
   canWaiveAtPhase,
   modeForPhase,
+  parsePhasePayload,
+  mayFlipChecks,
   decide,
   diffOverlaps,
   isProductRejection,
@@ -77,6 +79,7 @@ test("AI bug verdict on a recovered test is never re-flipped to flaky", () => {
   const d = decide({
     failure: failure(),
     runType: "PR",
+    phase: 2,
     branch: "feat/x",
     changedFiles: ["e2e-tests/playwright/specs/login.spec.ts"],
     ai: {
@@ -96,6 +99,7 @@ test("chronic flag from the model survives decide()", () => {
   const d = decide({
     failure: failure(),
     runType: "PR",
+    phase: 2,
     branch: "feat/x",
     changedFiles: [],
     ai: {
@@ -263,6 +267,7 @@ test("decide uses history suggestion when no model call", () => {
   const d = decide({
     failure: failure({ status: "flaky" }),
     runType: "PR",
+    phase: 2,
     branch: "feat/x",
     changedFiles: [],
   });
@@ -399,6 +404,7 @@ test("waivers at the confidence floor are flagged borderline", () => {
   const floor = decide({
     failure: failure(),
     runType: "PR",
+    phase: 2,
     branch: "feat/x",
     changedFiles: [],
     ai: {
@@ -414,6 +420,7 @@ test("waivers at the confidence floor are flagged borderline", () => {
   const solid = decide({
     failure: failure(),
     runType: "PR",
+    phase: 2,
     branch: "feat/x",
     changedFiles: [],
     ai: {
@@ -594,4 +601,34 @@ test("W13: modeForPhase ladder", () => {
   assert.equal(modeForPhase("MAIN", 2), "gate");
   assert.equal(modeForPhase("RELEASE", 1), "gate"); // gates, but policy waives nothing
   assert.equal(modeForPhase("", 0), "shadow");
+});
+
+// --- B4/B2/B3 regression: fail-closed phase parse; ledger-gated flips ---
+
+test("B4: parsePhasePayload fails closed on every non-conforming shape", () => {
+  assert.equal(parsePhasePayload({ phase: "gremlin" }), 0);
+  assert.equal(parsePhasePayload({ phase: {} }), 0);
+  assert.equal(parsePhasePayload({ phase: null }), 0);
+  assert.equal(parsePhasePayload({ phase: 1.5 }), 0);
+  assert.equal(parsePhasePayload({ phase: -1 }), 0);
+  assert.equal(parsePhasePayload({ phase: 4 }), 0);
+  assert.equal(parsePhasePayload("phase-2"), 0);
+  assert.equal(parsePhasePayload(null), 0);
+  // Conforming values pass through.
+  assert.equal(parsePhasePayload({ phase: 0 }), 0);
+  assert.equal(parsePhasePayload({ phase: 2 }), 2);
+  assert.equal(parsePhasePayload({ phase: 3 }), 3);
+});
+
+test("B2/B3: gate mode refuses flips when the ledger did not record", () => {
+  const refused = mayFlipChecks("gate", false);
+  assert.equal(refused.allowed, false);
+  assert.match(refused.reason ?? "", /refusing to flip/);
+  assert.equal(mayFlipChecks("gate", true).allowed, true);
+});
+
+test("B2/B3: shadow mode tolerates a ledger skip — it flips nothing anyway", () => {
+  const tolerated = mayFlipChecks("shadow", false);
+  assert.equal(tolerated.allowed, true);
+  assert.match(tolerated.reason ?? "", /shadow mode observes/);
 });

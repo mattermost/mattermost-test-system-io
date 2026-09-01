@@ -130,8 +130,10 @@ func (h *Handlers) SLAReport(w http.ResponseWriter, r *http.Request) {
 		       (v.corrected_verdict IS NOT NULL)                 AS corrected,
 		       EXISTS (
 		           SELECT 1 FROM stabilization_promotions p
-		           WHERE (p.repository = v.repository OR split_part(p.repository, '/', 2) = split_part(v.repository, '/', 2))
-		             AND p.external_test_id = v.external_test_id
+		           WHERE (p.repository = v.repository
+		              OR (split_part(p.repository, '/', 2) = split_part(v.repository, '/', 2)
+		                  AND split_part(p.repository, '/', 2) <> ''))
+		             AND p.external_test_id IS NOT DISTINCT FROM v.external_test_id
 		             AND NOT p.resolved
 		       ) AS promoted
 		FROM triage_verdicts v

@@ -9,7 +9,7 @@ import type { QueueEntry, LoopAction } from "./types.ts";
 import { STABILIZATION_LABEL, BRANCH_PREFIX } from "./types.ts";
 import { withinBudget, budgetStopNotice } from "./budget.ts";
 import { attemptsExhausted } from "./rails.ts";
-import { routeVerdict } from "./routing_deps.ts";
+
 
 export interface LoopDeps {
   fetchQueue(baseURL: string, repo: string, depth: number): Promise<{ promoted: QueueEntry[]; ranked: QueueEntry[] }>;
@@ -17,6 +17,11 @@ export interface LoopDeps {
   openPRCount(repo: string): Promise<number>;
   attemptsForTest(repo: string, testID: string): Promise<number>;
   repair(entry: QueueEntry): Promise<{ summary: string; editedFiles: string[]; routed: boolean; routingReason?: string }>;
+  /** M14/M16: stage e2e-tests/ edits so the self-check sees exactly what
+   * will be committed (untracked included). */
+  stageEdits(): void | Promise<void>;
+  /** M16: true when the staged diff is non-empty after staging. */
+  hasStagedChanges(): boolean | Promise<boolean>;
   selfCheck(): { passed: boolean; violations: Array<{ rule: string; file: string; message: string }> };
   openPR(entry: QueueEntry, summary: string): Promise<{ branch: string; prNumber: number }>;
   routeToOwner(entry: QueueEntry, reason: string): Promise<string>;
@@ -49,25 +54,22 @@ export async function runLoop(deps: LoopDeps, cfg: LoopConfig): Promise<LoopActi
     return [{ kind: "skipped", testID: "-", reason: `concurrency ${cfg.concurrency} already open` }];
   }
 
-  const queue = [...(await deps.fetchQueue(cfg.baseURL, cfg.repo, cfg.depth)).promoted,
-                 ...(await deps.fetchQueue(cfg.baseURL, cfg.repo, cfg.depth)).ranked];
+  // M11: ONE fetch; promoted first, then ranked, deduped by test_id — the
+  // previous double-fetch could open two PRs for a test present in both
+  // lists and blow the attempts cap in a single run.
+  const fetched = await deps.fetchQueue(cfg.baseURL, cfg.repo, cfg.depth);
+  const seen = new Set<string>();
+  const queue: QueueEntry[] = [];
+  for (const entry of [...fetched.promoted, ...fetched.ranked]) {
+    if (seen.has(entry.test_id)) continue;
+    seen.add(entry.test_id);
+    queue.push(entry);
+  }
 
   let taken = 0;
   for (const entry of queue) {
     if (taken >= slots) break;
     const testID = entry.test_id;
-
-    // W11: product bugs route, the loop never fixes them.
-    const routing = routeVerdict({
-      verdict: entry.promotion_source === "release-guard" || entry.promoted ? "MAIN_REGRESSION" : "TEST_DEBT",
-      suspectFiles: [],
-    });
-    if (routing.action === "route" && !entry.promoted) {
-      const owner = await deps.routeToOwner(entry, routing.reason);
-      actions.push({ kind: "routed", testID, owner, reason: routing.reason });
-      taken++;
-      continue;
-    }
 
     // Attempts-per-test cap: escalate with the diagnosis, never a 4th PR.
     const prior = await deps.attemptsForTest(cfg.repo, testID);
@@ -92,6 +94,19 @@ export async function runLoop(deps: LoopDeps, cfg: LoopConfig): Promise<LoopActi
 
     if (cfg.dryRun) {
       actions.push({ kind: "skipped", testID, reason: `dry-run: would open PR (${result.editedFiles.length} file(s))` });
+      taken++;
+      continue;
+    }
+
+    // M14: stage FIRST — the self-check reads --cached and the commit takes
+    // exactly what the check saw (untracked files included).
+    await deps.stageEdits();
+
+    // M16: a no-op repair (agent changed nothing) must not kill the run —
+    // record the attempt and move on; the old path died on an empty commit.
+    if (!(await deps.hasStagedChanges())) {
+      await deps.recordAttempt(testID, prior + 1, "no_changes", result.summary);
+      actions.push({ kind: "skipped", testID, reason: "repair produced no changes — recorded, not retried blindly" });
       taken++;
       continue;
     }

@@ -9,7 +9,14 @@ import * as path from "node:path";
 import { runLoop, type LoopDeps, type LoopConfig } from "./loop.ts";
 import { pickQueue, queueURL } from "./queue.ts";
 import { clampConcurrency } from "./rails.ts";
-import { branchName, commitAndPush, gitDeps, openStabilizationPR, attemptsForTest } from "./pr.ts";
+import {
+  branchName,
+  commitAndPush,
+  gitDeps,
+  openStabilizationPR,
+  attemptsForTest,
+  stageEdits as stageEditsForCommit,
+} from "./pr.ts";
 import { repairSpec } from "./agent.ts";
 import { checkOwnDiff } from "./self_check.ts";
 import { recordAttempt } from "./ledger.ts";
@@ -112,6 +119,16 @@ async function main(): Promise<void> {
     },
     selfCheck() {
       return checkOwnDiff(workspace);
+    },
+    stageEdits() {
+      stageEditsForCommit(git);
+    },
+    hasStagedChanges() {
+      try {
+        return git.run(["diff", "--cached", "--name-only"]).trim() !== "";
+      } catch {
+        return false;
+      }
     },
     async openPR(entry, summary) {
       const branch = branchName(entry.test_id);

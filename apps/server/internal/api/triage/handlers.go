@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -295,6 +296,11 @@ func (h *Handlers) Correct(w http.ResponseWriter, r *http.Request) {
 		if err := h.Pool.QueryRow(r.Context(), `
 			SELECT repository, external_test_id FROM triage_verdicts WHERE id = $1
 		`, id).Scan(&repository, &testID); err == nil && testID != nil {
+			// M7: full slug on the promotion write (see PromoteStabilization).
+			if repository != nil && !strings.Contains(*repository, "/") {
+				normalized := "mattermost/" + *repository
+				repository = &normalized
+			}
 			if _, err := h.Pool.Exec(r.Context(), `
 				INSERT INTO stabilization_promotions (repository, external_test_id, promoted_by, reason, source)
 				VALUES ($1, $2, $3, $4, 'override')

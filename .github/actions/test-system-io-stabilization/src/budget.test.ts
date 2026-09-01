@@ -7,7 +7,8 @@ test("monthlyQuery scopes to this month + label + branch prefix", () => {
   const q = monthlyQuery("mattermost/mattermost", now);
   assert.match(q, /repo:mattermost\/mattermost/);
   assert.match(q, /label:"e2e-stabilization"/);
-  assert.match(q, /head:"stabilization\/"/);
+  // Counted by label, not head: — head-search semantics are undocumented and
+  // branch names append dates (Opus minor 17).
   assert.match(q, /created:>=2026-09-01/);
 });
 

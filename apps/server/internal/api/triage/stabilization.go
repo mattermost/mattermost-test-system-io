@@ -18,6 +18,7 @@ package triage
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
@@ -223,6 +224,12 @@ func (h *Handlers) PromoteStabilization(w http.ResponseWriter, r *http.Request) 
 	}
 	if in.Source == "" {
 		in.Source = "manual"
+	}
+	// M7: normalize to a full slug — a bare "mattermost" written here would
+	// make the SLA's split_part match degenerate ('' = '' → TRUE for every
+	// bare-stored row) and close unrelated clocks.
+	if !strings.Contains(repo, "/") {
+		repo = "mattermost/" + repo
 	}
 	subject, err := authapi.SubjectFromContext(r.Context())
 	if err != nil {

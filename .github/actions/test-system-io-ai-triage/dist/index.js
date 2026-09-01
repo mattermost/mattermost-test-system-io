@@ -27785,6 +27785,18 @@ function guard(rel, workspace) {
   if (!ALLOWED_PREFIXES.some((p) => norm.startsWith(p))) {
     throw new Error(`only ${ALLOWED_PREFIXES.join(", ")} paths are writable, got ${norm}`);
   }
+  const rootReal = fs3.realpathSync(workspace);
+  let anc = abs;
+  while (!fs3.existsSync(anc)) anc = path.dirname(anc);
+  const ancReal = fs3.realpathSync(anc);
+  if (ancReal !== rootReal && !ancReal.startsWith(rootReal + path.sep)) {
+    throw new Error(`path escapes workspace (symlink?): ${rel}`);
+  }
+  const normReal = path.relative(rootReal, ancReal).split(path.sep).join("/");
+  const rootOk = ALLOWED_PREFIXES.some((p) => normReal === p.slice(0, -1) || normReal.startsWith(p));
+  if (!rootOk) {
+    throw new Error(`path resolves outside the writable prefixes (symlink?): ${rel}`);
+  }
   return abs;
 }
 function git(cwd, args) {

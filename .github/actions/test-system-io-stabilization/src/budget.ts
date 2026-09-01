@@ -9,7 +9,10 @@ export interface GitHubSearchFn {
   (query: string): Promise<{ total_count: number }>;
 }
 
-export const STABILIZATION_PR_QUERY = 'is:pr label:"e2e-stabilization" head:"stabilization/"';
+// Counted by LABEL, not head: — head search semantics are undocumented as
+// prefix-matching, and the branch name appends a date (Opus minor 17). The
+// label is applied by the loop itself on every PR it opens.
+export const STABILIZATION_PR_QUERY = 'is:pr label:"e2e-stabilization"';
 
 /** Monthly attempts used: stabilization PRs created since the 1st of the month. */
 export function monthlyQuery(repo: string, now = new Date()): string {

@@ -203,13 +203,15 @@ func (h *Handlers) SetPhase(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if in.Phase > current {
-		// Promotion: only when the gate offers it.
-		repo := r.URL.Query().Get("repo")
-		if repo == "" {
-			api.WriteError(w, r, fmt.Errorf("%w: repo query param is required to verify promotion eligibility", api.ErrBadRequest))
+		// M6: the phase row is GLOBAL, so promotion eligibility is computed
+		// over ALL repositories — a repo query param let an authed caller
+		// point the check at a quiet repo and shop for a promotion. And the
+		// ladder moves ONE step at a time; there is no 0→3 in one call.
+		if in.Phase > current+1 {
+			api.WriteError(w, r, fmt.Errorf("%w: phase moves one step at a time (current %d, requested %d)", api.ErrBadRequest, current, in.Phase))
 			return
 		}
-		inputs, err := h.loadPhaseInputs(r.Context(), repo)
+		inputs, err := h.loadPhaseInputs(r.Context(), "")
 		if err != nil {
 			h.logError("triage phase inputs for set", err)
 			api.WriteError(w, r, api.ErrInternal)
@@ -290,6 +292,8 @@ func (h *Handlers) ApplyPhaseEvaluation(w http.ResponseWriter, r *http.Request) 
 // loadPhaseInputs gathers the measured numbers: pooled agreement (4 weeks),
 // weekly rates most-recent-first, and 30d false-greens from the accuracy
 // metric. Release-branch false-greens stay a stub until W5's linkage.
+// loadPhaseInputs gathers the measured numbers. repo == "" means GLOBAL —
+// the phase row is global, so its eligibility must be too (M6).
 func (h *Handlers) loadPhaseInputs(ctx context.Context, repo string) (PhaseInputs, error) {
 	var in PhaseInputs
 
@@ -299,7 +303,7 @@ func (h *Handlers) loadPhaseInputs(ctx context.Context, repo string) (PhaseInput
 		SELECT count(*)::int, count(*) FILTER (WHERE human_agree)::float / nullif(count(*), 0)::float
 		FROM triage_audit_reviews ar
 		JOIN triage_verdicts v ON v.id = ar.verdict_id
-		WHERE (ar.repository = $1 OR split_part(ar.repository, '/', 2) = $1)
+		WHERE ($1 = '' OR ar.repository = $1 OR split_part(ar.repository, '/', 2) = $1)
 		  AND ar.reviewed_at >= now() - interval '28 days'
 	`, repo).Scan(&agreementReviews, &pooled); err != nil {
 		return in, err
@@ -313,7 +317,7 @@ func (h *Handlers) loadPhaseInputs(ctx context.Context, repo string) (PhaseInput
 		SELECT count(*) FILTER (WHERE human_agree)::float / nullif(count(*), 0)::float
 		FROM triage_audit_reviews ar
 		JOIN triage_verdicts v ON v.id = ar.verdict_id
-		WHERE (ar.repository = $1 OR split_part(ar.repository, '/', 2) = $1)
+		WHERE ($1 = '' OR ar.repository = $1 OR split_part(ar.repository, '/', 2) = $1)
 		  AND ar.reviewed_at >= now() - make_interval(days => $2 * 7)
 		GROUP BY date_trunc('week', ar.reviewed_at)
 		ORDER BY date_trunc('week', ar.reviewed_at) DESC
@@ -338,7 +342,7 @@ func (h *Handlers) loadPhaseInputs(ctx context.Context, repo string) (PhaseInput
 	if err := h.Pool.QueryRow(ctx, `
 		SELECT count(*)::int
 		FROM triage_verdicts
-		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
+		WHERE ($1 = '' OR repository = $1 OR split_part(repository, '/', 2) = $1)
 		  AND waived AND corrected_verdict IS NOT NULL
 		  AND created_at >= now() - interval '30 days'
 	`, repo).Scan(&in.FalseGreens30d); err != nil {

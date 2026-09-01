@@ -18,6 +18,19 @@ func seedTwelveDayStreak(t *testing.T, env *testenv.Env) {
 		DO $$
 		DECLARE g int; gid uuid; rid uuid; sid uuid;
 		BEGIN
+			-- A PASS 12 days back: the streak is NEWLY entered (M5 — an
+			-- all-fail series predates the window and must not fire).
+			INSERT INTO report_groups (framework, name, status, repository, branch, commit_sha, gh_run_id, created_at)
+			VALUES ('playwright', 'w7-pass', 'completed', 'mattermost/mattermost', 'main',
+			        'w7pass', 'w7-run-pass', now() - interval '12 days')
+			RETURNING id INTO gid;
+			INSERT INTO reports (report_group_id, name, status, total_cases, passed_cases)
+			VALUES (gid, 'shard', 'complete', 1, 1) RETURNING id INTO rid;
+			INSERT INTO suites (report_id, title, total_count, passed_count, ordinal)
+			VALUES (rid, 's', 1, 1, 0) RETURNING id INTO sid;
+			INSERT INTO test_cases (suite_id, title, full_title, status, external_test_id, ordinal)
+			VALUES (sid, 'c', 'c', 'passed', 'MM-T7001', 0);
+
 			FOR g IN 0..11 LOOP
 				INSERT INTO report_groups (framework, name, status, repository, branch, commit_sha, gh_run_id, created_at)
 				VALUES ('playwright', 'w7-' || g, 'completed', 'mattermost/mattermost', 'main',

@@ -16,6 +16,8 @@ function deps(over: Partial<LoopDeps> = {}): LoopDeps {
     async openPRCount() { return 0; },
     async attemptsForTest() { return 0; },
     async repair() { return { summary: "timing race; polling assertion", editedFiles: ["e2e-tests/a.spec.ts"], routed: false }; },
+    async stageEdits() {},
+    hasStagedChanges() { return true; },
     async selfCheck() { return { passed: true, violations: [] }; },
     async openPR() { return { branch: "stabilization/mm-t1", prNumber: 42 }; },
     async routeToOwner() { return "test-infra"; },
@@ -71,6 +73,8 @@ test("product-bug diagnosis routes, never fixes", async () => {
 test("self-check rejection stops the push and records the rejection", async () => {
   const recorded: string[] = [];
   const d = deps({
+    async stageEdits() {},
+    hasStagedChanges() { return true; },
     async selfCheck() {
       return { passed: false, violations: [{ rule: "ban-bare-wait", file: "e2e-tests/a.spec.ts", message: "x" }] };
     },
@@ -89,4 +93,35 @@ test("dry-run investigates but opens nothing", async () => {
   assert.equal(opened, false);
   assert.equal(actions[0]!.kind, "skipped");
   assert.match(actions[0]!.reason, /dry-run/);
+});
+
+test("M16: a no-op repair is recorded and skipped, never retried blindly", async () => {
+  const recorded: string[] = [];
+  let opened = false;
+  const d = deps({
+    async stageEdits() {},
+    hasStagedChanges() { return false; },
+    async recordAttempt(_t, n, outcome) { recorded.push(`${n}:${outcome}`); },
+    async openPR() { opened = true; return { branch: "b", prNumber: 1 }; },
+  });
+  const actions = await runLoop(d, BASE);
+  assert.equal(opened, false);
+  assert.equal(actions[0]!.kind, "skipped");
+  assert.match(actions[0]!.reason, /no changes/);
+  assert.deepEqual(recorded, ["1:no_changes"]);
+});
+
+test("M11: a test in both promoted and ranked is processed once", async () => {
+  const openedFor: string[] = [];
+  const d = deps({
+    async fetchQueue() {
+      return { promoted: [{ test_id: "MM-T1", promoted: true }], ranked: [{ test_id: "MM-T1" }] };
+    },
+    async stageEdits() {},
+    hasStagedChanges() { return true; },
+    async openPR(entry) { openedFor.push(entry.test_id); return { branch: "b", prNumber: 1 }; },
+  });
+  const actions = await runLoop(d, BASE);
+  assert.equal(openedFor.length, 1);
+  assert.equal(actions.filter((a) => a.kind === "fix_pr").length, 1);
 });

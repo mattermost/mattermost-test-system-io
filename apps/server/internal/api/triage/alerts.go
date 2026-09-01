@@ -195,7 +195,9 @@ type FiringRecord struct {
 	LastChannelPost *time.Time `json:"last_channel_post,omitempty"`
 	ChannelPosts    int        `json:"channel_posts"`
 	IssueURL        *string    `json:"issue_url,omitempty"`
-	IssueNumber     int        `json:"issue_number"`
+	// Nullable column — a pointer, never a zero-int lie (minor: migration
+	// 000031 leaves issue_number NULL until an issue exists).
+	IssueNumber     *int       `json:"issue_number,omitempty"`
 	LastIssueUpdate *time.Time `json:"last_issue_update,omitempty"`
 	FireCount       int        `json:"fire_count"`
 
@@ -551,12 +553,14 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 			h.logError("alerts issue open", err)
 			continue
 		}
-		issuesOpened++
+		// Minor: count only real opens — with no GitHub token the helper
+		// returns "" (suppressed), which is not an opened issue.
 		if url != "" {
+			issuesOpened++
 			key := firingKey(a.Rule, a.Subject)
 			if rec, ok := records[key]; ok {
 				rec.IssueURL = &url
-				rec.IssueNumber = num
+				rec.IssueNumber = &num
 				records[key] = rec
 			}
 		}
@@ -813,7 +817,7 @@ func (h *Handlers) openAlertIssue(ctx context.Context, repo string, a Alert) (st
 // place", never a second issue.
 func (h *Handlers) updateAlertIssue(ctx context.Context, repo string, a Alert, rec FiringRecord) error {
 	token := os.Getenv("TSIO_ALERT_GITHUB_TOKEN")
-	if token == "" || rec.IssueNumber == 0 {
+	if token == "" || rec.IssueNumber == nil {
 		return nil
 	}
 	fullRepo, ok := fullRepoSlug(repo)
@@ -821,7 +825,7 @@ func (h *Handlers) updateAlertIssue(ctx context.Context, repo string, a Alert, r
 		return fmt.Errorf("invalid repo slug: %q", repo)
 	}
 	_, err := postJSONTo(ctx,
-		"https://api.github.com/repos/"+fullRepo+"/issues/"+itoa(rec.IssueNumber)+"/comments",
+		"https://api.github.com/repos/"+fullRepo+"/issues/"+itoa(*rec.IssueNumber)+"/comments",
 		map[string]any{"body": "Still firing (`" + a.Rule + "`, fire count " + itoa(rec.FireCount) + ").\n" + alertEvidenceMarkdown(a)},
 		token)
 	return err

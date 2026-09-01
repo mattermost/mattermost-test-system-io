@@ -20327,16 +20327,30 @@ function budgetStopNotice(used, budget) {
 }
 
 // src/rails.ts
+var fs3 = __toESM(require("fs"));
 var path = __toESM(require("path"));
 function guardEditable(workspace, target) {
+  const rootLexical = path.resolve(workspace);
   const resolved = path.resolve(workspace, target);
-  const root = path.resolve(workspace);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+  if (resolved !== rootLexical && !resolved.startsWith(rootLexical + path.sep)) {
     throw new Error(`path escapes workspace: ${target}`);
   }
-  const rel = path.relative(root, resolved);
+  const rel = path.relative(rootLexical, resolved);
   if (!rel.startsWith("e2e-tests/")) {
     throw new Error(`stabilization loop may only edit e2e-tests/** \u2014 rejected: ${rel}`);
+  }
+  const rootReal = fs3.realpathSync(workspace);
+  let anc = resolved;
+  while (!fs3.existsSync(anc)) {
+    anc = path.dirname(anc);
+  }
+  const ancReal = fs3.realpathSync(anc);
+  if (ancReal !== rootReal && !ancReal.startsWith(rootReal + path.sep)) {
+    throw new Error(`path escapes workspace (symlink?): ${target}`);
+  }
+  const relReal = path.relative(rootReal, ancReal);
+  if (relReal !== "" && relReal !== "e2e-tests" && !relReal.startsWith("e2e-tests" + path.sep)) {
+    throw new Error(`path resolves outside e2e-tests/ (symlink?): ${target}`);
   }
   return resolved;
 }
@@ -20347,51 +20361,6 @@ function clampConcurrency(requested) {
 }
 function attemptsExhausted(used, maxAttemptsPerTest) {
   return used >= maxAttemptsPerTest;
-}
-
-// src/vendor/routing.ts
-var PRODUCT_BUG_VERDICTS = /* @__PURE__ */ new Set(["PR_REGRESSION", "MAIN_REGRESSION"]);
-var TEST_SIDE_VERDICTS = /* @__PURE__ */ new Set(["TEST_DEBT"]);
-function routeVerdict(input) {
-  if (input.productRejection) {
-    return {
-      action: "route",
-      reason: "product deliberately refused the action \u2014 not a test bug",
-      owner: resolveOwner(input.suspectFiles ?? []),
-      evidence: ["product_refusal"]
-    };
-  }
-  if (PRODUCT_BUG_VERDICTS.has(input.verdict)) {
-    return {
-      action: "route",
-      reason: `${input.verdict} \u2014 the change under test broke behavior; the loop repairs tests, not products`,
-      owner: resolveOwner(input.suspectFiles ?? []),
-      evidence: [`verdict:${input.verdict}`]
-    };
-  }
-  if (input.verdict === "INCONCLUSIVE" || input.verdict === "BUILD_OR_ENV_ERROR") {
-    return {
-      action: "route",
-      reason: `${input.verdict} \u2014 outside the loop's remit; a human or the infra queue owns it`,
-      owner: "test-infra",
-      evidence: [`verdict:${input.verdict}`]
-    };
-  }
-  if (TEST_SIDE_VERDICTS.has(input.verdict) || input.verdict.startsWith("FLAKY_")) {
-    return { action: "proceed", reason: `${input.verdict} \u2014 test-side, the loop may repair it` };
-  }
-  return {
-    action: "route",
-    reason: `unknown verdict ${input.verdict} \u2014 fail closed to a human`,
-    owner: "test-infra",
-    evidence: [`verdict:${input.verdict}`]
-  };
-}
-function resolveOwner(suspectFiles) {
-  const productTouched = suspectFiles.some(
-    (f) => !f.startsWith("e2e-tests/") && /\.(ts|tsx|js|jsx|go)$/.test(f)
-  );
-  return productTouched ? "codeowners-of-changed-product-files" : "test-infra";
 }
 
 // src/loop.ts
@@ -20406,24 +20375,18 @@ async function runLoop(deps, cfg) {
   if (slots === 0) {
     return [{ kind: "skipped", testID: "-", reason: `concurrency ${cfg.concurrency} already open` }];
   }
-  const queue = [
-    ...(await deps.fetchQueue(cfg.baseURL, cfg.repo, cfg.depth)).promoted,
-    ...(await deps.fetchQueue(cfg.baseURL, cfg.repo, cfg.depth)).ranked
-  ];
+  const fetched = await deps.fetchQueue(cfg.baseURL, cfg.repo, cfg.depth);
+  const seen = /* @__PURE__ */ new Set();
+  const queue = [];
+  for (const entry of [...fetched.promoted, ...fetched.ranked]) {
+    if (seen.has(entry.test_id)) continue;
+    seen.add(entry.test_id);
+    queue.push(entry);
+  }
   let taken = 0;
   for (const entry of queue) {
     if (taken >= slots) break;
     const testID = entry.test_id;
-    const routing = routeVerdict({
-      verdict: entry.promotion_source === "release-guard" || entry.promoted ? "MAIN_REGRESSION" : "TEST_DEBT",
-      suspectFiles: []
-    });
-    if (routing.action === "route" && !entry.promoted) {
-      const owner = await deps.routeToOwner(entry, routing.reason);
-      actions.push({ kind: "routed", testID, owner, reason: routing.reason });
-      taken++;
-      continue;
-    }
     const prior = await deps.attemptsForTest(cfg.repo, testID);
     if (attemptsExhausted(prior, cfg.maxAttemptsPerTest)) {
       actions.push({
@@ -20444,6 +20407,13 @@ async function runLoop(deps, cfg) {
     }
     if (cfg.dryRun) {
       actions.push({ kind: "skipped", testID, reason: `dry-run: would open PR (${result.editedFiles.length} file(s))` });
+      taken++;
+      continue;
+    }
+    await deps.stageEdits();
+    if (!await deps.hasStagedChanges()) {
+      await deps.recordAttempt(testID, prior + 1, "no_changes", result.summary);
+      actions.push({ kind: "skipped", testID, reason: "repair produced no changes \u2014 recorded, not retried blindly" });
       taken++;
       continue;
     }
@@ -20498,8 +20468,12 @@ function branchName(testID, now = /* @__PURE__ */ new Date()) {
   const slug = testID.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
   return `stabilization/${slug}-${now.toISOString().slice(0, 10)}`;
 }
+function stageEdits(git) {
+  git.run(["add", "--", "e2e-tests/"]);
+}
 function commitAndPush(git, branch, message) {
-  git.run(["checkout", "-b", branch]);
+  git.run(["fetch", "origin", "master"]);
+  git.run(["checkout", "-B", branch, "origin/master"]);
   git.run(["add", "--", "e2e-tests/"]);
   git.run(["commit", "-m", message, "--no-verify"]);
   git.run(["push", "origin", `HEAD:${branch}`]);
@@ -20516,16 +20490,16 @@ async function openStabilizationPR(api, repo, branch, title, body, label) {
   return pr.number;
 }
 async function attemptsForTest(api, repo, testID) {
-  const slug = testID.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+  const q = `repo:${repo} is:pr label:"e2e-stabilization" in:title "stabilization: ${testID}"`;
   const res = await api(
     "GET",
-    `/search/issues?q=repo:${repo}+is:pr+label:"e2e-stabilization"+head:"stabilization/${slug}"&per_page=1`
+    `/search/issues?q=${encodeURIComponent(q)}&per_page=1`
   );
   return Number(res.total_count ?? 0);
 }
 
 // src/agent.ts
-var fs3 = __toESM(require("fs"));
+var fs4 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
 var MAX_ROUNDS = 12;
 var TOOLS = [
@@ -20619,7 +20593,7 @@ ${TAXONOMY_PROMPT}`
       try {
         if (tu.name === "read_file") {
           const p = guardEditable(ctx.workspace, input.path ?? "");
-          payload = fs3.readFileSync(p, "utf8").slice(0, 48e3);
+          payload = fs4.readFileSync(p, "utf8").slice(0, 48e3);
         } else if (tu.name === "edit_file") {
           payload = applyEdit(ctx.workspace, input.path ?? "", input.old_text ?? "", input.new_text ?? "");
         } else {
@@ -20636,7 +20610,7 @@ ${TAXONOMY_PROMPT}`
 }
 function applyEdit(workspace, target, oldText, newText) {
   const p = guardEditable(workspace, target);
-  const content = fs3.readFileSync(p, "utf8");
+  const content = fs4.readFileSync(p, "utf8");
   if (!content.includes(oldText)) {
     throw new Error(`old_text not found in ${target} \u2014 provide the smallest unique excerpt`);
   }
@@ -20644,13 +20618,13 @@ function applyEdit(workspace, target, oldText, newText) {
   if (occurrences > 1) {
     throw new Error(`old_text is not unique (${occurrences} hits) \u2014 narrow it`);
   }
-  fs3.writeFileSync(p, content.replace(oldText, newText));
+  fs4.writeFileSync(p, content.replace(oldText, newText));
   return `edited ${path2.relative(path2.resolve(workspace), p)}`;
 }
 
 // src/self_check.ts
 var import_node_child_process2 = require("child_process");
-var fs4 = __toESM(require("fs"));
+var fs5 = __toESM(require("fs"));
 var import_ban_checker = __toESM(require_ban_checker());
 var checkStabilizationDiff = import_ban_checker.default.checkStabilizationDiff;
 function checkOwnDiff(workspace) {
@@ -20784,6 +20758,16 @@ async function main() {
     },
     selfCheck() {
       return checkOwnDiff(workspace);
+    },
+    stageEdits() {
+      stageEdits(git);
+    },
+    hasStagedChanges() {
+      try {
+        return git.run(["diff", "--cached", "--name-only"]).trim() !== "";
+      } catch {
+        return false;
+      }
     },
     async openPR(entry, summary2) {
       const branch = branchName(entry.test_id);

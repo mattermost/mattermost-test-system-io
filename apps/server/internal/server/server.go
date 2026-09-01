@@ -211,6 +211,10 @@ func Build(d Deps) chi.Router {
 		// authenticated — the metrics demote, humans promote.
 		r.Get("/triage/phase", triageH.Phase)
 		r.Get("/triage/phase/evaluation", triageH.PhaseEvaluation)
+		// W5/W14/W15c — release-cut guard, stabilization queue, SLA report.
+		r.Get("/triage/release-guard", triageH.ReleaseGuard)
+		r.Get("/triage/stabilization/queue", triageH.StabilizationQueue)
+		r.Get("/triage/sla", triageH.SlaReport)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
@@ -265,6 +269,9 @@ func Build(d Deps) chi.Router {
 			// W13 — human phase changes + the scheduled job's demotion apply.
 			r.Post("/triage/phase", triageH.SetPhase)
 			r.Post("/triage/phase/evaluate", triageH.ApplyPhaseEvaluation)
+			// Stabilization queue writes — allocating fixing effort is authenticated.
+			r.Post("/triage/stabilization/promote", triageH.PromoteStabilization)
+			r.Post("/triage/stabilization/resolve", triageH.ResolveStabilization)
 
 			r.Get("/artifacts/{id}", artifactsH.Get)
 

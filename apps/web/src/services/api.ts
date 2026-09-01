@@ -754,3 +754,101 @@ export function useSubmitAuditReview() {
     },
   });
 }
+
+// ---------- W13/W14/W15c triage status: phase, SLA, queue, alerts ----------
+
+export interface TriagePhase {
+  phase: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface SlaEntry {
+  verdict_id: string;
+  external_test_id?: string;
+  verdict: string;
+  branch: string;
+  commit_sha: string;
+  suspect_commit?: string;
+  attributed: boolean;
+  age_days: number;
+  limit_days: number;
+  state: 'open' | 'flag1' | 'flag2';
+}
+
+export interface StabilizationEntry {
+  test_id: string;
+  titles?: string[];
+  runs?: number;
+  failed?: number;
+  flaky?: number;
+  flips?: number;
+  failure_rate?: number;
+  promoted?: boolean;
+  promoted_by?: string;
+  promotion_source?: string;
+  promotion_reason?: string;
+}
+
+export interface AlertEvaluation {
+  repo: string;
+  alerts: Array<{
+    rule: string;
+    subject: string;
+    severity: string;
+    evidence: Record<string, unknown>;
+  }>;
+  dedup: { to_post: unknown[]; suppressed: number };
+  dry_run: boolean;
+}
+
+export function useTriagePhase() {
+  return useQuery<TriagePhase>({
+    queryKey: ['triage', 'phase'],
+    queryFn: async () => {
+      const res = await fetch(`${API_URL}/triage/phase`);
+      return handleResponse<TriagePhase>(res);
+    },
+  });
+}
+
+export function useSlaReport(repo: string) {
+  return useQuery<{ repo: string; entries: SlaEntry[] }>({
+    queryKey: ['triage', 'sla', repo],
+    queryFn: async () => {
+      const res = await fetch(`${API_URL}/triage/sla?repo=${encodeURIComponent(repo)}`);
+      return handleResponse(res);
+    },
+    enabled: repo !== '',
+  });
+}
+
+export function useStabilizationQueue(repo: string) {
+  return useQuery<{
+    repo: string;
+    promoted: StabilizationEntry[];
+    ranked: StabilizationEntry[];
+  }>({
+    queryKey: ['triage', 'stabilization-queue', repo],
+    queryFn: async () => {
+      const res = await fetch(
+        `${API_URL}/triage/stabilization/queue?repo=${encodeURIComponent(repo)}`,
+      );
+      return handleResponse(res);
+    },
+    enabled: repo !== '',
+  });
+}
+
+export function useAlertEvaluation(repo: string) {
+  return useQuery<AlertEvaluation>({
+    queryKey: ['triage', 'alerts-evaluation', repo],
+    queryFn: async () => {
+      const res = await fetch(
+        `${API_URL}/triage/alerts/evaluation?repo=${encodeURIComponent(repo)}`,
+      );
+      return handleResponse<AlertEvaluation>(res);
+    },
+    enabled: repo !== '',
+  });
+}

@@ -1512,6 +1512,230 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TriageAuditAgreement' }
 
+  /api/v1/triage/phase:
+    get:
+      tags: [triage]
+      summary: The rollout phase (0-3) — the single value every gating decision reads
+      description: |
+        W13 — shadow(0) / PR gate(1) / master gate(2) / self-healing(3).
+        Demotion is automatic by exactly one phase; promotion is a manual human
+        action offered only after two consecutive clean weeks.
+      security: []
+      responses:
+        '200':
+          description: Current phase
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [phase, updated_at, updated_by]
+                properties:
+                  phase: { type: integer, minimum: 0, maximum: 3 }
+                  updated_at: { type: string, format: date-time }
+                  updated_by: { type: string }
+
+  /api/v1/triage/phase/evaluation:
+    get:
+      tags: [triage]
+      summary: Live phase-gate inputs and decision (dry — nothing applied)
+      security: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+      responses:
+        '200':
+          description: Measured inputs + the gate's decision
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inputs:
+                    type: object
+                    properties:
+                      reviews: { type: integer }
+                      agreement_pooled: { type: number }
+                      false_greens_30d: { type: integer }
+                      release_false_greens: { type: integer, description: Stub until W5 release-run linkage. }
+                  decision:
+                    type: object
+                    properties:
+                      demote: { type: boolean }
+                      demote_reason: { type: string }
+                      promote_eligible: { type: boolean }
+                      clean_weeks: { type: integer }
+
+  /api/v1/triage/release-guard:
+    get:
+      tags: [triage]
+      summary: W5 — waivers active on a commit's master run (release-cut guard, TSIO half)
+      security: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+        - in: query
+          name: commit
+          schema: { type: string }
+          required: true
+      responses:
+        '200':
+          description: Waiver list; clean=true means proceed untouched
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repository, commit_sha, clean, waivers]
+                properties:
+                  repository: { type: string }
+                  commit_sha: { type: string }
+                  clean: { type: boolean }
+                  waivers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        verdict_id: { type: string, format: uuid }
+                        external_test_id: { type: string }
+                        verdict: { type: string }
+                        root_cause: { type: string }
+                        created_at: { type: string, format: date-time }
+                        age_days: { type: integer }
+
+  /api/v1/triage/stabilization/queue:
+    get:
+      tags: [triage]
+      summary: W14 — the stabilization queue (promotions first, then the flakiness ranking)
+      security: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+        - in: query
+          name: window
+          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '30d' }
+      responses:
+        '200':
+          description: Queue head (promoted) + organic ranking (top 10)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo: { type: string }
+                  depth: { type: integer }
+                  promoted:
+                    type: array
+                    items: { $ref: '#/components/schemas/StabilizationQueueEntry' }
+                  ranked:
+                    type: array
+                    items: { $ref: '#/components/schemas/StabilizationQueueEntry' }
+
+  /api/v1/triage/sla:
+    get:
+      tags: [triage]
+      summary: W15c — the past-SLA list the weekly review opens (worst first)
+      security: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+      responses:
+        '200':
+          description: Open SLA clocks with 1x/2x breach flags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo: { type: string }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        verdict_id: { type: string }
+                        verdict: { type: string }
+                        attributed: { type: boolean }
+                        age_days: { type: integer }
+                        limit_days: { type: integer }
+                        state: { type: string, enum: [open, flag1, flag2] }
+
+  /api/v1/triage/alerts/evaluation:
+    get:
+      tags: [triage]
+      summary: W7 — master alert rules over RAW rates (dry run, no side effects)
+      security: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+        - in: query
+          name: branch
+          schema: { type: string, default: main }
+        - in: query
+          name: floor
+          description: Unset/0 disables the floor rule (W12 sets it; no hardcoded threshold ships)
+          schema: { type: number, default: 0 }
+        - in: query
+          name: min_runs
+          description: Streak-rule UNKNOWN exclusion; 0 disables the exclusion
+          schema: { type: integer, default: 3 }
+      responses:
+        '200':
+          description: Candidate alerts + what dedup would do
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items: { $ref: '#/components/schemas/TriageAlert' }
+                  dedup:
+                    type: object
+                    properties:
+                      to_post: { type: array, items: { $ref: '#/components/schemas/TriageAlert' } }
+                      to_open_issue: { type: array, items: { $ref: '#/components/schemas/TriageAlert' } }
+                      suppressed: { type: integer }
+
+  /api/v1/triage/alerts/replay:
+    get:
+      tags: [triage]
+      summary: W7 — replay the alert rules day-by-day over a window (gate machinery)
+      description: |
+        Produces what WOULD have fired each day with dedup simulated. The W7
+        gate itself (real 30-day production data, <10 posts/week, incident
+        coverage, reviewer sign-off) runs against production and is attached
+        to the PR by a human.
+      security: []
+      parameters:
+        - in: query
+          name: repo
+          schema: { type: string }
+          required: true
+        - in: query
+          name: days
+          schema: { type: integer, minimum: 1, maximum: 90, default: 30 }
+      responses:
+        '200':
+          description: Per-day replay + posts-per-week
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  days_with_data: { type: integer }
+                  total_posts: { type: integer }
+                  posts_per_week: { type: number }
+                  gate_note: { type: string }
+
   /api/v1/triage/accuracy:
     get:
       tags: [triage]
@@ -2918,6 +3142,33 @@ components:
               week_start: { type: string }
               reviews: { type: integer }
               agreement_rate: { type: number }
+
+    TriageAlert:
+      type: object
+      required: [rule, subject, severity, evidence]
+      properties:
+        rule:
+          type: string
+          enum: [pass_rate_drop_24h, pass_rate_trend_7d, pass_rate_floor, new_failing_streak, cross_pr_cluster]
+        subject: { type: string }
+        severity: { type: string, enum: [warning, critical] }
+        evidence: { type: object, additionalProperties: true }
+
+    StabilizationQueueEntry:
+      type: object
+      required: [test_id]
+      properties:
+        test_id: { type: string }
+        runs: { type: integer }
+        failed: { type: integer }
+        flaky: { type: integer }
+        flips: { type: integer }
+        failure_rate: { type: number }
+        flake_rate: { type: number }
+        promoted: { type: boolean }
+        promoted_by: { type: string }
+        promotion_source: { type: string, enum: [release-guard, sla-breach, amnesty-expired, manual] }
+        promotion_reason: { type: string }
 
     TriageSuggestion:
       type: object

@@ -663,3 +663,94 @@ export function useDivergences({
     staleTime: Infinity,
   });
 }
+
+// ---------- W3: blind waiver audit ----------
+
+export interface AuditSampleItem {
+  verdict_id: string;
+  repository: string;
+  commit_sha: string;
+  branch: string;
+  gh_run_id: string;
+  gh_pr_number?: number;
+  external_test_id?: string;
+  stratum: string;
+  force_included: boolean;
+  evidence: Array<Record<string, unknown>>;
+  suspect_commit?: string;
+  created_at: string;
+  reviewed: boolean;
+}
+
+export interface AuditSampleResponse {
+  items: AuditSampleItem[];
+  target_size: number;
+  pool_size: number;
+  shortfall: number;
+  note?: string;
+}
+
+export interface AuditAgreementResponse {
+  pooled_weeks: number;
+  reviews: number;
+  agree: number;
+  audit_agreement_rate: number;
+  per_week: Array<{ week_start: string; reviews: number; agreement_rate: number }>;
+}
+
+export interface AuditVerdictDetail {
+  verdict: string;
+  confidence: number;
+  check_state: string;
+  root_cause?: string;
+  model?: string;
+}
+
+export function useAuditSample(repo: string) {
+  return useQuery<AuditSampleResponse>({
+    queryKey: ['triage', 'audit-sample', repo],
+    queryFn: async () => {
+      const res = await fetch(`${API_URL}/triage/audit/sample?repo=${encodeURIComponent(repo)}`);
+      return handleResponse<AuditSampleResponse>(res);
+    },
+    enabled: repo !== '',
+  });
+}
+
+export function useAuditAgreement(repo: string) {
+  return useQuery<AuditAgreementResponse>({
+    queryKey: ['triage', 'audit-agreement', repo],
+    queryFn: async () => {
+      const res = await fetch(
+        `${API_URL}/triage/audit/agreement?repo=${encodeURIComponent(repo)}&weeks=4`,
+      );
+      return handleResponse<AuditAgreementResponse>(res);
+    },
+    enabled: repo !== '',
+  });
+}
+
+export function useSubmitAuditReview() {
+  const client = useQueryClient();
+  return useMutation<
+    { verdict_id: string; reviewer: string; ai_verdict: AuditVerdictDetail | null },
+    ApiError,
+    { verdict_id: string; human_agree: boolean; note?: string }
+  >({
+    mutationFn: async (input) => {
+      const res = await fetch(`${API_URL}/triage/audit/reviews`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+      return handleResponse(res);
+    },
+    onSuccess: (_data, variables) => {
+      // Refresh the sample (reviewed flags) and the agreement rates; keep the
+      // revealed verdict for the item the reviewer just called.
+      void client.invalidateQueries({ queryKey: ['triage', 'audit-sample'] });
+      void client.invalidateQueries({ queryKey: ['triage', 'audit-agreement'] });
+      void variables;
+    },
+  });
+}

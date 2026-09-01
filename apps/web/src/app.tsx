@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, useParams } from 'react-router-dom';
 import { HomePage } from '@/pages/home_page';
+import { TriageAuditPage } from '@/pages/triage_audit_page';
 import { ReportPathRouter } from '@/pages/report_path_router';
 import { FilteredReportsPage } from '@/pages/filtered_reports_page';
 import { CommitReportsPage } from '@/pages/commit_reports_page';
@@ -50,6 +51,8 @@ export function App() {
             <Routes>
               <Route path="/" element={<HomePage />} />
               <Route path="/reports" element={<HomePage />} />
+              {/* W3 — blind waiver audit review surface */}
+              <Route path="/triage-audit" element={<TriageAuditPage />} />
               {/* Explicit prefixed routes */}
               <Route path="/reports/r/:id" element={<ReportDetailPage />} />
               <Route path="/reports/g/:id" element={<ReportDetailPage />} />

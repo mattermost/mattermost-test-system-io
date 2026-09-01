@@ -285,6 +285,7 @@ export async function run(): Promise<void> {
       decisions,
       clusters: pack.clusters || [],
       reportURL,
+      runConfig: pack.group?.environment_metadata,
     });
     if (commentBody) {
       const url = await upsertTriageComment({

@@ -29,6 +29,10 @@ export async function run(): Promise<void> {
   // wouldn't auto-mask on its own).
   core.setSecret(githubToken);
   const ghJobName = core.getInput("gh-job-name", { required: true });
+  // W9 — captured run configuration (feature flags, edition, env). Optional:
+  // absent means no config evidence, and the config-delta pre-tag simply
+  // never fires for this run (fail closed).
+  const environmentMetadataRaw = core.getInput("environment-metadata").trim();
   const jsonPath = core.getInput("json-path", { required: true });
   const screenshotsDirRaw = core.getInput("screenshots-dir");
   const screenshotsDir = screenshotsDirRaw.trim() === "" ? null : screenshotsDirRaw;
@@ -56,6 +60,7 @@ export async function run(): Promise<void> {
     framework,
     totalReportsExpected,
     compositeIdentity,
+    environmentMetadata: environmentMetadataRaw,
   };
   await uploadShard(cfg, jsonPath, screenshotsDir);
 }

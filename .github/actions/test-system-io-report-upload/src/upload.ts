@@ -19,6 +19,20 @@ import type {
   UploadPart,
 } from "./types";
 
+/** Parse the captured run config; null on absent or malformed input. */
+function parsedEnvironmentMetadata(raw?: string): Record<string, unknown> | null {
+  if (!raw || raw.trim() === "") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export interface UploadConfig {
   baseURL: string;
   audience: string;
@@ -26,6 +40,7 @@ export interface UploadConfig {
   ghJobName: string;
   framework: string;
   totalReportsExpected: number;
+  environmentMetadata?: string;
   compositeIdentity: CompositeIdentity;
 }
 
@@ -76,6 +91,10 @@ export async function uploadShard(
   >;
   const regBody: Record<string, unknown> = {
     ...registerIdent,
+    // W9 — malformed captured config must never fail the upload; drop it
+    // with the degradation already documented (no config evidence → the
+    // config-delta pre-tag simply never fires).
+    ...parsedEnvironmentMetadata(cfg.environmentMetadata),
     gh_job_id: cfg.ghJobId,
     gh_job_name: cfg.ghJobName,
     json_files: jsonParts.map((p) => ({ path: p.relPath, size: p.size })),

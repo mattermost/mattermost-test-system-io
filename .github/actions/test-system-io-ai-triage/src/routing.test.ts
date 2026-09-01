@@ -6,7 +6,10 @@ import { routeVerdict, resolveOwner } from "./routing.ts";
 // "proceeds"; a test-only flake proceeds; refusals route regardless of label.
 
 test("W11: product regression routes, never proceeds", () => {
-  const d = routeVerdict({ verdict: "MAIN_REGRESSION", suspectFiles: ["server/channels/app/channel.go"] });
+  const d = routeVerdict({
+    verdict: "MAIN_REGRESSION",
+    suspectFiles: ["server/channels/app/channel.go"],
+  });
   assert.equal(d.action, "route");
   assert.match(d.reason, /MAIN_REGRESSION/);
   if (d.action === "route") {
@@ -27,7 +30,10 @@ test("W11: product refusal routes even under a flaky label", () => {
 });
 
 test("W11: test-side flake proceeds", () => {
-  const d = routeVerdict({ verdict: "FLAKY_TEST", suspectFiles: ["e2e-tests/playwright/specs/x.spec.ts"] });
+  const d = routeVerdict({
+    verdict: "FLAKY_TEST",
+    suspectFiles: ["e2e-tests/playwright/specs/x.spec.ts"],
+  });
   assert.equal(d.action, "proceed");
 });
 

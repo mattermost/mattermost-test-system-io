@@ -16,6 +16,8 @@ export function formatTriageComment(args: {
   decisions: Decision[];
   clusters: EvidenceCluster[];
   reportURL: string;
+  /** W9 — captured run configuration; rendered when present. */
+  runConfig?: Record<string, unknown>;
 }): string | null {
   // Unblocking path: all-waived must stay silent — silence IS the feature.
   if (args.decisions.length === 0) return null;
@@ -62,6 +64,14 @@ export function formatTriageComment(args: {
     `<details><summary>All ${args.decisions.length} cluster(s) (${waived} waived as flaky)</summary>`,
     ``,
   );
+  // W9 — the conditions the run executed under, so "it failed because flag X
+  // was off" is one glance instead of a codebase dig (Saturnino's ask).
+  if (args.runConfig && Object.keys(args.runConfig).length > 0) {
+    const cfg = Object.entries(args.runConfig)
+      .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+      .join(", ");
+    lines.push(`Run config: \`${cfg}\``, ``);
+  }
   lines.push(`| Cluster | Verdict | Waived | Gist |`, `|---|---|:--:|---|`);
   for (let i = 0; i < args.decisions.length; i++) {
     const d = args.decisions[i]!;

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -30,6 +32,10 @@ type evidenceGroup struct {
 	Framework    string `json:"framework"`
 	Name         string `json:"name"`
 	Status       string `json:"status"`
+	// W9 — the run configuration this group executed under (captured at
+	// register; feature flags, edition, notable env). The agent and the
+	// deterministic config-delta pre-tag read it from here.
+	EnvironmentMetadata json.RawMessage `json:"environment_metadata,omitempty"`
 }
 
 type evidenceShot struct {
@@ -55,6 +61,9 @@ type evidenceFailure struct {
 	DistinctBranches *int                        `json:"distinct_branches,omitempty"`
 	Amnesty          *amnestyResponse            `json:"amnesty,omitempty"`
 	Suggested        Suggestion                  `json:"suggested"`
+	// W9 — captured run-config keys that differ from the last passing run
+	// for this test. Absent when either side has no captured config.
+	ConfigDelta []string `json:"config_delta,omitempty"`
 }
 
 // Evidence serves GET /api/v1/triage/evidence — one payload an agent needs to
@@ -102,6 +111,10 @@ func (h *Handlers) Evidence(w http.ResponseWriter, r *http.Request) {
 	for i := range clusters {
 		c := &clusters[i]
 		f := &c.Representative
+		// W9 — run-config delta vs the last passing run for this test.
+		// Computed before Suggest so the deterministic pre-tag can fire;
+		// a lookup failure degrades to nil (never a signal on its own).
+		f.ConfigDelta = h.configDeltaFor(ctx, g, f)
 		if f.ExternalTestID == nil || lookups >= maxHistoryLookups {
 			c.Suggested = Suggest(signalsFor(f))
 			f.Suggested = c.Suggested
@@ -155,6 +168,7 @@ func signalsFor(f *evidenceFailure) Signals {
 		s.ElsewhereOK = true
 		s.DistinctPRs = *f.DistinctPRs
 	}
+	s.ConfigDeltaKeys = f.ConfigDelta
 	return s
 }
 
@@ -169,10 +183,10 @@ func (h *Handlers) findEvidenceGroup(ctx context.Context, groupID, repo, commit,
 		}
 		err = h.Pool.QueryRow(ctx, `
 			SELECT id::text, repository, branch, commit_sha, gh_run_id, gh_run_attempt,
-			       gh_pr_number, framework, name, status
+			       gh_pr_number, framework, name, status, environment_metadata
 			FROM report_groups WHERE id = $1
 		`, id).Scan(&g.ID, &g.Repository, &g.Branch, &g.CommitSHA, &g.GHRunID, &g.GHRunAttempt,
-			&g.GHPRNumber, &g.Framework, &g.Name, &g.Status)
+			&g.GHPRNumber, &g.Framework, &g.Name, &g.Status, &g.EnvironmentMetadata)
 	} else {
 		if repo == "" || commit == "" || runID == "" || name == "" {
 			return g, fmt.Errorf("%w: group_id or repository+commit_sha+gh_run_id+name is required", api.ErrBadRequest)
@@ -182,12 +196,12 @@ func (h *Handlers) findEvidenceGroup(ctx context.Context, groupID, repo, commit,
 		}
 		err = h.Pool.QueryRow(ctx, `
 			SELECT id::text, repository, branch, commit_sha, gh_run_id, gh_run_attempt,
-			       gh_pr_number, framework, name, status
+			       gh_pr_number, framework, name, status, environment_metadata
 			FROM report_groups
 			WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
 			  AND commit_sha = $2 AND gh_run_id = $3 AND name = $4 AND gh_run_attempt = $5
 		`, repo, commit, runID, name, attempt).Scan(&g.ID, &g.Repository, &g.Branch, &g.CommitSHA,
-			&g.GHRunID, &g.GHRunAttempt, &g.GHPRNumber, &g.Framework, &g.Name, &g.Status)
+			&g.GHRunID, &g.GHRunAttempt, &g.GHPRNumber, &g.Framework, &g.Name, &g.Status, &g.EnvironmentMetadata)
 	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -336,5 +350,65 @@ func parseShots(raw []byte) []evidenceShot {
 			URL:            "/files/" + r.S3Key,
 		})
 	}
+	return out
+}
+
+// configDeltaFor returns the captured run-config keys whose values differ
+// between this group and the most recent earlier PASSING run for this test
+// on the same branch. No captured config on either side → nil (fail closed:
+// absence of evidence is never a signal).
+func (h *Handlers) configDeltaFor(ctx context.Context, g evidenceGroup, f *evidenceFailure) []string {
+	if len(g.EnvironmentMetadata) == 0 || f == nil || f.ExternalTestID == nil {
+		return nil
+	}
+	var baselineEnv []byte
+	err := h.Pool.QueryRow(ctx, `
+		SELECT g2.environment_metadata
+		FROM report_groups g2
+		JOIN reports r ON r.report_group_id = g2.id
+		JOIN suites s ON s.report_id = r.id
+		JOIN test_cases tc ON tc.suite_id = s.id
+		WHERE tc.external_test_id = $1
+		  AND (g2.repository = $2 OR split_part(g2.repository, '/', 2) = $2)
+		  AND g2.branch = $3
+		  AND g2.created_at < (SELECT created_at FROM report_groups WHERE id::text = $4)
+		  AND tc.status = 'passed'
+		  AND g2.environment_metadata IS NOT NULL
+		ORDER BY g2.created_at DESC
+		LIMIT 1
+	`, *f.ExternalTestID, g.Repository, g.Branch, g.ID).Scan(&baselineEnv)
+	if err != nil || len(baselineEnv) == 0 {
+		return nil
+	}
+	return envDeltaKeys(g.EnvironmentMetadata, baselineEnv)
+}
+
+// envDeltaKeys is the pure W9 compare: keys whose values differ between two
+// captured configs. Malformed JSON on either side → nil, never an error.
+func envDeltaKeys(current, baseline []byte) []string {
+	var cur, base map[string]any
+	if json.Unmarshal(current, &cur) != nil || json.Unmarshal(baseline, &base) != nil {
+		return nil
+	}
+	if cur == nil || base == nil {
+		return nil
+	}
+	keys := map[string]bool{}
+	for k, v := range cur {
+		bv, ok := base[k]
+		if !ok || !reflect.DeepEqual(v, bv) {
+			keys[k] = true
+		}
+	}
+	for k := range base {
+		if _, ok := cur[k]; !ok {
+			keys[k] = true
+		}
+	}
+	out := make([]string, 0, len(keys))
+	for k := range keys {
+		out = append(out, k)
+	}
+	sort.Strings(out)
 	return out
 }

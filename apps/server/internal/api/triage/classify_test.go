@@ -83,3 +83,62 @@ func contains(xs []string, want string) bool {
 	}
 	return false
 }
+
+// W9 — config-delta pre-tag: clean history + captured config that differs
+// from the last passing run → deterministic FLAKY_INFRA, never a model call.
+func TestSuggestConfigDeltaPreTag(t *testing.T) {
+	t.Run("clean history plus config delta is FLAKY_INFRA without AI", func(t *testing.T) {
+		s := Suggest(Signals{
+			Status: "failed", HasStableID: true, HistoryOK: true,
+			Runs: 6, Failed: 1, Flaky: 0, // Failed == 1: the current run is the only failure
+			ConfigDeltaKeys: []string{"E2E_FEATURE_FLAG_X"},
+		})
+		if s.Verdict != "FLAKY_INFRA" {
+			t.Fatalf("verdict = %q, want FLAKY_INFRA", s.Verdict)
+		}
+		if s.NeedsAI {
+			t.Fatal("config-delta pre-tag must not need AI — zero model calls is the gate")
+		}
+		if !containsStr(s.Citations, "config_delta_only") {
+			t.Fatalf("citations = %v, want config_delta_only", s.Citations)
+		}
+	})
+
+	t.Run("dirty history keeps the delta from pre-tagging", func(t *testing.T) {
+		s := Suggest(Signals{
+			Status: "failed", HasStableID: true, HistoryOK: true,
+			Runs: 6, Failed: 3, Flaky: 1,
+			ConfigDeltaKeys: []string{"E2E_FEATURE_FLAG_X"},
+		})
+		if s.Verdict == "FLAKY_INFRA" {
+			t.Fatal("delta must not pre-tag when the test has failures in history")
+		}
+	})
+
+	t.Run("two failures in history keep the delta from pre-tagging", func(t *testing.T) {
+		s := Suggest(Signals{
+			Status: "failed", HasStableID: true, HistoryOK: true,
+			Runs: 6, Failed: 2, Flaky: 0,
+			ConfigDeltaKeys: []string{"E2E_FEATURE_FLAG_X"},
+		})
+		if s.Verdict == "FLAKY_INFRA" {
+			t.Fatal("Failed >= 2 means the failure predates this run — not a config delta")
+		}
+	})
+
+	t.Run("no delta keys = no pre-tag", func(t *testing.T) {
+		s := Suggest(Signals{Status: "failed", HasStableID: true, HistoryOK: true, Runs: 6})
+		if s.Verdict == "FLAKY_INFRA" {
+			t.Fatal("clean history alone must not pre-tag FLAKY_INFRA")
+		}
+	})
+}
+
+func containsStr(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}

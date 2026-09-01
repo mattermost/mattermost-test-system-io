@@ -1,5 +1,7 @@
 package triage
 
+import "strings"
+
 // Signals is the subset of a failure the deterministic classifier needs.
 // History fields are ignored when HistoryOK is false.
 type Signals struct {
@@ -14,6 +16,11 @@ type Signals struct {
 	FailingSinceCommit bool
 	ElsewhereOK        bool
 	DistinctPRs        int
+
+	// ConfigDeltaKeys lists run-configuration keys whose captured values
+	// differ from the last passing run for this test (W9). Empty/nil = no
+	// baseline comparison available — never a signal on its own.
+	ConfigDeltaKeys []string
 }
 
 // Suggestion is the deterministic (no-model, no-rerun) reading of a failure.
@@ -37,7 +44,15 @@ const (
 	citeIsolated           = "isolated_to_this_pr"
 	citeNoStableID         = "no_stable_id"
 	citeHistoryUnavailable = "history_unavailable"
+	citeConfigDelta        = "config_delta_only"
 )
+
+// W9 — a run-configuration delta is deterministic flake evidence: the test
+// passed on this branch under a different captured config, its history is
+// otherwise clean, and the ONLY thing that changed is the environment. No
+// model call needed; the deterministic layer pre-tags it.
+const configDeltaVerdict = "FLAKY_INFRA"
+const configDeltaConfidence = 0.9
 
 // Suggest classifies a failure from TSIO history. It never asks for a rerun:
 // in-run recovery is measurement, a failing streak on the baseline branch is
@@ -74,6 +89,21 @@ func Suggest(s Signals) Suggestion {
 			NeedsAI:    true,
 			Reason:     "history lookup failed; fail closed",
 			Citations:  []string{citeHistoryUnavailable},
+		}
+	}
+
+	// W9 config-delta pre-tag: history where the ONLY failure is this run
+	// (Failed == 1 — the current one), never flaky, plus a captured config
+	// that differs from the last passing run for this test. The sole
+	// difference is configuration — infra-owned, no AI.
+	if len(s.ConfigDeltaKeys) > 0 && s.Failed == 1 && s.Flaky == 0 {
+		return Suggestion{
+			Verdict:    configDeltaVerdict,
+			Confidence: configDeltaConfidence,
+			NeedsAI:    false,
+			Reason: "clean history; the only difference from the last passing run is configuration: " +
+				strings.Join(s.ConfigDeltaKeys, ", "),
+			Citations: []string{citeConfigDelta, citeNeverFailed},
 		}
 	}
 

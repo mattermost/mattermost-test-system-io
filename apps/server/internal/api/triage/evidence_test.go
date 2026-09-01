@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,5 +53,28 @@ func TestMergeFailure_prefersHardFailAndScreenshots(t *testing.T) {
 	}
 	if len(got.Screenshots) != 1 || got.Screenshots[0].S3Key != "a.png" {
 		t.Fatalf("screenshots = %+v", got.Screenshots)
+	}
+}
+
+// W9 — the pure env compare: differing keys surface, identical configs do
+// not, malformed JSON fails closed to nil.
+func TestEnvDeltaKeys(t *testing.T) {
+	cur := []byte(`{"A": "on", "B": "same", "C": "1"}`)
+	base := []byte(`{"A": "off", "B": "same", "D": "2"}`)
+	got := envDeltaKeys(cur, base)
+	if len(got) != 3 { // A differs, C only in cur, D only in base
+		t.Fatalf("delta = %v, want [A C D]", got)
+	}
+	if fmt.Sprint(got) != "[A C D]" {
+		t.Fatalf("delta order = %v, want [A C D]", got)
+	}
+	if d := envDeltaKeys(cur, cur); len(d) != 0 {
+		t.Fatalf("identical configs produced delta %v, want empty", d)
+	}
+	if d := envDeltaKeys([]byte("not json"), base); d != nil {
+		t.Fatal("malformed current config must fail closed to nil")
+	}
+	if d := envDeltaKeys(nil, base); d != nil {
+		t.Fatal("missing current config must fail closed to nil")
 	}
 }

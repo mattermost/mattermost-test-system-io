@@ -119,6 +119,17 @@ function buildPrompt(cluster: EvidenceCluster, ctx: AgentContext): string {
   const hist = f.history
     ? `runs=${f.history.runs} failed=${f.history.failed} flaky=${f.history.flaky} flips=${f.history.flips} last_pass=${f.history.last_pass_commit ?? "none"} failing_since=${f.history.failing_since_commit ?? "none"} series=${f.history.series.join(",")}`
     : f.history_error || "not loaded — call get_history";
+  // W9 — the run configuration this failure executed under, and any keys that
+  // differ from the last passing run for this test. A config delta is strong
+  // infra-flake evidence: check whether the screenshot/error matches running
+  // under the changed flag before calling anything a product bug.
+  const env = ctx.group.environment_metadata
+    ? `run_config=${JSON.stringify(ctx.group.environment_metadata)}`
+    : "run_config=(not captured)";
+  const delta =
+    (f.config_delta ?? []).length > 0
+      ? `config_delta_vs_last_passing_run=${f.config_delta!.join(", ")}`
+      : "";
   return `You investigate ONE clustered E2E failure exactly as a careful human triager would: read the error and stack, view the failure screenshot, check this test's PAST failures on the baseline branch, check whether the same test is failing on other PRs right now, and read what this PR changed. Then decide. Do not ask for a rerun. 300 identical failures are still one cause.
 
 Call TSIO tools as needed, then decide. You already have error/stack (and often screenshots) in this prompt — that IS evidence.
@@ -167,6 +178,7 @@ external_test_id: ${f.external_test_id || "none"}
 Error: ${(f.error_message || "").slice(0, 3000) || "(none)"}
 Stack: ${(f.error_stack || "").slice(0, 2000) || "(none)"}
 History: ${hist}
+${env}${delta ? "\n" + delta : ""}
 Other PRs failing: ${f.distinct_prs ?? "unknown"}
 Screenshot keys (get_screenshot): ${shots}
 PR changed files: ${ctx.changedFiles.slice(0, 40).join(", ") || "(none)"}

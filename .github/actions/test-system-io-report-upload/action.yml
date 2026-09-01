@@ -41,6 +41,14 @@ inputs:
   github-token:
     description: Token with actions:read; used to look up gh_job_id
     required: true
+  environment-metadata:
+    description: >-
+      W9 — JSON object of the run configuration this upload executed under
+      (feature flags, server edition, notable env vars). Stored on the report
+      group and surfaced in triage evidence; the deterministic config-delta
+      pre-tag reads it. Pass an empty string when not captured.
+    required: false
+    default: ""
   gh-job-name:
     description: >
       Rendered job name of the calling matrix entry (e.g. `shard-3`).

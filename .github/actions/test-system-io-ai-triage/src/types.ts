@@ -58,6 +58,8 @@ export interface EvidenceFailure {
   distinct_branches?: number;
   amnesty?: Amnesty;
   suggested: Suggestion;
+  /** W9 — captured run-config keys that differ from the last passing run for this test. */
+  config_delta?: string[];
 }
 
 export interface EvidenceGroup {
@@ -71,6 +73,8 @@ export interface EvidenceGroup {
   framework: string;
   name: string;
   status: string;
+  /** W9 — captured run configuration (flags, edition, env); see comment on report group. */
+  environment_metadata?: Record<string, unknown>;
 }
 
 export interface EvidenceCluster {

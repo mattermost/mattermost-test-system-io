@@ -206,6 +206,11 @@ func Build(d Deps) chi.Router {
 		// aggregate reads; submits and per-item reveals are authenticated.
 		r.Get("/triage/audit/sample", triageH.AuditSample)
 		r.Get("/triage/audit/agreement", triageH.AuditAgreement)
+		// W13 — the single phase value every gating decision reads. Reads are
+		// public (CI jobs + web); writes and the auto-demotion apply are
+		// authenticated — the metrics demote, humans promote.
+		r.Get("/triage/phase", triageH.Phase)
+		r.Get("/triage/phase/evaluation", triageH.PhaseEvaluation)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
@@ -257,6 +262,9 @@ func Build(d Deps) chi.Router {
 			// a forged agreement row would corrupt W13's promotion gate.
 			r.Post("/triage/audit/reviews", triageH.SubmitAuditReview)
 			r.Get("/triage/audit/items/{id}", triageH.AuditItemDetail)
+			// W13 — human phase changes + the scheduled job's demotion apply.
+			r.Post("/triage/phase", triageH.SetPhase)
+			r.Post("/triage/phase/evaluate", triageH.ApplyPhaseEvaluation)
 
 			r.Get("/artifacts/{id}", artifactsH.Get)
 

@@ -80,10 +80,13 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Then the organic ranking, most unstable first, excluding tests already
-	// promoted. Same rollup the flakiness leaderboard uses.
+	// promoted. M2 fix: the rollup is per (test, report group) FIRST — the
+	// same shape the flakiness leaderboard uses — and only then aggregated
+	// per test, so runs = groups the test actually executed in and
+	// failure_rate is a real rate instead of degenerating to 0.0/1.0.
 	rows, err := h.Pool.Query(r.Context(), `
 		WITH matched AS (
-			SELECT g.id, tc.external_test_id, tc.status, tc.full_title
+			SELECT g.id AS group_id, tc.external_test_id, tc.status, tc.full_title
 			FROM report_groups g
 			JOIN reports r ON r.report_group_id = g.id
 			JOIN suites s ON s.report_id = r.id
@@ -94,24 +97,26 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 			  AND g.created_at >= $2::timestamptz
 		),
 		rolled AS (
-			SELECT external_test_id,
+			SELECT group_id, external_test_id,
 			       array_agg(DISTINCT coalesce(nullif(full_title, ''), '')) AS titles,
 			       bool_or(status IN ('passed', 'flaky'))                   AS ever_passed,
 			       bool_or(status IN ('failed', 'timedOut', 'interrupted')) AS ever_failed,
-			       count(*) FILTER (WHERE status = 'flaky')::int            AS flaky_rows,
-			       count(*)::int                                            AS rows_n
+			       bool_or(status = 'flaky')                                AS had_flaky
 			FROM matched
-			GROUP BY external_test_id
+			GROUP BY group_id, external_test_id
 		)
-		SELECT external_test_id, titles,
-		       count(*)::int,
-		       count(*) FILTER (WHERE ever_failed)::int,
-		       sum(flaky_rows)::int,
-		       count(*) FILTER (WHERE ever_passed AND ever_failed)::int
-		FROM rolled
-		GROUP BY external_test_id, titles
-		HAVING bool_or(ever_failed) OR bool_or(ever_passed AND NOT ever_failed)
-		ORDER BY count(*) FILTER (WHERE ever_failed) DESC, sum(flaky_rows) DESC
+		SELECT external_test_id,
+		       coalesce(array_agg(DISTINCT x.t) FILTER (WHERE x.t <> ''), '{}') AS titles,
+		       count(*)::int                                            AS runs,
+		       count(*) FILTER (WHERE r2.ever_failed)::int               AS failed,
+		       count(*) FILTER (WHERE r2.had_flaky)::int                 AS flaky,
+		       count(*) FILTER (WHERE r2.ever_passed AND r2.ever_failed)::int AS flips
+		FROM rolled r2
+		CROSS JOIN LATERAL (SELECT unnest(r2.titles) AS t) AS x
+		GROUP BY external_test_id
+		HAVING bool_or(r2.ever_failed) OR bool_or(r2.ever_passed AND NOT r2.ever_failed)
+		ORDER BY count(*) FILTER (WHERE r2.ever_failed) DESC,
+		         count(*) FILTER (WHERE r2.ever_passed AND r2.ever_failed) DESC
 		LIMIT $3
 	`, repo, since, StabilizationQueueDepth+len(promoted))
 	if err != nil {
@@ -129,12 +134,16 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 	ranked := []queueEntry{}
 	for rows.Next() {
 		var e queueEntry
-		var titles []byte
+		// B8 fix: the column is text[] — scan into []string, the same shape
+		// the flakiness handler scans (a *[]byte target is not an ArraySetter
+		// under pgx v5's binary negotiation and 500s on any non-empty row).
+		var titles []string
 		if err := rows.Scan(&e.TestID, &titles, &e.Runs, &e.Failed, &e.Flaky, &e.Flips); err != nil {
 			h.logError("stabilization queue scan", err)
 			api.WriteError(w, r, api.ErrInternal)
 			return
 		}
+		e.Titles = titles
 		if promotedSet[e.TestID] {
 			continue
 		}

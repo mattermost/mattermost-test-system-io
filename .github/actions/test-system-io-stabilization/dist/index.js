@@ -18828,6 +18828,162 @@ var require_undici = __commonJS({
   }
 });
 
+// src/vendor/ban-checker.js
+var require_ban_checker = __commonJS({
+  "src/vendor/ban-checker.js"(exports2, module2) {
+    "use strict";
+    var DEFAULT_ROOTS = ["e2e-tests/"];
+    var CONFIG_RE = /(?:playwright|cypress|detox)\.config\.[cm]?[jt]s$/;
+    var RULES = [
+      {
+        rule: "ban-bare-wait",
+        message: "bare sleep / fixed wait added \u2014 poll for the condition instead",
+        match(added) {
+          return added.some(
+            (l) => /waitForTimeout\s*\(/.test(l.text) || /cy\.wait\s*\(\s*\d/.test(l.text) || /new Promise\s*\([^)]*=>\s*setTimeout/.test(l.text) || /\bsleep\s*\(\s*\d/.test(l.text)
+          );
+        }
+      },
+      {
+        rule: "ban-retry-wrapper",
+        message: "retry added around previously un-retried behavior \u2014 fix the cause, not the symptom",
+        match(added, file) {
+          const inConfig = CONFIG_RE.test(file.path);
+          return added.some(
+            (l) => /retries\s*:\s*\d/.test(l.text) || /retries\s*=\s*\d/.test(l.text) || /jest\.retryTimes\s*\(/.test(l.text) || /test\.describe\.configure\s*\(/.test(l.text) || /\.retry\(\s*\d/.test(l.text) || inConfig && /retry/i.test(l.text)
+          );
+        }
+      },
+      {
+        rule: "ban-loosened-assertion",
+        message: "assertion loosened \u2014 a weaker matcher replaced a stronger one, or a soft assertion was added",
+        match(added, file) {
+          if (added.some((l) => /expect\.soft\s*\(/.test(l.text))) return true;
+          const weakAdded = added.some(
+            (l) => /\.toBeTruthy\s*\(|\.toBeDefined\s*\(|\.toBeNull\s*\(|\.toBeGreaterThan\s*\(\s*-?\s*1\s*\)/.test(l.text)
+          );
+          const removedAssertion = file.removed.some((l) => /\bexpect\s*\(|\bassert\b|\.should\(/.test(l.text));
+          return weakAdded && removedAssertion;
+        }
+      },
+      {
+        rule: "ban-deleted-assertion",
+        message: "assertion deleted without replacement \u2014 coverage was removed, not fixed",
+        match(added, file) {
+          const removedAsserts = file.removed.filter((l) => /\bexpect\s*\(|\bassert\s*\(|\.should\(/.test(l.text)).length;
+          const addedAsserts = added.filter((l) => /\bexpect\s*\(|\bassert\s*\(|\.should\(/.test(l.text)).length;
+          return removedAsserts > addedAsserts;
+        }
+      },
+      {
+        rule: "ban-skip-tag",
+        message: "skip/ignore tag added \u2014 the test is being silenced, not stabilized",
+        match(added) {
+          return added.some(
+            (l) => /\b(?:test|it|describe)\.(?:skip|fixme)\b/.test(l.text) || /\bxit\s*\(|\bxdescribe\s*\(/.test(l.text) || /@Ignore\b/.test(l.text) || /test\.skip\s*\(/.test(l.text)
+          );
+        }
+      },
+      {
+        rule: "ban-raised-timeout",
+        message: "timeout raised \u2014 waiting longer is masking, not fixing",
+        match(added, file) {
+          const inConfig = CONFIG_RE.test(file.path);
+          return added.some(
+            (l) => (
+              // Test/suite/config-level raises only. An ASSERTION-level timeout
+              // (`expect(locator).toBeVisible({ timeout: 10_000 })`) is the
+              // recommended stabilization fix, not a ban — the polling assertion
+              // replaces a fixed sleep.
+              /setTestTimeout\s*\(/.test(l.text) || /test\.setTimeout\s*\(/.test(l.text) || /setDefaultTimeout\s*\(/.test(l.text) || /defaultCommandTimeout\s*[:=]/.test(l.text) || /jest\.setTimeout\s*\(/.test(l.text) || /actionTimeout\s*[:=]/.test(l.text) || /navigationTimeout\s*[:=]/.test(l.text) || inConfig && /timeout\s*[:=]\s*\d/.test(l.text)
+            )
+          );
+        }
+      }
+    ];
+    function parseUnifiedDiff(diffText) {
+      const files = [];
+      let current = null;
+      let addedNo = 0;
+      let removedNo = 0;
+      for (const raw of String(diffText || "").split("\n")) {
+        if (raw.startsWith("+++ b/")) {
+          current = { path: raw.slice(6), added: [], removed: [] };
+          files.push(current);
+          continue;
+        }
+        if (!current) continue;
+        if (raw.startsWith("@@")) {
+          const m = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+          removedNo = m ? Number(m[1]) : 0;
+          addedNo = m ? Number(m[2]) : 0;
+          continue;
+        }
+        if (raw.startsWith("+") && !raw.startsWith("+++")) {
+          current.added.push({ no: addedNo++, text: raw.slice(1) });
+        } else if (raw.startsWith("-") && !raw.startsWith("---")) {
+          current.removed.push({ no: removedNo++, text: raw.slice(1) });
+        }
+      }
+      return files;
+    }
+    function checkStabilizationDiff2(diffText, opts = {}) {
+      const roots = opts.roots || DEFAULT_ROOTS;
+      const reportOnly = Boolean(opts.reportOnly);
+      const checkConfigs = opts.configFiles !== false;
+      const violations = [];
+      let checkedFiles = 0;
+      let skippedFiles = 0;
+      for (const file of parseUnifiedDiff(diffText)) {
+        const inRoots = roots.some((root) => file.path.startsWith(root));
+        const isConfig = CONFIG_RE.test(file.path);
+        if (!inRoots && !(isConfig && checkConfigs)) {
+          skippedFiles++;
+          continue;
+        }
+        if (file.added.length === 0) {
+          continue;
+        }
+        checkedFiles++;
+        for (const r of RULES) {
+          if (r.match(file.added, file)) {
+            violations.push({
+              rule: r.rule,
+              file: file.path,
+              message: r.message
+            });
+          }
+        }
+      }
+      return {
+        passed: reportOnly || violations.length === 0,
+        reportOnly,
+        checkedFiles,
+        skippedFiles,
+        violations
+      };
+    }
+    module2.exports = { parseUnifiedDiff, checkStabilizationDiff: checkStabilizationDiff2, DEFAULT_ROOTS, CONFIG_RE };
+    if (require.main === module2) {
+      const args = process.argv.slice(2);
+      const reportOnly = args.includes("--report-only");
+      const target = args.find((a) => !a.startsWith("--")) || "-";
+      const input = target === "-" ? require("fs").readFileSync(0, "utf8") : require("fs").readFileSync(target, "utf8");
+      const result = checkStabilizationDiff2(input, { reportOnly });
+      if (result.violations.length === 0) {
+        console.log(`stabilization-ban-checker: clean (${result.checkedFiles} file(s) checked)`);
+      } else {
+        console.log(`stabilization-ban-checker: ${result.violations.length} violation(s)`);
+        for (const v of result.violations) {
+          console.log(`  ${v.file}: [${v.rule}] ${v.message}`);
+        }
+        if (reportOnly) console.log("report-only mode: not failing");
+      }
+      process.exit(result.passed ? 0 : 1);
+    }
+  }
+});
+
 // node_modules/@actions/core/lib/command.js
 var os = __toESM(require("os"), 1);
 
@@ -20495,33 +20651,20 @@ function applyEdit(workspace, target, oldText, newText) {
 // src/self_check.ts
 var import_node_child_process2 = require("child_process");
 var fs4 = __toESM(require("fs"));
-var import_node_url = require("url");
-var import_meta = {};
-function vendoredChecker() {
-  return (0, import_node_url.fileURLToPath)(new URL("./vendor/ban-checker.js", import_meta.url));
-}
+var import_ban_checker = __toESM(require_ban_checker());
+var checkStabilizationDiff = import_ban_checker.default.checkStabilizationDiff;
 function checkOwnDiff(workspace) {
   let diff;
   try {
-    diff = (0, import_node_child_process2.execFileSync)("git", ["-C", workspace, "diff", "--unified=3"], { encoding: "utf8" });
+    diff = (0, import_node_child_process2.execFileSync)("git", ["-C", workspace, "diff", "--cached", "--unified=3"], {
+      encoding: "utf8"
+    });
   } catch (err) {
     throw new Error(`self-check git diff failed: ${err.message}`);
   }
   if (diff.trim() === "") return { passed: true, violations: [] };
-  const checker = vendoredChecker();
-  if (!fs4.existsSync(checker)) {
-    throw new Error("vendored ban checker missing \u2014 self-containment invariant broken");
-  }
-  const raw = (0, import_node_child_process2.execFileSync)(process.execPath, [checker, "-", "--report-only"], {
-    input: diff,
-    encoding: "utf8"
-  });
-  const violations = [];
-  for (const line of raw.split("\n")) {
-    const m = /^  (.+): \[(.+)\] (.+)$/.exec(line);
-    if (m) violations.push({ file: m[1], rule: m[2], message: m[3] });
-  }
-  return { passed: violations.length === 0, violations };
+  const result = checkStabilizationDiff(diff);
+  return { passed: result.passed, violations: result.violations };
 }
 
 // src/ledger.ts

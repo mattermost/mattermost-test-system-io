@@ -24,6 +24,11 @@ CREATE TABLE alert_firings (
     issue_url          text,
     issue_number       integer,
     last_issue_update  timestamptz,
+    -- B9: the OPEN INTENT, persisted in the same write as the decision and
+    -- BEFORE the GitHub call. A crash between "issue opened" and "URL
+    -- recorded" must not let the next run open a second issue — the claim
+    -- outlives the process.
+    issue_claimed      timestamptz,
     fire_count         integer     NOT NULL DEFAULT 1,
     evidence           jsonb       NOT NULL DEFAULT '[]',
     resolved_at        timestamptz

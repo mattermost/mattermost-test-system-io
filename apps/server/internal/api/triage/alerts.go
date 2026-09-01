@@ -198,10 +198,11 @@ type FiringRecord struct {
 	LastIssueUpdate *time.Time `json:"last_issue_update,omitempty"`
 	FireCount       int        `json:"fire_count"`
 
-	// issuePending is dedup-internal: set the moment an open is PLANNED, so
-	// the next firing routes to update instead of planning a second open.
-	// The caller replaces it with the real IssueURL after the GitHub call.
-	issuePending bool `json:"-"`
+	// B9: the persisted open-intent. Set the moment an open is PLANNED and
+	// written by recordFirings BEFORE the GitHub call, so a crash between
+	// issue-open and URL-record cannot produce a second issue on the next
+	// run. Replaces the in-memory-only issuePending.
+	IssueClaimed *time.Time `json:"-"`
 }
 
 // DedupPlan is what actually goes out for this evaluation, and what was held.
@@ -242,15 +243,16 @@ func ApplyAlertDedup(cands []Alert, existing map[string]FiringRecord, now time.T
 		}
 
 		// Issues: only cluster-shaped subjects (streak / cross-PR), only once
-		// the firing is persistent — at least 2 days old. Open is planned at
-		// most once (issuePending remembers the plan across calls); every
-		// later persistent firing updates in place.
+		// the firing is persistent — at least 2 days old. Open is claimed at
+		// most once (B9: the claim PERSISTS via recordFirings before the
+		// GitHub side effect); every later persistent firing updates in place.
 		if a.Rule == AlertRuleNewStreak || a.Rule == AlertRuleCrossPR {
 			if now.Sub(rec.FirstFiredAt) >= issueMinAge {
-				hasIssue := rec.IssueURL != nil || rec.issuePending
+				hasIssue := rec.IssueURL != nil || rec.IssueClaimed != nil
 				if !hasIssue {
 					plan.ToOpenIssue = append(plan.ToOpenIssue, a)
-					rec.issuePending = true
+					t := now
+					rec.IssueClaimed = &t
 				} else if rec.LastIssueUpdate == nil || now.Sub(*rec.LastIssueUpdate) >= issueCooldown {
 					plan.ToUpdateIssue = append(plan.ToUpdateIssue, a)
 					t := now
@@ -469,6 +471,16 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 	}
 	plan := ApplyAlertDedup(alerts, records, now)
 
+	// B9: persist the decision (fire counts, channel posts, issue CLAIMS)
+	// BEFORE any side effect. A crash after this point leaves a durable
+	// record that the issue was claimed — the next run updates instead of
+	// opening a duplicate.
+	if err := h.recordFirings(ctx, repo, records); err != nil {
+		h.logError("alerts record firings (pre-notify)", err)
+		api.WriteError(w, r, api.ErrInternal)
+		return
+	}
+
 	posted, issuesOpened, issuesUpdated := 0, 0, 0
 	if len(plan.ToPost) > 0 {
 		if err := h.postAlertWebhook(ctx, repo, plan.ToPost); err != nil {
@@ -501,10 +513,9 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 		issuesUpdated++
 	}
 
+	// Second pass: persist the GitHub URLs/numbers onto the claimed rows.
 	if err := h.recordFirings(ctx, repo, records); err != nil {
-		h.logError("alerts record firings", err)
-		api.WriteError(w, r, api.ErrInternal)
-		return
+		h.logError("alerts record firings (post-notify)", err) // claims already durable; URLs retry next run
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -605,7 +616,8 @@ func alertConfigFromQuery(r *http.Request) (floor float64, minRuns int) {
 func (h *Handlers) loadFiringRecords(ctx context.Context, repo string) (map[string]FiringRecord, error) {
 	rows, err := h.Pool.Query(ctx, `
 		SELECT rule, subject, first_fired_at, last_fired_at, last_channel_post,
-		       channel_posts, issue_url, issue_number, last_issue_update, fire_count
+		       channel_posts, issue_url, issue_number, last_issue_update, fire_count,
+		       issue_claimed
 		FROM alert_firings
 		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
 		  AND resolved_at IS NULL
@@ -619,7 +631,7 @@ func (h *Handlers) loadFiringRecords(ctx context.Context, repo string) (map[stri
 		var rec FiringRecord
 		if err := rows.Scan(&rec.Rule, &rec.Subject, &rec.FirstFiredAt, &rec.LastFiredAt,
 			&rec.LastChannelPost, &rec.ChannelPosts, &rec.IssueURL, &rec.IssueNumber,
-			&rec.LastIssueUpdate, &rec.FireCount); err != nil {
+			&rec.LastIssueUpdate, &rec.FireCount, &rec.IssueClaimed); err != nil {
 			return nil, err
 		}
 		out[firingKey(rec.Rule, rec.Subject)] = rec

@@ -1,0 +1,56 @@
+name: Test System IO — stabilization loop
+description: >-
+  W14 — the master-side self-healing loop. Takes one test at a time from the
+  TSIO stabilization queue (promotions first, then the flakiness ranking),
+  investigates it with TSIO evidence, edits the spec inside e2e-tests/** only,
+  self-checks its own diff against the W10 mechanical bans (enforcing — the
+  loop must never fight its own rules), and opens a stabilization PR against
+  master. Human review is ALWAYS required — the loop never pushes to master
+  and never merges its own PR. Budget and attempts are enforced, not just
+  measured: when the monthly attempt budget is exhausted the loop stops
+  taking new queue items and posts why instead of failing silently.
+  Requires TSIO PR #101's /triage/* endpoints.
+author: Mattermost
+
+inputs:
+  repo:
+    description: "The repository under repair (owner/name)"
+    required: true
+  github-token:
+    description: Token for PR creation, budget searches, and the blame compare
+    required: true
+    default: ${{ github.token }}
+  anthropic-api-key:
+    description: Claude API key for the spec-repair agent
+    required: true
+  use-staging:
+    description: Target the staging TSIO deployment
+    required: false
+    default: "false"
+  claude-model:
+    required: false
+    default: claude-sonnet-4-6
+  concurrency:
+    description: Max open stabilization PRs at once (hard cap 5; plan default 2)
+    required: false
+    default: "2"
+  max-attempts-per-test:
+    description: Attempts before the loop escalates to a human with a diagnosis
+    required: false
+    default: "3"
+  monthly-attempt-budget:
+    description: Hard monthly cap on stabilization attempts (GitHub-searched)
+    required: false
+    default: "20"
+  queue-depth:
+    description: Working queue scope (plan default: top 10)
+    required: false
+    default: "10"
+  dry-run:
+    description: Investigate and report, but open no PR and touch nothing
+    required: false
+    default: "false"
+
+runs:
+  using: node24
+  main: dist/index.js

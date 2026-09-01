@@ -1,0 +1,22 @@
+{
+  "name": "test-system-io-stabilization",
+  "private": true,
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsup",
+    "tsc": "tsc -b",
+    "format": "npx oxfmt src --write",
+    "format:check": "npx oxfmt src --check",
+    "lint": "npx oxlint src",
+    "test": "node --experimental-strip-types --test src/rails.test.ts src/budget.test.ts src/queue.test.ts src/loop.test.ts src/self_check.test.ts"
+  },
+  "dependencies": {
+    "@actions/core": "3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "25.6.0",
+    "tsup": "8.5.1",
+    "typescript": "6.0.3"
+  }
+}

@@ -214,7 +214,7 @@ func Build(d Deps) chi.Router {
 		// W5/W14/W15c — release-cut guard, stabilization queue, SLA report.
 		r.Get("/triage/release-guard", triageH.ReleaseGuard)
 		r.Get("/triage/stabilization/queue", triageH.StabilizationQueue)
-		r.Get("/triage/sla", triageH.SlaReport)
+		r.Get("/triage/sla", triageH.SLAReport)
 		// W7 — master alerting: dry evaluation + replay are public tools; the
 		// firing apply is the scheduled job's authenticated call.
 		r.Get("/triage/alerts/evaluation", triageH.AlertEvaluation)

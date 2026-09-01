@@ -24616,6 +24616,18 @@ async function fetchWithAuthRetry(makeRequest) {
 }
 
 // src/upload.ts
+function parsedEnvironmentMetadata(raw) {
+  if (!raw || raw.trim() === "") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 var SCREENSHOT_BATCH_MAX_FILES = 25;
 var SCREENSHOT_BATCH_MAX_BYTES = 15 * 1024 * 1024;
 async function uploadShard(cfg, jsonPath, screenshotsDir) {
@@ -24648,6 +24660,10 @@ async function uploadShard(cfg, jsonPath, screenshotsDir) {
   const { total_reports_expected: _ignored, ...registerIdent } = reportsIdent;
   const regBody = {
     ...registerIdent,
+    // W9 — malformed captured config must never fail the upload; drop it
+    // with the degradation already documented (no config evidence → the
+    // config-delta pre-tag simply never fires).
+    ...parsedEnvironmentMetadata(cfg.environmentMetadata),
     gh_job_id: cfg.ghJobId,
     gh_job_name: cfg.ghJobName,
     json_files: jsonParts.map((p) => ({ path: p.relPath, size: p.size })),
@@ -24803,6 +24819,7 @@ async function run() {
   const githubToken = getInput("github-token", { required: true });
   setSecret(githubToken);
   const ghJobName = getInput("gh-job-name", { required: true });
+  const environmentMetadataRaw = getInput("environment-metadata").trim();
   const jsonPath = getInput("json-path", { required: true });
   const screenshotsDirRaw = getInput("screenshots-dir");
   const screenshotsDir = screenshotsDirRaw.trim() === "" ? null : screenshotsDirRaw;
@@ -24826,7 +24843,8 @@ async function run() {
     ghJobName,
     framework,
     totalReportsExpected,
-    compositeIdentity
+    compositeIdentity,
+    environmentMetadata: environmentMetadataRaw
   };
   await uploadShard(cfg, jsonPath, screenshotsDir);
 }

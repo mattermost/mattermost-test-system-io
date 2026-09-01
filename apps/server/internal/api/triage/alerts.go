@@ -19,6 +19,7 @@
 // Dedup (W8): one channel post per subject per 24h; a GitHub issue opens once
 // when a streak/cross-PR subject has been firing ≥ 2 days, then updates in
 // place. All pure functions — the handlers only load data and apply effects.
+
 package triage
 
 import (
@@ -29,11 +30,14 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 )
 
+// The five master-alerting rules. Subjects: "master-pass-rate" for the three
+// rate rules, the test ID for the two cluster rules.
 const (
 	AlertRuleDrop24h   = "pass_rate_drop_24h"
 	AlertRuleTrend7d   = "pass_rate_trend_7d"
@@ -52,6 +56,7 @@ const (
 
 // ---------- inputs ----------
 
+// DayRate is one day's rolled raw pass rate — the unit the windows compare.
 type DayRate struct {
 	Day      time.Time `json:"day"`
 	Outcomes int       `json:"outcomes"`
@@ -59,6 +64,7 @@ type DayRate struct {
 	Rate     float64   `json:"rate"`
 }
 
+// StreakInput is a test's consecutive-failure streak on master as of the day.
 type StreakInput struct {
 	TestID     string `json:"test_id"`
 	Streak     int    `json:"streak"`
@@ -66,11 +72,13 @@ type StreakInput struct {
 	TotalRuns  int    `json:"total_runs"`
 }
 
+// CrossPRInput is a test's distinct-PR failure count inside the 7d window.
 type CrossPRInput struct {
 	TestID      string `json:"test_id"`
 	DistinctPRs int    `json:"distinct_prs"`
 }
 
+// MasterAlertInputs is everything the pure rule engine reads for one as-of day.
 type MasterAlertInputs struct {
 	Repo     string         `json:"repo"`
 	AsOf     time.Time      `json:"as_of"`
@@ -81,6 +89,7 @@ type MasterAlertInputs struct {
 	CrossPR  []CrossPRInput `json:"cross_pr"`
 }
 
+// Alert is one fired rule: what, on what subject, with what evidence.
 type Alert struct {
 	Rule     string         `json:"rule"`
 	Subject  string         `json:"subject"`
@@ -175,6 +184,8 @@ func medianRate(rates []DayRate, days int) *float64 {
 
 // ---------- W8 dedup ----------
 
+// FiringRecord is the live dedup state for one (rule, subject) — the W8 noise
+// controller. Fire counts are truth; posts and issue writes respect cooldowns.
 type FiringRecord struct {
 	Rule            string     `json:"rule"`
 	Subject         string     `json:"subject"`
@@ -193,6 +204,7 @@ type FiringRecord struct {
 	issuePending bool `json:"-"`
 }
 
+// DedupPlan is what actually goes out for this evaluation, and what was held.
 type DedupPlan struct {
 	ToPost        []Alert        `json:"to_post"`         // channel posts due now
 	ToOpenIssue   []Alert        `json:"to_open_issue"`   // persistent, no issue yet
@@ -643,12 +655,12 @@ func (h *Handlers) recordFirings(ctx context.Context, repo string, records map[s
 // ---------- notifier (env-gated; unset = log-only, flagged in W16) ----------
 
 // postJSONTo posts a JSON body; the optional token adds GitHub auth.
-func postJSONTo(ctx context.Context, url string, body any, token string) (map[string]any, error) {
+func postJSONTo(ctx context.Context, url string, body any, token string) (map[string]any, error) { //nolint:gosec // G704: url is operator-configured (TSIO_ALERT_WEBHOOK_URL / api.github.com), never request input
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw)) //nolint:gosec // G704: url is operator-configured (webhook env var / api.github.com), request input only ever becomes a validated slug
 	if err != nil {
 		return nil, err
 	}
@@ -657,7 +669,7 @@ func postJSONTo(ctx context.Context, url string, body any, token string) (map[st
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Accept", "application/vnd.github+json")
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: same operator-configured destinations as above
 	if err != nil {
 		return nil, err
 	}
@@ -678,12 +690,12 @@ func (h *Handlers) postAlertWebhook(ctx context.Context, repo string, alerts []A
 		}
 		return nil
 	}
-	lines := ""
+	var lines strings.Builder
 	for _, a := range alerts {
-		lines += "- **" + a.Rule + "** — " + a.Subject + "\n"
+		lines.WriteString("- **" + a.Rule + "** — " + a.Subject + "\n")
 	}
 	_, err := postJSONTo(ctx, url, map[string]any{
-		"text": "🔔 **" + repo + "** master alerting fired:\n" + lines,
+		"text": "🔔 **" + repo + "** master alerting fired:\n" + lines.String(),
 	}, "")
 	return err
 }
@@ -699,9 +711,9 @@ func (h *Handlers) openAlertIssue(ctx context.Context, repo string, a Alert) (st
 		}
 		return "", 0, nil
 	}
-	fullRepo := repo
-	if !containsSlash(fullRepo) {
-		fullRepo = "mattermost/" + fullRepo
+	fullRepo, ok := fullRepoSlug(repo)
+	if !ok {
+		return "", 0, fmt.Errorf("invalid repo slug: %q", repo)
 	}
 	out, err := postJSONTo(ctx, "https://api.github.com/repos/"+fullRepo+"/issues", map[string]any{
 		"title":  "[triage] persistent failure: " + a.Subject,
@@ -723,9 +735,9 @@ func (h *Handlers) updateAlertIssue(ctx context.Context, repo string, a Alert, r
 	if token == "" || rec.IssueNumber == 0 {
 		return nil
 	}
-	fullRepo := repo
-	if !containsSlash(fullRepo) {
-		fullRepo = "mattermost/" + fullRepo
+	fullRepo, ok := fullRepoSlug(repo)
+	if !ok {
+		return fmt.Errorf("invalid repo slug: %q", repo)
 	}
 	_, err := postJSONTo(ctx,
 		"https://api.github.com/repos/"+fullRepo+"/issues/"+itoa(rec.IssueNumber)+"/comments",
@@ -735,11 +747,11 @@ func (h *Handlers) updateAlertIssue(ctx context.Context, repo string, a Alert, r
 }
 
 func alertEvidenceMarkdown(a Alert) string {
-	out := ""
+	var out strings.Builder
 	for k, v := range a.Evidence {
-		out += "- `" + k + "`: " + fmt.Sprintf("%v", v) + "\n"
+		out.WriteString("- `" + k + "`: " + fmt.Sprintf("%v", v) + "\n")
 	}
-	return out
+	return out.String()
 }
 
 func containsSlash(s string) bool {
@@ -749,4 +761,34 @@ func containsSlash(s string) bool {
 		}
 	}
 	return false
+}
+
+// fullRepoSlug normalizes a repo to owner/name and rejects anything that is
+// not a plain slug — the de-taint for the GitHub issue URL (G704): request
+// input can only ever become mattermost/<safe-chars>, never a URL of its own.
+func fullRepoSlug(repo string) (string, bool) {
+	full := repo
+	if !containsSlash(full) {
+		full = "mattermost/" + full
+	}
+	for _, r := range full {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.', r == '/':
+		default:
+			return "", false
+		}
+	}
+	parts := 0
+	for _, r := range full {
+		if r == '/' {
+			parts++
+		}
+	}
+	if parts != 1 {
+		return "", false
+	}
+	return full, true
 }

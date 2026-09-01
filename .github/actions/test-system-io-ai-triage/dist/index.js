@@ -22374,6 +22374,9 @@ function error(message, properties = {}) {
 function warning(message, properties = {}) {
   issueCommand("warning", toCommandProperties(properties), message instanceof Error ? message.toString() : message);
 }
+function notice(message, properties = {}) {
+  issueCommand("notice", toCommandProperties(properties), message instanceof Error ? message.toString() : message);
+}
 function info(message) {
   process.stdout.write(message + os4.EOL);
 }
@@ -26709,6 +26712,8 @@ function buildPrompt(cluster, ctx) {
   const f = cluster.representative;
   const shots = (f.screenshots || []).map((s) => s.s3_key).join(", ") || "(none)";
   const hist = f.history ? `runs=${f.history.runs} failed=${f.history.failed} flaky=${f.history.flaky} flips=${f.history.flips} last_pass=${f.history.last_pass_commit ?? "none"} failing_since=${f.history.failing_since_commit ?? "none"} series=${f.history.series.join(",")}` : f.history_error || "not loaded \u2014 call get_history";
+  const env = ctx.group.environment_metadata ? `run_config=${JSON.stringify(ctx.group.environment_metadata)}` : "run_config=(not captured)";
+  const delta = (f.config_delta ?? []).length > 0 ? `config_delta_vs_last_passing_run=${f.config_delta.join(", ")}` : "";
   return `You investigate ONE clustered E2E failure exactly as a careful human triager would: read the error and stack, view the failure screenshot, check this test's PAST failures on the baseline branch, check whether the same test is failing on other PRs right now, and read what this PR changed. Then decide. Do not ask for a rerun. 300 identical failures are still one cause.
 
 Call TSIO tools as needed, then decide. You already have error/stack (and often screenshots) in this prompt \u2014 that IS evidence.
@@ -26757,6 +26762,7 @@ external_test_id: ${f.external_test_id || "none"}
 Error: ${(f.error_message || "").slice(0, 3e3) || "(none)"}
 Stack: ${(f.error_stack || "").slice(0, 2e3) || "(none)"}
 History: ${hist}
+${env}${delta ? "\n" + delta : ""}
 Other PRs failing: ${f.distinct_prs ?? "unknown"}
 Screenshot keys (get_screenshot): ${shots}
 PR changed files: ${ctx.changedFiles.slice(0, 40).join(", ") || "(none)"}
@@ -27019,6 +27025,10 @@ function formatTriageComment(args) {
     `<details><summary>All ${args.decisions.length} cluster(s) (${waived} waived as flaky)</summary>`,
     ``
   );
+  if (args.runConfig && Object.keys(args.runConfig).length > 0) {
+    const cfg = Object.entries(args.runConfig).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
+    lines.push(`Run config: \`${cfg}\``, ``);
+  }
   lines.push(`| Cluster | Verdict | Waived | Gist |`, `|---|---|:--:|---|`);
   for (let i = 0; i < args.decisions.length; i++) {
     const d = args.decisions[i];
@@ -27079,6 +27089,12 @@ async function upsertTriageComment(args) {
 
 // src/policy.ts
 var WAIVE_CONFIDENCE = 0.85;
+function modeForPhase(runType, phase) {
+  if (phase <= 0) return "shadow";
+  const t = (runType || "").toUpperCase();
+  if (t === "MAIN" && phase < 2) return "shadow";
+  return "gate";
+}
 var FLAKY = /* @__PURE__ */ new Set(["FLAKY_TEST", "FLAKY_INFRA", "FLAKY_SERVER"]);
 var NEVER_WAIVE = /* @__PURE__ */ new Set(["PR_REGRESSION", "INCONCLUSIVE", "TEST_DEBT", "BUILD_OR_ENV_ERROR"]);
 var PRODUCT_REJECTION = [
@@ -27151,9 +27167,16 @@ function hasAdjudicationEvidence(failure) {
   if ((failure.error_stack || "").trim().length > 0) return true;
   return false;
 }
+var bystanderPreexisting = (args) => args.verdict === "MAIN_REGRESSION" && args.citations.includes("failing_on_baseline") && (args.runType || "").toUpperCase() !== "MAIN";
 function canWaive(args) {
   if (neverAutoWaive(args.runType, args.branch)) {
     return { waived: false, reason: "release runs never auto-waive" };
+  }
+  if ((args.runType || "").toUpperCase() === "MAIN" && args.verdict === "MAIN_REGRESSION") {
+    return {
+      waived: false,
+      reason: "MAIN runs never waive MAIN_REGRESSION \u2014 the baseline is this run"
+    };
   }
   if (NEVER_WAIVE.has(args.verdict)) {
     return { waived: false, reason: `${args.verdict} is not waivable` };
@@ -27167,7 +27190,7 @@ function canWaive(args) {
   if (args.diffOverlapsFailure && FLAKY.has(args.verdict)) {
     return { waived: false, reason: "PR diff touches the failing area \u2014 attribution is ambiguous" };
   }
-  if (args.amnestyGranted === false) {
+  if (args.amnestyGranted === false && !bystanderPreexisting(args)) {
     return { waived: false, reason: "amnesty denied" };
   }
   if (args.confidence < WAIVE_CONFIDENCE) {
@@ -27180,7 +27203,7 @@ function canWaive(args) {
   if (FLAKY.has(args.verdict)) {
     return { waived: true, reason: args.verdict };
   }
-  if (args.verdict === "MAIN_REGRESSION" && args.citations.includes("failing_on_baseline")) {
+  if (bystanderPreexisting(args)) {
     return { waived: true, reason: "pre-existing on the baseline branch" };
   }
   return { waived: false, reason: `${args.verdict} is not waivable` };
@@ -27794,7 +27817,14 @@ async function run() {
   const groupID = getInput("group-id");
   const baseline = getInput("baseline-branch") || "main";
   const runType = getInput("run-type") || "PR";
-  const mode = (getInput("mode") || "shadow").toLowerCase();
+  let mode = (getInput("mode") || "shadow").toLowerCase();
+  const phase = await fetchRolloutPhase(baseURL);
+  if (mode === "gate" && modeForPhase(runType, phase) !== "gate") {
+    notice(
+      `run-type ${runType} gated to shadow by rollout phase ${phase} (server /triage/phase) \u2014 observing only`
+    );
+    mode = "shadow";
+  }
   const contextName = getInput("commit-status-context") || "e2e-test/ai-triage";
   const originalContexts = parseContextList(getInput("original-commit-status-contexts"));
   const githubToken = getInput("github-token");
@@ -27966,7 +27996,8 @@ async function run() {
       prAuthor,
       decisions,
       clusters: pack.clusters || [],
-      reportURL
+      reportURL,
+      runConfig: pack.group?.environment_metadata
     });
     if (commentBody) {
       const url = await upsertTriageComment({
@@ -28162,6 +28193,19 @@ function parseIdentity(raw) {
   }
   parsed.gh_run_attempt = String(parsed.gh_run_attempt || "1");
   return parsed;
+}
+async function fetchRolloutPhase(baseURL) {
+  try {
+    const res = await retryFetch(`${baseURL}/api/v1/triage/phase`, {}, "triage/phase");
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const body = await res.json();
+    const phase = body.phase ?? 0;
+    if (phase < 0 || phase > 3) return 0;
+    return phase;
+  } catch (err) {
+    warning(`rollout phase fetch failed (${err.message}) \u2014 fail closed to shadow (phase 0)`);
+    return 0;
+  }
 }
 async function fetchEvidence(baseURL, identity, groupID, baseline) {
   const params = new URLSearchParams({

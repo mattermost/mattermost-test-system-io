@@ -16,6 +16,7 @@
 //     preference shrink the sample — refill over it.
 //   - Force-include every waiver issued during a demoted window (W13), so the
 //     verdicts that cost triage its authority are always audited.
+
 package triage
 
 import (

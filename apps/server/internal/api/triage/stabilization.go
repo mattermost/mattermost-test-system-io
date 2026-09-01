@@ -12,6 +12,7 @@
 // until it does, the guard is invocable standalone.
 //
 // W15c: SLA clocks derived from the ledger, per the spec's SLA table.
+
 package triage
 
 import (
@@ -23,6 +24,8 @@ import (
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 )
 
+// StabilizationQueueDepth is the working-queue scope: the organic ranking
+// serves at most this many entries (plan W14; promotions ride above it).
 const StabilizationQueueDepth = 10
 
 // ---------- W14: the derived stabilization queue ----------

@@ -9,7 +9,7 @@ import (
 // advisory-period blame is action-side; corrected/promoted close here), and
 // the 1x/2x breach flags.
 
-func TestSlaClockCategories(t *testing.T) {
+func TestSLAClockCategories(t *testing.T) {
 	cases := []struct {
 		name       string
 		verdict    string
@@ -31,7 +31,7 @@ func TestSlaClockCategories(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			state, limit := SlaClock(tc.verdict, tc.attributed, tc.age, false, false, false)
+			state, limit := SLAClock(tc.verdict, tc.attributed, tc.age, false, false, false)
 			if state != tc.wantState {
 				t.Fatalf("state = %q, want %q", state, tc.wantState)
 			}
@@ -43,10 +43,10 @@ func TestSlaClockCategories(t *testing.T) {
 }
 
 func TestSlaClockClosesOnAction(t *testing.T) {
-	if state, _ := SlaClock("MAIN_REGRESSION", true, 9*24*time.Hour, true, false, false); state != "closed" {
+	if state, _ := SLAClock("MAIN_REGRESSION", true, 9*24*time.Hour, true, false, false); state != slaStateClosed {
 		t.Fatalf("corrected verdict clock = %q, want closed", state)
 	}
-	if state, _ := SlaClock("MAIN_REGRESSION", true, 9*24*time.Hour, false, true, false); state != "closed" {
+	if state, _ := SLAClock("MAIN_REGRESSION", true, 9*24*time.Hour, false, true, false); state != slaStateClosed {
 		t.Fatalf("queue-promoted verdict clock = %q, want closed", state)
 	}
 }
@@ -58,7 +58,7 @@ func TestSortSlaRowsWorstFirst(t *testing.T) {
 		{State: "flag2", AgeDays: 6},
 		{State: "flag1", AgeDays: 7},
 	}
-	sortSlaRows(rows)
+	sortSLARows(rows)
 	if rows[0].State != "flag2" {
 		t.Fatalf("first = %s, want flag2", rows[0].State)
 	}
@@ -73,16 +73,16 @@ func TestSortSlaRowsWorstFirst(t *testing.T) {
 // W15 — the M4 advisory period: attributed blame runs clockless while the
 // attribution precision itself is being measured.
 func TestSlaClockAdvisoryBlame(t *testing.T) {
-	if state, _ := SlaClock("MAIN_REGRESSION", true, 9*24*time.Hour, false, false, true); state != "none" {
+	if state, _ := SLAClock("MAIN_REGRESSION", true, 9*24*time.Hour, false, false, true); state != slaStateNone {
 		t.Fatalf("advisory attributed blame state = %q, want none (no clock)", state)
 	}
 	// Unattributed blame still carries the queue clock during advisory (5d
 	// limit; 9d is past 1x, not yet 2x).
-	if state, _ := SlaClock("MAIN_REGRESSION", false, 9*24*time.Hour, false, false, true); state != "flag1" {
+	if state, _ := SLAClock("MAIN_REGRESSION", false, 9*24*time.Hour, false, false, true); state != slaStateFlag1 {
 		t.Fatalf("advisory unattributed state = %q, want flag1", state)
 	}
 	// Advisory off: attributed blame clocks at 2 days as usual.
-	if state, _ := SlaClock("MAIN_REGRESSION", true, 3*24*time.Hour, false, false, false); state != "flag1" {
+	if state, _ := SLAClock("MAIN_REGRESSION", true, 3*24*time.Hour, false, false, false); state != slaStateFlag1 {
 		t.Fatalf("post-advisory attributed state = %q, want flag1", state)
 	}
 }

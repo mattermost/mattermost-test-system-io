@@ -15,6 +15,7 @@
 //
 // Demotion applies to runs starting after it — no retroactive check flips.
 // Promotion is always a human action; this code only computes eligibility.
+
 package triage
 
 import (
@@ -28,6 +29,10 @@ import (
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 )
 
+// The four rollout phases of the W13 ladder: shadow observes and flips
+// nothing; PR gate greens PR checks on waived flakes; master gate extends
+// that to MAIN runs (confirmed flakes only, by the W6 policy); self-healing
+// switches on the stabilization loop.
 const (
 	PhaseShadow      = 0
 	PhasePRGate      = 1

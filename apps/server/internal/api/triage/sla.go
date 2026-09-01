@@ -16,6 +16,7 @@
 //
 // M4's advisory period (first 4 weeks of author pings) runs clockless for
 // single-commit blame — the drift report records the flag-off date.
+
 package triage
 
 import (
@@ -25,14 +26,25 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 )
 
+// SLA clock states (shared with the tests — goconst wants one binding).
 const (
+	slaStateOpen   = "open"
+	slaStateFlag1  = "flag1"
+	slaStateFlag2  = "flag2"
+	slaStateNone   = "none"
+	slaStateClosed = "closed"
+
+	slaVerdictMainRegression = "MAIN_REGRESSION"
+	slaVerdictFlakyInfra     = "FLAKY_INFRA"
+	slaVerdictFlakyTest      = "FLAKY_TEST"
+
 	slaMainRegressionAttributed = 2 * 24 * time.Hour
 	slaMainRegressionQueue      = 5 * 24 * time.Hour
 	slaFlakyInfra               = 2 * 24 * time.Hour
 	slaFlakyTestExpired         = 5 * 24 * time.Hour
 )
 
-// SlaClock is the pure core: given a verdict's class, attribution, age, and
+// SLAClock is the pure core: given a verdict's class, attribution, age, and
 // whether a human has since acted, produce the SLA state.
 //
 //	state open .... clock running, within SLA
@@ -44,36 +56,36 @@ const (
 // advisoryBlame: during M4's advisory period (a dated config flag, not a
 // comment) single-commit blame pings are informational — attribution is
 // being measured, not enforced — so attributed MAIN_REGRESSION runs clockless.
-func SlaClock(verdict string, attributed bool, age time.Duration, corrected, promoted bool, advisoryBlame bool) (state string, limit time.Duration) {
+func SLAClock(verdict string, attributed bool, age time.Duration, corrected, promoted bool, advisoryBlame bool) (state string, limit time.Duration) {
 	switch {
 	case corrected || promoted:
-		return "closed", 0
-	case advisoryBlame && verdict == "MAIN_REGRESSION" && attributed:
-		return "none", 0
-	case verdict == "MAIN_REGRESSION":
+		return slaStateClosed, 0
+	case advisoryBlame && verdict == slaVerdictMainRegression && attributed:
+		return slaStateNone, 0
+	case verdict == slaVerdictMainRegression:
 		if attributed {
 			limit = slaMainRegressionAttributed
 		} else {
 			limit = slaMainRegressionQueue
 		}
-	case verdict == "FLAKY_INFRA":
+	case verdict == slaVerdictFlakyInfra:
 		limit = slaFlakyInfra
-	case verdict == "FLAKY_TEST":
+	case verdict == slaVerdictFlakyTest:
 		// Only amnesty-expired flakes carry an SLA (the waived ones are
 		// recorded, not chased); the caller passes age only for expired ones.
 		limit = slaFlakyTestExpired
 	default:
 		// PR_REGRESSION is before-merge; TEST_DEBT is groomed weekly;
 		// INCONCLUSIVE/BUILD_OR_ENV_ERROR route elsewhere. No clock.
-		return "none", 0
+		return slaStateNone, 0
 	}
 	switch {
 	case age >= 2*limit:
-		return "flag2", limit
+		return slaStateFlag2, limit
 	case age >= limit:
-		return "flag1", limit
+		return slaStateFlag1, limit
 	default:
-		return "open", limit
+		return slaStateOpen, limit
 	}
 }
 
@@ -91,11 +103,11 @@ type slaRow struct {
 	LimitDays      int       `json:"limit_days"`
 }
 
-// SlaReport serves GET /api/v1/triage/sla?repo=&advisory_until=ISO-date —
+// SLAReport serves GET /api/v1/triage/sla?repo=&advisory_until=ISO-date —
 // the past-SLA list the weekly meeting opens. Ordered worst-first (flag2
 // before flag1 before open). advisory_until implements the M4 advisory
 // period: verdicts created before that date carry no blame clock.
-func (h *Handlers) SlaReport(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) SLAReport(w http.ResponseWriter, r *http.Request) {
 	repo := r.URL.Query().Get("repo")
 	if repo == "" {
 		api.WriteError(w, r, errRepoRequired())
@@ -124,10 +136,10 @@ func (h *Handlers) SlaReport(w http.ResponseWriter, r *http.Request) {
 		       ) AS promoted
 		FROM triage_verdicts v
 		WHERE (v.repository = $1 OR split_part(v.repository, '/', 2) = $1)
-		  AND v.verdict IN ('MAIN_REGRESSION', 'FLAKY_INFRA')
+		  AND v.verdict IN ($2, $3)
 		  AND v.created_at >= now() - interval '30 days'
 		ORDER BY v.created_at ASC
-	`, repo)
+	`, repo, slaVerdictMainRegression, slaVerdictFlakyInfra)
 	if err != nil {
 		h.logError("sla report query", err)
 		api.WriteError(w, r, api.ErrInternal)
@@ -149,7 +161,7 @@ func (h *Handlers) SlaReport(w http.ResponseWriter, r *http.Request) {
 		}
 		age := now.Sub(row.CreatedAt)
 		advisory := !advisoryUntil.IsZero() && row.CreatedAt.Before(advisoryUntil)
-		state, limit := SlaClock(row.Verdict, row.Attributed, age, corrected, promoted, advisory)
+		state, limit := SLAClock(row.Verdict, row.Attributed, age, corrected, promoted, advisory)
 		if state == "none" || state == "closed" {
 			continue
 		}
@@ -160,11 +172,11 @@ func (h *Handlers) SlaReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Worst first: flag2, then flag1, then open; age descending within each.
-	sortSlaRows(out)
+	sortSLARows(out)
 	writeJSON(w, http.StatusOK, map[string]any{"repo": repo, "entries": out})
 }
 
-func sortSlaRows(rows []slaRow) {
+func sortSLARows(rows []slaRow) {
 	rank := map[string]int{"flag2": 0, "flag1": 1, "open": 2}
 	for i := 1; i < len(rows); i++ {
 		for j := i; j > 0; j-- {

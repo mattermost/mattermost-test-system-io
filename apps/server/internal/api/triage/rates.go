@@ -18,6 +18,7 @@
 // waiver must never make master look greener than it is.
 //
 // No caller may fetch an unlabelled "pass rate".
+
 package triage
 
 import (

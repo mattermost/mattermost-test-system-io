@@ -93,7 +93,7 @@ func TestSuggestConfigDeltaPreTag(t *testing.T) {
 			Runs: 6, Failed: 1, Flaky: 0, // Failed == 1: the current run is the only failure
 			ConfigDeltaKeys: []string{"E2E_FEATURE_FLAG_X"},
 		})
-		if s.Verdict != "FLAKY_INFRA" {
+		if s.Verdict != configDeltaVerdict {
 			t.Fatalf("verdict = %q, want FLAKY_INFRA", s.Verdict)
 		}
 		if s.NeedsAI {
@@ -110,7 +110,7 @@ func TestSuggestConfigDeltaPreTag(t *testing.T) {
 			Runs: 6, Failed: 3, Flaky: 1,
 			ConfigDeltaKeys: []string{"E2E_FEATURE_FLAG_X"},
 		})
-		if s.Verdict == "FLAKY_INFRA" {
+		if s.Verdict == configDeltaVerdict {
 			t.Fatal("delta must not pre-tag when the test has failures in history")
 		}
 	})
@@ -121,14 +121,14 @@ func TestSuggestConfigDeltaPreTag(t *testing.T) {
 			Runs: 6, Failed: 2, Flaky: 0,
 			ConfigDeltaKeys: []string{"E2E_FEATURE_FLAG_X"},
 		})
-		if s.Verdict == "FLAKY_INFRA" {
+		if s.Verdict == configDeltaVerdict {
 			t.Fatal("Failed >= 2 means the failure predates this run — not a config delta")
 		}
 	})
 
 	t.Run("no delta keys = no pre-tag", func(t *testing.T) {
 		s := Suggest(Signals{Status: "failed", HasStableID: true, HistoryOK: true, Runs: 6})
-		if s.Verdict == "FLAKY_INFRA" {
+		if s.Verdict == configDeltaVerdict {
 			t.Fatal("clean history alone must not pre-tag FLAKY_INFRA")
 		}
 	})

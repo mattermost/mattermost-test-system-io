@@ -215,6 +215,10 @@ func Build(d Deps) chi.Router {
 		r.Get("/triage/release-guard", triageH.ReleaseGuard)
 		r.Get("/triage/stabilization/queue", triageH.StabilizationQueue)
 		r.Get("/triage/sla", triageH.SlaReport)
+		// W7 — master alerting: dry evaluation + replay are public tools; the
+		// firing apply is the scheduled job's authenticated call.
+		r.Get("/triage/alerts/evaluation", triageH.AlertEvaluation)
+		r.Get("/triage/alerts/replay", triageH.AlertReplay)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
@@ -272,6 +276,8 @@ func Build(d Deps) chi.Router {
 			// Stabilization queue writes — allocating fixing effort is authenticated.
 			r.Post("/triage/stabilization/promote", triageH.PromoteStabilization)
 			r.Post("/triage/stabilization/resolve", triageH.ResolveStabilization)
+			// W7 — the alerting job's apply: posts, opens/updates issues, records.
+			r.Post("/triage/alerts/evaluate", triageH.AlertEvaluate)
 
 			r.Get("/artifacts/{id}", artifactsH.Get)
 

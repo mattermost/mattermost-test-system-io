@@ -26598,7 +26598,14 @@ async function run() {
     {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
-      body: JSON.stringify(identityForReports(compositeIdentity, framework, totalReportsExpected))
+      body: JSON.stringify(
+        identityForReports(
+          compositeIdentity,
+          framework,
+          totalReportsExpected,
+          parseEnvironmentMetadata()
+        )
+      )
     },
     "reports/begin"
   );
@@ -26645,7 +26652,7 @@ function formatPendingDescription() {
   const aliases = imageAliases ? ` (${imageAliases})` : "";
   return `tests running, image_tag:${imageTag}${aliases}`;
 }
-function identityForReports(c, framework, totalReportsExpected) {
+function identityForReports(c, framework, totalReportsExpected, environmentMetadata) {
   const body = {
     repository: c.repository,
     commit: c.commit_sha,
@@ -26657,7 +26664,25 @@ function identityForReports(c, framework, totalReportsExpected) {
     total_reports_expected: totalReportsExpected
   };
   if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;
+  if (environmentMetadata && Object.keys(environmentMetadata).length > 0) {
+    body.environment_metadata = environmentMetadata;
+  }
   return body;
+}
+function parseEnvironmentMetadata() {
+  const raw = getInput("environment-metadata").trim();
+  if (raw === "") return void 0;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      warning("environment-metadata must be a JSON object \u2014 ignoring");
+      return void 0;
+    }
+    return parsed;
+  } catch (err) {
+    warning(`environment-metadata is not valid JSON \u2014 ignoring (${String(err)})`);
+    return void 0;
+  }
 }
 function resolveBaseURL() {
   const useStaging = getInput("use-staging").trim().toLowerCase() === "true";

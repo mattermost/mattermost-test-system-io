@@ -197,7 +197,14 @@ export async function run(): Promise<void> {
     {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
-      body: JSON.stringify(identityForReports(compositeIdentity, framework, totalReportsExpected)),
+      body: JSON.stringify(
+        identityForReports(
+          compositeIdentity,
+          framework,
+          totalReportsExpected,
+          parseEnvironmentMetadata(),
+        ),
+      ),
     },
     "reports/begin",
   );
@@ -256,6 +263,7 @@ function identityForReports(
   c: CompositeIdentity,
   framework: string,
   totalReportsExpected: number,
+  environmentMetadata?: Record<string, unknown>,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     repository: c.repository,
@@ -268,7 +276,39 @@ function identityForReports(
     total_reports_expected: totalReportsExpected,
   };
   if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;
+  // W9 — the run configuration this group executed under (feature flags,
+  // edition, notable env). The deterministic config-delta pre-tag compares it
+  // against the last passing run for the same test and, when configuration is
+  // the ONLY difference, returns FLAKY_INFRA with zero model calls. Without it
+  // that pre-tag can never fire, so the cheapest correct verdict in the system
+  // is unavailable.
+  if (environmentMetadata && Object.keys(environmentMetadata).length > 0) {
+    body.environment_metadata = environmentMetadata;
+  }
   return body;
+}
+
+/**
+ * W9 — parse the environment-metadata input.
+ *
+ * Deliberately fail-soft: a malformed value warns and is dropped rather than
+ * failing the whole E2E run. Losing the config-delta pre-tag costs one cheap
+ * verdict; failing dispatch-begin costs the entire test run.
+ */
+function parseEnvironmentMetadata(): Record<string, unknown> | undefined {
+  const raw = core.getInput("environment-metadata").trim();
+  if (raw === "") return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      core.warning("environment-metadata must be a JSON object — ignoring");
+      return undefined;
+    }
+    return parsed as Record<string, unknown>;
+  } catch (err) {
+    core.warning(`environment-metadata is not valid JSON — ignoring (${String(err)})`);
+    return undefined;
+  }
 }
 
 function resolveBaseURL(): string {

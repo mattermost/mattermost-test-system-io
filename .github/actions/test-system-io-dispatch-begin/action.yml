@@ -128,6 +128,15 @@ inputs:
       when `framework: cypress`.
     required: false
     default: e2e-tests/playwright
+  environment-metadata:
+    description: >-
+      W9 — JSON object describing the run configuration this group executes
+      under (feature flags, server edition, notable env). Recorded on the
+      report group so the deterministic config-delta pre-tag can compare a
+      failure against the last passing run for the same test. Malformed values
+      warn and are dropped rather than failing the run.
+    required: false
+    default: ""
   playwright-project:
     description: >
       Playwright project name recorded on the run as metadata (sent to

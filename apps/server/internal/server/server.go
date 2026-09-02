@@ -221,6 +221,9 @@ func Build(d Deps) chi.Router {
 		// credential round-trip to find out whether a test is quarantined.
 		// Every WRITE is authenticated below.
 		r.Get("/triage/quarantine", triageH.ListQuarantine)
+		// R7-L1 — "is the loop keeping up?": arrival vs drain, with the one
+		// input worth changing named. Public so a dashboard can show it.
+		r.Get("/triage/stabilization/throughput", triageH.StabilizationThroughput)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)

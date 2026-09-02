@@ -1,0 +1,288 @@
+// R7-L1 — is the stabilization loop keeping up?
+//
+// THE PROBLEM THIS MAKES VISIBLE. The strategy doc carries a throughput formula
+// and the honest admission that "review capacity, not agent capacity, is the
+// binding constraint" — but nothing ever computed either side of it. So the
+// question that decides whether the whole master-side investment pays off ("do
+// we fix flaky tests faster than they appear?") was answerable only by hand,
+// from a spreadsheet, using numbers nobody was measuring.
+//
+// The arithmetic matters because it inverts the intuition. Fixing master so PR
+// authors suffer less is the right instinct, and every fix removes a recurring
+// source of noise permanently where a waiver only mitigates one occurrence. But
+// on the measured numbers the loop drains a small fraction of what arrives:
+//
+//	window_days = max(7, 20 / master_runs_per_day)   -- the 7-day floor governs
+//	cycle_days  = review_latency + window_days
+//	drain_rate  = concurrency / (cycle_days * attempts_per_fix)
+//	required concurrency >= arrival_rate * cycle_days * attempts_per_fix
+//
+// With arrival at 1.5/day, a 7-day window and 1.5 attempts per fix, breaking
+// even needs concurrency in the 20-32 range against a hard cap of 5. So the
+// backlog grows, and PR-side waivers stay load-bearing rather than being a
+// temporary bridge to a clean master.
+//
+// Of the three inputs, exactly one is a real lever: window_days is irreducible
+// if you want proof a fix worked, attempts_per_fix is a property of the tests,
+// and concurrency is capped by review capacity. That leaves REVIEW LATENCY. A
+// weekly named rotation means up to 7 days; a 48-hour review SLA cuts cycle
+// time from 14 days to 9 and raises drain by ~55%. This endpoint exists so that
+// trade is visible to whoever owns the rotation.
+
+package triage
+
+import (
+	"math"
+	"net/http"
+	"time"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
+)
+
+// Defaults for the two inputs this server cannot observe. Both are overridable
+// per-call so a reviewer can ask "what if we reviewed in two days?" without a
+// deploy, and both are echoed in the response so no number is unexplained.
+const (
+	// defaultAttemptsPerFix is the spec's assumption until Phase 0 measures it:
+	// most tests fixed on the first attempt, some needing 2-3, capped at 3.
+	defaultAttemptsPerFix = 1.5
+	// defaultReviewLatencyDays reflects a weekly named rotation — a PR opened
+	// just after this week's slot waits for the next one.
+	defaultReviewLatencyDays = 7.0
+	// defaultConcurrency is the pilot value from the spec (W14).
+	defaultConcurrency = 2
+	// maxConcurrency is the spec's hard cap: above this, review capacity is the
+	// binding constraint and raising the number buys nothing.
+	maxConcurrency = 5
+	// windowFloorDays is the flakiness window's floor: "20 runs or 7 days,
+	// whichever covers more runs", so on a busy master the floor governs.
+	windowFloorDays = 7.0
+)
+
+type throughputResponse struct {
+	Repo   string `json:"repo"`
+	Window string `json:"window"`
+
+	// Measured from this server's own data.
+	MasterRunsPerDay  float64 `json:"master_runs_per_day"`
+	NewFlakyInWindow  int     `json:"new_flaky_in_window"`
+	ArrivalRate       float64 `json:"arrival_rate_per_day"`
+	ResolvedInWindow  int     `json:"resolved_in_window"`
+	ObservedDrainRate float64 `json:"observed_drain_rate_per_day"`
+
+	// Inputs, echoed so every derived number is reproducible by hand.
+	ReviewLatencyDays float64 `json:"review_latency_days"`
+	AttemptsPerFix    float64 `json:"attempts_per_fix"`
+	Concurrency       int     `json:"concurrency"`
+	MaxConcurrency    int     `json:"max_concurrency"`
+
+	// Derived.
+	WindowDays           float64 `json:"window_days"`
+	CycleDays            float64 `json:"cycle_days"`
+	ModeledDrainRate     float64 `json:"modeled_drain_rate_per_day"`
+	RequiredConcurrency  float64 `json:"required_concurrency"`
+	CoveragePct          float64 `json:"coverage_pct"`
+	DeficitPerDay        float64 `json:"deficit_per_day"`
+	BacklogGrowthPerWeek float64 `json:"backlog_growth_per_week"`
+
+	KeepingUp      bool     `json:"keeping_up"`
+	BindingLever   string   `json:"binding_lever"`
+	Recommendation string   `json:"recommendation"`
+	Notes          []string `json:"notes"`
+}
+
+// StabilizationThroughput serves
+// GET /api/v1/triage/stabilization/throughput?repo=[&window=][&review_latency_days=][&attempts_per_fix=][&concurrency=]
+//
+// Public read, same reasoning as the queue: the loop and any dashboard should
+// be able to ask "am I keeping up?" without a credential round-trip.
+func (h *Handlers) StabilizationThroughput(w http.ResponseWriter, r *http.Request) {
+	repo := r.URL.Query().Get("repo")
+	if repo == "" {
+		api.WriteError(w, r, errRepoRequired())
+		return
+	}
+	window := orDefault(r.URL.Query().Get("window"), "30d")
+	since, err := parseSince(window)
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	if since == nil {
+		api.WriteError(w, r, errRepoRequiredWith("window must be bounded, e.g. 30d"))
+		return
+	}
+	windowDays := time.Since(*since).Hours() / 24
+	if windowDays < 1 {
+		windowDays = 1
+	}
+
+	resp := throughputResponse{
+		Repo:              normalizeRepo(repo),
+		Window:            window,
+		ReviewLatencyDays: parseFloat(r.URL.Query().Get("review_latency_days"), defaultReviewLatencyDays),
+		AttemptsPerFix:    parseFloat(r.URL.Query().Get("attempts_per_fix"), defaultAttemptsPerFix),
+		Concurrency:       int(parseFloat(r.URL.Query().Get("concurrency"), defaultConcurrency)),
+		MaxConcurrency:    maxConcurrency,
+	}
+	if resp.AttemptsPerFix <= 0 {
+		resp.AttemptsPerFix = defaultAttemptsPerFix
+	}
+	if resp.Concurrency <= 0 {
+		resp.Concurrency = defaultConcurrency
+	}
+
+	if err := h.loadThroughputCounts(r, &resp, since, windowDays); err != nil {
+		h.logError("stabilization throughput", err)
+		api.WriteError(w, r, api.ErrInternal)
+		return
+	}
+
+	computeThroughput(&resp)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handlers) loadThroughputCounts(r *http.Request, resp *throughputResponse, since *time.Time, windowDays float64) error {
+	ctx := r.Context()
+	repo := resp.Repo
+
+	// Master run volume — sets window_days via the 20-runs-or-7-days rule.
+	var masterGroups int
+	if err := h.Pool.QueryRow(ctx, `
+		SELECT count(*)::int FROM report_groups
+		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
+		  AND branch IN ('main', 'master')
+		  AND created_at >= $2::timestamptz
+	`, repo, since).Scan(&masterGroups); err != nil {
+		return err
+	}
+	resp.MasterRunsPerDay = float64(masterGroups) / windowDays
+
+	// Arrival: tests whose FIRST EVER failure on master in this repo falls
+	// inside the window. "First ever" is what makes it an arrival rather than
+	// a recurrence — a test that has been flaking for months is backlog, not
+	// new work appearing.
+	if err := h.Pool.QueryRow(ctx, `
+		WITH first_fail AS (
+			SELECT tc.external_test_id, min(g.created_at) AS first_failed_at
+			FROM report_groups g
+			JOIN reports rp ON rp.report_group_id = g.id
+			JOIN suites s ON s.report_id = rp.id
+			JOIN test_cases tc ON tc.suite_id = s.id
+			WHERE tc.external_test_id IS NOT NULL
+			  AND tc.status IN ('failed', 'timedOut', 'interrupted', 'flaky')
+			  AND (g.repository = $1 OR split_part(g.repository, '/', 2) = $1)
+			  AND g.branch IN ('main', 'master')
+			GROUP BY tc.external_test_id
+		)
+		SELECT count(*)::int FROM first_fail WHERE first_failed_at >= $2::timestamptz
+	`, repo, since).Scan(&resp.NewFlakyInWindow); err != nil {
+		return err
+	}
+	resp.ArrivalRate = float64(resp.NewFlakyInWindow) / windowDays
+
+	// Observed drain: stabilization promotions actually resolved in the window.
+	// This is the ground truth the model is checked against — if the two
+	// disagree, trust this one and fix the inputs.
+	if err := h.Pool.QueryRow(ctx, `
+		SELECT count(*)::int FROM stabilization_promotions
+		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
+		  AND resolved AND updated_at >= $2::timestamptz
+	`, repo, since).Scan(&resp.ResolvedInWindow); err != nil {
+		return err
+	}
+	resp.ObservedDrainRate = float64(resp.ResolvedInWindow) / windowDays
+	return nil
+}
+
+// computeThroughput applies the strategy doc's formula. Split out from the
+// handler so the arithmetic is unit-testable without a database.
+func computeThroughput(resp *throughputResponse) {
+	// window_days = max(7, 20 / master_runs_per_day). The max is load-bearing:
+	// taking the division alone would understate cycle time on a busy master
+	// and therefore understate the concurrency needed.
+	resp.WindowDays = windowFloorDays
+	if resp.MasterRunsPerDay > 0 {
+		if byRuns := 20 / resp.MasterRunsPerDay; byRuns > resp.WindowDays {
+			resp.WindowDays = byRuns
+		}
+	}
+	resp.CycleDays = resp.ReviewLatencyDays + resp.WindowDays
+
+	denom := resp.CycleDays * resp.AttemptsPerFix
+	if denom > 0 {
+		resp.ModeledDrainRate = float64(resp.Concurrency) / denom
+	}
+	resp.RequiredConcurrency = resp.ArrivalRate * denom
+
+	switch {
+	case resp.ArrivalRate <= 0:
+		// Nothing arriving: trivially keeping up, and say so rather than
+		// reporting a misleading 100%.
+		resp.CoveragePct = 100
+		resp.KeepingUp = true
+		resp.BindingLever = slaStateNone
+		resp.Recommendation = "no new flaky tests appeared in this window — nothing to drain"
+		resp.Notes = append(resp.Notes, "arrival_rate is 0, so coverage is reported as 100% by definition")
+	default:
+		resp.CoveragePct = 100 * resp.ModeledDrainRate / resp.ArrivalRate
+		resp.DeficitPerDay = resp.ArrivalRate - resp.ModeledDrainRate
+		resp.KeepingUp = resp.ModeledDrainRate >= resp.ArrivalRate
+		if resp.DeficitPerDay < 0 {
+			resp.DeficitPerDay = 0
+		}
+		resp.BacklogGrowthPerWeek = resp.DeficitPerDay * 7
+		resp.BindingLever, resp.Recommendation = throughputAdvice(resp)
+	}
+
+	resp.CoveragePct = round2(resp.CoveragePct)
+	resp.ArrivalRate = round2(resp.ArrivalRate)
+	resp.ObservedDrainRate = round2(resp.ObservedDrainRate)
+	resp.ModeledDrainRate = round2(resp.ModeledDrainRate)
+	resp.RequiredConcurrency = round2(resp.RequiredConcurrency)
+	resp.DeficitPerDay = round2(resp.DeficitPerDay)
+	resp.BacklogGrowthPerWeek = round2(resp.BacklogGrowthPerWeek)
+	resp.MasterRunsPerDay = round2(resp.MasterRunsPerDay)
+	resp.CycleDays = round2(resp.CycleDays)
+	resp.WindowDays = round2(resp.WindowDays)
+
+	if resp.ObservedDrainRate == 0 && resp.ModeledDrainRate > 0 {
+		resp.Notes = append(resp.Notes,
+			"observed_drain_rate is 0 — no stabilization promotions were resolved in this window, "+
+				"so modeled_drain_rate is an upper bound, not a measurement")
+	}
+}
+
+// throughputAdvice names the ONE input worth changing. Review latency is the
+// only genuine lever: the re-measurement window is irreducible if you want
+// proof a fix worked, attempts-per-fix is a property of the tests, and
+// concurrency is bounded by review capacity.
+func throughputAdvice(resp *throughputResponse) (lever, rec string) {
+	if resp.KeepingUp {
+		return slaStateNone, "drain meets arrival at the current settings — hold"
+	}
+	if resp.RequiredConcurrency > float64(resp.MaxConcurrency) {
+		// Show what the only real lever buys, concretely.
+		faster := resp.ReviewLatencyDays
+		if faster > 2 {
+			faster = 2
+		}
+		cycleAt2 := faster + resp.WindowDays
+		drainAtCap := float64(resp.MaxConcurrency) / (cycleAt2 * resp.AttemptsPerFix)
+		return "review_latency", "required concurrency " +
+			trimF(resp.RequiredConcurrency) + " exceeds the cap of " + itoa(resp.MaxConcurrency) +
+			", so raising concurrency cannot close this. Review latency is the only real lever: at " +
+			trimF(faster) + "d latency and concurrency " + itoa(resp.MaxConcurrency) +
+			", drain would be " + trimF(round2(drainAtCap)) + "/day against arrival " +
+			trimF(resp.ArrivalRate) + "/day. Quarantine the top of the queue by blast radius for the rest."
+	}
+	return "concurrency", "raise concurrency to " + itoa(int(math.Ceil(resp.RequiredConcurrency))) +
+		" (within the cap of " + itoa(resp.MaxConcurrency) + ") to meet arrival"
+}
+
+func round2(f float64) float64 {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0
+	}
+	return math.Round(f*100) / 100
+}

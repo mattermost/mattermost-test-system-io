@@ -26780,7 +26780,7 @@ RETRY-RECOVERY RULE (status=flaky or retry_count>0 \u2014 the test failed once t
 
 Rules:
 - NEVER return INCONCLUSIVE when error_message, error_stack, or screenshot keys are present. Pick FLAKY_* or a bug verdict.
-- Empty history (runs=0) is normal on staging / new tests \u2014 NOT a reason for INCONCLUSIVE. Cite "empty_history" and still decide from error/screenshots.
+- Empty history (runs=0) is normal on staging / new tests \u2014 NOT a reason for INCONCLUSIVE. Cite "empty_history" and still decide from error/screenshots. But know what happens next: with fewer than 3 baseline runs, a FLAKY_* verdict is REFUSED by policy unless the run also recovered on retry (status=flaky / retry_count>0), because on no history a flake call is a guess. So on a brand-new test that did NOT recover, say what you actually think broke it \u2014 a flake verdict there only discards your reasoning.
 - Screenshots: view one when keys are listed; if keys are "(none)", decide from error/stack alone and cite those.
 - confidence \u22650.85 with two citations (e.g. error_message + screenshot, or error_message + empty_history).
 - If history shows already failing on the baseline, MAIN_REGRESSION \u2014 not this PR.
@@ -27141,6 +27141,7 @@ async function upsertTriageComment(args) {
 
 // src/policy.ts
 var WAIVE_CONFIDENCE = 0.85;
+var MIN_HISTORY_RUNS_FOR_WAIVER = 3;
 function modeForPhase(runType, phase) {
   if (phase <= 0) return "shadow";
   const t = (runType || "").toUpperCase();
@@ -27287,6 +27288,12 @@ function canWaive(args) {
       reason: "failure rate shifted materially at this commit \u2014 historical flakiness does not explain it"
     };
   }
+  if (FLAKY.has(args.verdict) && args.historyRuns !== void 0 && args.historyRuns < MIN_HISTORY_RUNS_FOR_WAIVER && !args.citations.includes("this_run_recovered")) {
+    return {
+      waived: false,
+      reason: `only ${args.historyRuns} baseline run(s) \u2014 need ${MIN_HISTORY_RUNS_FOR_WAIVER} or in-run recovery before calling this a flake`
+    };
+  }
   if (args.amnestyGranted === false && !bystanderPreexisting(args) && !chronicFlakeBystander(args)) {
     return { waived: false, reason: "amnesty denied" };
   }
@@ -27313,6 +27320,7 @@ function decide(args) {
   const rateShifted = args.failure.rate_shift?.shifted === true;
   const q = args.failure.quarantine;
   const quarantined = q?.active === true ? { owner: q.owner, expiresAt: q.expires_at, daysRemaining: q.days_remaining } : void 0;
+  const historyRuns = args.failure.history_error ? void 0 : args.failure.history?.runs;
   const waiver = canWaiveAtPhase({
     runType: args.runType,
     branch: args.branch,
@@ -27324,6 +27332,7 @@ function decide(args) {
     productRejection: rejection,
     rateShiftedAtCommit: rateShifted,
     quarantined,
+    historyRuns,
     phase: args.phase
   });
   const d = {

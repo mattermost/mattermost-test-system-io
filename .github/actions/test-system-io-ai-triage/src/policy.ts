@@ -4,6 +4,25 @@ import { kindOf } from "./blame.ts";
 export const WAIVE_CONFIDENCE = 0.85;
 
 /**
+ * R7-E — the minimum baseline history a FLAKY_* waiver needs.
+ *
+ * The round-6 bar reads: "INCONCLUSIVE on <3-run tests | 100% | Never guess
+ * without history." That bar existed only in a document. Nothing in canWaive
+ * checked history depth, so a brand-new test with runs=0 and a confident model
+ * flake verdict was waivable — the deterministic layer correctly returns
+ * INCONCLUSIVE for runs=0, the model overrides it to FLAKY_* at 0.87, and every
+ * remaining gate passes (amnesty grants at rate 0, the rate-shift test needs
+ * >= 5 baseline runs so it cannot fire, and diff overlap is false when the PR
+ * is elsewhere).
+ *
+ * Observed live on mattermost#38154: three clusters, all runs=0, all
+ * FLAKY_* at 0.87-0.88. Nothing was waived only because a missing
+ * /triage/phase pinned the run to shadow mode. At phase 1 all three would
+ * have greened the check on no history at all.
+ */
+export const MIN_HISTORY_RUNS_FOR_WAIVER = 3;
+
+/**
  * W13/W6 — the server's rollout phase caps what a run type may gate.
  *
  *   phase 0 (shadow)  → nothing flips, everything observes + comments
@@ -269,6 +288,12 @@ export function canWaive(args: {
    * the expiry rule here.
    */
   quarantined?: { owner: string; expiresAt: string; daysRemaining: number };
+  /**
+   * R7-E — baseline runs for this test. Undefined means the history lookup
+   * itself failed, which is handled by the classifier's own fail-closed path
+   * rather than here; 0 is a real answer meaning "brand-new test".
+   */
+  historyRuns?: number;
 }): { waived: boolean; reason: string } {
   if (neverAutoWaive(args.runType, args.branch)) {
     return { waived: false, reason: "release runs never auto-waive" };
@@ -355,6 +380,36 @@ export function canWaive(args: {
         "failure rate shifted materially at this commit — historical flakiness does not explain it",
     };
   }
+  // R7-E: insufficient history — do not guess without a baseline.
+  //
+  // The exception is deliberate and is the whole reason this is not a blanket
+  // refusal: in-run recovery (status=flaky / retry_count>0) is flakiness
+  // MEASURED at this commit, not inferred from history. The test failed, then
+  // passed, with no code change in between. That evidence does not need a
+  // baseline, so a new test that demonstrably flaked in-run stays waivable.
+  //
+  // Without the exception every newly-added test would go permanently red on
+  // every PR that merely runs it, which is a worse failure than the one being
+  // prevented.
+  //
+  // Validated against the three real clusters on mattermost#38154: it refuses
+  // the ABAC file-permissions cluster (screenshot + diff reasoning but NO
+  // measured recovery — an empty channel where ABAC-permitted files should
+  // appear is also what a real regression looks like) and permits the two that
+  // cite this_run_recovered.
+  if (
+    FLAKY.has(args.verdict) &&
+    args.historyRuns !== undefined &&
+    args.historyRuns < MIN_HISTORY_RUNS_FOR_WAIVER &&
+    !args.citations.includes("this_run_recovered")
+  ) {
+    return {
+      waived: false,
+      reason:
+        `only ${args.historyRuns} baseline run(s) — need ${MIN_HISTORY_RUNS_FOR_WAIVER} ` +
+        `or in-run recovery before calling this a flake`,
+    };
+  }
   // W4 bystander carve-out: amnesty's pain must land on master, not on
   // bystander PR authors. A PR that hits a failure already failing on the
   // baseline stays waivable even after the test's amnesty has expired — the
@@ -414,6 +469,10 @@ export function decide(args: {
     q?.active === true
       ? { owner: q.owner, expiresAt: q.expires_at, daysRemaining: q.days_remaining }
       : undefined;
+  // R7-E — history depth. A failed lookup leaves this undefined on purpose:
+  // the classifier already fails closed to INCONCLUSIVE on a history error, so
+  // treating "unknown" as "insufficient" here would double-count it.
+  const historyRuns = args.failure.history_error ? undefined : args.failure.history?.runs;
   const waiver = canWaiveAtPhase({
     runType: args.runType,
     branch: args.branch,
@@ -425,6 +484,7 @@ export function decide(args: {
     productRejection: rejection,
     rateShiftedAtCommit: rateShifted,
     quarantined,
+    historyRuns,
     phase: args.phase,
   });
   const d: Decision = {

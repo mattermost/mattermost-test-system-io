@@ -13,6 +13,7 @@ import {
   neverAutoWaive,
   rollup,
   WAIVE_CONFIDENCE,
+  MIN_HISTORY_RUNS_FOR_WAIVER,
 } from "./policy.ts";
 import type { EvidenceFailure } from "./types.ts";
 
@@ -1289,4 +1290,200 @@ test("R7-D: a policy-asserted confidence still cannot pass the rate-shift gate",
   assert.equal(d.confidence, WAIVE_CONFIDENCE, "the floor is still manufactured");
   assert.equal(d.waived, false, "but the rate-shift gate refuses it anyway");
   assert.match(d.reason, /rate shifted materially/);
+});
+
+// ---------------------------------------------------------------------------
+// R7-E — insufficient history.
+//
+// The round-6 bar said "INCONCLUSIVE on <3-run tests, 100% — never guess
+// without history", but it lived only in a document: canWaive never checked
+// history depth. Reproduced live on mattermost#38154, where three clusters at
+// runs=0 all came back FLAKY_* at 0.87-0.88 and were waivable.
+// ---------------------------------------------------------------------------
+
+const noHistoryFlake = {
+  runType: "PR",
+  branch: "feat/x",
+  verdict: "FLAKY_TEST",
+  confidence: 0.88,
+  amnestyGranted: true,
+  diffOverlapsFailure: false,
+};
+
+test("R7-E: a brand-new test cannot be waived as a flake on model confidence alone", () => {
+  const w = canWaive({
+    ...noHistoryFlake,
+    citations: ["screenshot", "pr_diff", "empty_history"],
+    historyRuns: 0,
+  });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /0 baseline run\(s\)/);
+  assert.match(w.reason, /in-run recovery/);
+});
+
+test("R7-E: in-run recovery is measured, not guessed, so it still waives", () => {
+  // The test failed then passed at this commit with no code change. That
+  // evidence needs no baseline — and without this exception every newly-added
+  // test would go permanently red on every PR that merely runs it.
+  const w = canWaive({
+    ...noHistoryFlake,
+    citations: ["this_run_recovered", "screenshot", "empty_history"],
+    historyRuns: 0,
+  });
+  assert.equal(w.waived, true);
+});
+
+test("R7-E: the threshold is the round-6 bar — under 3 runs", () => {
+  for (const runs of [0, 1, 2]) {
+    const w = canWaive({
+      ...noHistoryFlake,
+      citations: ["screenshot", "pr_diff"],
+      historyRuns: runs,
+    });
+    assert.equal(w.waived, false, `${runs} run(s) must not be enough`);
+  }
+  const w = canWaive({
+    ...noHistoryFlake,
+    citations: ["screenshot", "pr_diff"],
+    historyRuns: MIN_HISTORY_RUNS_FOR_WAIVER,
+  });
+  assert.equal(w.waived, true, `${MIN_HISTORY_RUNS_FOR_WAIVER} runs is the bar and must pass`);
+});
+
+test("R7-E: an unknown history depth is not treated as insufficient here", () => {
+  // A failed history lookup already fails closed to INCONCLUSIVE in the
+  // classifier. Counting it again here would double-punish the same fault.
+  const w = canWaive({ ...noHistoryFlake, citations: ["screenshot", "pr_diff"] });
+  assert.equal(w.waived, true);
+});
+
+test("R7-E: bug verdicts are unaffected — this only gates flake waivers", () => {
+  const w = canWaive({
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "MAIN_REGRESSION",
+    confidence: 0.95,
+    citations: ["failing_on_baseline", "failing_elsewhere"],
+    amnestyGranted: true,
+    diffOverlapsFailure: false,
+    historyRuns: 0,
+  });
+  assert.equal(w.waived, true, "the bystander carve-out does not depend on history depth");
+});
+
+// The three real clusters from mattermost#38154 run 33678302436, with their
+// verbatim citations. This is the case that motivated the gate, so it is
+// pinned as the case that proves it.
+for (const c of [
+  {
+    id: "f13e66c1 ABAC file_permissions_render",
+    verdict: "FLAKY_INFRA",
+    confidence: 0.87,
+    citations: ["screenshot", "error_message", "empty_history", "failing_elsewhere", "pr_diff"],
+    wantWaived: false,
+    why: "no measured recovery — an empty channel where ABAC-permitted files should appear is also what a real regression looks like",
+  },
+  {
+    id: "3a128060 'Add people' button",
+    verdict: "FLAKY_TEST",
+    confidence: 0.88,
+    citations: ["this_run_recovered", "error_message", "screenshot", "empty_history", "pr_diff"],
+    wantWaived: true,
+    why: "flakiness measured in-run",
+  },
+  {
+    id: "f788e803 attribute-selector-menu",
+    verdict: "FLAKY_TEST",
+    confidence: 0.87,
+    citations: ["this_run_recovered", "error_message", "screenshot", "empty_history", "pr_diff"],
+    wantWaived: true,
+    why: "flakiness measured in-run",
+  },
+]) {
+  test(`R7-E: live cluster ${c.id} -> waived=${c.wantWaived}`, () => {
+    const w = canWaive({
+      runType: "PR",
+      branch: "pr-38154",
+      verdict: c.verdict,
+      confidence: c.confidence,
+      citations: c.citations,
+      amnestyGranted: true,
+      diffOverlapsFailure: false,
+      historyRuns: 0,
+    });
+    assert.equal(w.waived, c.wantWaived, `${c.id}: ${c.why} (got: ${w.reason})`);
+  });
+}
+
+test("R7-E: decide() actually passes history depth through — the live shape", () => {
+  // canWaive tests alone would not catch decide() forgetting to pass it, which
+  // is exactly how the bar came to exist only in a document.
+  const d = decide({
+    failure: failure({
+      external_test_id: "MM-T5824",
+      file: "e2e-tests/playwright/specs/functional/system_console/abac/file_access/file_permissions_render.spec.ts",
+      error_message: "Timed out after waiting for 10000 ms (async-wait-until)",
+      screenshots: [{ s3_key: "k", url: "u" }],
+      history: {
+        runs: 0,
+        passed: 0,
+        failed: 0,
+        flaky: 0,
+        skipped: 0,
+        flips: 0,
+        failure_rate: 0,
+        flake_rate: 0,
+        series: [],
+      },
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "history does not decide this failure",
+        citations: [],
+      },
+    }),
+    runType: "PR",
+    branch: "pr-38154",
+    changedFiles: [".github/workflows/e2e-tests-playwright-template.yml", "CODEOWNERS"],
+    ai: {
+      verdict: "FLAKY_INFRA",
+      confidence: 0.87,
+      reason: "channel body empty despite ABAC policy match — testcontainer setup race",
+      citations: ["screenshot", "error_message", "empty_history", "pr_diff"],
+    },
+    phase: 1, // PR gating live — this is what shadow mode was hiding
+  });
+  assert.equal(d.waived, false, "runs=0 with no measured recovery must not green the check");
+  assert.equal(d.check_state, "failure");
+  assert.match(d.reason, /0 baseline run\(s\)/);
+});
+
+test("R7-E: a history lookup failure is not double-counted", () => {
+  const d = decide({
+    failure: failure({
+      error_message: "Timeout 30000ms exceeded",
+      history_error: "history query: connection refused",
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "history lookup failed; fail closed",
+        citations: ["history_unavailable"],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: ["webapp/src/unrelated.tsx"],
+    ai: {
+      verdict: "FLAKY_TEST",
+      confidence: 0.9,
+      reason: "timing race",
+      citations: ["error_message", "this_run_recovered"],
+    },
+    phase: 1,
+  });
+  // Recovery is cited, so this is allowed — the point is that an unknown
+  // history depth did not add a second, separate refusal.
+  assert.equal(d.waived, true);
 });

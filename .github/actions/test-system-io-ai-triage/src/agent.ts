@@ -197,7 +197,7 @@ RETRY-RECOVERY RULE (status=flaky or retry_count>0 — the test failed once then
 
 Rules:
 - NEVER return INCONCLUSIVE when error_message, error_stack, or screenshot keys are present. Pick FLAKY_* or a bug verdict.
-- Empty history (runs=0) is normal on staging / new tests — NOT a reason for INCONCLUSIVE. Cite "empty_history" and still decide from error/screenshots.
+- Empty history (runs=0) is normal on staging / new tests — NOT a reason for INCONCLUSIVE. Cite "empty_history" and still decide from error/screenshots. But know what happens next: with fewer than 3 baseline runs, a FLAKY_* verdict is REFUSED by policy unless the run also recovered on retry (status=flaky / retry_count>0), because on no history a flake call is a guess. So on a brand-new test that did NOT recover, say what you actually think broke it — a flake verdict there only discards your reasoning.
 - Screenshots: view one when keys are listed; if keys are "(none)", decide from error/stack alone and cite those.
 - confidence ≥0.85 with two citations (e.g. error_message + screenshot, or error_message + empty_history).
 - If history shows already failing on the baseline, MAIN_REGRESSION — not this PR.

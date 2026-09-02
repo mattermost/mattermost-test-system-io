@@ -138,6 +138,9 @@ export async function run(): Promise<void> {
           changedFiles,
           compareCommits: (base, head) =>
             compareCommits(githubToken, pack.group.repository, base, head),
+          getPrDiff: () => getPrDiff(githubToken, pack.group.repository, pack.group.gh_pr_number),
+          getTestSource: (path, sha) =>
+            getTestSource(githubToken, pack.group.repository, path, sha),
         });
       } catch (err) {
         core.warning(`agent failed: ${(err as Error).message}; failing closed`);
@@ -553,11 +556,15 @@ async function fetchRolloutPhase(baseURL: string): Promise<number> {
     const body = await res.json();
     const phase = parsePhasePayload(body);
     if (phase === 0) {
-      core.warning(`rollout phase payload unconforming (${JSON.stringify(body)}) — fail closed to shadow (phase 0)`);
+      core.warning(
+        `rollout phase payload unconforming (${JSON.stringify(body)}) — fail closed to shadow (phase 0)`,
+      );
     }
     return phase;
   } catch (err) {
-    core.warning(`rollout phase fetch failed (${(err as Error).message}) — fail closed to shadow (phase 0)`);
+    core.warning(
+      `rollout phase fetch failed (${(err as Error).message}) — fail closed to shadow (phase 0)`,
+    );
     return 0;
   }
 }
@@ -638,6 +645,81 @@ async function compareCommits(
     author: c.author,
     commit: c.commit,
   }));
+}
+
+const MAX_DIFF_BYTES = 200 * 1024;
+const MAX_SOURCE_BYTES = 100 * 1024;
+
+/**
+ * Fetch the PR's unified diff, capped at 200KB. When truncated, the changed
+ * file paths are still listed up front — for the ABAC shape the paths alone
+ * (.github/workflows, testcontainers) carry most of the signal.
+ */
+export async function getPrDiff(
+  token: string,
+  repository: string,
+  prNumber?: number,
+): Promise<string> {
+  if (!token || !prNumber) return "";
+  const [owner, repo] = splitRepo(repository);
+  try {
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "application/vnd.github.v3.diff",
+      },
+    });
+    if (!res.ok) {
+      core.warning(`getPrDiff: HTTP ${res.status}`);
+      return "";
+    }
+    const diff = await res.text();
+    if (Buffer.byteLength(diff) <= MAX_DIFF_BYTES) return diff;
+    const paths = [...diff.matchAll(/^diff --git a\/(.+?) b\//gm)].map((m) => m[1]);
+    const header =
+      `[diff truncated to ${MAX_DIFF_BYTES} bytes]\n` +
+      `Changed files (${paths.length}):\n${paths.map((p) => `- ${p}`).join("\n")}\n\n`;
+    return header + diff.slice(0, MAX_DIFF_BYTES) + "\n... (truncated)";
+  } catch (err) {
+    core.warning(`getPrDiff: ${(err as Error).message}`);
+    return "";
+  }
+}
+
+/**
+ * Fetch a file's source at a commit SHA (raw), capped at 100KB.
+ */
+export async function getTestSource(
+  token: string,
+  repository: string,
+  path: string,
+  sha: string,
+): Promise<string> {
+  if (!token || !path || !sha) return "";
+  const [owner, repo] = splitRepo(repository);
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${sha}`,
+      {
+        headers: {
+          authorization: `Bearer ${token}`,
+          accept: "application/vnd.github.v3.raw",
+        },
+      },
+    );
+    if (!res.ok) {
+      core.warning(`getTestSource: HTTP ${res.status} for ${path}`);
+      return "";
+    }
+    const src = await res.text();
+    if (Buffer.byteLength(src) > MAX_SOURCE_BYTES) {
+      return src.slice(0, MAX_SOURCE_BYTES) + "\n... (truncated)";
+    }
+    return src;
+  } catch (err) {
+    core.warning(`getTestSource: ${(err as Error).message}`);
+    return "";
+  }
 }
 
 /**

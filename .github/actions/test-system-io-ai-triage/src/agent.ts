@@ -15,9 +15,13 @@ export interface AgentContext {
   baselineBranch: string;
   changedFiles: string[];
   compareCommits: (base: string, head: string) => Promise<CompareCommit[]>;
+  /** Fetch the PR's changed files + patch (capped). Empty string when unavailable. */
+  getPrDiff: () => Promise<string>;
+  /** Fetch a file's source at a commit SHA (capped). Empty string when unavailable. */
+  getTestSource: (path: string, sha: string) => Promise<string>;
 }
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: "get_history",
     description:
@@ -59,6 +63,25 @@ const TOOLS = [
         failing_since_commit: { type: "string" },
       },
       required: ["last_pass_commit", "failing_since_commit"],
+    },
+  },
+  {
+    name: "get_pr_diff",
+    description:
+      "Fetch this PR's changed files and patch. MANDATORY before any FLAKY_* verdict on a PR run: you cannot judge whether a failure is the PR's fault without reading what the PR changed. Paths alone (e.g. .github/workflows, testcontainers) carry most of the signal even when a patch is truncated.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "get_test_source",
+    description:
+      "Fetch the failing spec's source at the run's commit. Use this to see what the test actually does — a selector timeout is a race or a real break depending on what the test asserts and how it waits.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        sha: { type: "string" },
+      },
+      required: ["path"],
     },
   },
 ];
@@ -154,7 +177,7 @@ kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TES
 
 RETRY-RECOVERY RULE (status=flaky or retry_count>0 — the test failed once then passed on retry with no code change):
 - Recovery is NECESSARY but NOT SUFFICIENT for FLAKY_*. A timing-sensitive product bug also passes on retry.
-- Before ANY FLAKY_* verdict you MUST call get_history AND get_failing_elsewhere, and view the screenshot when keys are listed. Cite them ("history", "failing_elsewhere", "screenshot").
+- Before ANY FLAKY_* verdict you MUST call get_history AND get_failing_elsewhere, and on a PR run get_pr_diff, and view the screenshot when keys are listed. Cite them ("history", "failing_elsewhere", "pr_diff", "screenshot"). A flake verdict without having looked at the change is a guess.
 - Waive FLAKY_* only when recovery is corroborated by at least ONE of: past flaky/recovered outcomes in baseline history, the same test failing-and-recovering on other PRs, or a pure timing/timeout error signature with no wrong product state.
 - Recovery + screenshot or error showing a WRONG PRODUCT STATE (wrong data, corrupted content, broken layout, incorrect business logic) is a BUG — return PR_REGRESSION or MAIN_REGRESSION, not flake.
 - If get_history shows this test flaked/recovered ≥3 times in the last 20 baseline runs, set "chronic":true and start the reason with "chronic flake (n/20)" — a human must track it even though it is waived.
@@ -168,7 +191,7 @@ Rules:
 - If history shows already failing on the baseline, MAIN_REGRESSION — not this PR.
 - PR_REGRESSION only when this PR changed product code or the failing spec that explains the failure. Files under .github/, detox/e2e/support/, detox/utils/, *.md are CI/harness — they do NOT make a UI timeout/login flake into PR_REGRESSION.
 - If the PR only touches CI/harness and the failure is setup/login/timeout/emulator, prefer FLAKY_INFRA or FLAKY_SERVER.
-- If the PR diff overlaps the failing product/spec area, do not call a flake — even if it recovered on retry.
+- If the PR diff overlaps the failing product/spec area, do not call a flake — even if it recovered on retry. Read the diff (get_pr_diff) and the failing spec (get_test_source) before deciding a PR failure is a flake.
 
 Cluster: ${cluster.signature} (${cluster.member_count} tests) — ${cluster.label}
 Representative: ${f.full_title}
@@ -264,6 +287,19 @@ async function runTool(
       }
       const commits = await ctx.compareCommits(lastPass, failingSince);
       return toolText(toolUseId, JSON.stringify(attribute(commits)));
+    }
+    if (name === "get_pr_diff") {
+      const diff = await ctx.getPrDiff();
+      if (!diff) return toolText(toolUseId, "PR diff unavailable (no PR number or token)");
+      return toolText(toolUseId, diff);
+    }
+    if (name === "get_test_source") {
+      const path = input.path || cluster.representative.file || "";
+      const sha = input.sha || ctx.group.commit_sha || "";
+      if (!path) return toolText(toolUseId, "no file path for this cluster");
+      const src = await ctx.getTestSource(path, sha);
+      if (!src) return toolText(toolUseId, `could not fetch source for ${path}@${sha}`);
+      return toolText(toolUseId, src);
     }
     return toolText(toolUseId, `unknown tool ${name}`);
   } catch (err) {

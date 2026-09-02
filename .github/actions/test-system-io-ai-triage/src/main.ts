@@ -38,7 +38,7 @@ import {
   type FixResult,
 } from "./fixer.ts";
 import { buildReportURL } from "./report_url.ts";
-import { retryFetch } from "./retry-fetch.ts";
+import { retryFetch, parseJSON } from "./retry-fetch.ts";
 import type {
   CompositeIdentity,
   Decision,
@@ -477,10 +477,10 @@ async function fetchReportCounts(baseURL: string, groupID: string): Promise<RunC
       core.warning(`report stats HTTP ${res.status}; falling back to status description`);
       return undefined;
     }
-    const report = (await res.json()) as {
+    const report = await parseJSON<{
       orchestration?: { tests?: RunCounts };
       test_stats?: RunCounts;
-    };
+    }>(res, "reports/:id");
     const t = report.orchestration?.tests || report.test_stats;
     if (!t || typeof t.passed !== "number" || typeof t.failed !== "number") return undefined;
     return { passed: t.passed, failed: t.failed, flaky: t.flaky, skipped: t.skipped };
@@ -553,7 +553,7 @@ async function fetchRolloutPhase(baseURL: string): Promise<number> {
   try {
     const res = await retryFetch(`${baseURL}/api/v1/triage/phase`, {}, "triage/phase");
     if (!res.ok) throw new Error(`status ${res.status}`);
-    const body = await res.json();
+    const body = await parseJSON<unknown>(res, "triage/phase");
     const phase = parsePhasePayload(body);
     if (phase === 0) {
       core.warning(
@@ -599,7 +599,7 @@ async function fetchEvidence(
   if (!res.ok) {
     throw new Error(`triage/evidence HTTP ${res.status} ${await res.text()}`);
   }
-  return (await res.json()) as EvidencePack;
+  return await parseJSON<EvidencePack>(res, "triage/evidence");
 }
 
 async function listChangedFiles(

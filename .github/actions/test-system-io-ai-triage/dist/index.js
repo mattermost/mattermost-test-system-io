@@ -26621,6 +26621,19 @@ async function safeText(res, max = 500) {
     return "<unreadable body>";
   }
 }
+async function parseJSON(res, label) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const head = text.slice(0, 200).replace(/\s+/g, " ").trim();
+    const looksLikeHTML = /^\s*(<!doctype|<html)/i.test(text);
+    const diagnosis = looksLikeHTML ? "The response is an HTML page, which means this TSIO deployment does not have the /api/v1/triage endpoints (unknown paths fall through to the web app). Check the use-staging input." : "The response is neither JSON nor HTML.";
+    throw new Error(
+      `${label} did not return JSON (HTTP ${res.status}). ${diagnosis} Body starts: ${head}`
+    );
+  }
+}
 
 // src/agent.ts
 var MAX_ROUNDS = 6;
@@ -28282,7 +28295,7 @@ async function fetchReportCounts(baseURL, groupID) {
       warning(`report stats HTTP ${res.status}; falling back to status description`);
       return void 0;
     }
-    const report = await res.json();
+    const report = await parseJSON(res, "reports/:id");
     const t = report.orchestration?.tests || report.test_stats;
     if (!t || typeof t.passed !== "number" || typeof t.failed !== "number") return void 0;
     return { passed: t.passed, failed: t.failed, flaky: t.flaky, skipped: t.skipped };
@@ -28340,7 +28353,7 @@ async function fetchRolloutPhase(baseURL) {
   try {
     const res = await retryFetch(`${baseURL}/api/v1/triage/phase`, {}, "triage/phase");
     if (!res.ok) throw new Error(`status ${res.status}`);
-    const body = await res.json();
+    const body = await parseJSON(res, "triage/phase");
     const phase = parsePhasePayload(body);
     if (phase === 0) {
       warning(
@@ -28380,7 +28393,7 @@ async function fetchEvidence(baseURL, identity, groupID, baseline) {
   if (!res.ok) {
     throw new Error(`triage/evidence HTTP ${res.status} ${await res.text()}`);
   }
-  return await res.json();
+  return await parseJSON(res, "triage/evidence");
 }
 async function listChangedFiles(token, repository, prNumber) {
   if (!token || !prNumber) return [];

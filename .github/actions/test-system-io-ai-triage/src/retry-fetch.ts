@@ -58,3 +58,42 @@ export async function safeText(res: Response, max = 500): Promise<string> {
     return "<unreadable body>";
   }
 }
+
+/**
+ * Parse a JSON response, or fail with an error a human can act on.
+ *
+ * WHY THIS EXISTS. A TSIO deployment that does not have the /api/v1/triage/*
+ * endpoints does NOT return 404 for them — the web app is served from the same
+ * origin, so unknown paths fall through to the SPA and come back as **HTTP 200
+ * with an HTML document**. Every `res.ok` check passes, and the failure only
+ * surfaces as `SyntaxError: Unexpected token '<'` from JSON.parse, which
+ * crashes the action with a stack trace and no indication of the real cause.
+ *
+ * That is a fail-closed violation in spirit: the check does end up red, but
+ * with a crashed job instead of a reason anyone can read. Observed for real on
+ * mattermost#38154 when the triage job was pointed at a TSIO without these
+ * endpoints deployed.
+ *
+ * It parses FIRST and only diagnoses on failure, rather than gating on
+ * content-type. Gating on the header rejects valid JSON served as text/plain —
+ * which real proxies and hand-rolled test doubles both do — and a check that
+ * refuses good data to catch bad data is a worse trade than parsing and
+ * explaining.
+ */
+export async function parseJSON<T>(res: Response, label: string): Promise<T> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const head = text.slice(0, 200).replace(/\s+/g, " ").trim();
+    const looksLikeHTML = /^\s*(<!doctype|<html)/i.test(text);
+    const diagnosis = looksLikeHTML
+      ? "The response is an HTML page, which means this TSIO deployment does not have " +
+        "the /api/v1/triage endpoints (unknown paths fall through to the web app). " +
+        "Check the use-staging input."
+      : "The response is neither JSON nor HTML.";
+    throw new Error(
+      `${label} did not return JSON (HTTP ${res.status}). ${diagnosis} Body starts: ${head}`,
+    );
+  }
+}

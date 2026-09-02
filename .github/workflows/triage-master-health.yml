@@ -1,0 +1,136 @@
+---
+# M2 — rolling master health alerting. This is what replaces the manual 09:00
+# spot check.
+#
+# The job is deliberately thin: POST /triage/alerts/evaluate does the whole
+# read-modify-write inside one transaction-scoped advisory lock, applies the
+# dedup rules (at most one channel post per 24h per subject, one issue opened
+# per story then updated in place), and performs the side effects itself using
+# the server's own webhook and GitHub credentials. So this workflow supplies a
+# schedule and a credential, nothing more — there is no alerting logic here to
+# drift out of sync with the server's.
+#
+# Concurrency is belt-and-braces. The server already refuses a second
+# concurrent evaluation per repo with a 409, so overlapping runs are safe; the
+# group below just avoids queueing pointless work.
+name: Triage — master health alerts
+
+on:
+  schedule:
+    # Every two hours. The spot check it replaces ran once a day, and the
+    # alerting rules are streak/rate based rather than instantaneous, so this
+    # is about catching a bad master within a working morning rather than
+    # reacting to a single run.
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Space-separated owner/name list to evaluate"
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        description: "Evaluate and print the plan without posting or opening issues"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: triage-master-health
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    # Skip on forks: the secret is absent there and a scheduled job that always
+    # fails is noise that trains people to ignore the alerting.
+    if: github.repository == 'mattermost/mattermost-test-system-io'
+    steps:
+      - name: alerts/evaluate
+        env:
+          TSIO_URL: ${{ vars.TSIO_URL || 'https://test-io.test.mattermost.com' }}
+          TSIO_API_KEY: ${{ secrets.TSIO_ALERTS_API_KEY }}
+          # Default set kept in a repo variable so adding a repo needs no code
+          # change. Falls back to the two repos that report today.
+          REPOS: ${{ inputs.repos || vars.TSIO_ALERT_REPOS || 'mattermost/mattermost mattermost/mattermost-mobile' }}
+          BRANCH: master
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${TSIO_API_KEY}" ]; then
+            echo "::error::TSIO_ALERTS_API_KEY is not set — cannot evaluate alerts."
+            echo "Issue one with: tsioctl keys issue --name master-health-alerts"
+            exit 1
+          fi
+
+          # dry_run uses the PUBLIC evaluation endpoint, which computes the same
+          # plan with zero side effects. Same rules, same dedup, nothing posted.
+          if [ "${DRY_RUN}" = "true" ]; then
+            METHOD=GET
+            PATH_SUFFIX="/api/v1/triage/alerts/evaluation"
+            AUTH_ARGS=()
+          else
+            METHOD=POST
+            PATH_SUFFIX="/api/v1/triage/alerts/evaluate"
+            AUTH_ARGS=(-H "X-API-Key: ${TSIO_API_KEY}")
+          fi
+
+          FAILED=0
+          {
+            echo "## Master health alerts"
+            echo
+            echo "Endpoint: \`${METHOD} ${PATH_SUFFIX}\`  ·  dry_run: \`${DRY_RUN}\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for REPO in ${REPOS}; do
+            echo "--- ${REPO} (${BRANCH})"
+            BODY_FILE="$(mktemp)"
+            CODE="$(curl -sS -o "${BODY_FILE}" -w '%{http_code}' \
+              -X "${METHOD}" "${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"}" \
+              "${TSIO_URL}${PATH_SUFFIX}?repo=${REPO}&branch=${BRANCH}" || echo 000)"
+
+            if [ "${CODE}" = "409" ]; then
+              # The server's advisory lock refused a concurrent evaluation.
+              # Expected under overlap, and explicitly NOT a failure.
+              echo "  evaluation already in flight — skipping this repo"
+              echo "- **${REPO}** — already in flight (409), skipped" >> "$GITHUB_STEP_SUMMARY"
+              rm -f "${BODY_FILE}"
+              continue
+            fi
+
+            if [ "${CODE}" != "200" ]; then
+              echo "::error::${REPO}: HTTP ${CODE}"
+              head -c 600 "${BODY_FILE}" || true
+              echo "- **${REPO}** — FAILED (HTTP ${CODE})" >> "$GITHUB_STEP_SUMMARY"
+              FAILED=1
+              rm -f "${BODY_FILE}"
+              continue
+            fi
+
+            # Summarise for a human skimming the run, and echo the raw counts
+            # so a bad rule change is visible in the log.
+            jq -r '
+              "  alerts=\(.alerts | length) posted=\(.posted // 0) " +
+              "issues_opened=\(.issues_opened // 0) issues_updated=\(.issues_updated // 0) " +
+              "suppressed=\(.suppressed // 0)"
+            ' "${BODY_FILE}" || true
+
+            {
+              printf -- "- **%s** — " "${REPO}"
+              jq -r '
+                "\(.alerts | length) alert(s), \(.posted // 0) posted, " +
+                "\(.issues_opened // 0) issue(s) opened, \(.issues_updated // 0) updated, " +
+                "\(.suppressed // 0) suppressed"
+              ' "${BODY_FILE}" 2>/dev/null || echo "(unparseable response)"
+              jq -r '.alerts[]? | "    - `\(.rule)` **\(.subject)** (\(.severity))"' "${BODY_FILE}" 2>/dev/null || true
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            rm -f "${BODY_FILE}"
+          done
+
+          exit "${FAILED}"

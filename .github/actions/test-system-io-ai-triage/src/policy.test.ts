@@ -1150,3 +1150,143 @@ test("R7-L3: decide() passes an active quarantine through to a green check", () 
   assert.equal(d.check_state, "success");
   assert.match(d.reason, /quarantined test/);
 });
+
+// ---------------------------------------------------------------------------
+// R7-D — provenance on a policy-asserted confidence.
+//
+// Four override paths raise the confidence to exactly WAIVE_CONFIDENCE, which
+// is the threshold canWaive then checks it against — so on those paths the
+// floor is unfalsifiable. The bump stays (removing it makes the override
+// pointless), but a manufactured 0.85 must be distinguishable from one the
+// model actually produced, or the ledger, the blind audit and the calibration
+// metrics are all reading a number nobody measured.
+// ---------------------------------------------------------------------------
+
+test("R7-D: an INCONCLUSIVE override marks its confidence as policy-asserted", () => {
+  const d = decide({
+    failure: failure({
+      error_message: "locator.click: Timeout 30000ms exceeded",
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "history does not decide this failure",
+        citations: [],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: ["webapp/channels/src/components/unrelated/thing.tsx"],
+    phase: 1,
+  });
+
+  // The floor was manufactured from a model confidence of 0.
+  assert.equal(d.confidence, WAIVE_CONFIDENCE);
+  assert.ok(
+    d.citations.includes("policy_asserted_confidence"),
+    `citations ${JSON.stringify(d.citations)} must record that policy set this confidence`,
+  );
+  assert.equal(d.source, "policy");
+  // Exactly at the floor is below the borderline threshold, so it is also
+  // surfaced for a human eyeball rather than sliding through silently.
+  assert.equal(d.borderline, true);
+});
+
+test("R7-D: a model that was already confident enough gets NO marker", () => {
+  // The citation must mean "policy invented this number", not "policy touched
+  // this decision" — otherwise it is noise and gets ignored.
+  const d = decide({
+    failure: failure({
+      error_message: "locator.click: Timeout 30000ms exceeded",
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "history does not decide",
+        citations: [],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: ["webapp/channels/src/components/unrelated/thing.tsx"],
+    ai: {
+      verdict: "PR_REGRESSION",
+      confidence: 0.97,
+      reason: "looks like a real break",
+      citations: ["error_message", "history"],
+    },
+    phase: 1,
+  });
+  // The no-product-overlap override fires, but 0.97 already clears the floor.
+  assert.equal(d.confidence, 0.97);
+  assert.ok(
+    !d.citations.includes("policy_asserted_confidence"),
+    "a confidence the model actually produced must not be marked as asserted",
+  );
+});
+
+test("R7-D: the CI-only override marks its asserted confidence too", () => {
+  const d = decide({
+    failure: failure({
+      error_message: "expect(el).toBeVisible: Timeout 15000ms exceeded",
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "unknown",
+        citations: [],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    // CI-only diff, and the model calls it a PR regression.
+    changedFiles: [".github/workflows/e2e-tests.yml"],
+    ai: {
+      verdict: "PR_REGRESSION",
+      confidence: 0.5,
+      reason: "guessing",
+      citations: ["error_message", "history"],
+    },
+    phase: 1,
+  });
+  assert.equal(d.verdict, "FLAKY_INFRA");
+  assert.equal(d.confidence, WAIVE_CONFIDENCE);
+  assert.ok(d.citations.includes("policy_asserted_confidence"));
+  assert.ok(d.citations.includes("ci_only_diff"));
+});
+
+test("R7-D: a policy-asserted confidence still cannot pass the rate-shift gate", () => {
+  // The marker is for auditability; it must not become a way in. The gate that
+  // catches the expensive case has to win over a manufactured confidence.
+  const d = decide({
+    failure: failure({
+      error_message: "policy row missing after search",
+      rate_shift: {
+        ok: true,
+        baseline_runs: 20,
+        baseline_failed: 8,
+        baseline_rate: 0.4,
+        pr_runs: 3,
+        pr_failed: 3,
+        pr_rate: 1,
+        p_value: 0.064,
+        shifted: true,
+        alpha: 0.1,
+      },
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "unknown",
+        citations: [],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: [".github/workflows/e2e-tests.yml"],
+    phase: 1,
+  });
+  assert.equal(d.confidence, WAIVE_CONFIDENCE, "the floor is still manufactured");
+  assert.equal(d.waived, false, "but the rate-shift gate refuses it anyway");
+  assert.match(d.reason, /rate shifted materially/);
+});

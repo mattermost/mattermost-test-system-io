@@ -27365,6 +27365,15 @@ function mergeModel(suggested, ai, overlaps, failure, changedFiles) {
   }
   return enforceDecisiveVerdict(merged, failure, changedFiles, overlaps);
 }
+function assertedConfidence(modelConfidence, cites) {
+  if (modelConfidence >= WAIVE_CONFIDENCE) {
+    return { confidence: modelConfidence, citations: cites };
+  }
+  return {
+    confidence: WAIVE_CONFIDENCE,
+    citations: [...cites, "policy_asserted_confidence"]
+  };
+}
 function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
   const evidence = hasAdjudicationEvidence(failure);
   const ciOnly = isCIOnlyDiff(changedFiles);
@@ -27377,47 +27386,51 @@ function enforceDecisiveVerdict(merged, failure, changedFiles, overlaps) {
     cites.push("error_message");
   }
   if (!overlaps && !specTouched && ciOnly && (merged.verdict === "PR_REGRESSION" || merged.verdict === "TEST_DEBT")) {
+    const asserted = assertedConfidence(merged.confidence, [...cites, "ci_only_diff"]);
     return {
       verdict: "FLAKY_INFRA",
-      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      confidence: asserted.confidence,
       reason: `${merged.reason} \u2014 overridden: PR only touches CI/harness, not product code under test`,
       gist: merged.gist,
-      citations: unique([...cites, "ci_only_diff"]),
+      citations: unique(asserted.citations),
       source: "policy"
     };
   }
   if (!overlaps && !specTouched && merged.verdict === "PR_REGRESSION" && evidence) {
     const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
+    const asserted = assertedConfidence(merged.confidence, [...cites, "no_product_overlap"]);
     return {
       verdict: flakeKind,
-      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      confidence: asserted.confidence,
       reason: `${merged.reason} \u2014 overridden: PR does not touch this failure's product/spec area`,
       gist: merged.gist,
-      citations: unique([...cites, "no_product_overlap"]),
+      citations: unique(asserted.citations),
       source: "policy"
     };
   }
   if (!overlaps && !specTouched && merged.verdict === "TEST_DEBT" && evidence) {
     const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
     if (flakeKind === "FLAKY_INFRA" || flakeKind === "FLAKY_SERVER") {
+      const asserted = assertedConfidence(merged.confidence, [...cites, "no_product_overlap"]);
       return {
         verdict: flakeKind,
-        confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+        confidence: asserted.confidence,
         reason: `${merged.reason} \u2014 overridden: infra/server signal with no product overlap`,
         gist: merged.gist,
-        citations: unique([...cites, "no_product_overlap"]),
+        citations: unique(asserted.citations),
         source: "policy"
       };
     }
   }
   if (merged.verdict === "INCONCLUSIVE" && evidence) {
     const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
+    const asserted = assertedConfidence(merged.confidence, [...cites, "error_or_screenshot"]);
     return {
       verdict: flakeKind,
-      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      confidence: asserted.confidence,
       reason: `${merged.reason} \u2014 overridden: evidence present (error/screenshots/stack); INCONCLUSIVE forbidden`,
       gist: merged.gist,
-      citations: unique([...cites, "error_or_screenshot"]),
+      citations: unique(asserted.citations),
       source: "policy"
     };
   }

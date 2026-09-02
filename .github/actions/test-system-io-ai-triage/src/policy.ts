@@ -514,6 +514,44 @@ function mergeModel(
  * INCONCLUSIVE. Also refuse PR_REGRESSION / TEST_DEBT when the PR only
  * touched CI/harness — that was poisoning #9996 dogfood.
  */
+/**
+ * R7-D — the confidence the policy layer asserts when it overrides a verdict,
+ * plus the citation that says it did.
+ *
+ * THE PROBLEM. Four override paths below turn a non-waivable verdict into a
+ * waivable FLAKY_* and raise the confidence to `WAIVE_CONFIDENCE` — which is
+ * exactly the threshold `canWaive` then checks it against. So on those paths
+ * the 0.85 floor is unfalsifiable: the policy manufactures the number that
+ * clears its own gate. An INCONCLUSIVE at confidence 0 becomes a waived flake
+ * at 0.85.
+ *
+ * WHY THE BUMP STAYS. Removing it would leave the override pointless — the
+ * verdict would change but could never be waived, so every ambiguous run stays
+ * red and the "with evidence in hand, do not leave this INCONCLUSIVE" rule
+ * stops meaning anything. Whether that trade is right is a design decision for
+ * the team, not something to change unilaterally.
+ *
+ * WHAT IS FIXED. The provenance. Until now a 0.85 measured by the model and a
+ * 0.85 fabricated here were indistinguishable in the ledger, in the blind
+ * audit, and in the calibration metrics — which are precisely the mechanisms
+ * meant to catch a bad waiver. Every manufactured confidence now carries
+ * `policy_asserted_confidence`, so it can be filtered, audited and excluded
+ * from calibration. The citation is added ONLY when the floor was actually
+ * raised; a model that was already confident enough gets no marker.
+ */
+function assertedConfidence(
+  modelConfidence: number,
+  cites: string[],
+): { confidence: number; citations: string[] } {
+  if (modelConfidence >= WAIVE_CONFIDENCE) {
+    return { confidence: modelConfidence, citations: cites };
+  }
+  return {
+    confidence: WAIVE_CONFIDENCE,
+    citations: [...cites, "policy_asserted_confidence"],
+  };
+}
+
 export function enforceDecisiveVerdict(
   merged: {
     verdict: string;
@@ -559,12 +597,13 @@ export function enforceDecisiveVerdict(
     ciOnly &&
     (merged.verdict === "PR_REGRESSION" || merged.verdict === "TEST_DEBT")
   ) {
+    const asserted = assertedConfidence(merged.confidence, [...cites, "ci_only_diff"]);
     return {
       verdict: "FLAKY_INFRA",
-      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      confidence: asserted.confidence,
       reason: `${merged.reason} — overridden: PR only touches CI/harness, not product code under test`,
       gist: merged.gist,
-      citations: unique([...cites, "ci_only_diff"]),
+      citations: unique(asserted.citations),
       source: "policy",
     };
   }
@@ -572,12 +611,13 @@ export function enforceDecisiveVerdict(
   // PR_REGRESSION means "this PR caused it" — impossible without product/spec overlap.
   if (!overlaps && !specTouched && merged.verdict === "PR_REGRESSION" && evidence) {
     const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
+    const asserted = assertedConfidence(merged.confidence, [...cites, "no_product_overlap"]);
     return {
       verdict: flakeKind,
-      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      confidence: asserted.confidence,
       reason: `${merged.reason} — overridden: PR does not touch this failure's product/spec area`,
       gist: merged.gist,
-      citations: unique([...cites, "no_product_overlap"]),
+      citations: unique(asserted.citations),
       source: "policy",
     };
   }
@@ -586,12 +626,13 @@ export function enforceDecisiveVerdict(
   if (!overlaps && !specTouched && merged.verdict === "TEST_DEBT" && evidence) {
     const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
     if (flakeKind === "FLAKY_INFRA" || flakeKind === "FLAKY_SERVER") {
+      const asserted = assertedConfidence(merged.confidence, [...cites, "no_product_overlap"]);
       return {
         verdict: flakeKind,
-        confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+        confidence: asserted.confidence,
         reason: `${merged.reason} — overridden: infra/server signal with no product overlap`,
         gist: merged.gist,
-        citations: unique([...cites, "no_product_overlap"]),
+        citations: unique(asserted.citations),
         source: "policy",
       };
     }
@@ -599,12 +640,13 @@ export function enforceDecisiveVerdict(
 
   if (merged.verdict === "INCONCLUSIVE" && evidence) {
     const flakeKind = inferFlakeKind(failure.error_message || "", failure.error_stack || "");
+    const asserted = assertedConfidence(merged.confidence, [...cites, "error_or_screenshot"]);
     return {
       verdict: flakeKind,
-      confidence: Math.max(merged.confidence, WAIVE_CONFIDENCE),
+      confidence: asserted.confidence,
       reason: `${merged.reason} — overridden: evidence present (error/screenshots/stack); INCONCLUSIVE forbidden`,
       gist: merged.gist,
-      citations: unique([...cites, "error_or_screenshot"]),
+      citations: unique(asserted.citations),
       source: "policy",
     };
   }

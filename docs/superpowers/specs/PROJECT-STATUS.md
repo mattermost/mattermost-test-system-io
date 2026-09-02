@@ -41,10 +41,12 @@ by the model: the rate-shift gate refuses it whatever the verdict says.
   `effective_failures=25` — recomputed *after* waivers were written, and
   unchanged. Waiving cannot improve the number the team is judged by.
 - Alert fired: `new_failing_streak` on **MM-T2004**, `streak=6 / 20 runs`.
-- Stabilization queue ranked worst-first: MM-T5824 (40%), MM-T2001 (40%),
-  MM-T2004 (30%), MM-T2006 (10%), MM-T2005 (5%). The chronic flakes that now go
-  green on PRs are exactly the ones at the top of the fix queue — the forcing
+- Stabilization queue ranked by blast radius (§4b): MM-T2007 (6 PRs hit) first,
+  then MM-T5824 and MM-T2001 (40% each, 1 PR each). The chronic flakes that now
+  go green on PRs are exactly the ones at the top of the fix queue — the forcing
   function moved to master, it did not disappear.
+- Throughput: `keeping_up=false`, coverage 47.6% on this small dataset;
+  6.5% on the measured production numbers (§4b).
 
 ### Goal 3 — master regression and its author
 
@@ -118,7 +120,7 @@ currently falls back to test infra.
 | R7-B/C policy gates + L1/L2/L3 levers | 127 TS tests (was 101), Go triage green, golangci-lint 0 across internal/… and tests/… | `npm test`, `go test`, `golangci-lint run` |
 | Both ABAC cases refused end-to-end | 2/2, through `decide()` at phase 1 | `policy.test.ts` |
 | Unshifted control still waives | 2/2 | `policy.test.ts` |
-| Full e2e suite | all packages green (contract, admin_cli, oidc, orchestration, reports, triage) | `make test-server-e2e`, Docker |
+| Full e2e suite | all packages green. One caveat, recorded rather than hidden: `TestOrchestrationHappyPath` timed out once under full-suite testcontainers contention and passed in 4s in isolation — an infra flake, and `orchestration` imports no changed package (`go list -deps`: 0 matches) | `make test-server-e2e`, Docker |
 | Blind audit is blind | 6 banned keys absent from the raw sample payload; `ai_verdict` absent before submit, revealed after | `TestBlindAuditSampleAndReview` |
 | A waiver never edits history or rates | pass | `TestWaiverNeverEditsHistoryOrRates` |
 | Master alerting fires and dedups | pass | `TestMasterAlertingFiresAndDedups` |

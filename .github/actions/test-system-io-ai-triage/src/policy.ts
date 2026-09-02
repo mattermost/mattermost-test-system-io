@@ -203,6 +203,50 @@ const bystanderPreexisting = (args: {
   args.citations.includes("failing_on_baseline") &&
   (args.runType || "").toUpperCase() !== "MAIN";
 
+/**
+ * R7-C — the chronic-flake bystander carve-out.
+ *
+ * THE FAULT THIS FIXES. Two rules were exactly complementary, and together they
+ * made the product's primary promise unreachable:
+ *
+ *   classify.go pre-tags FLAKY_TEST only when FailureRate >= 0.10
+ *   amnesty denies a waiver     whenever   FailureRate >= 0.10  (inclusive)
+ *
+ * So the history-based flake verdict could NEVER be waived. Any test flakier
+ * than 10% on master turned every PR that touched it red — including PRs whose
+ * authors had nothing to do with it. Measured live on seeded data: a 40% flake
+ * and a 10% flake both came back FAILURE with reason "amnesty denied", while
+ * the model's verdict was correct in both cases. No amount of model quality
+ * could have fixed that.
+ *
+ * THE PRINCIPLE, already written into the W4 carve-out below: amnesty's pain
+ * must land on master and on the test's owner, never on a bystander PR author.
+ * W4 applied it only to MAIN_REGRESSION. This extends the same reasoning to
+ * FLAKY_* on PR runs, which is where the promise "if it's flaky and not your
+ * change, your check goes green" actually lives.
+ *
+ * WHY THIS IS SAFE NOW AND WAS NOT BEFORE. The original reason to exclude
+ * FLAKY_* was that a chronic flake could not be distinguished from a chronic
+ * flake that this time broke for real. The R7-B rate-shift gate above now
+ * decides exactly that, and it runs FIRST — so anything reaching here has a
+ * failure count its own baseline explains. The redundant check on
+ * rateShiftedAtCommit is kept so this stays correct if the blocks are ever
+ * reordered.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO. MAIN runs still require amnesty, so a
+ * chronic flake still goes red on master, still gets an owner, and still gets
+ * promoted up the stabilization ranking. The forcing function moves to master,
+ * which is where the fix is owned — it is not removed.
+ */
+const chronicFlakeBystander = (args: {
+  runType: string;
+  verdict: string;
+  rateShiftedAtCommit?: boolean;
+}): boolean =>
+  FLAKY.has(args.verdict) &&
+  (args.runType || "").toUpperCase() !== "MAIN" &&
+  args.rateShiftedAtCommit !== true;
+
 export function canWaive(args: {
   runType: string;
   branch: string;
@@ -275,7 +319,11 @@ export function canWaive(args: {
   // escalation (hard red on master, promotion up the stabilization ranking)
   // happens on the master side, where the fix is owned. FLAKY_* verdicts on
   // any run, and everything on a MAIN run, still require amnesty.
-  if (args.amnestyGranted === false && !bystanderPreexisting(args)) {
+  if (
+    args.amnestyGranted === false &&
+    !bystanderPreexisting(args) &&
+    !chronicFlakeBystander(args)
+  ) {
     return { waived: false, reason: "amnesty denied" };
   }
   if (args.confidence < WAIVE_CONFIDENCE) {

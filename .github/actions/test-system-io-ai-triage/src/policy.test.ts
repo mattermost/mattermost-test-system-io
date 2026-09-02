@@ -525,7 +525,34 @@ test("W4: expired amnesty still denies FLAKY on a MAIN run — master goes hard 
   assert.equal(w.reason, "amnesty denied");
 });
 
-test("W4: expired amnesty still denies FLAKY on a PR — the PR is not a bystander to its own flake", () => {
+/**
+ * R7-C — DELIBERATE REVERSAL of the previous W4 decision.
+ *
+ * This test previously asserted `waived === false` with the rationale "the PR is
+ * not a bystander to its own flake". That decision made the product's primary
+ * promise unreachable, and the reversal is not a loosening for convenience —
+ * here is the arithmetic:
+ *
+ *   classify.go pre-tags FLAKY_TEST only when FailureRate >= 0.10
+ *   amnesty denies a waiver     whenever   FailureRate >= 0.10  (inclusive)
+ *
+ * The two conditions are exact complements, so a history-based flake verdict
+ * could never be waived on any run. Measured live against seeded data, a 40%
+ * flake AND a 10% flake both returned FAILURE / "amnesty denied" while the
+ * model's verdict was correct in both cases. No model improvement could fix
+ * that, because no model was involved in the refusal.
+ *
+ * The PR author did not make the test flaky; they are a bystander to its
+ * chronic flakiness, which is precisely the W4 principle ("amnesty's pain must
+ * land on master, not on bystander PR authors") applied one step further than
+ * W4 originally applied it.
+ *
+ * Safe now, and not before, because the R7-B rate-shift gate runs FIRST and
+ * catches the case this refusal was really protecting against — a chronic flake
+ * that this time broke for real. See the sibling MAIN test above: master still
+ * goes hard red, so the test still gets an owner and a fix.
+ */
+test("R7-C: expired amnesty no longer denies a corroborated FLAKY on a PR — bystander goes green", () => {
   const w = canWaive({
     runType: "PR",
     branch: "feat/x",
@@ -535,8 +562,118 @@ test("W4: expired amnesty still denies FLAKY on a PR — the PR is not a bystand
     amnestyGranted: false,
     diffOverlapsFailure: false,
   });
+  assert.equal(w.waived, true);
+  assert.equal(w.reason, "FLAKY_TEST");
+});
+
+test("R7-C: the carve-out does NOT apply on a MAIN run — master keeps the forcing function", () => {
+  const w = canWaive({
+    runType: "MAIN",
+    branch: "main",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["history", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+  });
   assert.equal(w.waived, false);
   assert.equal(w.reason, "amnesty denied");
+});
+
+test("R7-C: a shifted rate still refuses, chronic bystander or not", () => {
+  // The carve-out must never reopen the expensive case. Rate shift wins.
+  const w = canWaive({
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["history", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+    rateShiftedAtCommit: true,
+  });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /rate shifted materially/);
+});
+
+test("R7-C: the carve-out does not rescue a bug verdict or a product refusal", () => {
+  // PR_REGRESSION is NEVER_WAIVE, and a product refusal is not a flake — the
+  // carve-out must not widen into either.
+  const bug = canWaive({
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "PR_REGRESSION",
+    confidence: 0.95,
+    citations: ["history", "pr_diff"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(bug.waived, false);
+
+  const refusal = canWaive({
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["history", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+    productRejection: true,
+  });
+  assert.equal(refusal.waived, false);
+  assert.match(refusal.reason, /deliberately refusing/);
+
+  const overlap = canWaive({
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["history", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: true,
+  });
+  assert.equal(overlap.waived, false);
+  assert.match(overlap.reason, /touches the failing area/);
+});
+
+test("R7-C: the confidence floor and citation rule still apply to a chronic bystander", () => {
+  const lowConf = canWaive({
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "FLAKY_TEST",
+    confidence: 0.7,
+    citations: ["history", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(lowConf.waived, false);
+  assert.match(lowConf.reason, /confidence/);
+
+  const oneCite = canWaive({
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["history"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(oneCite.waived, false);
+  assert.match(oneCite.reason, /two independent citations/);
+});
+
+test("R7-C: RELEASE runs are untouched — still waive nothing", () => {
+  const w = canWaive({
+    runType: "RELEASE",
+    branch: "release-11.4",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["history", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /release runs never auto-waive/);
 });
 
 // --- W6/W13 full matrix: 3 run types × 4 phases × the verdict set ---

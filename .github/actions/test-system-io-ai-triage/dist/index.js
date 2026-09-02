@@ -27236,6 +27236,7 @@ function hasAdjudicationEvidence(failure) {
   return false;
 }
 var bystanderPreexisting = (args) => args.verdict === "MAIN_REGRESSION" && args.citations.includes("failing_on_baseline") && (args.runType || "").toUpperCase() !== "MAIN";
+var chronicFlakeBystander = (args) => FLAKY.has(args.verdict) && (args.runType || "").toUpperCase() !== "MAIN" && args.rateShiftedAtCommit !== true;
 function canWaive(args) {
   if (neverAutoWaive(args.runType, args.branch)) {
     return { waived: false, reason: "release runs never auto-waive" };
@@ -27264,7 +27265,7 @@ function canWaive(args) {
       reason: "failure rate shifted materially at this commit \u2014 historical flakiness does not explain it"
     };
   }
-  if (args.amnestyGranted === false && !bystanderPreexisting(args)) {
+  if (args.amnestyGranted === false && !bystanderPreexisting(args) && !chronicFlakeBystander(args)) {
     return { waived: false, reason: "amnesty denied" };
   }
   if (args.confidence < WAIVE_CONFIDENCE) {

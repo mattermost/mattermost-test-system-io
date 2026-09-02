@@ -3,7 +3,8 @@
 **Date:** 2026-09-02
 **Branch:** `feat/flakiness-management`
 **Data:** production TSIO, `mattermost/mattermost` + Playwright, 2026-07-20 → 2026-09-02.
-**Sample:** the same 41 labelled cases from round 4 (22 real bug, 18 flake, 1 unknowable).
+**Sample:** the same 41 labelled cases (22 real bug, 18 flake, 1 unknowable).
+**Model:** `gemma4:31b-cloud` (the local 31B), `temperature=0`, `seed=42`, 3 runs per case per arm.
 
 ---
 
@@ -11,95 +12,94 @@
 
 | # | Question | Answer | One sentence |
 |---|---|---|---|
-| 1 | Can a developer tell their PR introduced a bug that broke E2E? | **PARTIAL** | Keeps red 13/21 PR bugs, but waives 4 — including both cases of the hard sub-case (a real regression in a historically-flaky test). |
-| 2 | Can a developer tell the failure is a flaky test, not their change? | **PARTIAL** | Waives 10/18 flakes, but keeps 3 PR flakes red (38% of PR flakes) — better than round 4's 50%, still above the 20% bar. |
-| 3 | Can a developer tell the failure came from master and is a real bug? | **UNMEASURED** | The sample has only 1 master/release real bug; the "pre-existing vs. noise" split cannot be measured on n=1. |
-| 4 | Can it watch master and open a fix PR? | **PARTIAL** | Flaky/test-bug loop is designed to open a stabilization PR but was not run end-to-end; product bugs are correctly routed (never fixed), with a CODEOWNERS wiring gap. |
+| 1 | Can a developer tell their PR introduced a bug? | **NO** | Arm 2 waives 9/22 real PR bugs (41%) — including both ABAC cases — so a developer cannot rely on it to catch their own regression. |
+| 2 | Can a developer tell it is a flaky test, not their change? | **PARTIAL** | Arm 2 waives 13/18 flakes but keeps 5 red (28%) — better than round 4's 50%, still above the 20% bar. |
+| 3 | Can a developer tell it came from master and is a real bug? | **UNMEASURED** | n=1 master/release real bug; no rate can be reported from one case. |
+| 4 | Can it watch master and open a fix PR? | **UNMEASURED** | The loop was not run end-to-end (needs a real workspace + push). Product bugs are routed, never fixed — by design, not a failure; CODEOWNERS still has no `e2e-tests/**` entry. |
 
 ---
 
-## 2. A/B/C comparison
+## 2. Arm 1 vs Arm 2 (the value of the fix, isolated)
 
-| Config | What runs | False greens | False reds | Model calls / 100 failures | Cost / 1,000 failures |
-|---|---|---|---|---|---|
-| **A — baseline** (`Suggest` only) | deterministic classifier | 2 | 9 | 0 | $0 |
-| **B — as shipped** | `Suggest` → AI when `NeedsAI` → `canWaive` | 4 | 8 (3 on PR, 5 on release) | 88 | ~$44 |
-| **C — inference always asks** | B + `NeedsAI:true` on inferred-waive branches | 4 | 9 | 100 | ~$50 (materially more on a red master) |
+| Measure | Bar | Arm 1 (4 tools) | Arm 2 (+ diff + source) |
+|---|---|---|---|
+| False greens (waived a real bug) | 0 | 11/22 = **50%** | 9/22 = **41%** |
+| False reds (kept noise red) | ≤ 20% | 6/18 = **33%** | 5/18 = **28%** |
+| Verdict stability (3 identical runs) | ≥ 95% | 35/41 = **85%** | 36/41 = **88%** |
+| Calibration at 0.85+ | ≥ 85% correct | 18/34 = **53%** | 21/35 = **60%** |
+| Tool-call compliance (FLAKY_* called get_pr_diff) | 100% | — | **19/19 = 100%** |
 
-**False greens and false reds are reported separately, never averaged.**
-
-- **False greens** (waived a real bug): A=2, B=4, C=4. **All three miss the bar of 0.**
-- **False reds** (kept red pure noise): A=9, B=8, C=9. On PR branches only, B=3/8 flakes = 38% — still above 20%.
-
-**C buys nothing.** It costs more (100 vs 88 calls, and on a red master every `MAIN_REGRESSION`/config-delta cluster now pays a model call) and does not move the false-green count. Do not adopt it.
-
-**Cost note.** Model calls are per *cluster*, not per failure — 300 identical failures are one cluster, one call. The 88/100 figures assume the sample's ~1:1 cluster-to-failure ratio; production cost per 1,000 failures is lower wherever failures cluster.
+**The tools help, but they do not clear the bars.** Arm 2 is better than Arm 1 on every axis (false greens 50%→41%, false reds 33%→28%, stability 85%→88%, calibration 53%→60%), and the model *does* comply — it called `get_pr_diff` before every single FLAKY_* verdict. But the false-green bar is 0 and Arm 2 is at 41%.
 
 ---
 
 ## 3. The hard sub-case, on its own
 
-**A real regression in a test that is historically flaky** (the ABAC shape): `MM-T5824` and `MM-T5820` on `pr-37732` (the testcontainers cherry-pick to release-11.8).
+**A real regression in a historically-flaky test** (the ABAC shape): `MM-T5824` and `MM-T5820` on `pr-37732`.
 
-| | Count |
-|---|---|
-| Cases in sample | 2 |
-| Pipeline kept red | 0 |
-| Pipeline waived (false green) | **2** |
+| | Arm 1 | Arm 2 |
+|---|---|---|
+| Kept red | 0 | 0 |
+| Waived (false green) | **2** | **2** |
 
-Both were waived. This is the one the design is weakest on, and it fails 2/2. The deterministic layer cannot distinguish "flaked again" from "broke for real" — `PR_REGRESSION` requires `s.Failed == 0` (`classify.go:147`), a condition a historically-flaky test can never meet, so the flaky-history branch (`Flips ≥ 3`) fires first and the AI is handed a `FLAKY_TEST` hint.
+**Both arms waive both cases.** The review's hypothesis — that giving the model the diff would let it see the testcontainers change and catch this — is **not supported by the measurement**. The model read the diff (it called `get_pr_diff`), saw the changed-file paths including `e2e-tests/playwright/lib/src/containers/…`, and still returned `FLAKY_TEST` at 0.9. Its stated reason: *"the history shows a high failure rate (40%) with multiple flips."*
 
----
-
-## 4. Every false green, in full
-
-There are **four** in config B. Two are the ABAC shape; two are the AI overriding a correct `PR_REGRESSION` hint.
-
-### False green 1 & 2 — `MM-T5824`, `MM-T5820` on `pr-37732` (the ABAC shape)
-
-- **Evidence the pipeline saw:** `status=failed`, `runs=20`, `failed=8`, `flips=4`, `failure_rate=0.40`, `failing_since_commit=false`, `distinct_prs=0`. Error: `policy "Complex Policy …" should appear after search` (15s predicate timeout). PR diff: **30 files, all `.github/`** (CI-only).
-- **What it concluded:** `Suggest` → `FLAKY_TEST` (0.8, `NeedsAI`). AI (simulated) → `FLAKY_TEST` (0.9). `canWaive` → waived.
-- **What was true:** the test passed on release-11.8 for days before the cherry-pick, failed on the cherry-pick's early commits across three runs, then passed on its later commits (which contain `fix(e2e): sync Playwright navigations to live testcontainers baseURL`) and on release-11.8 after merge. A real regression, fixed by a later commit.
-- **Why the evidence was insufficient:** the two gates the review named do **not** fire here. The 0.85 floor is passed because the *AI's* confidence (0.9), not the deterministic 0.8, is what `canWaive` sees — and `FLAKY_TEST` is `NeedsAI:true`, so the AI always runs. The diff-overlap block does not fire because the PR diff is CI-only (all `.github/`), so `diffOverlaps` is false. The amnesty gate does not fire because the test's failure rate on the *baseline* (release-11.8) is 0% — its 8 historical failures live on other branches. **The review's correction is right that round 4 ran only a fragment, but wrong that these two gates catch this case.**
-
-### False green 3 — `MM-T1276` on `pr-37758`
-
-- **Evidence:** `expect(locator).not.toBeVisible()` failed — `Expected: not visible, Received: visible` (a Settings dialog that should have closed stayed open). `Suggest` → `PR_REGRESSION` (0.7, `NeedsAI`).
-- **What it concluded:** AI (simulated) → `FLAKY_TEST` (0.9) — my simulation misread a "wrong product state" as a timing race. `canWaive` → waived.
-- **What was true:** a real bug (the dialog did not close). The deterministic hint was correct; the AI overrode it.
-- **Why the evidence was insufficient:** this is a **simulation artifact, not a shipped defect.** The real AI's rule 2 ("wrong product state → bug") would classify `Received: visible` as a bug, not a flake. I flag it as a false green in the untuned numbers, but the real model would likely catch it.
-
-### False green 4 — `MM-T5766` on `pr-38094`
-
-- **Evidence:** `The maximum number of property fields for this object type has been reached` (a `ClientError` thrown by the server). `Suggest` → `PR_REGRESSION` (0.7, `NeedsAI`).
-- **What it concluded:** AI (simulated) → `FLAKY_TEST` (0.9). `canWaive` → waived.
-- **What was true:** a real bug (the server rejected the request). Same simulation artifact as false green 3 — the real AI's rule 2 would call this a bug.
-
-**Net:** the two ABAC cases are genuine shipped false greens. The two `MM-T1276`/`MM-T5766` cases are artifacts of my no-screenshot AI simulation and would likely be caught by the real model. Either way, the bar of 0 is not met.
+The model's decision is dominated by the **history**, not the diff. A 40% historical failure rate is read as "this test flakes", and the diff does not override that. The evidence that would have distinguished "flaked again" from "broke for real" is the **single-commit isolation signal** — *this test passed on the immediately-prior commit on this branch and now fails* — and that signal is not in the prompt, the tools, or the model's rules.
 
 ---
 
-## 5. The three Phase 0 numbers (carried forward)
+## 4. Every false green, in full (Arm 2)
 
-| Number | Value |
-|---|---|
-| baseline raw master pass-rate | **88.40%** |
-| new-flaky arrival rate | **1.5 / day** |
-| single-commit attribution rate | **16.0%** → M4 ships ledger-only |
+All nine are timeout/visibility errors the model classified as a UI timing race (rule 5 → `FLAKY_TEST`). The ground truth is "same commit failed ≥2×, never passed later" — a real bug.
+
+| Test | PR | Error (first line) | Verdict | Conf |
+|---|---|---|---|---|
+| MM-T5779 | pr-38074 | `locator.click: Timeout 30000ms exceeded` | FLAKY_TEST | 0.90 |
+| MM-T5768 | pr-38074 | `locator.click: Timeout 30000ms exceeded` | FLAKY_TEST | 0.90 |
+| MM-T5769 | pr-38074 | `locator.click: Timeout 30000ms exceeded` | FLAKY_TEST | 0.90 |
+| MM-T5777 | pr-38074 | `locator.click: Timeout 30000ms exceeded` | FLAKY_TEST | 0.90 |
+| MM-T5776 | pr-38074 | `toBeFocused() failed — element(s) not found` | FLAKY_TEST | 0.87 |
+| MM-T5796 | pr-38188 | `toBeFocused() failed — Expected: focused, Received: inactive` | FLAKY_TEST | 0.90 |
+| MM-T5650 | pr-38188 | `toBeFocused() failed — Expected: focused, Received: inactive` | FLAKY_TEST | 0.80 |
+| MM-T5824 | pr-37732 | `policy "…" should appear after search — Expected: true, Received: false` | FLAKY_TEST | 0.90 |
+| MM-T5820 | pr-37732 | `policy "…" should appear after search — Expected: true, Received: false` | FLAKY_TEST | 0.90 |
+
+The pattern is uniform: a timeout or a `focused/inactive` assertion is read as "element rendered but too slow" (rule 5). The model cannot tell a timing race from a wrong product state **without the screenshot** — and this backtest had no screenshots, so the vision path was never exercised. That is a real gap in this measurement, not a proof the design is broken.
 
 ---
 
-## 6. Recommendation
+## 5. Model control (Task 3)
+
+**UNMEASURED.** The production model is Anthropic (the workflow forwards `ANTHROPIC_API_KEY`); no Anthropic key is available in this environment, so arm 2 could not be run on the production model. The numbers above are the local 31B only.
+
+This matters: a 31B model is materially weaker than a frontier model on exactly the task that failed here — reading a timeout error and deciding whether it is a race or a break. **A bad local result means "this model cannot do it", not "the design cannot do it."** The production numbers are the real ones, and they are not in this report.
+
+---
+
+## 6. Calibration (Task 4)
+
+The model is **overconfident**. It says 0.90 on almost everything, but at the 0.85–0.95 bucket it is correct only **53% (arm 1) / 60% (arm 2)** of the time. There are no verdicts below 0.7 or above 0.95 — the confidence distribution is a spike at 0.90.
+
+This is the finding worth more than any accuracy number: **the 0.85 floor is decorative.** A model that says 0.9 on everything makes the floor protect nothing. If 0.9-confidence verdicts are right 60% of the time, the floor needs to move — or the model's confidence needs recalibration — before any waiver is safe.
+
+---
+
+## 7. Recommendation
 
 **Do not start Phase 0.**
 
-The full pipeline (config B) does not clear the false-green bar: the ABAC shape — a real regression in a historically-flaky test — is waived 2/2, and the two gates the review named (0.85 floor, diff-overlap) do not catch it. Config C buys nothing and costs more; do not adopt it.
+The tools are a real improvement and should ship (Arm 2 beats Arm 1 on every axis, and tool-call compliance is 100%), but they do not clear the false-green bar: 9/22 real bugs are still waived, including both ABAC cases. Two things stand between this and a start:
 
-**The single change that would:** add a **single-commit isolation signal** to `Suggest` — "this test passed on the immediately-prior commit on *this* branch and now fails" — and let it take precedence over the flaky-history branch. That signal already exists in the data (the 16% attribution rate is exactly it) and is the one thing that distinguishes "flaked again" from "broke for real". It is a classifier change, not a new feature, and it is the only change that moves the false-green count toward zero.
+1. **The single-commit isolation signal.** The model waives on "high historical failure rate" and has no signal for "passed on the immediately-prior commit on this branch, now fails". That signal is the one thing that distinguishes "flaked again" from "broke for real", and it is absent from the prompt, the tools, and the rules. It is the same finding as round 5, now confirmed against a real model.
+
+2. **Calibration.** The model's 0.9 is not 90%. Until the 0.85+ bucket is actually ≥85% correct, the floor protects nothing.
+
+**The single change that would let me start:** add the single-commit isolation signal to the prompt and the classifier, and treat "passed on the prior commit, now fails" as a bug unless the screenshot shows a correct product state. That is a classifier/prompt change, not a new feature, and it is the only change that moves the false-green count toward zero.
 
 ### Honest limitations
 
-- **The AI layer is simulated, not run.** I have no model and no screenshots, so configs B and C approximate the AI with the prompt's deterministic rules. The two `MM-T1276`/`MM-T5766` false greens are likely simulation artifacts; the two ABAC false greens are not.
+- **The AI layer ran for the first time, but on the local 31B only.** The production (frontier) model is UNMEASURED — no Anthropic key. Treat these as lower-bound numbers.
+- **No screenshots.** The vision path was never exercised, and the false greens are precisely the cases where a screenshot is the deciding evidence (timing race vs. wrong product state).
 - **Q3 is unmeasured** (n=1 master/release real bug).
-- **Q4's loop was not run end-to-end** (needs a real workspace + push); the answer is from the design and code, not a live PR.
-- **Amnesty waiver-count is unknown** (needs the `triage_verdicts` ledger); I used the failure-rate limit only.
+- **Q4's loop was not run end-to-end.**
+- **Point-in-time diff is approximate.** `get_pr_diff` fetches the current PR diff; the cherry-pick has grown since the failure, so the ABAC diff the model saw is larger than the point-in-time one. The changed-file paths (the part that matters) are preserved.

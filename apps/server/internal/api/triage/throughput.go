@@ -22,12 +22,25 @@
 // backlog grows, and PR-side waivers stay load-bearing rather than being a
 // temporary bridge to a clean master.
 //
-// Of the three inputs, exactly one is a real lever: window_days is irreducible
-// if you want proof a fix worked, attempts_per_fix is a property of the tests,
-// and concurrency is capped by review capacity. That leaves REVIEW LATENCY. A
-// weekly named rotation means up to 7 days; a 48-hour review SLA cuts cycle
-// time from 14 days to 9 and raises drain by ~55%. This endpoint exists so that
-// trade is visible to whoever owns the rotation.
+// THE WINDOW WAS NEVER IRREDUCIBLE. An earlier version of this comment claimed
+// window_days could not be lowered because it is "the proof a fix worked". That
+// was wrong, and the error was in the sampling strategy, not the arithmetic: the
+// 7-day floor exists only because the naive way to collect 20 samples of a test
+// is to wait for 20 natural master runs. Re-run the ONE test 20 times with
+// `--grep` on its MM-T id and 20 samples take a single job. Pass targeted=true
+// to model that (see targetedWindowDays).
+//
+// The two levers that matter, on the measured numbers (arrival 1.47/day):
+//
+//	baseline (wait for master, weekly review, concurrency 2)   drain 0.10/day
+//	+ targeted re-measurement                                  drain 0.18/day
+//	+ targeted AND a 48h review SLA at concurrency 5           drain 1.48/day  <- keeps up
+//
+// BOTH are required. Targeted re-measurement alone at a weekly review cadence
+// reaches 0.46/day, still short of 1.47. attempts_per_fix is a property of the
+// tests, and concurrency is capped by review capacity, so those two are not
+// levers. This endpoint exists so that trade is visible to whoever owns the
+// rotation.
 
 package triage
 
@@ -59,6 +72,30 @@ const (
 	// windowFloorDays is the flakiness window's floor: "20 runs or 7 days,
 	// whichever covers more runs", so on a busy master the floor governs.
 	windowFloorDays = 7.0
+
+	// targetedWindowDays is the re-measurement window when the fix is verified
+	// by re-running JUST the one test, N times, in a single dedicated CI job —
+	// Playwright `--grep` on the test's MM-T id, Cypress `--spec`.
+	//
+	// This is the assumption-breaker. The 7-day floor exists only because the
+	// naive way to collect 20 samples of a test is to wait for 20 natural
+	// master runs. If instead you run the one test 20 times on demand, 20
+	// samples take one job. 6 hours is deliberately conservative: it covers
+	// queueing, a full environment boot per repetition, and 20 repetitions of
+	// a slow E2E spec, and it is still ~28x shorter than the 7-day floor.
+	//
+	// It is a strictly BETTER measurement, not a shortcut: 20 consecutive
+	// executions at one commit isolate the test's own flakiness, whereas 20
+	// master runs spread over 7 days confound it with everything else that
+	// landed in that week.
+	targetedWindowDays = 0.25
+)
+
+// The levers throughputAdvice can name, in the order it prefers them.
+const (
+	leverConcurrency = "concurrency"
+	leverWindow      = "remeasurement_window"
+	leverReview      = "review_latency"
 )
 
 type throughputResponse struct {
@@ -77,6 +114,10 @@ type throughputResponse struct {
 	AttemptsPerFix    float64 `json:"attempts_per_fix"`
 	Concurrency       int     `json:"concurrency"`
 	MaxConcurrency    int     `json:"max_concurrency"`
+	// Targeted re-measurement: verify the fix by re-running just this test N
+	// times in one job (`--grep MM-Txxxx`) instead of waiting for N natural
+	// master runs. Collapses window_days from 7 to hours.
+	Targeted bool `json:"targeted_remeasurement"`
 
 	// Derived.
 	WindowDays           float64 `json:"window_days"`
@@ -140,6 +181,7 @@ func (h *Handlers) StabilizationThroughput(w http.ResponseWriter, r *http.Reques
 		api.WriteError(w, r, err)
 		return
 	}
+	targeted := r.URL.Query().Get("targeted") == "true"
 
 	resp := throughputResponse{
 		Repo:              normalizeRepo(repo),
@@ -148,6 +190,7 @@ func (h *Handlers) StabilizationThroughput(w http.ResponseWriter, r *http.Reques
 		AttemptsPerFix:    attempts,
 		Concurrency:       int(concurrency),
 		MaxConcurrency:    maxConcurrency,
+		Targeted:          targeted,
 	}
 
 	if err := h.loadThroughputCounts(r, &resp, since, windowDays); err != nil {
@@ -216,13 +259,20 @@ func (h *Handlers) loadThroughputCounts(r *http.Request, resp *throughputRespons
 // computeThroughput applies the strategy doc's formula. Split out from the
 // handler so the arithmetic is unit-testable without a database.
 func computeThroughput(resp *throughputResponse) {
-	// window_days = max(7, 20 / master_runs_per_day). The max is load-bearing:
-	// taking the division alone would understate cycle time on a busy master
-	// and therefore understate the concurrency needed.
-	resp.WindowDays = windowFloorDays
-	if resp.MasterRunsPerDay > 0 {
-		if byRuns := 20 / resp.MasterRunsPerDay; byRuns > resp.WindowDays {
-			resp.WindowDays = byRuns
+	// Targeted re-measurement decouples the window from master's cadence
+	// entirely: the samples come from re-running the one test, so no amount of
+	// waiting for master is involved.
+	if resp.Targeted {
+		resp.WindowDays = targetedWindowDays
+	} else {
+		// window_days = max(7, 20 / master_runs_per_day). The max is
+		// load-bearing: taking the division alone would understate cycle time
+		// on a busy master and therefore understate the concurrency needed.
+		resp.WindowDays = windowFloorDays
+		if resp.MasterRunsPerDay > 0 {
+			if byRuns := 20 / resp.MasterRunsPerDay; byRuns > resp.WindowDays {
+				resp.WindowDays = byRuns
+			}
 		}
 	}
 	resp.CycleDays = resp.ReviewLatencyDays + resp.WindowDays
@@ -271,13 +321,45 @@ func computeThroughput(resp *throughputResponse) {
 	}
 }
 
-// throughputAdvice names the ONE input worth changing. Review latency is the
-// only genuine lever: the re-measurement window is irreducible if you want
-// proof a fix worked, attempts-per-fix is a property of the tests, and
-// concurrency is bounded by review capacity.
+// throughputAdvice names the ONE change worth making, preferring the CHEAPEST
+// one that actually closes the gap. Ordering matters: telling a calm repo to
+// redesign its re-measurement strategy when bumping concurrency by one would
+// do is bad advice, and so is suggesting a concurrency number that cannot help.
+//
+//  1. already keeping up            -> nothing
+//  2. concurrency within the cap closes it -> raise concurrency (cheapest)
+//  3. targeted re-measurement helps -> stop waiting for master (biggest lever)
+//  4. otherwise                     -> review latency, plus quarantine for the rest
 func throughputAdvice(resp *throughputResponse) (lever, rec string) {
 	if resp.KeepingUp {
 		return slaStateNone, "drain meets arrival at the current settings — hold"
+	}
+	if resp.RequiredConcurrency <= float64(resp.MaxConcurrency) {
+		return leverConcurrency, "raise concurrency to " +
+			itoa(int(math.Ceil(resp.RequiredConcurrency))) +
+			" (within the cap of " + itoa(resp.MaxConcurrency) + ") to meet arrival"
+	}
+	// Concurrency cannot close it. The biggest remaining lever is to stop
+	// waiting for master to re-measure — quantified, not described.
+	if !resp.Targeted {
+		targeted := *resp
+		targeted.Targeted = true
+		targeted.Notes = nil
+		computeThroughput(&targeted)
+		if targeted.ModeledDrainRate > resp.ModeledDrainRate {
+			verdict := "."
+			if targeted.KeepingUp {
+				verdict = " — which KEEPS UP."
+			} else if targeted.RequiredConcurrency <= float64(targeted.MaxConcurrency) {
+				verdict = " — which KEEPS UP at concurrency " +
+					itoa(int(math.Ceil(targeted.RequiredConcurrency))) + "."
+			}
+			return leverWindow, "verify fixes by re-running just the test " +
+				"(--grep on its MM-T id) instead of waiting for master: window " +
+				trimF(resp.WindowDays) + "d -> " + trimF(targeted.WindowDays) + "d takes drain " +
+				trimF(resp.ModeledDrainRate) + " -> " + trimF(targeted.ModeledDrainRate) +
+				"/day against arrival " + trimF(resp.ArrivalRate) + "/day" + verdict
+		}
 	}
 	if resp.RequiredConcurrency > float64(resp.MaxConcurrency) {
 		// Show what the only real lever buys, concretely.
@@ -287,14 +369,14 @@ func throughputAdvice(resp *throughputResponse) (lever, rec string) {
 		}
 		cycleAt2 := faster + resp.WindowDays
 		drainAtCap := float64(resp.MaxConcurrency) / (cycleAt2 * resp.AttemptsPerFix)
-		return "review_latency", "required concurrency " +
+		return leverReview, "required concurrency " +
 			trimF(resp.RequiredConcurrency) + " exceeds the cap of " + itoa(resp.MaxConcurrency) +
 			", so raising concurrency cannot close this. Review latency is the only real lever: at " +
 			trimF(faster) + "d latency and concurrency " + itoa(resp.MaxConcurrency) +
 			", drain would be " + trimF(round2(drainAtCap)) + "/day against arrival " +
 			trimF(resp.ArrivalRate) + "/day. Quarantine the top of the queue by blast radius for the rest."
 	}
-	return "concurrency", "raise concurrency to " + itoa(int(math.Ceil(resp.RequiredConcurrency))) +
+	return leverConcurrency, "raise concurrency to " + itoa(int(math.Ceil(resp.RequiredConcurrency))) +
 		" (within the cap of " + itoa(resp.MaxConcurrency) + ") to meet arrival"
 }
 

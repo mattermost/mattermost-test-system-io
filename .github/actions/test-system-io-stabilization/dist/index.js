@@ -20385,6 +20385,9 @@ async function runLoop(deps, cfg) {
     return [{ kind: "skipped", testID: "-", reason: `concurrency ${cfg.concurrency} already open` }];
   }
   const fetched = await deps.fetchQueue(cfg.baseURL, cfg.repo, cfg.depth);
+  if (!fetched.ok) {
+    return [{ kind: "queue_unavailable", status: fetched.status }];
+  }
   const seen = /* @__PURE__ */ new Set();
   const queue = [];
   for (const entry of [...fetched.promoted, ...fetched.ranked]) {
@@ -20396,7 +20399,9 @@ async function runLoop(deps, cfg) {
   for (const entry of queue) {
     if (taken >= slots) break;
     const testID = entry.test_id;
-    await deps.resetWorkspace();
+    if (!cfg.dryRun) {
+      await deps.resetWorkspace();
+    }
     const prior = await deps.attemptsForTest(cfg.repo, testID);
     if (attemptsExhausted(prior, cfg.maxAttemptsPerTest)) {
       actions.push({
@@ -20462,6 +20467,28 @@ function queueURL(baseURL, repo) {
   const params = new URLSearchParams({ repo, window: "30d" });
   return `${baseURL}/api/v1/triage/stabilization/queue?${params.toString()}`;
 }
+async function fetchQueue(opts) {
+  const url = queueURL(opts.baseURL, opts.repo);
+  try {
+    const bearer = await opts.getIDToken(opts.audience);
+    const res = await opts.fetch(url, { headers: { Authorization: `Bearer ${bearer}` } });
+    if (res.status === 401 || res.status === 403) {
+      opts.setFailed(
+        `queue fetch ${res.status} \u2014 OIDC audience/authorization misconfigured (permanent, not transient)`
+      );
+      return { ok: false, status: res.status, promoted: [], ranked: [] };
+    }
+    if (!res.ok) {
+      opts.warning(`queue fetch failed (${res.status}) \u2014 standing down this run`);
+      return { ok: false, status: res.status, promoted: [], ranked: [] };
+    }
+    const body = await res.json();
+    return { ok: true, status: res.status, promoted: body.promoted ?? [], ranked: body.ranked ?? [] };
+  } catch (err) {
+    opts.warning(`queue fetch failed (${err.message}) \u2014 standing down this run`);
+    return { ok: false, status: 0, promoted: [], ranked: [] };
+  }
+}
 
 // src/pr.ts
 var import_node_child_process = require("child_process");
@@ -20473,6 +20500,18 @@ function gitDeps(workspace) {
       maxBuffer: 32 * 1024 * 1024
     })
   };
+}
+function resetWorkspace(git, baseBranch) {
+  try {
+    git.run(["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+    git.run(["checkout", "-B", baseBranch, `refs/remotes/origin/${baseBranch}`]);
+    git.run(["restore", "--staged", "--worktree", "--", "e2e-tests/"]);
+    git.run(["clean", "-fd", "--", "e2e-tests/"]);
+  } catch (err) {
+    throw new Error(
+      `workspace reset failed (is origin/${baseBranch} available?): ${err.message}`
+    );
+  }
 }
 function branchName(testID, now = /* @__PURE__ */ new Date()) {
   const slug = testID.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
@@ -20729,16 +20768,15 @@ async function main() {
     // R2-2: B7 moved the queue behind RequireAuth — fetch with the same
     // OIDC bearer the ledger writes use, or the loop dies on its first call.
     async fetchQueue(b, r) {
-      const url = queueURL(b, r);
-      try {
-        const bearer = await getIDToken(getInput("oidc-audience") || "mattermost-test-system-io");
-        const res = await fetch(url, { headers: { Authorization: `Bearer ${bearer}` } });
-        if (!res.ok) throw new Error(`queue fetch: ${res.status}`);
-        return await res.json();
-      } catch (err) {
-        warning(`queue fetch failed (${err.message}) \u2014 standing down this run`);
-        return { promoted: [], ranked: [] };
-      }
+      return fetchQueue({
+        baseURL: b,
+        repo: r,
+        audience: getInput("oidc-audience") || "mattermost-test-system-io",
+        getIDToken: (aud) => getIDToken(aud),
+        fetch,
+        setFailed: (m) => setFailed(m),
+        warning: (m) => warning(m)
+      });
     },
     async monthlyAttemptsUsed(r) {
       const monthStart = /* @__PURE__ */ new Date();
@@ -20780,12 +20818,11 @@ async function main() {
     // R2-4: pristine base per entry. Fetch the EXPLICIT remote ref —
     // `git fetch origin master` writes only FETCH_HEAD and never creates
     // refs/remotes/origin/master, which actions/checkout's narrow refspec
-    // may not have created either.
+    // may not have created either. Round-3 major 2: scoped to e2e-tests/ so
+    // a composite job's untracked files and uncommitted edits outside the
+    // loop's edit root survive.
     async resetWorkspace() {
-      git.run(["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
-      git.run(["checkout", "-f", "-B", baseBranch, `refs/remotes/origin/${baseBranch}`]);
-      git.run(["reset", "--hard"]);
-      git.run(["clean", "-fd"]);
+      resetWorkspace(git, baseBranch);
     },
     stageEdits() {
       stageEdits(git);
@@ -20860,6 +20897,9 @@ Test: ${entry.test_id}`,
         break;
       case "skipped":
         info(`skipped ${a.testID}: ${a.reason}`);
+        break;
+      case "queue_unavailable":
+        notice(`queue unavailable (status ${a.status}) \u2014 loop stood down`);
         break;
     }
   }

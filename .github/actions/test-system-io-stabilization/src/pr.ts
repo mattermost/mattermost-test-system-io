@@ -19,6 +19,27 @@ export function gitDeps(workspace: string): GitDeps {
   };
 }
 
+/**
+ * R2-4 + round-3 major 2: reset the workspace to the pristine base BEFORE each
+ * entry. Scoped to e2e-tests/ — the loop only ever writes there, so a
+ * composite job's untracked non-ignored files and uncommitted edits to tracked
+ * files OUTSIDE e2e-tests/ must survive (the old `reset --hard` + `clean -fd`
+ * silently discarded them). A missing origin/<base> is a clear error, not a
+ * mid-loop crash.
+ */
+export function resetWorkspace(git: GitDeps, baseBranch: string): void {
+  try {
+    git.run(["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+    git.run(["checkout", "-B", baseBranch, `refs/remotes/origin/${baseBranch}`]);
+    git.run(["restore", "--staged", "--worktree", "--", "e2e-tests/"]);
+    git.run(["clean", "-fd", "--", "e2e-tests/"]);
+  } catch (err) {
+    throw new Error(
+      `workspace reset failed (is origin/${baseBranch} available?): ${(err as Error).message}`,
+    );
+  }
+}
+
 export function branchName(testID: string, now = new Date()): string {
   const slug = testID.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
   return `stabilization/${slug}-${now.toISOString().slice(0, 10)}`;

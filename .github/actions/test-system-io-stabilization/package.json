@@ -9,7 +9,7 @@
     "format": "npx oxfmt src --write",
     "format:check": "npx oxfmt src --check",
     "lint": "npx oxlint src",
-    "test": "node --experimental-strip-types --test src/rails.test.ts src/budget.test.ts src/queue.test.ts src/loop.test.ts src/self_check.test.ts"
+    "test": "node --experimental-strip-types --test src/*.test.ts"
   },
   "dependencies": {
     "@actions/core": "3.0.1"

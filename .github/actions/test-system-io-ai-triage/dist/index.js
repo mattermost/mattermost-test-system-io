@@ -26999,6 +26999,12 @@ function formatTriageComment(args) {
   const mainRegressions = productBugs.filter((d) => d.verdict === "MAIN_REGRESSION");
   const waived = args.decisions.filter((d) => d.waived).length;
   const lines = [VERDICT_COMMENT_MARKER, `## \u{1F916} E2E AI triage`, ``];
+  if (args.mode === "shadow") {
+    lines.push(
+      `> \u26A0\uFE0F **Observational (shadow mode)** \u2014 this run did not act on any check; it only reports what triage would have done.`,
+      ``
+    );
+  }
   if (prRegressions.length > 0) {
     const tag = args.prAuthor ? `@${args.prAuthor}` : "PR author";
     lines.push(
@@ -28025,7 +28031,7 @@ async function run() {
   } else {
     setOutput("flipped_contexts", "");
   }
-  if (mode === "gate" && githubToken && identity.gh_pr_number && decisions.some((d) => d.verdict === "PR_REGRESSION" || d.verdict === "MAIN_REGRESSION")) {
+  if (githubToken && identity.gh_pr_number && decisions.some((d) => d.verdict === "PR_REGRESSION" || d.verdict === "MAIN_REGRESSION")) {
     const [owner, repo] = splitRepo(pack.group.repository);
     let prAuthor;
     try {
@@ -28046,7 +28052,8 @@ async function run() {
       decisions,
       clusters: pack.clusters || [],
       reportURL,
-      runConfig: pack.group?.environment_metadata
+      runConfig: pack.group?.environment_metadata,
+      mode
     });
     if (commentBody) {
       const url = await upsertTriageComment({

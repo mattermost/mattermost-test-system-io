@@ -27,7 +27,8 @@ export type LoopAction =
   | { kind: "routed"; testID: string; owner: string; reason: string }
   | { kind: "budget_exhausted"; used: number; budget: number }
   | { kind: "attempts_exhausted"; testID: string; attempts: number; diagnosis: string }
-  | { kind: "skipped"; testID: string; reason: string };
+  | { kind: "skipped"; testID: string; reason: string }
+  | { kind: "queue_unavailable"; status: number };
 
 /** The one thing the loop may edit — enforced before any write. */
 export const EDITABLE_ROOT = "e2e-tests/";

@@ -100,3 +100,28 @@ test("mixed: one unwaived master bug still comments and shows waived truthfully"
   assert.match(body, /1 failure cluster looks like an existing bug on master/);
   assert.match(body, /✅/); // waived truthfully in the details table
 });
+
+test("shadow mode labels the comment observational (round-3 major 3)", () => {
+  const body = formatTriageComment({
+    prAuthor: "octocat",
+    decisions: [decision({ verdict: "PR_REGRESSION" })],
+    clusters: [cluster("sig7", "Save fails")],
+    reportURL: "https://r.example",
+    mode: "shadow",
+  });
+  assert.ok(body);
+  assert.match(body, /Observational \(shadow mode\)/);
+  assert.match(body, /did not act on any check/);
+});
+
+test("gate mode does not label the comment observational", () => {
+  const body = formatTriageComment({
+    prAuthor: "octocat",
+    decisions: [decision({ verdict: "PR_REGRESSION" })],
+    clusters: [cluster("sig8", "Save fails")],
+    reportURL: "https://r.example",
+    mode: "gate",
+  });
+  assert.ok(body);
+  assert.ok(!body.includes("Observational"), "gate comment must not be labelled observational");
+});

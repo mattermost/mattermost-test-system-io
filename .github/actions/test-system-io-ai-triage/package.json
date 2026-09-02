@@ -9,7 +9,7 @@
     "format": "npx oxfmt src --write",
     "format:check": "npx oxfmt src --check",
     "lint": "npx oxlint src",
-    "test": "node --experimental-strip-types --test src/*.test.ts"
+    "test": "node --experimental-strip-types --experimental-test-module-mocks --test src/*.test.ts"
   },
   "dependencies": {
     "@actions/core": "3.0.1",

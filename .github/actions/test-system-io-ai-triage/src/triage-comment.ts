@@ -18,6 +18,8 @@ export function formatTriageComment(args: {
   reportURL: string;
   /** W9 — captured run configuration; rendered when present. */
   runConfig?: Record<string, unknown>;
+  /** "gate" or "shadow" — shadow comments are labelled observational. */
+  mode?: string;
 }): string | null {
   // Unblocking path: all-waived must stay silent — silence IS the feature.
   if (args.decisions.length === 0) return null;
@@ -31,6 +33,15 @@ export function formatTriageComment(args: {
   const waived = args.decisions.filter((d) => d.waived).length;
 
   const lines: string[] = [VERDICT_COMMENT_MARKER, `## 🤖 E2E AI triage`, ``];
+
+  // Shadow mode observes and comments but acts on nothing — say so up front so
+  // nobody reads an observational note as a verdict that flipped a check.
+  if (args.mode === "shadow") {
+    lines.push(
+      `> ⚠️ **Observational (shadow mode)** — this run did not act on any check; it only reports what triage would have done.`,
+      ``,
+    );
+  }
 
   // The gist: one sentence per headline, no stories.
   if (prRegressions.length > 0) {

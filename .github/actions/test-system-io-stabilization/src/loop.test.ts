@@ -11,7 +11,7 @@ function entry(testID: string, promoted = false): QueueEntry {
 
 function deps(over: Partial<LoopDeps> = {}): LoopDeps {
   return {
-    async fetchQueue() { return { promoted: [], ranked: [entry("MM-T1")] }; },
+    async fetchQueue() { return { ok: true, status: 200, promoted: [], ranked: [entry("MM-T1")] }; },
     async monthlyAttemptsUsed() { return 0; },
     async openPRCount() { return 0; },
     async attemptsForTest() { return 0; },
@@ -40,7 +40,7 @@ test("budget exhausted stops before touching the queue", async () => {
   let queueTouched = false;
   const d = deps({
     async monthlyAttemptsUsed() { return 20; },
-    async fetchQueue() { queueTouched = true; return { promoted: [], ranked: [] }; },
+    async fetchQueue() { queueTouched = true; return { ok: true, status: 200, promoted: [], ranked: [] }; },
   });
   const actions = await runLoop(d, BASE);
   assert.equal(actions[0]!.kind, "budget_exhausted");
@@ -118,7 +118,7 @@ test("M11: a test in both promoted and ranked is processed once", async () => {
   const openedFor: string[] = [];
   const d = deps({
     async fetchQueue() {
-      return { promoted: [{ test_id: "MM-T1", promoted: true }], ranked: [{ test_id: "MM-T1" }] };
+      return { ok: true, status: 200, promoted: [{ test_id: "MM-T1", promoted: true }], ranked: [{ test_id: "MM-T1" }] };
     },
     async stageEdits() {},
     hasStagedChanges() { return true; },
@@ -134,7 +134,7 @@ test("R2-4 + M3: resetWorkspace runs before every entry — one rejected edit ca
   let calls = 0;
   const d = deps({
     async fetchQueue() {
-      return { promoted: [], ranked: [entry("MM-T1"), entry("MM-T2")] };
+      return { ok: true, status: 200, promoted: [], ranked: [entry("MM-T1"), entry("MM-T2")] };
     },
     async resetWorkspace() { resets.push(`before-${++calls}`); },
     async stageEdits() {},
@@ -153,4 +153,35 @@ test("R2-4 + M3: resetWorkspace runs before every entry — one rejected edit ca
   // T1 rejected, T2 opened — the poisoning would have rejected both.
   assert.equal(actions[0]!.kind, "skipped");
   assert.equal(actions[1]!.kind, "fix_pr");
+});
+
+test("queue unavailable emits a distinct action, never 'queue empty'", async () => {
+  const d = deps({
+    async fetchQueue() { return { ok: false, status: 500, promoted: [], ranked: [] }; },
+  });
+  const actions = await runLoop(d, BASE);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0]!.kind, "queue_unavailable");
+  if (actions[0]!.kind === "queue_unavailable") assert.equal(actions[0]!.status, 500);
+});
+
+test("healthy-but-empty queue stands down with 'queue empty'", async () => {
+  const d = deps({
+    async fetchQueue() { return { ok: true, status: 200, promoted: [], ranked: [] }; },
+  });
+  const actions = await runLoop(d, BASE);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0]!.kind, "skipped");
+  if (actions[0]!.kind === "skipped") assert.equal(actions[0]!.reason, "queue empty");
+});
+
+test("dry-run never resets the workspace (touches nothing)", async () => {
+  let reset = false;
+  const d = deps({
+    async resetWorkspace() { reset = true; },
+  });
+  const actions = await runLoop(d, { ...BASE, dryRun: true });
+  assert.equal(reset, false);
+  assert.equal(actions[0]!.kind, "skipped");
+  if (actions[0]!.kind === "skipped") assert.match(actions[0]!.reason, /dry-run/);
 });

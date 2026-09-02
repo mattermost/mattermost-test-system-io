@@ -7,12 +7,13 @@
  */
 import type { QueueEntry, LoopAction } from "./types.ts";
 import { STABILIZATION_LABEL, BRANCH_PREFIX } from "./types.ts";
+import type { QueueFetchResult } from "./queue.ts";
 import { withinBudget, budgetStopNotice } from "./budget.ts";
 import { attemptsExhausted } from "./rails.ts";
 
 
 export interface LoopDeps {
-  fetchQueue(baseURL: string, repo: string, depth: number): Promise<{ promoted: QueueEntry[]; ranked: QueueEntry[] }>;
+  fetchQueue(baseURL: string, repo: string, depth: number): Promise<QueueFetchResult>;
   monthlyAttemptsUsed(repo: string): Promise<number>;
   openPRCount(repo: string): Promise<number>;
   attemptsForTest(repo: string, testID: string): Promise<number>;
@@ -67,6 +68,12 @@ export async function runLoop(deps: LoopDeps, cfg: LoopConfig): Promise<LoopActi
   // previous double-fetch could open two PRs for a test present in both
   // lists and blow the attempts cap in a single run.
   const fetched = await deps.fetchQueue(cfg.baseURL, cfg.repo, cfg.depth);
+  if (!fetched.ok) {
+    // Round-3 major 1: a failed fetch must NOT emit the same terminal action
+    // a genuinely empty queue emits — that made a misconfigured OIDC audience
+    // report "nothing to do" and exit 0 forever.
+    return [{ kind: "queue_unavailable", status: fetched.status }];
+  }
   const seen = new Set<string>();
   const queue: QueueEntry[] = [];
   for (const entry of [...fetched.promoted, ...fetched.ranked]) {
@@ -80,8 +87,11 @@ export async function runLoop(deps: LoopDeps, cfg: LoopConfig): Promise<LoopActi
     if (taken >= slots) break;
     const testID = entry.test_id;
 
-    // Fresh base for every entry — see resetWorkspace.
-    await deps.resetWorkspace();
+    // Fresh base for every entry — see resetWorkspace. Dry-run touches
+    // nothing: no reset, no clean, no commit, no push (round-3 major 2).
+    if (!cfg.dryRun) {
+      await deps.resetWorkspace();
+    }
 
     // Attempts-per-test cap: escalate with the diagnosis, never a 4th PR.
     const prior = await deps.attemptsForTest(cfg.repo, testID);

@@ -7,7 +7,7 @@
 import * as core from "@actions/core";
 import * as path from "node:path";
 import { runLoop, type LoopDeps, type LoopConfig } from "./loop.ts";
-import { pickQueue, queueURL } from "./queue.ts";
+import { pickQueue, queueURL, fetchQueue } from "./queue.ts";
 import { clampConcurrency } from "./rails.ts";
 import {
   branchName,
@@ -15,12 +15,13 @@ import {
   gitDeps,
   openStabilizationPR,
   attemptsForTest,
+  resetWorkspace,
   stageEdits as stageEditsForCommit,
 } from "./pr.ts";
 import { repairSpec } from "./agent.ts";
 import { checkOwnDiff } from "./self_check.ts";
 import { recordAttempt } from "./ledger.ts";
-import { STABILIZATION_LABEL, BRANCH_PREFIX, type QueueEntry } from "./types.ts";
+import { STABILIZATION_LABEL, BRANCH_PREFIX } from "./types.ts";
 
 const STAGING_URL = "https://staging-test-io.test.mattermost.com";
 const PRODUCTION_URL = "https://test-io.test.mattermost.com";
@@ -80,16 +81,15 @@ async function main(): Promise<void> {
     // R2-2: B7 moved the queue behind RequireAuth — fetch with the same
     // OIDC bearer the ledger writes use, or the loop dies on its first call.
     async fetchQueue(b, r) {
-      const url = queueURL(b, r);
-      try {
-        const bearer = await core.getIDToken(core.getInput("oidc-audience") || "mattermost-test-system-io");
-        const res = await fetch(url, { headers: { Authorization: `Bearer ${bearer}` } });
-        if (!res.ok) throw new Error(`queue fetch: ${res.status}`);
-        return (await res.json()) as { promoted: QueueEntry[]; ranked: QueueEntry[] };
-      } catch (err) {
-        core.warning(`queue fetch failed (${(err as Error).message}) — standing down this run`);
-        return { promoted: [], ranked: [] };
-      }
+      return fetchQueue({
+        baseURL: b,
+        repo: r,
+        audience: core.getInput("oidc-audience") || "mattermost-test-system-io",
+        getIDToken: (aud) => core.getIDToken(aud),
+        fetch,
+        setFailed: (m) => core.setFailed(m),
+        warning: (m) => core.warning(m),
+      });
     },
     async monthlyAttemptsUsed(r) {
       const monthStart = new Date();
@@ -133,12 +133,11 @@ async function main(): Promise<void> {
     // R2-4: pristine base per entry. Fetch the EXPLICIT remote ref —
     // `git fetch origin master` writes only FETCH_HEAD and never creates
     // refs/remotes/origin/master, which actions/checkout's narrow refspec
-    // may not have created either.
+    // may not have created either. Round-3 major 2: scoped to e2e-tests/ so
+    // a composite job's untracked files and uncommitted edits outside the
+    // loop's edit root survive.
     async resetWorkspace() {
-      git.run(["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
-      git.run(["checkout", "-f", "-B", baseBranch, `refs/remotes/origin/${baseBranch}`]);
-      git.run(["reset", "--hard"]);
-      git.run(["clean", "-fd"]);
+      resetWorkspace(git, baseBranch);
     },
     stageEdits() {
       stageEditsForCommit(git);
@@ -210,6 +209,9 @@ async function main(): Promise<void> {
         break;
       case "skipped":
         core.info(`skipped ${a.testID}: ${a.reason}`);
+        break;
+      case "queue_unavailable":
+        core.notice(`queue unavailable (status ${a.status}) — loop stood down`);
         break;
     }
   }

@@ -283,8 +283,9 @@ export async function run(): Promise<void> {
   // MVP #1: regressions must reach the PR author — commit statuses and the
   // Actions page are invisible to authors. One idempotent comment, @-tagging
   // the PR author only when this PR is the suspect. All-waived stays silent.
+  // Shadow mode comments too (observational) — Phase 0 dogfooding is worthless
+  // if developers see nothing for its whole 4-week run.
   if (
-    mode === "gate" &&
     githubToken &&
     identity.gh_pr_number &&
     decisions.some((d) => d.verdict === "PR_REGRESSION" || d.verdict === "MAIN_REGRESSION")
@@ -310,6 +311,7 @@ export async function run(): Promise<void> {
       clusters: pack.clusters || [],
       reportURL,
       runConfig: pack.group?.environment_metadata,
+      mode,
     });
     if (commentBody) {
       const url = await upsertTriageComment({

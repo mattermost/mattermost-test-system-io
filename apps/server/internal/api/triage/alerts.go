@@ -506,6 +506,11 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, errRepoRequired())
 		return
 	}
+	// Round-3 major 4: normalize ONLY for the alert_firings read/write key (and
+	// the advisory-lock key, which must match it). The report_groups data
+	// queries take repoRaw so the split_part(...) = $1 arm stays live for a
+	// short-form repo — normalizing here made ?repo=mattermost read zero data
+	// while the dry GET endpoint returned rows.
 	repo := normalizeAlertRepo(repoRaw)
 	branch := orDefault(r.URL.Query().Get("branch"), "main")
 	floor, minRuns, cfgErr := alertConfigFromQuery(r)
@@ -534,14 +539,14 @@ func (h *Handlers) AlertEvaluate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.loadMasterAlertData(ctx, tx, repo, branch, time.Now().Add(-45*24*time.Hour))
+	data, err := h.loadMasterAlertData(ctx, tx, repoRaw, branch, time.Now().Add(-45*24*time.Hour))
 	if err != nil {
 		h.logError("alerts load", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
 	now := time.Now()
-	alerts := EvaluateMasterAlerts(data.inputsAsOf(repo, now, floor, minRuns))
+	alerts := EvaluateMasterAlerts(data.inputsAsOf(repoRaw, now, floor, minRuns))
 
 	records, err := h.loadFiringRecords(ctx, tx, repo)
 	if err != nil {

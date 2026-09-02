@@ -348,7 +348,10 @@ test("R2-3: guard rejects dangling symlinks planted under an allowed prefix", ()
   assert.throws(() => guard("e2e-tests/dangling.ts", ws), /dangling symlink|symlink/i);
   // Dangling link at a product file inside the workspace.
   fs.symlinkSync(path.join(ws, "server.go"), path.join(ws, "e2e-tests", "dangling2.ts"));
-  assert.throws(() => guard("e2e-tests/dangling2.ts", ws), /dangling symlink|outside the writable prefixes/i);
+  assert.throws(
+    () => guard("e2e-tests/dangling2.ts", ws),
+    /dangling symlink|outside the writable prefixes/i,
+  );
   // Non-dangling file link still rejected.
   fs.writeFileSync(path.join(ws, "victim.go"), "package x");
   fs.symlinkSync(path.join(ws, "victim.go"), path.join(ws, "e2e-tests", "link.ts"));

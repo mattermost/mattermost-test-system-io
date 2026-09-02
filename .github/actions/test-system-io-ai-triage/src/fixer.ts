@@ -561,7 +561,9 @@ export function guard(rel: string | undefined, workspace: string): string {
     throw new Error(`path escapes workspace (symlink?): ${rel}`);
   }
   const normReal = path.relative(rootReal, ancReal).split(path.sep).join("/");
-  const rootOk = ALLOWED_PREFIXES.some((p) => normReal === p.slice(0, -1) || normReal.startsWith(p));
+  const rootOk = ALLOWED_PREFIXES.some(
+    (p) => normReal === p.slice(0, -1) || normReal.startsWith(p),
+  );
   if (!rootOk) {
     throw new Error(`path resolves outside the writable prefixes (symlink?): ${rel}`);
   }

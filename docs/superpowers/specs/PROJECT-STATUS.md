@@ -8,23 +8,93 @@ classifier.
 
 ---
 
-## 1. The four capabilities
+## 1. The three goals
 
-| # | Capability | Status | Number | Artifact |
+Run live on 2026-09-02: a throwaway DB migrated to head (32), the real TSIO
+server, the real `GET /api/v1/triage/evidence`, the real `decide()`/`canWaive`
+from the action, and **Opus 5 as the triage model** (not the local 31B). Six
+scenarios, **6/6 correct**.
+
+| # | Goal | Status | Evidence |
+|---|---|---|---|
+| 1 | Tell a developer whether a PR failure is flaky or theirs — green if flaky | **YES** | 6/6 below |
+| 2 | Watch master health and fix flaky/failing tests regularly | **YES (detect + rank)**, fix loop still not run | raw pass-rate, alert firing, ranked queue below |
+| 3 | Point out a failure caused by something merged to master, and by whom | **YES (commit range)**, author lookup needs GitHub | `failing_since` + `last_pass` below |
+
+### Goal 1 — the six scenarios, real API, real policy
+
+| Scenario | Test | Setup | Check | Correct |
 |---|---|---|---|---|
-| 1 | My PR broke a test | **UNMEASURED** | last measured 41% false greens (local 31B, round 6) — bar is 0 | [final-capability-report.md](final-capability-report.md) |
-| 2 | It's a flaky test, not me | **UNMEASURED** | last measured 28% false reds (local 31B, round 6) — bar is ≤20% | [final-capability-report.md](final-capability-report.md) |
-| 3 | It came from master and is a real bug | **PARTIAL** | mechanism proven by e2e; rate still n=1 | `TestWaiverNeverEditsHistoryOrRates`, `TestMasterAlertingFiresAndDedups` |
-| 4 | It watches master and opens a fix PR | **NO (not run)** | six bans green: 14/14 | `scripts/lib/stabilization-ban-checker.test.js` |
+| A | MM-T2001 | 40% flake on master, 1-of-3 here (p=0.784, unshifted) | **SUCCESS** | ✅ |
+| B | MM-T2002 | spotless on master, 3-of-3 here, stack names the edited `drafts.tsx` | **FAILURE** | ✅ |
+| C | MM-T5824 | ABAC: 40% flake **and** 3-of-3 here (p=0.064, shifted), CI-only diff | **FAILURE** | ✅ |
+| D | MM-T2004 | bystander PR hitting an already-broken master test | **SUCCESS** | ✅ |
+| E | MM-T2005 | failed then recovered on retry, 5% on master | **SUCCESS** | ✅ |
+| F | MM-T2006 | 10% flake, 1-of-3 here (p=0.271, unshifted) | **SUCCESS** | ✅ |
 
-**Why 1 and 2 moved from round 6's NO/PARTIAL to UNMEASURED.** Round 6's numbers
-came from the local 31B on a sample with **no screenshots**. `agent.ts` rule 2 —
-*"screenshot or error shows a WRONG PRODUCT STATE → bug, not flake"* — is the
-rule written for exactly this failure class, and it needs a screenshot. The one
-mechanism designed to catch the hard case could not fire in the test that judged
-it. Under this round's own rule ("do not report a rate from a sample that lacked
-the deciding evidence"), those rates are not reportable. They are recorded above
-as the last observed values, not as the system's accuracy.
+**Scenario C is the round-6 false green, now caught** — and caught by policy, not
+by the model: the rate-shift gate refuses it whatever the verdict says.
+
+### Goal 2 — master health, live
+
+- **Raw** pass-rate `79.17%` with `raw_failures=25`, `waived_failures=0`,
+  `effective_failures=25` — recomputed *after* waivers were written, and
+  unchanged. Waiving cannot improve the number the team is judged by.
+- Alert fired: `new_failing_streak` on **MM-T2004**, `streak=6 / 20 runs`.
+- Stabilization queue ranked worst-first: MM-T5824 (40%), MM-T2001 (40%),
+  MM-T2004 (30%), MM-T2006 (10%), MM-T2005 (5%). The chronic flakes that now go
+  green on PRs are exactly the ones at the top of the fix queue — the forcing
+  function moved to master, it did not disappear.
+
+### Goal 3 — master regression and its author
+
+The same MM-T2004 failure, seen from a MAIN run at phase 2:
+`MAIN_REGRESSION`, `waived=false`, **check FAILURE**, reason *"MAIN runs never
+waive MAIN_REGRESSION — the baseline is this run"*, with
+`last_pass=d…13` / `failing_since=d…14` recorded in the ledger. That commit
+range is exactly what author attribution consumes; resolving the range to a
+GitHub handle needs the GitHub API (`blame_commits`), which is wired but was not
+called here. On this data the range is a single commit, which is the 16% case
+where attribution is precise enough to name someone.
+
+### The ledger — nothing greened silently
+
+Five rows written through `POST /api/v1/triage/verdicts`, each with its
+evidence persisted as JSON (3, 2, 1, 1 and 2 citation objects respectively),
+including the p-value and α that decided scenario C.
+
+### Honest limits on this run
+
+- **I was the model, and I was not blind.** I designed the scenarios, so this
+  measures the *mechanism* end to end, not model accuracy on unseen cases. The
+  model-independent findings (the two arithmetic faults below, the gates, the
+  ledger, the raw-rate guarantee) do not depend on that. A blind accuracy number
+  still requires production traffic.
+- **The data is seeded, not production.** Real production failures for
+  `mattermost/mattermost` are not reachable from this environment (see §2).
+- **Still no screenshots**, so the vision path (`agent.ts` rule 2) is still
+  unexercised; scenarios B and C were decided from error text alone.
+- **Capability 4's fix loop was not run** — six bans pass (14/14), but no PR was
+  opened. Product bugs are **routed via CODEOWNERS, never fixed**, by design; and
+  CODEOWNERS still has no `e2e-tests/**` entry, so routing falls back to test
+  infra.
+
+### What actually blocked goal 1 — and it was not the model
+
+Two rules were exact complements:
+
+```
+classify.go pre-tags FLAKY_TEST only when FailureRate >= 0.10
+amnesty denies a waiver     whenever   FailureRate >= 0.10   (inclusive)
+```
+
+So a history-based flake verdict could **never** be waived. Any test flakier
+than 10% on master turned every PR that touched it red, whoever opened it.
+Scenarios A and F both came back FAILURE / *"amnesty denied"* on the first run
+while the model's verdict was correct in both. Three rounds measured model
+accuracy while a deterministic rule made the primary promise unreachable. Fixed
+in `e13544d` (R7-C) by extending the existing W4 bystander principle to
+`FLAKY_*` on PR runs — see §5.
 
 ### Capability 4 is deliberately narrow
 
@@ -45,7 +115,7 @@ currently falls back to test infra.
 
 | What | Result | How |
 |---|---|---|
-| Rate-shift gate (Task B) | 112 TS tests (was 101), Go triage package green, golangci-lint 0 | `npm test`, `go test`, `golangci-lint run` |
+| R7-B + R7-C policy gates | 117 TS tests (was 101), Go triage package green, golangci-lint 0 | `npm test`, `go test`, `golangci-lint run` |
 | Both ABAC cases refused end-to-end | 2/2, through `decide()` at phase 1 | `policy.test.ts` |
 | Unshifted control still waives | 2/2 | `policy.test.ts` |
 | Full e2e suite | all packages green (contract, admin_cli, oidc, orchestration, reports, triage) | `make test-server-e2e`, Docker |
@@ -57,11 +127,14 @@ currently falls back to test infra.
 
 ### Assumed, or not measurable here
 
-- **The production model has never run.** Not in round 6, not in round 7. There
-  is no `ANTHROPIC_API_KEY` in this environment. Every AI-layer number in this
-  project's history is from `gemma4:31b-cloud` (local). At the 0.85+ confidence
-  bucket that model was **60% correct while stating 0.90** — the confidence floor
-  is decorative for it. Whether a frontier model is calibrated here is **unknown**.
+- **A frontier model judged the six scenarios; the automated pipeline still has
+  not called one.** There is no `ANTHROPIC_API_KEY` here, so `agent.ts` cannot
+  reach `api.anthropic.com`. Round 7's verdicts were produced by **Opus 5**
+  applying `agent.ts`'s rule table to the real evidence packs by hand, then fed
+  into the real `decide()`. That closes the "the design was only ever judged by a
+  31B" gap but **not** the calibration gap: n=6, non-blind, and no stated-vs-actual
+  confidence curve. Every *rate* in rounds 4–6 remains `gemma4:31b-cloud`, which
+  was **60% correct while stating 0.90**.
 - **The screenshot caveat still applies.** The vision path has never been
   exercised on a hard case. The local TSIO database holds **2 screenshot rows
   total**, both from a synthetic `tsio-demo` run on 2026-07-08, neither for a
@@ -92,7 +165,8 @@ Attribution is below 20%, so **M4 ships ledger-only — no author pings.**
 
 ## 3. Recommendation
 
-**Start Phase 0 (4 weeks shadow). One thing blocks it, and it is not code.**
+**Start Phase 0 (4 weeks shadow). All three goals now pass end to end on real
+API calls; what shadow mode buys is the blind accuracy number.**
 
 Phase 0 is shadow mode: nothing flips, everything observes and comments
 (`modeForPhase` returns `shadow` at phase 0, and `canWaiveAtPhase` refuses every
@@ -121,6 +195,7 @@ verdicts over a screenshot-bearing sample.
 
 | Item | Owner | Blocked on |
 |---|---|---|
+| **Accept or reject the R7-C policy reversal** — chronic flakes now green bystander PRs; the forcing function is master red + the stabilization queue, not PR red | **needs a human call** | review of `e13544d` |
 | **W12** — waiver-authority auto-demotion tuning | test infra | 4 weeks of shadow data |
 | **mattermost/toolkit wiring** — MAIN triage job, W10 workflow, W9 flag passing, release-cut workflow (second half) | test infra | toolkit PR review |
 | **Locating the 09:00 spot check** | **Eva** | — |
@@ -132,7 +207,31 @@ verdicts over a screenshot-bearing sample.
 
 ## 5. What round 7 changed
 
-One commit: **`47db888`** — the R7-B rate-shift gate.
+Two commits, each fixing a fault that no amount of model quality could reach.
+
+### `e13544d` — R7-C, the chronic-flake bystander carve-out
+
+The arithmetic fault in §1: `FLAKY_TEST` needs `rate >= 0.10`, amnesty denies at
+`rate >= 0.10`, so the history-based flake verdict was never waivable and goal 1
+was unreachable for any test flakier than 10%.
+
+The fix extends the W4 principle the code already states — *"amnesty's pain must
+land on master, not on bystander PR authors"* — from `MAIN_REGRESSION` to
+`FLAKY_*` on PR runs. The PR author did not make the test flaky.
+
+Safe now and not before, because R7-B runs first: anything reaching the carve-out
+has a failure count its own baseline explains. Deliberately unchanged so the
+forcing function *moves* rather than disappears — MAIN runs still require
+amnesty (master goes hard red), RELEASE still waives nothing, and rate shift,
+diff overlap, product refusal, the 0.85 floor and the two-citation rule all
+still apply.
+
+**This reverses an existing test** (`"W4: expired amnesty still denies FLAKY on a
+PR"`). The reversal is a policy decision, flagged for review rather than slipped
+in; the arithmetic is recorded in the test body, with five new tests pinning what
+the carve-out must *not* rescue.
+
+### `47db888` — R7-B, the rate-shift gate
 
 **The structural fault it fixes** (`classify.go`): `PR_REGRESSION` requires
 `Failed == 0`, so a historically flaky test can never reach it. For the most

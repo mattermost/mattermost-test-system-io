@@ -69,3 +69,71 @@ test("getTestSource truncates a huge spec to 100KB", async () => {
   assert.ok(out.includes("truncated"), "must note the truncation");
   assert.ok(Buffer.byteLength(out) <= 100 * 1024 + 64, "must stay near the 100KB cap");
 });
+
+// ---------------------------------------------------------------------------
+// R7-F — get_test_source path re-rooting.
+//
+// TSIO stores the framework's own `file`, and Playwright's reporter emits it
+// relative to `testDir` ('specs' in the monorepo). So evidence carries
+// `functional/channels/drafts.spec.ts` while the repo path is
+// `e2e-tests/playwright/specs/functional/channels/drafts.spec.ts`.
+// contents/<evidence path> 404s for EVERY spec, so get_test_source always
+// returned "could not fetch source" — half of round 6's "give the model the
+// evidence" fix was silently inert, and the prompt told the model to read a
+// file it could never see.
+//
+// The existing tests here covered TOOLS registration and byte caps but never
+// path resolution, which is exactly why this survived.
+// ---------------------------------------------------------------------------
+import { testSourceCandidates } from "./main.ts";
+
+test("R7-F: a Playwright spec path is re-rooted under the spec dir", () => {
+  const got = testSourceCandidates("functional/channels/drafts.spec.ts");
+  assert.ok(
+    got.includes("e2e-tests/playwright/specs/functional/channels/drafts.spec.ts"),
+    `candidates ${JSON.stringify(got)} must include the real repo path`,
+  );
+  assert.equal(
+    got[0],
+    "e2e-tests/playwright/specs/functional/channels/drafts.spec.ts",
+    "the most likely candidate must be tried first",
+  );
+});
+
+test("R7-F: a Cypress spec path is re-rooted too", () => {
+  const got = testSourceCandidates("channels/messaging/post.spec.js");
+  assert.ok(got.some((c) => c.startsWith("e2e-tests/cypress/tests/integration/")));
+});
+
+test("R7-F: an already repo-relative path is left alone and not duplicated", () => {
+  const p = "e2e-tests/playwright/specs/functional/channels/drafts.spec.ts";
+  assert.deepEqual(testSourceCandidates(p), [p]);
+});
+
+test("R7-F: leading ./ and / are normalised", () => {
+  for (const p of ["./functional/a.spec.ts", "/functional/a.spec.ts"]) {
+    const got = testSourceCandidates(p);
+    assert.ok(
+      got.includes("e2e-tests/playwright/specs/functional/a.spec.ts"),
+      `${p} -> ${JSON.stringify(got)}`,
+    );
+    assert.ok(!got.some((c) => c.includes("//") || c.startsWith("/")), "no malformed candidates");
+  }
+});
+
+test("R7-F: a non-spec path still gets tried verbatim — this fetch is read-only", () => {
+  // The fixer refuses non-spec paths because it WRITES. Reading a product
+  // source the model explicitly asked for is harmless, so it is not refused.
+  const got = testSourceCandidates("webapp/channels/src/components/drafts/drafts.tsx");
+  assert.deepEqual(got, ["webapp/channels/src/components/drafts/drafts.tsx"]);
+});
+
+test("R7-F: empty input yields no candidates rather than fetching the repo root", () => {
+  assert.deepEqual(testSourceCandidates(""), []);
+  assert.deepEqual(testSourceCandidates("  ".trim()), []);
+});
+
+test("R7-F: candidates are unique, so one 404 is not retried twice", () => {
+  const got = testSourceCandidates("functional/a.spec.ts");
+  assert.equal(new Set(got).size, got.length);
+});

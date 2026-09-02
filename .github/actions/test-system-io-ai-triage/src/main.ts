@@ -36,6 +36,7 @@ import {
   MAX_FIX_TARGETS,
   type FixerContext,
   type FixResult,
+  repoRelSpecCandidates,
 } from "./fixer.ts";
 import { buildReportURL } from "./report_url.ts";
 import { retryFetch, parseJSON } from "./retry-fetch.ts";
@@ -689,6 +690,42 @@ export async function getPrDiff(
 /**
  * Fetch a file's source at a commit SHA (raw), capped at 100KB.
  */
+/**
+ * Candidate repo-relative paths to try for a spec, most likely first.
+ *
+ * THE BUG THIS FIXES. TSIO ingests the framework's own JSON, and Playwright's
+ * reporter emits `file` relative to its configured `testDir` (`specs` in the
+ * monorepo). So the evidence path is `functional/channels/drafts.spec.ts`,
+ * while the repo path is
+ * `e2e-tests/playwright/specs/functional/channels/drafts.spec.ts`. Fetching
+ * `contents/<evidence path>` therefore 404s for EVERY Playwright and Cypress
+ * spec, and get_test_source returned "could not fetch source" every time —
+ * while the prompt told the model to read a spec it could never see. Half of
+ * round 6's "give the model the evidence" fix was silently inert.
+ *
+ * fixer.ts already had to solve this and documents it; the re-rooting lives
+ * there as repoRelSpecCandidates, so this reuses it rather than growing a
+ * second copy of the same knowledge.
+ *
+ * The raw path is kept as a last resort because this is a read-only fetch:
+ * unlike the fixer, which must refuse to WRITE outside e2e-tests/**, reading a
+ * product source the model explicitly asked for is harmless and occasionally
+ * the right thing.
+ */
+export function testSourceCandidates(path: string): string[] {
+  const norm = path.replace(/^\.\//, "").replace(/^\/+/, "");
+  if (!norm) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of [...repoRelSpecCandidates(norm), norm]) {
+    if (c && !seen.has(c)) {
+      seen.add(c);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
 export async function getTestSource(
   token: string,
   repository: string,
@@ -697,29 +734,44 @@ export async function getTestSource(
 ): Promise<string> {
   if (!token || !path || !sha) return "";
   const [owner, repo] = splitRepo(repository);
-  try {
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${sha}`,
-      {
-        headers: {
-          authorization: `Bearer ${token}`,
-          accept: "application/vnd.github.v3.raw",
+  const candidates = testSourceCandidates(path);
+  const tried: string[] = [];
+  for (const candidate of candidates) {
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/${candidate}?ref=${sha}`,
+        {
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: "application/vnd.github.v3.raw",
+          },
         },
-      },
-    );
-    if (!res.ok) {
-      core.warning(`getTestSource: HTTP ${res.status} for ${path}`);
-      return "";
+      );
+      if (res.status === 404) {
+        // Expected while walking candidate roots — not worth a warning each.
+        tried.push(`${candidate} (404)`);
+        continue;
+      }
+      if (!res.ok) {
+        tried.push(`${candidate} (HTTP ${res.status})`);
+        continue;
+      }
+      const src = await res.text();
+      if (candidate !== path) {
+        core.info(`getTestSource: re-rooted ${path} -> ${candidate}`);
+      }
+      if (Buffer.byteLength(src) > MAX_SOURCE_BYTES) {
+        return src.slice(0, MAX_SOURCE_BYTES) + "\n... (truncated)";
+      }
+      return src;
+    } catch (err) {
+      tried.push(`${candidate} (${(err as Error).message})`);
     }
-    const src = await res.text();
-    if (Buffer.byteLength(src) > MAX_SOURCE_BYTES) {
-      return src.slice(0, MAX_SOURCE_BYTES) + "\n... (truncated)";
-    }
-    return src;
-  } catch (err) {
-    core.warning(`getTestSource: ${(err as Error).message}`);
-    return "";
   }
+  core.warning(
+    `getTestSource: no candidate resolved for ${path}@${sha} — tried ${tried.join(", ")}`,
+  );
+  return "";
 }
 
 /**

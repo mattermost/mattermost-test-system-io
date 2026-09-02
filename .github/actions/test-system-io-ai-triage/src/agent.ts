@@ -184,9 +184,6 @@ DETERMINISTIC CLASSIFICATION — identical evidence must yield the identical ver
 Do not oscillate between FLAKY_INFRA/FLAKY_SERVER/FLAKY_TEST for the same error signature — apply the table.
 
 RATE-SHIFT RULE (the "rate_shift" line above): a high historical failure rate is NOT on its own a reason to call a flake. What matters is whether THIS commit's failure count is explained by that rate. If rate_shift shows shifted=true, this test is failing materially more often here than its own baseline explains — "it flakes anyway" does not account for that, so prefer PR_REGRESSION (or MAIN_REGRESSION on a MAIN run) and cite "rate_shift". Note that a FLAKY_* verdict on a shifted rate is REFUSED by policy regardless of your confidence, so returning one only discards your reasoning; say what you actually think caused it instead.
-
-kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
-
 RETRY-RECOVERY RULE (status=flaky or retry_count>0 — the test failed once then passed on retry with no code change):
 - Recovery is NECESSARY but NOT SUFFICIENT for FLAKY_*. A timing-sensitive product bug also passes on retry.
 - Before ANY FLAKY_* verdict you MUST call get_history AND get_failing_elsewhere, and on a PR run get_pr_diff, and view the screenshot when keys are listed. Cite them ("history", "failing_elsewhere", "pr_diff", "screenshot"). A flake verdict without having looked at the change is a guess.

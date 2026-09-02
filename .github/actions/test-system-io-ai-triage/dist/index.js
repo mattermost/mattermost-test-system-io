@@ -26767,9 +26767,6 @@ DETERMINISTIC CLASSIFICATION \u2014 identical evidence must yield the identical 
 Do not oscillate between FLAKY_INFRA/FLAKY_SERVER/FLAKY_TEST for the same error signature \u2014 apply the table.
 
 RATE-SHIFT RULE (the "rate_shift" line above): a high historical failure rate is NOT on its own a reason to call a flake. What matters is whether THIS commit's failure count is explained by that rate. If rate_shift shows shifted=true, this test is failing materially more often here than its own baseline explains \u2014 "it flakes anyway" does not account for that, so prefer PR_REGRESSION (or MAIN_REGRESSION on a MAIN run) and cite "rate_shift". Note that a FLAKY_* verdict on a shifted rate is REFUSED by policy regardless of your confidence, so returning one only discards your reasoning; say what you actually think caused it instead.
-
-kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
-
 RETRY-RECOVERY RULE (status=flaky or retry_count>0 \u2014 the test failed once then passed on retry with no code change):
 - Recovery is NECESSARY but NOT SUFFICIENT for FLAKY_*. A timing-sensitive product bug also passes on retry.
 - Before ANY FLAKY_* verdict you MUST call get_history AND get_failing_elsewhere, and on a PR run get_pr_diff, and view the screenshot when keys are listed. Cite them ("history", "failing_elsewhere", "pr_diff", "screenshot"). A flake verdict without having looked at the change is a guess.
@@ -28468,32 +28465,59 @@ ${paths.map((p) => `- ${p}`).join("\n")}
     return "";
   }
 }
+function testSourceCandidates(path2) {
+  const norm = path2.replace(/^\.\//, "").replace(/^\/+/, "");
+  if (!norm) return [];
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const c of [...repoRelSpecCandidates(norm), norm]) {
+    if (c && !seen.has(c)) {
+      seen.add(c);
+      out.push(c);
+    }
+  }
+  return out;
+}
 async function getTestSource(token, repository, path2, sha) {
   if (!token || !path2 || !sha) return "";
   const [owner, repo] = splitRepo(repository);
-  try {
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${path2}?ref=${sha}`,
-      {
-        headers: {
-          authorization: `Bearer ${token}`,
-          accept: "application/vnd.github.v3.raw"
+  const candidates = testSourceCandidates(path2);
+  const tried = [];
+  for (const candidate of candidates) {
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/${candidate}?ref=${sha}`,
+        {
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: "application/vnd.github.v3.raw"
+          }
         }
+      );
+      if (res.status === 404) {
+        tried.push(`${candidate} (404)`);
+        continue;
       }
-    );
-    if (!res.ok) {
-      warning(`getTestSource: HTTP ${res.status} for ${path2}`);
-      return "";
+      if (!res.ok) {
+        tried.push(`${candidate} (HTTP ${res.status})`);
+        continue;
+      }
+      const src = await res.text();
+      if (candidate !== path2) {
+        info(`getTestSource: re-rooted ${path2} -> ${candidate}`);
+      }
+      if (Buffer.byteLength(src) > MAX_SOURCE_BYTES) {
+        return src.slice(0, MAX_SOURCE_BYTES) + "\n... (truncated)";
+      }
+      return src;
+    } catch (err) {
+      tried.push(`${candidate} (${err.message})`);
     }
-    const src = await res.text();
-    if (Buffer.byteLength(src) > MAX_SOURCE_BYTES) {
-      return src.slice(0, MAX_SOURCE_BYTES) + "\n... (truncated)";
-    }
-    return src;
-  } catch (err) {
-    warning(`getTestSource: ${err.message}`);
-    return "";
   }
+  warning(
+    `getTestSource: no candidate resolved for ${path2}@${sha} \u2014 tried ${tried.join(", ")}`
+  );
+  return "";
 }
 async function writeLedger(baseURL, audience, pack, decisions, model) {
   if (decisions.length === 0) return true;

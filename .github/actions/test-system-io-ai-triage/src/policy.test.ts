@@ -979,3 +979,174 @@ test("R7-B: decide() reads the shift from the pack and never recomputes it", () 
   });
   assert.equal(d.waived, false, "shifted:true is authoritative regardless of ok");
 });
+
+// ---------------------------------------------------------------------------
+// R7-L3 — explicit quarantine.
+//
+// Quarantine is a human pre-authorization: owned, expiring, and stronger than
+// the model's opinion. These tests pin both halves — what it buys, and the
+// four things it must never hide.
+// ---------------------------------------------------------------------------
+
+const activeQuarantine = {
+  owner: "@test-infra",
+  expiresAt: "2026-09-16T00:00:00Z",
+  daysRemaining: 14,
+};
+
+const qArgs = {
+  runType: "PR",
+  branch: "feat/x",
+  verdict: "FLAKY_TEST",
+  confidence: 0.9,
+  citations: ["history", "failing_elsewhere"],
+  amnestyGranted: true,
+  diffOverlapsFailure: false,
+};
+
+test("R7-L3: an active quarantine greens a PR check and names the owner and deadline", () => {
+  const w = canWaive({ ...qArgs, quarantined: activeQuarantine });
+  assert.equal(w.waived, true);
+  assert.match(w.reason, /quarantined test/);
+  assert.match(w.reason, /@test-infra/);
+  assert.match(w.reason, /14d left/);
+});
+
+test("R7-L3: quarantine works on INCONCLUSIVE — that is most of its value", () => {
+  // An unreliable test should stop gating PRs whether or not a model can
+  // explain today's failure. Without quarantine, INCONCLUSIVE is NEVER_WAIVE.
+  const withoutQ = canWaive({ ...qArgs, verdict: "INCONCLUSIVE" });
+  assert.equal(withoutQ.waived, false);
+
+  const withQ = canWaive({ ...qArgs, verdict: "INCONCLUSIVE", quarantined: activeQuarantine });
+  assert.equal(withQ.waived, true);
+  assert.match(withQ.reason, /quarantined test/);
+});
+
+test("R7-L3: quarantine does not need model confidence or two citations", () => {
+  // It is a pre-authorization, not a verdict, so it sits above both rules.
+  const w = canWaive({
+    ...qArgs,
+    confidence: 0.1,
+    citations: [],
+    amnestyGranted: false,
+    quarantined: activeQuarantine,
+  });
+  assert.equal(w.waived, true);
+  assert.match(w.reason, /quarantined test/);
+});
+
+test("R7-L3: quarantine NEVER hides PR_REGRESSION — that is the message the system exists to deliver", () => {
+  const w = canWaive({ ...qArgs, verdict: "PR_REGRESSION", quarantined: activeQuarantine });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /PR_REGRESSION is not waivable/);
+});
+
+test("R7-L3: quarantine NEVER hides a shifted rate", () => {
+  // The shift says the failure is not explained by the test's flakiness —
+  // exactly what the quarantine asserts, so the quarantine cannot override it.
+  const w = canWaive({ ...qArgs, quarantined: activeQuarantine, rateShiftedAtCommit: true });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /rate shifted materially/);
+});
+
+test("R7-L3: quarantine NEVER hides a product refusal or an overlapping diff", () => {
+  const refusal = canWaive({ ...qArgs, quarantined: activeQuarantine, productRejection: true });
+  assert.equal(refusal.waived, false);
+  assert.match(refusal.reason, /deliberately refusing/);
+
+  const overlap = canWaive({ ...qArgs, quarantined: activeQuarantine, diffOverlapsFailure: true });
+  assert.equal(overlap.waived, false);
+  assert.match(overlap.reason, /touches the failing area/);
+});
+
+test("R7-L3: quarantine NEVER applies on a MAIN run — master keeps running the test", () => {
+  const w = canWaive({
+    ...qArgs,
+    runType: "MAIN",
+    branch: "main",
+    verdict: "MAIN_REGRESSION",
+    citations: ["failing_on_baseline"],
+    quarantined: activeQuarantine,
+  });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /MAIN runs never waive MAIN_REGRESSION/);
+});
+
+test("R7-L3: quarantine NEVER applies on a RELEASE run", () => {
+  const w = canWaive({
+    ...qArgs,
+    runType: "RELEASE",
+    branch: "release-11.4",
+    quarantined: activeQuarantine,
+  });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /release runs never auto-waive/);
+});
+
+test("R7-L3: an inactive quarantine in the pack is ignored by decide()", () => {
+  // The server only sends live quarantines, but active=false must be inert if
+  // one ever arrives — expiry is the server's call, never re-derived here.
+  const d = decide({
+    failure: failure({
+      quarantine: {
+        id: "q1",
+        external_test_id: "MM-T1",
+        owner: "@test-infra",
+        reason: "chronic",
+        created_by: "@someone",
+        expires_at: "2026-08-01T00:00:00Z",
+        active: false,
+        days_remaining: -32,
+        applied_count: 9,
+      },
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "history does not decide",
+        citations: [],
+      },
+      error_message: undefined,
+      error_stack: undefined,
+      screenshots: [],
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: ["webapp/src/thing.tsx"],
+    phase: 1,
+  });
+  assert.equal(d.waived, false, "an expired quarantine must not green anything");
+});
+
+test("R7-L3: decide() passes an active quarantine through to a green check", () => {
+  const d = decide({
+    failure: failure({
+      quarantine: {
+        id: "q2",
+        external_test_id: "MM-T1",
+        owner: "@test-infra",
+        reason: "chronic flake, queued for a fix",
+        created_by: "@yasser",
+        expires_at: "2026-09-16T00:00:00Z",
+        active: true,
+        days_remaining: 14,
+        applied_count: 3,
+      },
+      suggested: {
+        verdict: "INCONCLUSIVE",
+        confidence: 0,
+        needs_ai: true,
+        reason: "history does not decide",
+        citations: [],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: ["webapp/src/unrelated.tsx"],
+    phase: 1,
+  });
+  assert.equal(d.waived, true);
+  assert.equal(d.check_state, "success");
+  assert.match(d.reason, /quarantined test/);
+});

@@ -62,6 +62,27 @@ export interface EvidenceFailure {
   config_delta?: string[];
   /** R7-B — baseline vs this-PR failure rate for this test; drives the rate-shift gate. */
   rate_shift?: RateShift;
+  /** R7-L3 — the live quarantine for this test, if any. Only ever set on PR runs. */
+  quarantine?: Quarantine;
+}
+
+/**
+ * R7-L3 — an explicit, owned, expiring quarantine.
+ *
+ * The server only includes this while it is live, and computes `active` itself
+ * so the action never re-derives the expiry rule. Branch on `active` and
+ * nothing else.
+ */
+export interface Quarantine {
+  id: string;
+  external_test_id: string;
+  owner: string;
+  reason: string;
+  created_by: string;
+  expires_at: string;
+  active: boolean;
+  days_remaining: number;
+  applied_count: number;
 }
 
 /**

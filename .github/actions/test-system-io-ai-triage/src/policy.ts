@@ -263,6 +263,12 @@ export function canWaive(args: {
    * which never refuses a waiver on its own.
    */
   rateShiftedAtCommit?: boolean;
+  /**
+   * R7-L3 — an ACTIVE quarantine for this test (owned, not expired). The
+   * server computes `active`; pass that through verbatim and never re-derive
+   * the expiry rule here.
+   */
+  quarantined?: { owner: string; expiresAt: string; daysRemaining: number };
 }): { waived: boolean; reason: string } {
   if (neverAutoWaive(args.runType, args.branch)) {
     return { waived: false, reason: "release runs never auto-waive" };
@@ -276,6 +282,42 @@ export function canWaive(args: {
       waived: false,
       reason: "MAIN runs never waive MAIN_REGRESSION — the baseline is this run",
     };
+  }
+  // R7-L3: an active quarantine is a HUMAN PRE-AUTHORIZATION, so it does not
+  // need the model to be confident — it works even on INCONCLUSIVE, which is
+  // most of its value: an unreliable test should stop gating PRs whether or
+  // not a model can explain today's failure. It therefore sits above
+  // NEVER_WAIVE, the confidence floor and the citation rule.
+  //
+  // Four things it must never hide, checked before it can apply:
+  //
+  //   PR_REGRESSION      "your change broke this" is the message the whole
+  //                      system exists to deliver; a quarantine on the test
+  //                      must not suppress it.
+  //   productRejection   the server deliberately refused the action — it
+  //                      answered correctly, so this is not the test's fault.
+  //   diffOverlapsFailure this PR touches the failing area, so attribution is
+  //                      ambiguous and a pre-authorization cannot resolve it.
+  //   rateShiftedAtCommit the failure count is not explained by the test's own
+  //                      flakiness — the very thing the quarantine asserts.
+  //
+  // MAIN is excluded by construction: quarantine hides a test from PR gating,
+  // never from master. Master keeps running it, keeps counting it in
+  // raw_failures, and keeps it in the stabilization ranking.
+  if (args.quarantined && (args.runType || "").toUpperCase() !== "MAIN") {
+    const blocked =
+      args.verdict === "PR_REGRESSION" ||
+      args.productRejection === true ||
+      args.diffOverlapsFailure ||
+      args.rateShiftedAtCommit === true;
+    if (!blocked) {
+      return {
+        waived: true,
+        reason:
+          `quarantined test (owner ${args.quarantined.owner}, ` +
+          `${args.quarantined.daysRemaining}d left, expires ${args.quarantined.expiresAt})`,
+      };
+    }
   }
   if (NEVER_WAIVE.has(args.verdict)) {
     return { waived: false, reason: `${args.verdict} is not waivable` };
@@ -366,6 +408,12 @@ export function decide(args: {
   // recompute or soften it: the threshold lives in one place (rateshift.go) so
   // the ledger row and the gate can never disagree about what was judged.
   const rateShifted = args.failure.rate_shift?.shifted === true;
+  // R7-L3 — trust the server's `active`; the action must not re-derive expiry.
+  const q = args.failure.quarantine;
+  const quarantined =
+    q?.active === true
+      ? { owner: q.owner, expiresAt: q.expires_at, daysRemaining: q.days_remaining }
+      : undefined;
   const waiver = canWaiveAtPhase({
     runType: args.runType,
     branch: args.branch,
@@ -376,13 +424,24 @@ export function decide(args: {
     diffOverlapsFailure: overlaps,
     productRejection: rejection,
     rateShiftedAtCommit: rateShifted,
+    quarantined,
     phase: args.phase,
   });
   const d: Decision = {
     ...merged,
     waived: waiver.waived,
     check_state: waiver.waived ? "success" : "failure",
-    reason: waiver.waived ? merged.reason : `${merged.reason} (${waiver.reason})`,
+    // R7-L3: a waiver's reason is kept whenever it carries provenance the
+    // verdict does not already state. For a plain flake waive the reason IS
+    // the verdict name ("FLAKY_TEST"), which would only be noise — but a
+    // quarantine names its owner and deadline, and that must reach the PR
+    // comment and the ledger row. A waiver nobody can attribute is exactly
+    // the silence this system exists to remove.
+    reason: waiver.waived
+      ? waiver.reason === merged.verdict
+        ? merged.reason
+        : `${merged.reason} (${waiver.reason})`
+      : `${merged.reason} (${waiver.reason})`,
     kind: kindOf(merged.verdict),
     member_count: 1,
     chronic: args.ai?.chronic === true,

@@ -215,6 +215,12 @@ func Build(d Deps) chi.Router {
 		// firing apply is the scheduled job's authenticated call.
 		r.Get("/triage/alerts/evaluation", triageH.AlertEvaluation)
 		r.Get("/triage/alerts/replay", triageH.AlertReplay)
+		// R7-L3 — quarantine READS are public for the same reason the
+		// stabilization queue is: the PR triage action and the test runner in
+		// the tested repo's CI both consult it, and neither should need a
+		// credential round-trip to find out whether a test is quarantined.
+		// Every WRITE is authenticated below.
+		r.Get("/triage/quarantine", triageH.ListQuarantine)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
@@ -281,6 +287,11 @@ func Build(d Deps) chi.Router {
 			// Stabilization queue writes — allocating fixing effort is authenticated.
 			r.Post("/triage/stabilization/promote", triageH.PromoteStabilization)
 			r.Post("/triage/stabilization/resolve", triageH.ResolveStabilization)
+			// R7-L3 — quarantine writes. Hiding a test from PR gating is a
+			// human decision with an owner and a deadline, so the identity
+			// comes from the authenticated subject and never from the body.
+			r.Post("/triage/quarantine", triageH.Quarantine)
+			r.Post("/triage/quarantine/{id}/release", triageH.ReleaseQuarantine)
 			// W7 — the alerting job's apply: posts, opens/updates issues, records.
 			r.Post("/triage/alerts/evaluate", triageH.AlertEvaluate)
 

@@ -67,6 +67,10 @@ type evidenceFailure struct {
 	// R7-B — this test's baseline failure rate versus its rate across this
 	// PR's runs. Absent on non-PR runs and when history is unavailable.
 	RateShift *RateShift `json:"rate_shift,omitempty"`
+	// R7-L3 — the live quarantine for this test, if any. Present only while
+	// active (not released, not expired); a lookup failure degrades to nil,
+	// which is the fail-closed direction because nil never greens a check.
+	Quarantine *QuarantineEntry `json:"quarantine,omitempty"`
 }
 
 // Evidence serves GET /api/v1/triage/evidence — one payload an agent needs to
@@ -140,6 +144,12 @@ func (h *Handlers) Evidence(w http.ResponseWriter, r *http.Request) {
 		am, amErr := h.amnestyFor(ctx, testID, g.Repository, baseline, "14d", "30d", 3, 0.10)
 		if amErr == nil {
 			f.Amnesty = &am
+		}
+		// R7-L3 — an active quarantine for this test. Only ever set on a PR
+		// run: quarantine hides a test from PR gating, never from master, so
+		// putting it in a MAIN pack would invite a consumer to green master.
+		if g.GHPRNumber != nil {
+			f.Quarantine = h.activeQuarantineFor(ctx, g.Repository, testID)
 		}
 		// R7-B rate shift — needs both halves: a usable baseline summary and
 		// this PR's own runs. Any missing piece leaves RateShift nil, which

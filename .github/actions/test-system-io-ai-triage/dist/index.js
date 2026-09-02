@@ -27247,6 +27247,15 @@ function canWaive(args) {
       reason: "MAIN runs never waive MAIN_REGRESSION \u2014 the baseline is this run"
     };
   }
+  if (args.quarantined && (args.runType || "").toUpperCase() !== "MAIN") {
+    const blocked = args.verdict === "PR_REGRESSION" || args.productRejection === true || args.diffOverlapsFailure || args.rateShiftedAtCommit === true;
+    if (!blocked) {
+      return {
+        waived: true,
+        reason: `quarantined test (owner ${args.quarantined.owner}, ${args.quarantined.daysRemaining}d left, expires ${args.quarantined.expiresAt})`
+      };
+    }
+  }
   if (NEVER_WAIVE.has(args.verdict)) {
     return { waived: false, reason: `${args.verdict} is not waivable` };
   }
@@ -27289,6 +27298,8 @@ function decide(args) {
   const rejection = isProductRejection(args.failure.error_message, args.failure.error_stack) || args.ai?.product_refusal === true;
   const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
   const rateShifted = args.failure.rate_shift?.shifted === true;
+  const q = args.failure.quarantine;
+  const quarantined = q?.active === true ? { owner: q.owner, expiresAt: q.expires_at, daysRemaining: q.days_remaining } : void 0;
   const waiver = canWaiveAtPhase({
     runType: args.runType,
     branch: args.branch,
@@ -27299,13 +27310,20 @@ function decide(args) {
     diffOverlapsFailure: overlaps,
     productRejection: rejection,
     rateShiftedAtCommit: rateShifted,
+    quarantined,
     phase: args.phase
   });
   const d = {
     ...merged,
     waived: waiver.waived,
     check_state: waiver.waived ? "success" : "failure",
-    reason: waiver.waived ? merged.reason : `${merged.reason} (${waiver.reason})`,
+    // R7-L3: a waiver's reason is kept whenever it carries provenance the
+    // verdict does not already state. For a plain flake waive the reason IS
+    // the verdict name ("FLAKY_TEST"), which would only be noise — but a
+    // quarantine names its owner and deadline, and that must reach the PR
+    // comment and the ledger row. A waiver nobody can attribute is exactly
+    // the silence this system exists to remove.
+    reason: waiver.waived ? waiver.reason === merged.verdict ? merged.reason : `${merged.reason} (${waiver.reason})` : `${merged.reason} (${waiver.reason})`,
     kind: kindOf(merged.verdict),
     member_count: 1,
     chronic: args.ai?.chronic === true,
@@ -27853,7 +27871,9 @@ function guard(rel, workspace) {
     throw new Error(`path escapes workspace (symlink?): ${rel}`);
   }
   const normReal = path.relative(rootReal, ancReal).split(path.sep).join("/");
-  const rootOk = ALLOWED_PREFIXES.some((p) => normReal === p.slice(0, -1) || normReal.startsWith(p));
+  const rootOk = ALLOWED_PREFIXES.some(
+    (p) => normReal === p.slice(0, -1) || normReal.startsWith(p)
+  );
   if (!rootOk) {
     throw new Error(`path resolves outside the writable prefixes (symlink?): ${rel}`);
   }

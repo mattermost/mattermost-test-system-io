@@ -40,9 +40,16 @@ export function parsePhasePayload(body: unknown): number {
  * flip on any ledger failure; only shadow mode may observe without a ledger
  * row (and it flips nothing anyway).
  */
-export function mayFlipChecks(mode: string, ledgerOK: boolean): { allowed: boolean; reason?: string } {
+export function mayFlipChecks(
+  mode: string,
+  ledgerOK: boolean,
+): { allowed: boolean; reason?: string } {
   if (ledgerOK) return { allowed: true };
-  if (mode !== "gate") return { allowed: true, reason: "shadow mode observes without flipping — ledger skip tolerated" };
+  if (mode !== "gate")
+    return {
+      allowed: true,
+      reason: "shadow mode observes without flipping — ledger skip tolerated",
+    };
   return {
     allowed: false,
     reason: "ledger write failed — refusing to flip: a waiver without a ledger row is silent",
@@ -50,11 +57,15 @@ export function mayFlipChecks(mode: string, ledgerOK: boolean): { allowed: boole
 }
 
 /** The full waiver decision: policy (canWaive) AND phase (modeForPhase). */
-export function canWaiveAtPhase(
-  args: Parameters<typeof canWaive>[0] & { phase: number },
-): { waived: boolean; reason: string } {
+export function canWaiveAtPhase(args: Parameters<typeof canWaive>[0] & { phase: number }): {
+  waived: boolean;
+  reason: string;
+} {
   if (modeForPhase(args.runType, args.phase) !== "gate") {
-    return { waived: false, reason: `phase ${args.phase} keeps ${args.runType || "PR"} runs in shadow mode` };
+    return {
+      waived: false,
+      reason: `phase ${args.phase} keeps ${args.runType || "PR"} runs in shadow mode`,
+    };
   }
   return canWaive(args);
 }
@@ -201,6 +212,13 @@ export function canWaive(args: {
   amnestyGranted?: boolean;
   diffOverlapsFailure: boolean;
   productRejection?: boolean;
+  /**
+   * R7-B — this test's failure rate shifted materially at this commit
+   * (binomial tail test vs its own baseline rate; see rateshift.go). Optional
+   * so existing call sites keep compiling, and absent is read as "no signal",
+   * which never refuses a waiver on its own.
+   */
+  rateShiftedAtCommit?: boolean;
 }): { waived: boolean; reason: string } {
   if (neverAutoWaive(args.runType, args.branch)) {
     return { waived: false, reason: "release runs never auto-waive" };
@@ -227,6 +245,29 @@ export function canWaive(args: {
   }
   if (args.diffOverlapsFailure && FLAKY.has(args.verdict)) {
     return { waived: false, reason: "PR diff touches the failing area — attribution is ambiguous" };
+  }
+  // R7-B: the rate-shift gate — the most expensive error class must not rest
+  // on model judgment.
+  //
+  // The deterministic classifier can only reach PR_REGRESSION when a test has
+  // never failed on the baseline (classify.go requires Failed == 0), so a
+  // historically flaky test that this time broke for real is indistinguishable
+  // from one that merely flaked again: both land on FLAKY_TEST, which is
+  // waivable. The rate-shift test separates them from the test's own data — if
+  // this commit's failure count is too unlikely under its baseline rate, then
+  // "it flaked again" does not explain what happened.
+  //
+  // This is a gate, not a hint. It fires whatever the model said and whatever
+  // confidence it claimed, because the model is measurably overconfident (a
+  // stated 0.9 was ~60% correct in the round-6 backtest) and because the
+  // policy gate, not the model, owns every green. It sits above the confidence
+  // floor deliberately: a higher stated confidence must not buy past it.
+  if (args.rateShiftedAtCommit === true && FLAKY.has(args.verdict)) {
+    return {
+      waived: false,
+      reason:
+        "failure rate shifted materially at this commit — historical flakiness does not explain it",
+    };
   }
   // W4 bystander carve-out: amnesty's pain must land on master, not on
   // bystander PR authors. A PR that hits a failure already failing on the
@@ -273,6 +314,10 @@ export function decide(args: {
     isProductRejection(args.failure.error_message, args.failure.error_stack) ||
     args.ai?.product_refusal === true;
   const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
+  // R7-B — read the server-computed shift verbatim. The action must not
+  // recompute or soften it: the threshold lives in one place (rateshift.go) so
+  // the ledger row and the gate can never disagree about what was judged.
+  const rateShifted = args.failure.rate_shift?.shifted === true;
   const waiver = canWaiveAtPhase({
     runType: args.runType,
     branch: args.branch,
@@ -282,6 +327,7 @@ export function decide(args: {
     amnestyGranted: args.failure.amnesty?.granted,
     diffOverlapsFailure: overlaps,
     productRejection: rejection,
+    rateShiftedAtCommit: rateShifted,
     phase: args.phase,
   });
   const d: Decision = {

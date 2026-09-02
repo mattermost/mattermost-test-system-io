@@ -26729,6 +26729,8 @@ function buildPrompt(cluster, ctx) {
   const f = cluster.representative;
   const shots = (f.screenshots || []).map((s) => s.s3_key).join(", ") || "(none)";
   const hist = f.history ? `runs=${f.history.runs} failed=${f.history.failed} flaky=${f.history.flaky} flips=${f.history.flips} last_pass=${f.history.last_pass_commit ?? "none"} failing_since=${f.history.failing_since_commit ?? "none"} series=${f.history.series.join(",")}` : f.history_error || "not loaded \u2014 call get_history";
+  const rs = f.rate_shift;
+  const shift = rs?.ok ? `rate_shift: baseline ${rs.baseline_failed}/${rs.baseline_runs} (${(rs.baseline_rate * 100).toFixed(0)}%) vs this PR ${rs.pr_failed}/${rs.pr_runs} (${(rs.pr_rate * 100).toFixed(0)}%), p=${rs.p_value.toFixed(3)} at alpha=${rs.alpha} \u2192 shifted=${rs.shifted}` : "rate_shift=(not computable \u2014 no PR runs or baseline too small)";
   const env = ctx.group.environment_metadata ? `run_config=${JSON.stringify(ctx.group.environment_metadata)}` : "run_config=(not captured)";
   const delta = (f.config_delta ?? []).length > 0 ? `config_delta_vs_last_passing_run=${f.config_delta.join(", ")}` : "";
   return `You investigate ONE clustered E2E failure exactly as a careful human triager would: read the error and stack, view the failure screenshot, check this test's PAST failures on the baseline branch, check whether the same test is failing on other PRs right now, and read what this PR changed. Then decide. Do not ask for a rerun. 300 identical failures are still one cause.
@@ -26750,6 +26752,8 @@ DETERMINISTIC CLASSIFICATION \u2014 identical evidence must yield the identical 
 5. UI timing race with CORRECT product state in the screenshot (element rendered but too slow, animation/transition race) \u2192 FLAKY_TEST.
 6. Only if no rule matches and evidence is contradictory \u2192 INCONCLUSIVE.
 Do not oscillate between FLAKY_INFRA/FLAKY_SERVER/FLAKY_TEST for the same error signature \u2014 apply the table.
+
+RATE-SHIFT RULE (the "rate_shift" line above): a high historical failure rate is NOT on its own a reason to call a flake. What matters is whether THIS commit's failure count is explained by that rate. If rate_shift shows shifted=true, this test is failing materially more often here than its own baseline explains \u2014 "it flakes anyway" does not account for that, so prefer PR_REGRESSION (or MAIN_REGRESSION on a MAIN run) and cite "rate_shift". Note that a FLAKY_* verdict on a shifted rate is REFUSED by policy regardless of your confidence, so returning one only discards your reasoning; say what you actually think caused it instead.
 
 kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
 
@@ -26779,6 +26783,7 @@ external_test_id: ${f.external_test_id || "none"}
 Error: ${(f.error_message || "").slice(0, 3e3) || "(none)"}
 Stack: ${(f.error_stack || "").slice(0, 2e3) || "(none)"}
 History: ${hist}
+${shift}
 ${env}${delta ? "\n" + delta : ""}
 Other PRs failing: ${f.distinct_prs ?? "unknown"}
 Screenshot keys (get_screenshot): ${shots}
@@ -27139,7 +27144,11 @@ function parsePhasePayload(body) {
 }
 function mayFlipChecks(mode, ledgerOK) {
   if (ledgerOK) return { allowed: true };
-  if (mode !== "gate") return { allowed: true, reason: "shadow mode observes without flipping \u2014 ledger skip tolerated" };
+  if (mode !== "gate")
+    return {
+      allowed: true,
+      reason: "shadow mode observes without flipping \u2014 ledger skip tolerated"
+    };
   return {
     allowed: false,
     reason: "ledger write failed \u2014 refusing to flip: a waiver without a ledger row is silent"
@@ -27147,7 +27156,10 @@ function mayFlipChecks(mode, ledgerOK) {
 }
 function canWaiveAtPhase(args) {
   if (modeForPhase(args.runType, args.phase) !== "gate") {
-    return { waived: false, reason: `phase ${args.phase} keeps ${args.runType || "PR"} runs in shadow mode` };
+    return {
+      waived: false,
+      reason: `phase ${args.phase} keeps ${args.runType || "PR"} runs in shadow mode`
+    };
   }
   return canWaive(args);
 }
@@ -27246,6 +27258,12 @@ function canWaive(args) {
   if (args.diffOverlapsFailure && FLAKY.has(args.verdict)) {
     return { waived: false, reason: "PR diff touches the failing area \u2014 attribution is ambiguous" };
   }
+  if (args.rateShiftedAtCommit === true && FLAKY.has(args.verdict)) {
+    return {
+      waived: false,
+      reason: "failure rate shifted materially at this commit \u2014 historical flakiness does not explain it"
+    };
+  }
   if (args.amnestyGranted === false && !bystanderPreexisting(args)) {
     return { waived: false, reason: "amnesty denied" };
   }
@@ -27269,6 +27287,7 @@ function decide(args) {
   const overlaps = diffOverlaps(args.changedFiles, args.failure.file, args.failure.error_stack);
   const rejection = isProductRejection(args.failure.error_message, args.failure.error_stack) || args.ai?.product_refusal === true;
   const merged = mergeModel(suggested, args.ai, overlaps, args.failure, args.changedFiles);
+  const rateShifted = args.failure.rate_shift?.shifted === true;
   const waiver = canWaiveAtPhase({
     runType: args.runType,
     branch: args.branch,
@@ -27278,6 +27297,7 @@ function decide(args) {
     amnestyGranted: args.failure.amnesty?.granted,
     diffOverlapsFailure: overlaps,
     productRejection: rejection,
+    rateShiftedAtCommit: rateShifted,
     phase: args.phase
   });
   const d = {

@@ -60,6 +60,30 @@ export interface EvidenceFailure {
   suggested: Suggestion;
   /** W9 — captured run-config keys that differ from the last passing run for this test. */
   config_delta?: string[];
+  /** R7-B — baseline vs this-PR failure rate for this test; drives the rate-shift gate. */
+  rate_shift?: RateShift;
+}
+
+/**
+ * R7-B — the baseline-vs-current failure rate comparison for one test.
+ *
+ * `ok` false means the comparison was not computable (no PR context, baseline
+ * too small, too few PR runs). That is NOT evidence of no shift: an absent
+ * signal must only ever decline to refuse a waiver, never justify one.
+ */
+export interface RateShift {
+  ok: boolean;
+  baseline_runs: number;
+  baseline_failed: number;
+  baseline_rate: number;
+  pr_runs: number;
+  pr_failed: number;
+  pr_rate: number;
+  /** P(X >= pr_failed | n=pr_runs, p=baseline_rate). */
+  p_value: number;
+  /** The gate's answer: the rate rose by more than baseline flakiness explains. */
+  shifted: boolean;
+  alpha: number;
 }
 
 export interface EvidenceGroup {

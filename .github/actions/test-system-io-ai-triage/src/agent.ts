@@ -146,6 +146,16 @@ function buildPrompt(cluster: EvidenceCluster, ctx: AgentContext): string {
   // differ from the last passing run for this test. A config delta is strong
   // infra-flake evidence: check whether the screenshot/error matches running
   // under the changed flag before calling anything a product bug.
+  // R7-B — the baseline-vs-this-PR failure rate comparison. This is the
+  // evidence that separates "flaked again" from "broke for real": a test at
+  // 40% on master going 3-of-3 on this PR has shifted; one at 40% on both has
+  // not. Stated as a citation the model can quote, and enforced independently
+  // as a policy gate in canWaive — the prompt line is for the reason text, not
+  // for the decision.
+  const rs = f.rate_shift;
+  const shift = rs?.ok
+    ? `rate_shift: baseline ${rs.baseline_failed}/${rs.baseline_runs} (${(rs.baseline_rate * 100).toFixed(0)}%) vs this PR ${rs.pr_failed}/${rs.pr_runs} (${(rs.pr_rate * 100).toFixed(0)}%), p=${rs.p_value.toFixed(3)} at alpha=${rs.alpha} → shifted=${rs.shifted}`
+    : "rate_shift=(not computable — no PR runs or baseline too small)";
   const env = ctx.group.environment_metadata
     ? `run_config=${JSON.stringify(ctx.group.environment_metadata)}`
     : "run_config=(not captured)";
@@ -172,6 +182,8 @@ DETERMINISTIC CLASSIFICATION — identical evidence must yield the identical ver
 5. UI timing race with CORRECT product state in the screenshot (element rendered but too slow, animation/transition race) → FLAKY_TEST.
 6. Only if no rule matches and evidence is contradictory → INCONCLUSIVE.
 Do not oscillate between FLAKY_INFRA/FLAKY_SERVER/FLAKY_TEST for the same error signature — apply the table.
+
+RATE-SHIFT RULE (the "rate_shift" line above): a high historical failure rate is NOT on its own a reason to call a flake. What matters is whether THIS commit's failure count is explained by that rate. If rate_shift shows shifted=true, this test is failing materially more often here than its own baseline explains — "it flakes anyway" does not account for that, so prefer PR_REGRESSION (or MAIN_REGRESSION on a MAIN run) and cite "rate_shift". Note that a FLAKY_* verdict on a shifted rate is REFUSED by policy regardless of your confidence, so returning one only discards your reasoning; say what you actually think caused it instead.
 
 kind mapping: FLAKY_* = flake (no author). PR_REGRESSION / MAIN_REGRESSION / TEST_DEBT / BUILD_OR_ENV_ERROR = bug (name the commit/author via blame_commits).
 
@@ -201,6 +213,7 @@ external_test_id: ${f.external_test_id || "none"}
 Error: ${(f.error_message || "").slice(0, 3000) || "(none)"}
 Stack: ${(f.error_stack || "").slice(0, 2000) || "(none)"}
 History: ${hist}
+${shift}
 ${env}${delta ? "\n" + delta : ""}
 Other PRs failing: ${f.distinct_prs ?? "unknown"}
 Screenshot keys (get_screenshot): ${shots}

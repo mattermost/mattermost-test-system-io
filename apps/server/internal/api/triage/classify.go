@@ -21,6 +21,14 @@ type Signals struct {
 	// differ from the last passing run for this test (W9). Empty/nil = no
 	// baseline comparison available — never a signal on its own.
 	ConfigDeltaKeys []string
+
+	// RateShift compares this test's failure rate on the baseline branch with
+	// its rate across this PR's runs (R7-B). A zero value (OK false) means the
+	// comparison was not computable and must never justify a waiver on its
+	// own — see rateshift.go. It only ever adds a citation here; the refusal
+	// itself is a policy gate in the action's canWaive, deliberately outside
+	// the model's reach.
+	RateShift RateShift
 }
 
 // Suggestion is the deterministic (no-model, no-rerun) reading of a failure.
@@ -45,6 +53,7 @@ const (
 	citeNoStableID         = "no_stable_id"
 	citeHistoryUnavailable = "history_unavailable"
 	citeConfigDelta        = "config_delta_only"
+	citeRateShift          = "rate_shifted_at_commit"
 )
 
 // W9 — a run-configuration delta is deterministic flake evidence: the test
@@ -62,6 +71,12 @@ func Suggest(s Signals) Suggestion {
 		cites := []string{citeThisRunRecovered}
 		if s.HistoryOK && s.Flips > 0 {
 			cites = append(cites, citeFlipCount)
+		}
+		// Recovery is measurement, but a rate that shifted at this commit is
+		// still worth carrying into the pack: a timing-sensitive product bug
+		// also passes on retry. The citation makes the refusal auditable.
+		if s.RateShift.OK && s.RateShift.Shifted {
+			cites = append(cites, citeRateShift)
 		}
 		return Suggestion{
 			Verdict:    "FLAKY_TEST",
@@ -136,12 +151,23 @@ func Suggest(s Signals) Suggestion {
 	}
 
 	if s.Flips >= 3 && s.Runs >= 6 && s.FailureRate >= 0.1 && s.FailureRate <= 0.7 {
+		cites := []string{citeFlipCount, citeFailureRate}
+		reason := "historically unstable; screenshots can confirm the same flake versus a new UI break"
+		// R7-B: this is the branch a flaky-but-really-broke failure lands on,
+		// because PR_REGRESSION below is unreachable for any test with a
+		// non-clean baseline. The verdict is left alone on purpose — the
+		// refusal belongs in the policy gate, not in a model-visible hint —
+		// but the pack must carry the signal so the gate's reason is citable.
+		if s.RateShift.OK && s.RateShift.Shifted {
+			cites = append(cites, citeRateShift)
+			reason += "; but the failure rate shifted materially at this commit, which historical flakiness does not explain"
+		}
 		return Suggestion{
 			Verdict:    "FLAKY_TEST",
 			Confidence: 0.8,
 			NeedsAI:    true,
-			Reason:     "historically unstable; screenshots can confirm the same flake versus a new UI break",
-			Citations:  []string{citeFlipCount, citeFailureRate},
+			Reason:     reason,
+			Citations:  cites,
 		}
 	}
 

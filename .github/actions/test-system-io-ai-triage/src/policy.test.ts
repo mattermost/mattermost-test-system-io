@@ -589,7 +589,11 @@ test("W6/W13 matrix: PR gates from phase 1; MAIN confirmed flakes only from phas
   assert.equal(canWaiveAtPhase({ ...prArgs, phase: 1 }).waived, true, "PR gates at phase 1");
 
   const mainArgs = { ...prArgs, runType: "MAIN", branch: "main" };
-  assert.equal(canWaiveAtPhase({ ...mainArgs, phase: 1 }).waived, false, "MAIN still shadow at phase 1");
+  assert.equal(
+    canWaiveAtPhase({ ...mainArgs, phase: 1 }).waived,
+    false,
+    "MAIN still shadow at phase 1",
+  );
   assert.equal(canWaiveAtPhase({ ...mainArgs, phase: 2 }).waived, true, "MAIN gates at phase 2");
   assert.equal(canWaiveAtPhase({ ...mainArgs, phase: 3 }).waived, true, "MAIN gates at phase 3");
 });
@@ -631,4 +635,210 @@ test("B2/B3: shadow mode tolerates a ledger skip — it flips nothing anyway", (
   const tolerated = mayFlipChecks("shadow", false);
   assert.equal(tolerated.allowed, true);
   assert.match(tolerated.reason ?? "", /shadow mode observes/);
+});
+
+// ---------------------------------------------------------------------------
+// R7-B — the rate-shift gate.
+//
+// The most expensive error class (a historically flaky test that this time
+// broke for real) must not rest on model judgment. These tests assert the
+// gate refuses the waiver from the signal alone, whatever the model said.
+// ---------------------------------------------------------------------------
+
+/** A shifted comparison: 40% on the baseline, 3-of-3 here. p = 0.064 <= 0.10. */
+function shiftedRate(): NonNullable<EvidenceFailure["rate_shift"]> {
+  return {
+    ok: true,
+    baseline_runs: 20,
+    baseline_failed: 8,
+    baseline_rate: 0.4,
+    pr_runs: 3,
+    pr_failed: 3,
+    pr_rate: 1,
+    p_value: 0.064,
+    shifted: true,
+    alpha: 0.1,
+  };
+}
+
+/** An unshifted comparison: 40% on the baseline, 1-of-3 here. p = 0.784. */
+function unshiftedRate(): NonNullable<EvidenceFailure["rate_shift"]> {
+  return {
+    ok: true,
+    baseline_runs: 20,
+    baseline_failed: 8,
+    baseline_rate: 0.4,
+    pr_runs: 3,
+    pr_failed: 1,
+    pr_rate: 0.333,
+    p_value: 0.784,
+    shifted: false,
+    alpha: 0.1,
+  };
+}
+
+const flakyWaiveArgs = {
+  runType: "PR",
+  branch: "feat/x",
+  verdict: "FLAKY_TEST",
+  confidence: 0.92,
+  citations: ["screenshot", "history"],
+  amnestyGranted: true,
+  diffOverlapsFailure: false,
+};
+
+test("R7-B: a shifted failure rate refuses a FLAKY_* waiver", () => {
+  const w = canWaive({ ...flakyWaiveArgs, rateShiftedAtCommit: true });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /rate shifted materially/);
+});
+
+test("R7-B: an unshifted failure rate leaves the waiver alone", () => {
+  const w = canWaive({ ...flakyWaiveArgs, rateShiftedAtCommit: false });
+  assert.equal(w.waived, true);
+  assert.equal(w.reason, "FLAKY_TEST");
+});
+
+test("R7-B: an absent shift signal never refuses — it is not evidence of no shift", () => {
+  const w = canWaive(flakyWaiveArgs);
+  assert.equal(w.waived, true, "a missing comparison must preserve prior behaviour");
+});
+
+test("R7-B: the gate applies to every FLAKY_* verdict, not just FLAKY_TEST", () => {
+  for (const verdict of ["FLAKY_TEST", "FLAKY_INFRA", "FLAKY_SERVER"]) {
+    const w = canWaive({ ...flakyWaiveArgs, verdict, rateShiftedAtCommit: true });
+    assert.equal(w.waived, false, `${verdict} must be refused on a shifted rate`);
+    assert.match(w.reason, /rate shifted materially/);
+  }
+});
+
+test("R7-B: confidence cannot buy past the gate — it is a gate, not a score", () => {
+  for (const confidence of [0.85, 0.9, 0.99, 1]) {
+    const w = canWaive({ ...flakyWaiveArgs, confidence, rateShiftedAtCommit: true });
+    assert.equal(w.waived, false, `confidence ${confidence} must not clear the gate`);
+  }
+});
+
+test("R7-B: the gate does not touch the pre-existing MAIN_REGRESSION carve-out", () => {
+  // A bystander PR hitting a failure already failing on the baseline is not a
+  // flake waiver, and the shift gate must not widen its blast radius into it.
+  const w = canWaive({
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "MAIN_REGRESSION",
+    confidence: 0.95,
+    citations: ["failing_on_baseline", "failing_elsewhere"],
+    amnestyGranted: true,
+    diffOverlapsFailure: false,
+    rateShiftedAtCommit: true,
+  });
+  assert.equal(w.waived, true);
+  assert.match(w.reason, /pre-existing on the baseline/);
+});
+
+/**
+ * The ABAC cases, end to end through decide().
+ *
+ * Both were waived 2/2 in the round-6 backtest at a stated confidence of 0.90:
+ * the model read the diff, saw a 40% historical failure rate, and called it a
+ * flake. The diff is 30 files all under .github/, so diffOverlaps is false and
+ * the existing overlap gate cannot fire. The rate-shift gate is the only thing
+ * standing between that verdict and a false green.
+ */
+for (const testId of ["MM-T5824", "MM-T5820"]) {
+  test(`R7-B: ${testId} (ABAC, pr-37732) is refused on the rate shift`, () => {
+    const f = failure({
+      external_test_id: testId,
+      full_title: `system_console › abac › ${testId} file permissions render`,
+      title: `${testId} file permissions render`,
+      file: "e2e-tests/playwright/specs/functional/system_console/abac/file_access/file_permissions_render.spec.ts",
+      error_message: `policy "test-policy" should appear after search — Expected: true, Received: false`,
+      suggested: {
+        verdict: "FLAKY_TEST",
+        confidence: 0.8,
+        needs_ai: true,
+        reason: "historically unstable",
+        citations: ["flip_count", "historical_failure_rate", "rate_shifted_at_commit"],
+      },
+      rate_shift: shiftedRate(),
+    });
+    const d = decide({
+      failure: f,
+      runType: "PR",
+      branch: "cherry-pick-abac",
+      // The real diff: 30 files, all under .github/ — CI-only, so the
+      // diff-overlap gate is false and cannot save this case.
+      changedFiles: [".github/workflows/e2e-tests.yml", ".github/actions/x/action.yml"],
+      ai: {
+        verdict: "FLAKY_TEST",
+        confidence: 0.9,
+        reason: "the history shows a high failure rate (40%) with multiple flips",
+        citations: ["history", "pr_diff"],
+      },
+      phase: 1,
+    });
+    assert.equal(d.waived, false, `${testId} must not green — this was a false green in round 6`);
+    assert.equal(d.check_state, "failure");
+    assert.match(d.reason, /rate shifted materially/);
+  });
+
+  test(`R7-B: ${testId} still waives when the rate did NOT shift`, () => {
+    // The control: same test, same 40% history, but it only failed once here.
+    // That IS ordinary flakiness and must stay waivable, or the gate is just
+    // a blanket refusal for every flaky test.
+    const f = failure({
+      external_test_id: testId,
+      rate_shift: unshiftedRate(),
+      suggested: {
+        verdict: "FLAKY_TEST",
+        confidence: 0.8,
+        needs_ai: true,
+        reason: "historically unstable",
+        citations: ["flip_count", "historical_failure_rate"],
+      },
+    });
+    const d = decide({
+      failure: f,
+      runType: "PR",
+      branch: "cherry-pick-abac",
+      changedFiles: [".github/workflows/e2e-tests.yml"],
+      ai: {
+        verdict: "FLAKY_TEST",
+        confidence: 0.9,
+        reason: "recovered, matches its usual flake signature",
+        citations: ["history", "pr_diff"],
+      },
+      phase: 1,
+    });
+    assert.equal(d.waived, true, `${testId} at its baseline rate must stay waivable`);
+    assert.equal(d.check_state, "success");
+  });
+}
+
+test("R7-B: decide() reads the shift from the pack and never recomputes it", () => {
+  // ok:false with shifted:true is a contradictory pack. The action must honour
+  // the server's `shifted` verbatim — one threshold, one place (rateshift.go).
+  const d = decide({
+    failure: failure({
+      rate_shift: { ...shiftedRate(), ok: false },
+      suggested: {
+        verdict: "FLAKY_TEST",
+        confidence: 0.8,
+        needs_ai: true,
+        reason: "historically unstable",
+        citations: ["flip_count", "historical_failure_rate"],
+      },
+    }),
+    runType: "PR",
+    branch: "feat/x",
+    changedFiles: [".github/workflows/e2e.yml"],
+    ai: {
+      verdict: "FLAKY_TEST",
+      confidence: 0.9,
+      reason: "flake",
+      citations: ["history", "pr_diff"],
+    },
+    phase: 1,
+  });
+  assert.equal(d.waived, false, "shifted:true is authoritative regardless of ok");
 });

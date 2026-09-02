@@ -64,6 +64,9 @@ type evidenceFailure struct {
 	// W9 — captured run-config keys that differ from the last passing run
 	// for this test. Absent when either side has no captured config.
 	ConfigDelta []string `json:"config_delta,omitempty"`
+	// R7-B — this test's baseline failure rate versus its rate across this
+	// PR's runs. Absent on non-PR runs and when history is unavailable.
+	RateShift *RateShift `json:"rate_shift,omitempty"`
 }
 
 // Evidence serves GET /api/v1/triage/evidence — one payload an agent needs to
@@ -138,6 +141,22 @@ func (h *Handlers) Evidence(w http.ResponseWriter, r *http.Request) {
 		if amErr == nil {
 			f.Amnesty = &am
 		}
+		// R7-B rate shift — needs both halves: a usable baseline summary and
+		// this PR's own runs. Any missing piece leaves RateShift nil, which
+		// the policy gate reads as "no shift signal" and therefore never
+		// refuses a waiver over. Fail-open here is safe precisely because the
+		// signal can only ever refuse, never grant.
+		if g.GHPRNumber != nil && histErr == nil {
+			prRuns, prFailed, prErr := testhistory.LookupPRFailureCounts(
+				ctx, h.Pool, testID, g.Repository, g.Framework, *g.GHPRNumber, historySince)
+			if prErr != nil {
+				h.logError("triage evidence pr failure counts", prErr)
+			} else {
+				// Baseline must count flaky as failure to match the PR side.
+				rs := ComputeRateShift(summary.Runs, summary.Failed+summary.Flaky, prRuns, prFailed)
+				f.RateShift = &rs
+			}
+		}
 		c.Suggested = Suggest(signalsFor(f))
 		f.Suggested = c.Suggested
 	}
@@ -169,6 +188,9 @@ func signalsFor(f *evidenceFailure) Signals {
 		s.DistinctPRs = *f.DistinctPRs
 	}
 	s.ConfigDeltaKeys = f.ConfigDelta
+	if f.RateShift != nil {
+		s.RateShift = *f.RateShift
+	}
 	return s
 }
 

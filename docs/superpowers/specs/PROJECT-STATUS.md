@@ -18,7 +18,7 @@ scenarios, **6/6 correct**.
 | # | Goal | Status | Evidence |
 |---|---|---|---|
 | 1 | Tell a developer whether a PR failure is flaky or theirs — green if flaky | **YES** | 6/6 below |
-| 2 | Watch master health and fix flaky/failing tests regularly | **YES (detect + rank)**, fix loop still not run | raw pass-rate, alert firing, ranked queue below |
+| 2 | Watch master health and fix flaky/failing tests regularly | **YES (detect + rank + throughput)**, fix loop still not run | raw pass-rate, alert firing, blast-radius queue, throughput (§4b) |
 | 3 | Point out a failure caused by something merged to master, and by whom | **YES (commit range)**, author lookup needs GitHub | `failing_since` + `last_pass` below |
 
 ### Goal 1 — the six scenarios, real API, real policy
@@ -115,7 +115,7 @@ currently falls back to test infra.
 
 | What | Result | How |
 |---|---|---|
-| R7-B + R7-C policy gates | 117 TS tests (was 101), Go triage package green, golangci-lint 0 | `npm test`, `go test`, `golangci-lint run` |
+| R7-B/C policy gates + L1/L2/L3 levers | 127 TS tests (was 101), Go triage green, golangci-lint 0 across internal/… and tests/… | `npm test`, `go test`, `golangci-lint run` |
 | Both ABAC cases refused end-to-end | 2/2, through `decide()` at phase 1 | `policy.test.ts` |
 | Unshifted control still waives | 2/2 | `policy.test.ts` |
 | Full e2e suite | all packages green (contract, admin_cli, oidc, orchestration, reports, triage) | `make test-server-e2e`, Docker |
@@ -196,12 +196,87 @@ verdicts over a screenshot-bearing sample.
 | Item | Owner | Blocked on |
 |---|---|---|
 | **Accept or reject the R7-C policy reversal** — chronic flakes now green bystander PRs; the forcing function is master red + the stabilization queue, not PR red | **needs a human call** | review of `e13544d` |
+| **Set a 48-hour stabilization review SLA** — the only real lever on drain (14d → 9d cycle, +55% drain) | **Eva** (rotation owner) | rotation decision, no code |
+| **Narrow or remove R7-C once quarantine adoption is real** | test infra | quarantine in use (§4b) |
 | **W12** — waiver-authority auto-demotion tuning | test infra | 4 weeks of shadow data |
 | **mattermost/toolkit wiring** — MAIN triage job, W10 workflow, W9 flag passing, release-cut workflow (second half) | test infra | toolkit PR review |
 | **Locating the 09:00 spot check** | **Eva** | — |
 | **CODEOWNERS `e2e-tests/**` entry** | test infra | routing falls back to test infra until it lands |
 | **Re-run rounds 4–6 measurement on the production model** | test infra | `ANTHROPIC_API_KEY` + screenshot-bearing sample (see §3) |
 | **Commit the backtest harness and dataset** | test infra | — (lost three times; do it with the next measurement) |
+
+---
+
+## 4b. The three levers — "fix master so PRs suffer less"
+
+The instinct is right: a fix removes a recurring source of PR noise
+permanently, a waiver only mitigates one occurrence. But the loop **provably
+cannot drain** at planned capacity, so prevention alone does not get there:
+
+```
+arrival     = 1.5 new flaky tests/day   (measured: 44 in 30d)
+window_days = max(7, 20/35 runs per day) = 7      ← the floor governs
+cycle_days  = review_latency + 7         = 9..14
+drain       = concurrency / (cycle × 1.5) = 0.10..0.37/day
+break-even needs concurrency 20..32       — the cap is 5
+```
+
+Coverage is **6–25%**; the backlog grows ~1.1–1.4/day. Three levers were
+implemented against that.
+
+| Lever | What shipped | Commit |
+|---|---|---|
+| **1. Make the constraint visible** | `GET /triage/stabilization/throughput` — arrival vs drain, every input echoed, and the one lever worth pulling named. Observed drain reported next to modeled, with a note when modeled is only an upper bound. | `79ec6c9` |
+| **2. Rank by blast radius** | The queue now leads on **distinct PRs a test failed on**, then master failure count. Realized developer cost, not "most broken". Falls back to the old master-only order when there is no PR data. | `68b02c0` |
+| **3. Quarantine — the missing third state** | Owned, expiring, auditable. Migration 000033 + `POST/GET/release`. | `8a836cc` |
+
+**Lever 1's other half is not code.** Review latency is the only real input:
+`window_days` is irreducible if you want proof a fix worked, `attempts_per_fix`
+is a property of the tests, and concurrency is capped by review capacity. A
+weekly named rotation means up to 7 days; **a 48-hour review SLA cuts cycle
+14 → 9 days and raises drain ~55%** (0.24 → 0.37/day at the cap). That is Eva's
+rotation decision, and it is the single highest-value change available.
+
+### Lever 2, live
+
+| Rank | Test | Affected PRs | Master failures | Rate |
+|---|---|---|---|---|
+| 1 | MM-T2007 | **6** | 3 | 15% |
+| 2 | MM-T5824 | 1 | 8 | 40% |
+| 3 | MM-T2001 | 1 | 8 | 40% |
+
+The old ordering buried MM-T2007 at #4 behind two 40% flakes that had each cost
+exactly one developer.
+
+### Lever 3, live
+
+Quarantining MM-T2007 (owner `@test-infra`, 14 days):
+
+- PR run → **SUCCESS**, reason `… (quarantined test (owner @test-infra, 13d left, expires 2026-09-16))`
+- Same failure on a MAIN run → **FAILURE**, `amnesty denied` — master keeps the forcing function
+- Raw master pass-rate **unchanged** (80.00%, `raw_failures` 28, `waived` 0)
+- Still **#1 in the fix queue** — quarantine buys time, not forgiveness
+
+Four things quarantine may never hide, each tested: `PR_REGRESSION`, a product
+refusal, an overlapping diff, and a shifted failure rate. MAIN and RELEASE are
+excluded by construction. Within those bounds it works even on `INCONCLUSIVE`
+and bypasses the confidence floor — it is a human pre-authorization, not a
+verdict, and that is most of its value.
+
+**Why quarantine is not the old bucket list.** The bucket list failed because
+tests went in and were never seen again. Every guardrail it lacked is mandatory
+here and `NOT NULL`: owner, reason, creator (from the authenticated subject,
+never the body), and a deadline capped at 30 days. `active` is computed at read
+time, so a forgotten quarantine **lapses by itself** — no cron, no sweeper — and
+the lapsed row is stamped `system:expiry` so the trail shows it ran out rather
+than being canceled by a person.
+
+**Honest note on R7-C.** The chronic-flake carve-out is auto-quarantine without
+the guardrails: it greens bystander PRs indefinitely, with no owner and no
+expiry. Explicit quarantine is strictly stricter. Once quarantine adoption is
+real, R7-C should be narrowed or removed — it is kept for now only because
+removing it would break goal 1 for any test flakier than 10% until someone
+quarantines each one by hand.
 
 ---
 

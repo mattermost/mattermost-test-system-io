@@ -322,15 +322,15 @@ the system drops a rollout phase automatically.
 | Master never waives a master regression | Automated test, all phases |
 | Release branches waive nothing | Automated test |
 | Six stabilization bans | 14/14 |
-| Test suite | 127 unit + full e2e, lint clean |
+| Test suite | 152 unit (ai-triage) + 46 triage unit + 43 stabilization + triage e2e, golangci-lint 0. **Caveat:** `internal/config` has 4 failures on a developer machine — `loadDotenv()` picks up the local `.env`, so `TSIO_DATABASE_URL`/`TSIO_S3_*` leak into the assertions. Pre-existing, unrelated to triage, and green in CI (proven in a clean worktree). Non-hermetic tests are still a real if minor defect. |
 
 ### Not verified — stated plainly
 
 | Gap | Why it matters |
 |---|---|
-| **The automated pipeline has never called a frontier model.** Round 7's verdicts were produced by Opus 5 applying the documented rules to real evidence packs *by hand*; no `ANTHROPIC_API_KEY` was available. | Closes the "only ever tested on a small local model" gap, but **n=7 and not blind** — the scenarios were authored by the same person who judged them. This measures the mechanism, not accuracy. |
+| **The pipeline HAS now called a frontier model — once.** mattermost#38154 run 33678302436 invoked `claude-sonnet-4-6` in CI on 4 real failures across 3 clusters. | Supersedes the earlier "never called" line. But **n=3 clusters, all on tests with `runs=0`**, none independently confirmed, and nothing gated (a missing `/triage/phase` on staging pinned the run to shadow). Still no accuracy number. |
 | **No accuracy or calibration number exists.** Earlier rounds used a local 31B which was **60% correct while stating 0.90 confidence**. | The 0.85 confidence floor protects nothing against a model that says 0.9 on everything. This is precisely why the policy gate — not the model — owns every green. |
-| **The screenshot path has never been exercised.** The rule written for the hard case needs a screenshot; the test data had none. | Two scenarios were decided from error text alone. |
+| **The screenshot path HAS now fired.** On the same run, 2 of 3 clusters cited screenshots and one reasoned from image content ("the Members panel is fully rendered… but the visible button is labelled 'Add'"). | Supersedes the earlier "never exercised" line — this was the single biggest measurement gap in rounds 4–6. Still only 3 clusters, and none of the verdicts is independently confirmed. |
 | **The agent fix loop has never run end to end.** The six bans pass, but no fix PR has been opened. | §4.3 is designed, not demonstrated. |
 
 **What this means for approval.** Phase 0 is shadow mode: nothing flips,

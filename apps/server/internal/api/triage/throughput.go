@@ -32,8 +32,10 @@
 package triage
 
 import (
+	"fmt"
 	"math"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
@@ -117,19 +119,35 @@ func (h *Handlers) StabilizationThroughput(w http.ResponseWriter, r *http.Reques
 		windowDays = 1
 	}
 
+	// NOTE: do NOT use the package's parseFloat here. Its contract is "a
+	// fraction in [0,1]" (it serves max_failure_rate and the alert floor) and
+	// it silently returns the default for anything outside that range. Feeding
+	// review_latency_days=2 through it yields 7. These are what-if knobs, and a
+	// knob that silently does nothing is worse than no knob at all — so each
+	// gets its own range and an out-of-range value is a 400, not a default.
+	reviewLatency, err := parseRange(r.URL.Query().Get("review_latency_days"), defaultReviewLatencyDays, 0, 60, "review_latency_days")
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	attempts, err := parseRange(r.URL.Query().Get("attempts_per_fix"), defaultAttemptsPerFix, 1, 10, "attempts_per_fix")
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	concurrency, err := parseRange(r.URL.Query().Get("concurrency"), defaultConcurrency, 1, 100, "concurrency")
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+
 	resp := throughputResponse{
 		Repo:              normalizeRepo(repo),
 		Window:            window,
-		ReviewLatencyDays: parseFloat(r.URL.Query().Get("review_latency_days"), defaultReviewLatencyDays),
-		AttemptsPerFix:    parseFloat(r.URL.Query().Get("attempts_per_fix"), defaultAttemptsPerFix),
-		Concurrency:       int(parseFloat(r.URL.Query().Get("concurrency"), defaultConcurrency)),
+		ReviewLatencyDays: reviewLatency,
+		AttemptsPerFix:    attempts,
+		Concurrency:       int(concurrency),
 		MaxConcurrency:    maxConcurrency,
-	}
-	if resp.AttemptsPerFix <= 0 {
-		resp.AttemptsPerFix = defaultAttemptsPerFix
-	}
-	if resp.Concurrency <= 0 {
-		resp.Concurrency = defaultConcurrency
 	}
 
 	if err := h.loadThroughputCounts(r, &resp, since, windowDays); err != nil {
@@ -278,6 +296,24 @@ func throughputAdvice(resp *throughputResponse) (lever, rec string) {
 	}
 	return "concurrency", "raise concurrency to " + itoa(int(math.Ceil(resp.RequiredConcurrency))) +
 		" (within the cap of " + itoa(resp.MaxConcurrency) + ") to meet arrival"
+}
+
+// parseRange reads a bounded numeric query param. Empty means "use the
+// default"; anything present but unparseable or out of range is an error, so a
+// mistyped what-if never masquerades as a real answer.
+func parseRange(v string, dflt, lo, hi float64, name string) (float64, error) {
+	if v == "" {
+		return dflt, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, errRepoRequiredWith(name + " must be a number")
+	}
+	if f < lo || f > hi {
+		return 0, errRepoRequiredWith(fmt.Sprintf("%s must be between %s and %s",
+			name, trimF(lo), trimF(hi)))
+	}
+	return f, nil
 }
 
 func round2(f float64) float64 {

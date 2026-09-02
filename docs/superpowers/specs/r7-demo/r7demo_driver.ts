@@ -15,6 +15,7 @@ const CHANGED: Record<string, string[]> = {
   D: ["webapp/channels/src/components/common/typo.tsx"],
   E: ["webapp/channels/src/components/emoji/emoji_picker_tweak.tsx"],
   F: ["webapp/channels/src/components/profile_popover/profile_popover.tsx"],
+  G: ["webapp/channels/src/components/unrelated/thing.tsx"],
 };
 
 // My verdicts as the model (Opus 5), from the evidence packs only, applying
@@ -48,6 +49,9 @@ const MODEL: Record<string, ClaudeVerdict | undefined> = {
   },
   D: undefined, // deterministic MAIN_REGRESSION, needs_ai=false
   E: undefined, // status=flaky -> deterministic FLAKY_TEST conf 1.0, needs_ai=false
+  // G is the quarantined test: the deterministic layer suggests FLAKY_TEST and
+  // the quarantine decides the check, so no model verdict is needed.
+  G: undefined,
   F: {
     verdict: "FLAKY_TEST",
     confidence: 0.9,
@@ -65,9 +69,10 @@ const EXPECT: Record<string, string> = {
   D: "success on the bystander PR (pre-existing on master)",
   E: "success (measured flake: failed then recovered on retry, 5% on master)",
   F: "success (10% flake, rate did not shift)",
+  G: "success (quarantined: 15% on master, hits 6 PRs)",
 };
 
-for (const tag of ["A", "B", "C", "D", "E", "F"]) {
+for (const tag of ["A", "B", "C", "D", "E", "F", "G"]) {
   const pack: EvidencePack = JSON.parse(readFileSync(`${SP}/ev_${tag}.json`, "utf8"));
   const c = pack.clusters[0]!;
   const d = decide({

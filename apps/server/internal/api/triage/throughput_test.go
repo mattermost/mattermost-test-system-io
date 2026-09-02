@@ -205,3 +205,35 @@ func TestThroughputFlagsUnmeasuredDrain(t *testing.T) {
 		t.Fatalf("notes must flag modeled drain as an upper bound when nothing resolved, got %q", joined)
 	}
 }
+
+// Regression: the what-if knobs must actually take effect.
+//
+// They were first wired through the package's parseFloat, whose contract is "a
+// fraction in [0,1]" — so review_latency_days=2 silently became 7 and
+// concurrency=5 silently became 2. The demo showed identical numbers for two
+// different scenarios and looked plausible. A knob that silently does nothing
+// is worse than no knob, so out-of-range is now an error, not a default.
+func TestParseRangeAppliesValuesAndRejectsJunk(t *testing.T) {
+	t.Run("a value above 1 is honored, not clamped", func(t *testing.T) {
+		got, err := parseRange("2", defaultReviewLatencyDays, 0, 60, "review_latency_days")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != 2 {
+			t.Fatalf("got %v, want 2 — this is the exact bug parseFloat caused", got)
+		}
+	})
+	t.Run("empty uses the default", func(t *testing.T) {
+		got, err := parseRange("", 7, 0, 60, "review_latency_days")
+		if err != nil || got != 7 {
+			t.Fatalf("got %v, %v; want 7, nil", got, err)
+		}
+	})
+	for _, bad := range []string{"abc", "-1", "999"} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			if _, err := parseRange(bad, 7, 0, 60, "review_latency_days"); err == nil {
+				t.Fatalf("%q must be rejected, not silently defaulted", bad)
+			}
+		})
+	}
+}

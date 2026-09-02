@@ -76,10 +76,11 @@ including the p-value and α that decided scenario C.
   `mattermost/mattermost` are not reachable from this environment (see §2).
 - **Still no screenshots**, so the vision path (`agent.ts` rule 2) is still
   unexercised; scenarios B and C were decided from error text alone.
-- **Capability 4's fix loop was not run** — six bans pass (14/14), but no PR was
-  opened. Product bugs are **routed via CODEOWNERS, never fixed**, by design; and
-  CODEOWNERS still has no `e2e-tests/**` entry, so routing falls back to test
-  infra.
+- **Capability 4's fix loop was not run** — the workflow, the six bans and the CI
+  ban gate are all shipped and verified against real diffs, but no fix PR has
+  been opened. It is off until `E2E_STABILIZATION_LOOP=on`, and manual runs
+  default to dry. Product bugs are **routed via CODEOWNERS, never fixed**, by
+  design; the `/e2e-tests/` CODEOWNERS entry now exists (§4c).
 
 ### What actually blocked goal 1 — and it was not the model
 
@@ -106,8 +107,9 @@ is the precise outcome this design exists to prevent — that is a feature, not 
 gap. The six mechanical bans (`ban-bare-wait`, `ban-raised-timeout`,
 `ban-retry-wrapper`, `ban-skip-tag`, `ban-deleted-assertion`,
 `ban-loosened-assertion`) reject the masking edits before any push; all 14 of
-their tests pass. **CODEOWNERS still has no `e2e-tests/**` entry**, so routing
-currently falls back to test infra.
+their tests pass, and they are now also enforced in mattermost CI on every PR
+touching `e2e-tests/**`. The `/e2e-tests/` CODEOWNERS entry is shipped, so
+routing no longer falls back to the repo root.
 
 ---
 
@@ -203,7 +205,7 @@ verdicts over a screenshot-bearing sample.
 | **W12** — waiver-authority auto-demotion tuning | test infra | 4 weeks of shadow data |
 | **mattermost/toolkit wiring** — MAIN triage job, W10 workflow, W9 flag passing, release-cut workflow (second half) | test infra | toolkit PR review |
 | **Locating the 09:00 spot check** | **Eva** | — |
-| **CODEOWNERS `e2e-tests/**` entry** | test infra | routing falls back to test infra until it lands |
+| **CODEOWNERS `e2e-tests/**` entry** | test infra | **shipped** — confirm `@mattermost/test-infra` is the right handle |
 | **Re-run rounds 4–6 measurement on the production model** | test infra | `ANTHROPIC_API_KEY` + screenshot-bearing sample (see §3) |
 | **Commit the backtest harness and dataset** | test infra | — (lost three times; do it with the next measurement) |
 

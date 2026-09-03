@@ -96,11 +96,17 @@ func Suggest(s Signals) Suggestion {
 		}
 	}
 
-	// W9 config-delta pre-tag: history where the ONLY failure is this run
-	// (Failed == 1 — the current one), never flaky, plus a captured config
-	// that differs from the last passing run for this test. The sole
-	// difference is configuration — infra-owned, no AI.
-	if len(s.ConfigDeltaKeys) > 0 && s.Failed == 1 && s.Flaky == 0 {
+	// W9 config-delta pre-tag: a spotless baseline, never flaky, plus a
+	// captured config that differs from the last passing run. The sole
+	// difference is configuration — infra-owned, decided without a model.
+	//
+	// Failed == 0, not 1. The summary is scoped to the BASELINE branch, and a
+	// pull request's own run lives on its head branch, so the current failure
+	// is not in this count: "clean history" means zero. On a master run the
+	// current failure IS counted, so Failed is 1 and this branch is skipped —
+	// which is the fail-closed direction for a high-confidence verdict that
+	// nothing else re-examines.
+	if len(s.ConfigDeltaKeys) > 0 && s.Failed == 0 && s.Flaky == 0 {
 		return Suggestion{
 			Verdict:    configDeltaVerdict,
 			Confidence: configDeltaConfidence,

@@ -162,8 +162,37 @@ func TestDecide_ReliableTestIsNotDismissedAsAFlake(t *testing.T) {
 	}
 }
 
+func TestDecide_APassingObservationIsSettled(t *testing.T) {
+	// Asked about a run where the test did not fail. Nothing to attribute, and
+	// above all no reason to spend a server build re-establishing that a
+	// passing test passes.
+	got := Decide(base(20, 0), obs(3, 0))
+
+	if got.Outcome != AttrNoFailure {
+		t.Fatalf("outcome = %q, want %q", got.Outcome, AttrNoFailure)
+	}
+	if !got.CanGreen {
+		t.Error("a run with no failures did not green")
+	}
+	if got.NeedsReproduction {
+		t.Error("asked for a reproduction of a passing run")
+	}
+	if got.Outcome == AttrKnownFlake {
+		t.Error("a passing run was recorded as a flake — that verdict reaches the ledger")
+	}
+}
+
+func TestDecide_APassingObservationNeedsNoBaseline(t *testing.T) {
+	// An unknown test that did not fail is still settled: the no-baseline guard
+	// must not send it to a reproduction.
+	got := Decide(base(0, 0), obs(1, 0))
+	if got.Outcome != AttrNoFailure || got.NeedsReproduction {
+		t.Fatalf("outcome = %q needs_reproduction = %v, want NO_FAILURE and no reproduction",
+			got.Outcome, got.NeedsReproduction)
+	}
+}
+
 func TestDecide_ZeroFailuresIsNeverASuspect(t *testing.T) {
-	// Asked about a run where the test did not fail. Nothing to attribute.
 	got := Decide(base(20, 0), obs(3, 0))
 	if got.Outcome == AttrPRSuspect {
 		t.Fatal("a passing run was called a PR suspect")
@@ -181,6 +210,7 @@ func TestDecide_AlwaysEchoesTheThreshold(t *testing.T) {
 		{"suspect", base(20, 0), obs(1, 1)},
 		{"flake", base(20, 8), obs(3, 1)},
 		{"hard case", base(20, 8), obs(3, 3)},
+		{"no failure", base(20, 8), obs(3, 0)},
 	} {
 		if got := Decide(tc.b, tc.o); got.Observed.Threshold != unremarkableP {
 			t.Errorf("%s: threshold = %v, want %v", tc.name, got.Observed.Threshold, unremarkableP)
@@ -202,6 +232,7 @@ func TestDecide_EveryOutcomeCarriesAReason(t *testing.T) {
 		{"reliable", base(100, 2), obs(1, 1)},
 		{"flake", base(20, 8), obs(3, 1)},
 		{"hard case", base(20, 8), obs(3, 3)},
+		{"no failure", base(20, 8), obs(3, 0)},
 	} {
 		got := Decide(tc.b, tc.o)
 		if got.Reason == "" {

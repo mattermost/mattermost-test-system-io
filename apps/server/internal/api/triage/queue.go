@@ -204,6 +204,14 @@ func (h *Handlers) Queue(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	// A row-level error mid-iteration ends the loop silently, so without this
+	// a connection dropped halfway through would be served as a short queue
+	// with a 200 — a truncated worklist that looks complete.
+	if err := rows.Err(); err != nil {
+		h.logError("stabilization queue scan", err)
+		api.WriteError(w, r, api.ErrInternal)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, queueResponse{
 		Repo:   repo,

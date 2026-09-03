@@ -130,11 +130,15 @@ assertion, a skip or ignore tag, a raised timeout at test, suite, or config leve
 
 Setup failures are not test results. Resolve them and retry.
 
+Run each from the repository root. The subshells matter: without them the
+second `cd` is relative to wherever the first one landed, and
+`cd webapp` from inside `e2e-tests/playwright` does not exist.
+
 ```bash
 docker info
-cd e2e-tests/playwright && npm ci
-cd webapp && make node_modules
-cd e2e-tests/cypress && npm ci
+(cd e2e-tests/playwright && npm ci)
+(cd webapp && make node_modules)
+(cd e2e-tests/cypress && npm ci)
 ```
 
 Use `make node_modules` when local packages such as `@mattermost/client` or
@@ -158,12 +162,12 @@ Image download and container startup are setup, not test failures.
 If testcontainers cannot run after setup is repaired, use the local server:
 
 ```bash
-cd server
-ENABLED_DOCKER_SERVICES='postgres redis' RUN_SERVER_IN_BACKGROUND=true make run
+# From the repository root. The server starts in the background, so the
+# subshell returns to root before the test command runs.
+(cd server && ENABLED_DOCKER_SERVICES='postgres redis' RUN_SERVER_IN_BACKGROUND=true make run)
 curl --fail --silent http://127.0.0.1:8065/api/v4/system/ping
-cd e2e-tests/playwright
-PW_HEADLESS=true PW_BASE_URL=http://localhost:8065 \
-  npm run test -- "specs/<validated-file>" --project=chrome --repeat-each=3
+(cd e2e-tests/playwright && PW_HEADLESS=true PW_BASE_URL=http://localhost:8065 \
+  npm run test -- "specs/<validated-file>" --project=chrome --repeat-each=3)
 ```
 
 Cypress — run the affected file three separate times:

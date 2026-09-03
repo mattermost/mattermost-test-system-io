@@ -74,6 +74,7 @@ The response decides what happens next:
 
 | `outcome` | `can_green` | What you do |
 |---|---|---|
+| `NO_FAILURE` | true | The test did not fail in the observation you sent. Nothing to attribute — recheck your counts. |
 | `MASTER_BROKEN` | true | Classify `PRE_EXISTING_MASTER_BREAK`. **No reproduction.** Go to step 4. |
 | `KNOWN_FLAKE` | true | Classify `FLAKY_TEST`. **No reproduction.** Go to step 4. |
 | `PR_SUSPECT` | false | The test is clean on master. Reproduce (step 3) to confirm before saying so. |
@@ -93,14 +94,18 @@ One `PR_SUSPECT` among ten flakes means the check stays red.
 The standard testcontainer image tracks master and may not contain this PR's
 server or webapp changes. Build from the PR checkout.
 
+Run each from the repository root. The subshells matter: without them the
+second `cd` is relative to wherever the first one landed, and `cd e2e-tests/...`
+from inside `webapp` does not exist.
+
 ```bash
 docker info
-cd webapp && make node_modules
-cd e2e-tests/playwright && npm ci
-cd e2e-tests/cypress && npm ci
+(cd webapp && make node_modules)
+(cd e2e-tests/playwright && npm ci)
+(cd e2e-tests/cypress && npm ci)
 
-cd server
-ENABLED_DOCKER_SERVICES='postgres redis' RUN_SERVER_IN_BACKGROUND=true make run
+# The server starts in the background, so the subshell returns to root.
+(cd server && ENABLED_DOCKER_SERVICES='postgres redis' RUN_SERVER_IN_BACKGROUND=true make run)
 curl --fail --silent http://127.0.0.1:8065/api/v4/system/ping
 ```
 

@@ -88,9 +88,12 @@ func contains(xs []string, want string) bool {
 // from the last passing run → deterministic FLAKY_INFRA, never a model call.
 func TestSuggestConfigDeltaPreTag(t *testing.T) {
 	t.Run("clean history plus config delta is FLAKY_INFRA without AI", func(t *testing.T) {
+		// Failed == 0. The summary is scoped to the BASELINE branch, so a pull
+		// request's own failing run is not in this count — a spotless baseline
+		// reads as zero, not one.
 		s := Suggest(Signals{
 			Status: "failed", HasStableID: true, HistoryOK: true,
-			Runs: 6, Failed: 1, Flaky: 0, // Failed == 1: the current run is the only failure
+			Runs: 6, Failed: 0, Flaky: 0,
 			ConfigDeltaKeys: []string{"E2E_FEATURE_FLAG_X"},
 		})
 		if s.Verdict != configDeltaVerdict {
@@ -112,6 +115,21 @@ func TestSuggestConfigDeltaPreTag(t *testing.T) {
 		})
 		if s.Verdict == configDeltaVerdict {
 			t.Fatal("delta must not pre-tag when the test has failures in history")
+		}
+	})
+
+	t.Run("a single baseline failure keeps the delta from pre-tagging", func(t *testing.T) {
+		// This is a master run: the current failure IS counted, so Failed is 1
+		// and the baseline is not provably clean. The pre-tag is skipped, which
+		// is the fail-closed direction for a high-confidence verdict nothing
+		// else re-examines.
+		s := Suggest(Signals{
+			Status: "failed", HasStableID: true, HistoryOK: true,
+			Runs: 6, Failed: 1, Flaky: 0,
+			ConfigDeltaKeys: []string{"E2E_FEATURE_FLAG_X"},
+		})
+		if s.Verdict == configDeltaVerdict {
+			t.Fatal("a non-zero baseline failure count must not pre-tag as a config delta")
 		}
 	})
 

@@ -17,6 +17,7 @@ package triage
 //
 // The four outcomes, in the order they are decided:
 //
+//	NO_FAILURE       the observation has no failures. Nothing to attribute.
 //	PR_SUSPECT       the test is clean on master and failing here. Never green.
 //	                 Decided first so nothing below can reach past it.
 //	MASTER_BROKEN    already failing on master right now. The PR is a bystander.
@@ -24,7 +25,7 @@ package triage
 //	                 baseline rate.
 //	NEEDS_REPRODUCTION  history cannot settle it. Go run the test.
 //
-// Only MASTER_BROKEN and KNOWN_FLAKE carry can_green.
+// MASTER_BROKEN, KNOWN_FLAKE and NO_FAILURE carry can_green.
 
 import (
 	"context"
@@ -47,6 +48,9 @@ const (
 	AttrKnownFlake = "KNOWN_FLAKE"
 	// AttrNeedsReproduction means history is insufficient or contradictory.
 	AttrNeedsReproduction = "NEEDS_REPRODUCTION"
+	// AttrNoFailure means the observation carries no failures, so there is
+	// nothing to attribute.
+	AttrNoFailure = "NO_FAILURE"
 )
 
 const (
@@ -189,11 +193,27 @@ func Decide(base AttributionBaseline, obs AttributionObserved) AttributionResult
 
 	// No baseline at all. A brand-new test, a renamed one, or a repository that
 	// does not use MM-T ids — all indistinguishable here, and none of them a
-	// reason to green a check.
-	if base.Runs == 0 {
+	// reason to green a FAILING check. A passing observation is handled just
+	// below and does not need a baseline to be settled.
+	if base.Runs == 0 && obs.Failed > 0 {
 		res.Outcome = AttrNeedsReproduction
 		res.NeedsReproduction = true
 		res.Reason = "no baseline runs for this test in the window — run it to find out"
+		return res
+	}
+
+	// Nothing failed, so there is nothing to attribute. Answered before every
+	// rate rule below, which would otherwise send a run where the test PASSED
+	// off to a reproduction — a server build spent to re-establish that a
+	// passing test passed.
+	//
+	// Deliberately not reported as KNOWN_FLAKE: this verdict is written to the
+	// ledger, and recording "this test flaked" about a run where it did not
+	// fail would be false in the one place that has to stay trustworthy.
+	if obs.Failed == 0 {
+		res.Outcome = AttrNoFailure
+		res.CanGreen = true
+		res.Reason = "no failures in " + itoa(obs.Attempts) + " attempt(s) — nothing to attribute"
 		return res
 	}
 

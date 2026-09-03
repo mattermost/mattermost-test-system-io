@@ -33,6 +33,7 @@ load-bearing — `PR_SUSPECT` is decided first so nothing below can reach past i
 
 | Outcome | When | `can_green` |
 |---|---|---|
+| `NO_FAILURE` | The observation carries no failures | yes — nothing to attribute |
 | `PR_SUSPECT` | Clean on the baseline in the window, failing here | **never** |
 | `MASTER_BROKEN` | The baseline is failing this test right now | yes — bystander |
 | `KNOWN_FLAKE` | The failure count is what this test's own rate predicts | yes |

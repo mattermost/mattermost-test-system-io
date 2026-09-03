@@ -2578,25 +2578,15 @@ components:
           type: string
           description: Human-readable message suitable for direct display.
 
-    SpecHistoryEntry:
-      type: object
-      required: [report_id, commit_sha, run_attempt, status, duration_ms, created_at]
-      properties:
-        report_id: { type: string, format: uuid, description: "Per-shard report row; resolvable against ReportDetail.reports[].id." }
-        commit_sha: { type: string }
-        run_attempt: { type: integer }
-        status: { type: string }
-        duration_ms: { type: integer }
-        error_message: { type: string }
-        error_stack: { type: string }
-        errors_json:
-          type: string
-          description: "JSON-encoded [{message, estack}] ready for the inline error renderer."
-        created_at: { type: string, format: date-time }
-        screenshots:
-          type: array
-          description: "Screenshots linked to this attempt's test_case via the linker."
-          items: { $ref: '#/components/schemas/ScreenshotInfo' }
+
+    TestOutcome:
+      type: string
+      enum: [passed, failed, flaky, skipped, unknown]
+      description: |
+        One test's outcome in one report group, rolled up across that group's
+        shards. `flaky` means it failed and then passed on retry within the same
+        run — measured flakiness rather than inferred, which is why it is not
+        folded into `failed`.
 
     TestHistoryEntry:
       type: object
@@ -2666,6 +2656,26 @@ components:
           type: array
           items: { $ref: '#/components/schemas/TestHistoryEntry' }
         summary: { $ref: '#/components/schemas/TestHistorySummary' }
+
+    TestFailingElsewhereResponse:
+      type: object
+      required: [test_id, repo, distinct_prs, distinct_branch, occurrences]
+      properties:
+        test_id: { type: string }
+        repo: { type: string }
+        distinct_prs: { type: integer }
+        distinct_branch: { type: integer }
+        occurrences:
+          type: array
+          items:
+            type: object
+            required: [branch, commit, outcome, created_at]
+            properties:
+              branch: { type: string }
+              gh_pr_number: { type: integer }
+              commit: { type: string }
+              outcome: { $ref: '#/components/schemas/TestOutcome' }
+              created_at: { type: string, format: date-time }
 
     TestFlakinessRow:
       type: object
@@ -2841,22 +2851,6 @@ components:
             needs_human:
               type: boolean
               description: Computed — the agent has failed enough times that the test is a human's.
-        affected_prs:
-          type: integer
-          description: Distinct PRs this test failed on in the window — the blast radius the queue ranks by.
-        fix_attempts:
-          type: object
-          description: What happened the last time the fix loop tried this test.
-          properties:
-            attempts: { type: integer }
-            failed: { type: integer }
-            last_outcome: { type: string, enum: [fixed, failed, blocked, needs_human] }
-            last_detail: { type: string }
-            last_attempt_at: { type: string, format: date-time }
-            needs_human:
-              type: boolean
-              description: Computed — the agent has failed enough times that the test is a human's.
-
     TriageSuggestion:
       type: object
       required: [verdict, confidence, needs_ai, reason, citations]
@@ -2983,8 +2977,9 @@ components:
         commit_sha: { type: string }
         outcome:
           type: string
-          enum: [PR_SUSPECT, MASTER_BROKEN, KNOWN_FLAKE, NEEDS_REPRODUCTION]
+          enum: [NO_FAILURE, PR_SUSPECT, MASTER_BROKEN, KNOWN_FLAKE, NEEDS_REPRODUCTION]
           description: |
+            NO_FAILURE — the observation has no failures; nothing to attribute.
             PR_SUSPECT — clean on the baseline and failing here; never green.
             MASTER_BROKEN — the baseline is failing it too; this run is a bystander.
             KNOWN_FLAKE — the count is what this test's own baseline predicts.

@@ -256,12 +256,18 @@ func (h *Handlers) loadEvidenceFailures(ctx context.Context, groupID string) ([]
 
 	byKey := map[string]evidenceFailure{}
 	order := []string{}
+	// Counted separately from len(order) because rows merge: a sharded suite
+	// reports the same test once per shard, and those collapse into one key.
+	// Truncation is a fact about what the query returned, so measuring it by
+	// distinct keys under-reports it exactly when sharding is heaviest.
+	scanned := 0
 	for rows.Next() {
 		var raw rawFailure
 		if err := rows.Scan(&raw.ExternalTestID, &raw.FullTitle, &raw.Title, &raw.File,
 			&raw.Status, &raw.RetryCount, &raw.DurationMs, &raw.ErrorMessage, &raw.ErrorStack, &raw.ShotsJSON); err != nil {
 			return nil, false, err
 		}
+		scanned++
 		shots := parseShots(raw.ShotsJSON)
 		f := evidenceFailure{
 			ExternalTestID: raw.ExternalTestID,
@@ -290,8 +296,10 @@ func (h *Handlers) loadEvidenceFailures(ctx context.Context, groupID string) ([]
 		return nil, false, err
 	}
 
-	truncated := len(order) > maxEvidenceRows
-	if truncated {
+	// The query asks for maxEvidenceRows+1 precisely so that overflow is
+	// visible here.
+	truncated := scanned > maxEvidenceRows
+	if len(order) > maxEvidenceRows {
 		order = order[:maxEvidenceRows]
 	}
 	out := make([]evidenceFailure, 0, len(order))
@@ -366,7 +374,7 @@ func (h *Handlers) configDeltaFor(ctx context.Context, g evidenceGroup, f *evide
 		WHERE tc.external_test_id = $1
 		  AND (g2.repository = $2 OR split_part(g2.repository, '/', 2) = $2)
 		  AND g2.branch = $3
-		  AND g2.created_at < (SELECT created_at FROM report_groups WHERE id::text = $4)
+		  AND g2.created_at < (SELECT created_at FROM report_groups WHERE id = $4::uuid)
 		  AND tc.status = 'passed'
 		  AND g2.environment_metadata IS NOT NULL
 		ORDER BY g2.created_at DESC

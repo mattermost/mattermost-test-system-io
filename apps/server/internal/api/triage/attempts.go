@@ -37,15 +37,21 @@ import (
 // test that waits for a person who was going to be needed anyway.
 const MaxFixAttempts = 3
 
-// outcomeFixed is the one outcome the rest of the logic branches on: it is
-// what makes a detail optional, and what releases a test from a human.
-const outcomeFixed = "fixed"
+const (
+	// outcomeFixed makes a detail optional, and releases a test from a human.
+	outcomeFixed = "fixed"
+	// outcomeNeedsHuman is an explicit escalation: the caller has decided this
+	// test is a person's without waiting to exhaust the attempt budget. It is
+	// deliberately NOT counted as a failed attempt — nothing was tried — but it
+	// hands the test over on its own when it is the most recent outcome.
+	outcomeNeedsHuman = "needs_human"
+)
 
 var validFixOutcomes = map[string]bool{
-	outcomeFixed:  true,
-	"failed":      true,
-	"blocked":     true,
-	"needs_human": true,
+	outcomeFixed:      true,
+	"failed":          true,
+	"blocked":         true,
+	outcomeNeedsHuman: true,
 }
 
 type fixAttemptInput struct {
@@ -70,6 +76,11 @@ type fixAttemptSummary struct {
 	// NeedsHuman is computed, not stored: a forgotten flag would go stale the
 	// moment someone fixed the test by hand, whereas this is always a
 	// statement about the rows that exist right now.
+	//
+	// True when the attempt budget is spent, or when the caller escalated
+	// explicitly. Either way a later `fixed` clears it — the most recent
+	// attempt is the one that counts, or a test the agent eventually repaired
+	// would stay parked on a person forever.
 	NeedsHuman bool `json:"needs_human"`
 }
 
@@ -81,7 +92,10 @@ type fixAttemptSummary struct {
 func (h *Handlers) RecordFixAttempt(w http.ResponseWriter, r *http.Request) {
 	var in fixAttemptInput
 	if err := decodeJSONBody(w, r, &in); err != nil {
-		api.WriteError(w, r, err)
+		// The decoder's own error is a parser detail, and mapError sends
+		// anything it does not recognize to 500. A malformed body is the
+		// caller's mistake, so say so.
+		api.WriteError(w, r, errBadRequest("malformed JSON body"))
 		return
 	}
 	if in.TestID == "" || in.Repository == "" {
@@ -105,7 +119,11 @@ func (h *Handlers) RecordFixAttempt(w http.ResponseWriter, r *http.Request) {
 
 	subject, err := authapi.SubjectFromContext(r.Context())
 	if err != nil {
-		api.WriteError(w, r, err)
+		// Unreachable behind RequireAuth, but a route left unprotected by a
+		// future edit must fail closed rather than write an unattributed row —
+		// and must say 401 rather than 500, which mapError would otherwise
+		// return for an error it does not recognize.
+		api.WriteError(w, r, api.ErrUnauthorized)
 		return
 	}
 
@@ -166,7 +184,8 @@ func (h *Handlers) fixAttemptsFor(r *http.Request, repo, testID string) (fixAtte
 	s.LastAt = lastAt
 	// A test the agent has already fixed is not the human's problem, whatever
 	// the earlier failures were — the last attempt is the one that counts.
-	s.NeedsHuman = s.Failed >= MaxFixAttempts && s.LastOutcome != outcomeFixed
+	s.NeedsHuman = s.LastOutcome != outcomeFixed &&
+		(s.Failed >= MaxFixAttempts || s.LastOutcome == outcomeNeedsHuman)
 	return s, nil
 }
 
@@ -203,7 +222,8 @@ func (h *Handlers) loadFixAttempts(r *http.Request, repo string) (map[string]fix
 		if lastDetail != nil {
 			s.LastDetail = *lastDetail
 		}
-		s.NeedsHuman = s.Failed >= MaxFixAttempts && s.LastOutcome != outcomeFixed
+		s.NeedsHuman = s.LastOutcome != outcomeFixed &&
+			(s.Failed >= MaxFixAttempts || s.LastOutcome == outcomeNeedsHuman)
 		out[testID] = s
 	}
 	return out, rows.Err()

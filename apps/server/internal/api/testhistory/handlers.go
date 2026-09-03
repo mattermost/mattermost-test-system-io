@@ -118,33 +118,14 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.Pool.Query(r.Context(), groupRollupSQL+`
-		SELECT commit_sha, gh_run_id, gh_pr_number, branch, name, run_group,
-		       outcome, shard_rows, duration_ms, created_at
-		FROM outcomes
-		ORDER BY created_at DESC
-		LIMIT $7
-	`, testID, repo, q.Get("branch"), q.Get("framework"), q.Get("run_group"), since, limit)
+	// Same projection and scan order as every other caller — see loadEntries.
+	// Kept in one place because the two copies this replaced had to stay in
+	// step by hand, and a column added to one of them would have been scanned
+	// into the wrong field by the other.
+	entries, err := loadEntries(r.Context(), h.Pool, testID, repo,
+		q.Get("branch"), q.Get("framework"), q.Get("run_group"), since, limit)
 	if err != nil {
-		h.logError("tests history query", err)
-		api.WriteError(w, r, api.ErrInternal)
-		return
-	}
-	defer rows.Close()
-
-	entries := make([]historyEntry, 0, limit)
-	for rows.Next() {
-		var e historyEntry
-		if err := rows.Scan(&e.Commit, &e.GHRunID, &e.GHPRNumber, &e.Branch, &e.Name,
-			&e.RunGroup, &e.Outcome, &e.ShardRows, &e.DurationMs, &e.CreatedAt); err != nil {
-			h.logError("tests history scan", err)
-			api.WriteError(w, r, api.ErrInternal)
-			return
-		}
-		entries = append(entries, e)
-	}
-	if err := rows.Err(); err != nil {
-		h.logError("tests history rows", err)
+		h.logError("tests history", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}

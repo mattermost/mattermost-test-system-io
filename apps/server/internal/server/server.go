@@ -215,6 +215,10 @@ func Build(d Deps) chi.Router {
 		// credential round-trip to find out whether a test is quarantined.
 		// Every WRITE is authenticated below.
 		r.Get("/triage/quarantine", triageH.ListQuarantine)
+		// The replay job's worklist: ingested runs with a failure and no
+		// ledger row. Public for the same reason evidence is — it returns run
+		// coordinates the report list already exposes.
+		r.Get("/triage/replay/candidates", triageH.ReplayCandidates)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
@@ -262,13 +266,11 @@ func Build(d Deps) chi.Router {
 			// it — an audit trail of who did what, which is not the same kind of
 			// data as "how flaky is this test".
 			r.Get("/triage/verdicts", triageH.ListVerdicts)
-			// B7: these three return ROWS — root_cause free text, suspect
+			// B7: these two return ROWS — root_cause free text, suspect
 			// commits (named engineers), OIDC subjects in promoted_by, and
-			// the audit sample itself (which must stay unretrievable without
-			// a credential or an auditor could un-blind themselves by commit
-			// SHA via release-guard). Same standard as ListVerdicts.
+			// the audit sample itself, which must stay unretrievable without
+			// a credential. Same standard as ListVerdicts.
 			r.Get("/triage/audit/sample", triageH.AuditSample)
-			r.Get("/triage/release-guard", triageH.ReleaseGuard)
 			r.Get("/triage/stabilization/queue", triageH.StabilizationQueue)
 			// W3 — blind audit submits + the post-submit reveal are authenticated:
 			// a forged agreement row would let a reviewer manufacture their own

@@ -88,16 +88,6 @@ func TestEvaluateMasterAlertsRules(t *testing.T) {
 		}
 	})
 
-	t.Run("cross-PR cluster fires at 3 PRs, not 2", func(t *testing.T) {
-		alerts := EvaluateMasterAlerts(MasterAlertInputs{Repo: "r", DayRates: base, CrossPR: []CrossPRInput{
-			{TestID: "MM-T9", DistinctPRs: 2},
-			{TestID: "MM-T8", DistinctPRs: 3},
-		}})
-		subjects := alertSubjects(alerts, AlertRuleCrossPR)
-		if len(subjects) != 1 || subjects[0] != "MM-T8" {
-			t.Fatalf("cross-PR subjects = %v, want [MM-T8]", subjects)
-		}
-	})
 }
 
 // W8 dedup gates: 12 consecutive firings → one channel post per 24h, one
@@ -139,7 +129,7 @@ func TestApplyAlertDedupW8Gate(t *testing.T) {
 
 func TestApplyAlertDedupSuppressesWithin24h(t *testing.T) {
 	now := time.Now()
-	alert := Alert{Rule: AlertRuleCrossPR, Subject: "MM-T888"}
+	alert := Alert{Rule: AlertRuleNewStreak, Subject: "MM-T888"}
 
 	records := map[string]FiringRecord{}
 	first := ApplyAlertDedup([]Alert{alert}, records, now)

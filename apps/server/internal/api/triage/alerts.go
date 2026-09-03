@@ -44,15 +44,11 @@ import (
 // rate rules, the test ID for the two cluster rules.
 const (
 	AlertRuleDrop24h   = "pass_rate_drop_24h"
-	AlertRuleTrend7d   = "pass_rate_trend_7d"
 	AlertRuleFloor     = "pass_rate_floor"
 	AlertRuleNewStreak = "new_failing_streak"
-	AlertRuleCrossPR   = "cross_pr_cluster"
 
 	drop24hPoints   = 10.0
-	trend7dPoints   = 5.0
 	streakMinRuns   = 3
-	crossPRMinPRs   = 3
 	channelCooldown = 24 * time.Hour
 	issueMinAge     = 48 * time.Hour
 	issueCooldown   = 24 * time.Hour
@@ -76,21 +72,14 @@ type StreakInput struct {
 	TotalRuns  int    `json:"total_runs"`
 }
 
-// CrossPRInput is a test's distinct-PR failure count inside the 7d window.
-type CrossPRInput struct {
-	TestID      string `json:"test_id"`
-	DistinctPRs int    `json:"distinct_prs"`
-}
-
 // MasterAlertInputs is everything the pure rule engine reads for one as-of day.
 type MasterAlertInputs struct {
-	Repo     string         `json:"repo"`
-	AsOf     time.Time      `json:"as_of"`
-	DayRates []DayRate      `json:"day_rates"` // ascending by day, includes AsOf day
-	Floor    float64        `json:"floor"`     // 0 = rule disabled
-	MinRuns  int            `json:"min_runs"`  // streak exclusion; 0 = no exclusion
-	Streaks  []StreakInput  `json:"streaks"`
-	CrossPR  []CrossPRInput `json:"cross_pr"`
+	Repo     string        `json:"repo"`
+	AsOf     time.Time     `json:"as_of"`
+	DayRates []DayRate     `json:"day_rates"` // ascending by day, includes AsOf day
+	Floor    float64       `json:"floor"`     // 0 = rule disabled
+	MinRuns  int           `json:"min_runs"`  // streak exclusion; 0 = no exclusion
+	Streaks  []StreakInput `json:"streaks"`
 }
 
 // Alert is one fired rule: what, on what subject, with what evidence.
@@ -110,19 +99,12 @@ func EvaluateMasterAlerts(in MasterAlertInputs) []Alert {
 		return alerts
 	}
 	cur := rates[len(rates)-1]
-	prior7 := medianRate(rates, 7)   // days strictly before the current one
-	prior30 := medianRate(rates, 30) // (fewer days of history → smaller sample; honest)
+	prior7 := medianRate(rates, 7) // days strictly before the current one
 
 	if prior7 != nil && cur.Rate <= *prior7-drop24hPoints {
 		alerts = append(alerts, Alert{
 			Rule: AlertRuleDrop24h, Subject: "master-pass-rate", Severity: "warning",
 			Evidence: map[string]any{"rate_24h": cur.Rate, "median_7d": *prior7, "drop_points": *prior7 - cur.Rate},
-		})
-	}
-	if prior7 != nil && prior30 != nil && *prior7 <= *prior30-trend7dPoints {
-		alerts = append(alerts, Alert{
-			Rule: AlertRuleTrend7d, Subject: "master-pass-rate", Severity: "warning",
-			Evidence: map[string]any{"median_7d": *prior7, "median_30d": *prior30, "drop_points": *prior30 - *prior7},
 		})
 	}
 	if in.Floor > 0 && cur.Rate < in.Floor {
@@ -143,14 +125,6 @@ func EvaluateMasterAlerts(in MasterAlertInputs) []Alert {
 			Rule: AlertRuleNewStreak, Subject: s.TestID, Severity: "warning",
 			Evidence: map[string]any{"streak": s.Streak, "total_runs": s.TotalRuns},
 		})
-	}
-	for _, c := range in.CrossPR {
-		if c.DistinctPRs >= crossPRMinPRs {
-			alerts = append(alerts, Alert{
-				Rule: AlertRuleCrossPR, Subject: c.TestID, Severity: "warning",
-				Evidence: map[string]any{"distinct_prs": c.DistinctPRs},
-			})
-		}
 	}
 	return alerts
 }
@@ -248,11 +222,11 @@ func ApplyAlertDedup(cands []Alert, existing map[string]FiringRecord, now time.T
 			plan.Suppressed++
 		}
 
-		// Issues: only cluster-shaped subjects (streak / cross-PR), only once
+		// Issues: only test-shaped subjects (a new failing streak), only once
 		// the firing is persistent — at least 2 days old. Open is claimed at
 		// most once (B9: the claim PERSISTS via recordFirings before the
 		// GitHub side effect); every later persistent firing updates in place.
-		if a.Rule == AlertRuleNewStreak || a.Rule == AlertRuleCrossPR {
+		if a.Rule == AlertRuleNewStreak {
 			if now.Sub(rec.FirstFiredAt) >= issueMinAge {
 				hasIssue := rec.IssueURL != nil || rec.IssueClaimed != nil
 				if !hasIssue {
@@ -387,7 +361,6 @@ func (d masterAlertData) inputsAsOf(repo string, asOf time.Time, floor float64, 
 		}
 	}
 
-	crossPRs := map[string]map[int]bool{}
 	for key, points := range d.series {
 		var streak int
 		var seenPreStreak bool // a pass (or non-failed run) before the streak
@@ -413,12 +386,6 @@ func (d masterAlertData) inputsAsOf(repo string, asOf time.Time, floor float64, 
 					}
 				}
 			}
-			if p.Failed && p.PR != nil && p.At.After(asOf.Add(-7*24*time.Hour)) {
-				if crossPRs[key] == nil {
-					crossPRs[key] = map[int]bool{}
-				}
-				crossPRs[key][*p.PR] = true
-			}
 		}
 		if streak >= streakMinRuns && sawMasterPoint {
 			// M5: a streak that covers EVERY observed point predates the
@@ -432,11 +399,6 @@ func (d masterAlertData) inputsAsOf(repo string, asOf time.Time, floor float64, 
 				PrevFailed: predatesWindow,
 				TotalRuns:  total,
 			})
-		}
-	}
-	for key, prs := range crossPRs {
-		if len(prs) >= crossPRMinPRs {
-			in.CrossPR = append(in.CrossPR, CrossPRInput{TestID: key, DistinctPRs: len(prs)})
 		}
 	}
 	return in

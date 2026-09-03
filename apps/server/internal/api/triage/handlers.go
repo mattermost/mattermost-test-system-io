@@ -98,13 +98,19 @@ type verdictInput struct {
 }
 
 type verdictBatch struct {
-	Repository string         `json:"repository"`
-	Branch     string         `json:"branch"`
-	CommitSHA  string         `json:"commit_sha"`
-	GHRunID    string         `json:"gh_run_id"`
-	GHPRNumber *int           `json:"gh_pr_number"`
-	Model      *string        `json:"model"`
-	Verdicts   []verdictInput `json:"verdicts"`
+	Repository string  `json:"repository"`
+	Branch     string  `json:"branch"`
+	CommitSHA  string  `json:"commit_sha"`
+	GHRunID    string  `json:"gh_run_id"`
+	GHPRNumber *int    `json:"gh_pr_number"`
+	Model      *string `json:"model"`
+
+	// Replay marks the whole batch as measured offline by the replay job
+	// rather than produced live in CI. Replay rows never flip a check (no CI
+	// job reads them) and are excluded from the live accuracy figure — see
+	// migration 000034.
+	Replay   bool           `json:"replay"`
+	Verdicts []verdictInput `json:"verdicts"`
 }
 
 // CreateVerdicts serves POST /api/v1/triage/verdicts — upserts a run's triage
@@ -180,9 +186,9 @@ func (h *Handlers) CreateVerdicts(w http.ResponseWriter, r *http.Request) {
 				repository, branch, commit_sha, gh_run_id, gh_pr_number,
 				external_test_id, cluster_signature, member_count,
 				verdict, confidence, root_cause, evidence,
-				suspect_commit, check_state, waived, model
+				suspect_commit, check_state, waived, model, replay
 			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 			ON CONFLICT (repository, commit_sha, gh_run_id, cluster_signature, external_test_id)
 			DO UPDATE SET
 				branch        = EXCLUDED.branch,
@@ -195,13 +201,14 @@ func (h *Handlers) CreateVerdicts(w http.ResponseWriter, r *http.Request) {
 				suspect_commit = EXCLUDED.suspect_commit,
 				check_state   = EXCLUDED.check_state,
 				waived        = EXCLUDED.waived,
-				model         = EXCLUDED.model
+				model         = EXCLUDED.model,
+				replay        = EXCLUDED.replay
 			RETURNING id
 		`,
 			batch.Repository, batch.Branch, batch.CommitSHA, batch.GHRunID, batch.GHPRNumber,
 			v.ExternalTestID, v.ClusterSignature, memberCount,
 			v.Verdict, v.Confidence, v.RootCause, evidence,
-			v.SuspectCommit, checkState, v.Waived, batch.Model,
+			v.SuspectCommit, checkState, v.Waived, batch.Model, batch.Replay,
 		).Scan(&id); err != nil {
 			h.logError("triage verdicts upsert", err)
 			api.WriteError(w, r, api.ErrInternal)
@@ -562,6 +569,12 @@ func (h *Handlers) ListVerdicts(w http.ResponseWriter, r *http.Request) {
 // result and were later corrected to a real-bug class. It must stay at zero
 // before triage is given any gating authority; a non-zero value means the system
 // shipped a bug.
+//
+// Live and replay verdicts are counted separately and never averaged. `source`
+// selects which: "live" (default) is what CI actually did; "replay" is the
+// offline measurement the replay job produces before any calling workflow is
+// merged. A replay verdict is decided with later runs of the same test already
+// in the database, so folding it into the live figure would overstate CI.
 func (h *Handlers) Accuracy(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	repo := q.Get("repo")
@@ -574,6 +587,12 @@ func (h *Handlers) Accuracy(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, err)
 		return
 	}
+	source := orDefault(q.Get("source"), "live")
+	if source != "live" && source != "replay" {
+		api.WriteError(w, r, fmt.Errorf("%w: source must be live or replay", api.ErrBadRequest))
+		return
+	}
+	replay := source == "replay"
 
 	type bucket struct {
 		Verdict   string `json:"verdict"`
@@ -590,9 +609,10 @@ func (h *Handlers) Accuracy(w http.ResponseWriter, r *http.Request) {
 		FROM triage_verdicts
 		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
 		  AND created_at >= $2::timestamptz
+		  AND replay = $3
 		GROUP BY verdict
 		ORDER BY count(*) DESC
-	`, repo, since)
+	`, repo, since, replay)
 	if err != nil {
 		h.logError("triage accuracy buckets", err)
 		api.WriteError(w, r, api.ErrInternal)
@@ -630,9 +650,10 @@ func (h *Handlers) Accuracy(w http.ResponseWriter, r *http.Request) {
 		FROM triage_verdicts
 		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
 		  AND created_at >= $2::timestamptz
+		  AND replay = $3
 		  AND waived
-		  AND corrected_verdict = ANY($3)
-	`, repo, since, realBugList).Scan(&falseGreens); err != nil {
+		  AND corrected_verdict = ANY($4)
+	`, repo, since, replay, realBugList).Scan(&falseGreens); err != nil {
 		h.logError("triage accuracy false greens", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
@@ -645,6 +666,7 @@ func (h *Handlers) Accuracy(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"repo":            repo,
+		"source":          source,
 		"window":          orDefault(q.Get("window"), "30d"),
 		"total_verdicts":  total,
 		"waived":          waived,

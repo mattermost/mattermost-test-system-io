@@ -1,17 +1,17 @@
-// W5 + W14 + W15c — the stabilization queue and the guards that feed it.
+// W14 — the stabilization queue: the ranked list of what to fix first.
 //
-// W14: the queue is derived (flakiness leaderboard top-N, amnesty-expired
-// promoted to the top) plus recorded promotions. The agent loop itself is
-// action-side (mattermost CI) and lands with rollout Phase 3; the server owns
-// the ranking and the record of who promoted what, so the loop, the
-// release-cut guard, and the SLA clocks all write through one place.
+// The queue is derived (flakiness leaderboard top-N, amnesty-expired promoted
+// to the top) plus recorded promotions, and it leads on blast radius — the
+// number of distinct PRs a test broke — because that is realized developer
+// cost rather than "most broken on master". The agent fix loop is action-side
+// (mattermost CI); the server owns the ranking and the record of who promoted
+// or resolved what.
 //
-// W5: the release-cut guard's TSIO half — every waiver active on a commit's
-// master run, in one call. The workflow half (pause + release-manager
-// confirm) lives in the release automation, which W0 could not locate;
-// until it does, the guard is invocable standalone.
-//
-// W15c: SLA clocks derived from the ledger, per the spec's SLA table.
+// Two things that used to live here are gone. The release-cut guard (W5) was
+// built and callable but the release automation it was meant to pause was
+// never located, so nothing ever called it — it is a few lines of SQL when
+// someone finds that job. The SLA clocks (W15c) tracked a review latency no
+// code can enforce.
 
 package triage
 
@@ -19,7 +19,6 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
@@ -328,70 +327,3 @@ func (h *Handlers) ResolveStabilization(w http.ResponseWriter, r *http.Request) 
 }
 
 // ---------- W5: release-cut guard, TSIO half ----------
-
-type releaseGuardResponse struct {
-	Repository string        `json:"repository"`
-	CommitSHA  string        `json:"commit_sha"`
-	Clean      bool          `json:"clean"`
-	Waivers    []guardWaiver `json:"waivers"`
-}
-
-type guardWaiver struct {
-	VerdictID      string    `json:"verdict_id"`
-	ExternalTestID *string   `json:"external_test_id,omitempty"`
-	Verdict        string    `json:"verdict"`
-	RootCause      *string   `json:"root_cause,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	AgeDays        int       `json:"age_days"`
-}
-
-// ReleaseGuard serves GET /api/v1/triage/release-guard?repo=&commit= — every
-// waived verdict on the master run for that commit. The release automation
-// calls this before cutting a branch: clean → proceed; waivers → the release
-// manager confirms, and on confirm the listed tests are filed to the top of
-// the stabilization queue via the promote endpoint. Public read (the guard
-// runs from release CI), the promote it triggers is authenticated.
-func (h *Handlers) ReleaseGuard(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	repo := q.Get("repo")
-	commit := q.Get("commit")
-	if repo == "" || commit == "" {
-		api.WriteError(w, r, errRepoRequiredWith("repo and commit are required"))
-		return
-	}
-
-	rows, err := h.Pool.Query(r.Context(), `
-		SELECT id::text, external_test_id, verdict, root_cause, created_at
-		FROM triage_verdicts
-		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
-		  AND commit_sha = $2
-		  AND waived
-		  AND gh_pr_number IS NULL
-		ORDER BY created_at DESC
-	`, repo, commit)
-	if err != nil {
-		h.logError("release guard waivers", err)
-		api.WriteError(w, r, api.ErrInternal)
-		return
-	}
-	defer rows.Close()
-
-	waivers := []guardWaiver{}
-	now := time.Now()
-	for rows.Next() {
-		var g guardWaiver
-		if err := rows.Scan(&g.VerdictID, &g.ExternalTestID, &g.Verdict, &g.RootCause, &g.CreatedAt); err != nil {
-			h.logError("release guard scan", err)
-			api.WriteError(w, r, api.ErrInternal)
-			return
-		}
-		g.AgeDays = int(now.Sub(g.CreatedAt).Hours() / 24)
-		waivers = append(waivers, g)
-	}
-	writeJSON(w, http.StatusOK, releaseGuardResponse{
-		Repository: repo,
-		CommitSHA:  commit,
-		Clean:      len(waivers) == 0,
-		Waivers:    waivers,
-	})
-}

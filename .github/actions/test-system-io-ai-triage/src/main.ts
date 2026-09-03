@@ -482,7 +482,7 @@ async function fetchReportCounts(baseURL: string, groupID: string): Promise<RunC
   }
 }
 
-async function attachBlame(
+export async function attachBlame(
   d: Decision,
   cluster: EvidenceCluster,
   githubToken: string,
@@ -537,7 +537,7 @@ function parseIdentity(raw: string): CompositeIdentity {
   return parsed;
 }
 
-async function fetchEvidence(
+export async function fetchEvidence(
   baseURL: string,
   identity: CompositeIdentity,
   groupID: string,
@@ -570,7 +570,7 @@ async function fetchEvidence(
   return await parseJSON<EvidencePack>(res, "triage/evidence");
 }
 
-async function listChangedFiles(
+export async function listChangedFiles(
   token: string,
   repository: string,
   prNumber?: number,
@@ -597,7 +597,7 @@ async function listChangedFiles(
   }
 }
 
-async function compareCommits(
+export async function compareCommits(
   token: string,
   repository: string,
   base: string,
@@ -748,12 +748,16 @@ export async function getTestSource(
  * false on any failure; the caller must refuse to flip when this is false in
  * gate mode (and may only tolerate the skip in shadow mode).
  */
-async function writeLedger(
+export async function writeLedger(
   baseURL: string,
   audience: string,
   pack: EvidencePack,
   decisions: Decision[],
   model: string,
+  /** Marks the batch as measured offline by the replay job. Replay rows are a
+   * real ledger entry that nothing reads to flip a check, and they are counted
+   * separately from live verdicts by GET /triage/accuracy. */
+  replay = false,
 ): Promise<boolean> {
   if (decisions.length === 0) return true;
   let bearer: string;
@@ -772,6 +776,7 @@ async function writeLedger(
     gh_run_id: pack.group.gh_run_id,
     gh_pr_number: pack.group.gh_pr_number,
     model,
+    replay,
     verdicts: decisions.map((d, i) => {
       const c = pack.clusters[i]!;
       const testID = c.representative.external_test_id;

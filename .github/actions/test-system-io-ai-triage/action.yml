@@ -20,6 +20,33 @@ description: >
 author: Mattermost
 
 inputs:
+  task:
+    description: >
+      triage (default) adjudicates the run that invoked this action.
+      replay re-adjudicates runs Test System IO has already ingested — same
+      evidence pack, classifier, model and policy layer — and records the
+      results as ledger rows marked `replay`. Replay never sets a commit status
+      and never comments; it exists to produce an accuracy number before any
+      calling workflow is gating. It ignores composite-identity and reads
+      replay-repo instead.
+    required: false
+    default: triage
+  replay-repo:
+    description: Repository to replay (task=replay). Slug or full owner/name.
+    required: false
+    default: ""
+  replay-branch:
+    description: Restrict replay to one branch. Empty replays every branch.
+    required: false
+    default: ""
+  replay-days:
+    description: How far back to look for unadjudicated failing runs (1-180).
+    required: false
+    default: "30"
+  replay-limit:
+    description: Maximum runs per invocation (1-500). Each run costs model calls.
+    required: false
+    default: "20"
   use-staging:
     description: When true, target staging instead of production.
     required: false
@@ -29,8 +56,11 @@ inputs:
     required: false
     default: mattermost-test-system-io
   composite-identity:
-    description: Composite identity JSON (same payload the begin action received).
-    required: true
+    description: >
+      Composite identity JSON (same payload the begin action received).
+      Required for task=triage; unused by task=replay.
+    required: false
+    default: ""
   group-id:
     description: Report-group UUID. Optional; composite-identity is enough.
     required: false
@@ -129,6 +159,10 @@ outputs:
     description: Fix mode — signatures the loop guard blocked; a human must review these.
   comment_url:
     description: URL of the PR comment describing the fixes.
+  replayed:
+    description: Replay mode — runs re-adjudicated and recorded in the ledger.
+  ledger_failures:
+    description: Replay mode — runs whose ledger write failed, so they stay unmeasured.
 
 runs:
   using: node24

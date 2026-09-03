@@ -14,10 +14,10 @@ CREATE TABLE stabilization_promotions (
     id                uuid        PRIMARY KEY DEFAULT uuidv7(),
     repository        text        NOT NULL,
     external_test_id  text        NOT NULL,
-    -- Who/what promoted: a human subject, 'release-guard', 'sla-clock', …
+    -- Who/what promoted: a human subject, or 'system' for the automatic path.
     promoted_by       text        NOT NULL,
     reason            text        NOT NULL DEFAULT '',
-    -- release-guard | sla-breach | amnesty-expired | manual
+    -- amnesty-expired | manual | override
     source            text        NOT NULL DEFAULT 'manual',
     resolved          boolean     NOT NULL DEFAULT false,
     created_at        timestamptz NOT NULL DEFAULT now(),

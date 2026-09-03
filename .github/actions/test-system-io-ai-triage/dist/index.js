@@ -4983,22 +4983,22 @@ var require_formdata = __commonJS({
         name = webidl.converters.USVString(name, prefix, "name");
         value = isBlobLike(value) ? webidl.converters.Blob(value, prefix, "value", { strict: false }) : webidl.converters.USVString(value, prefix, "value");
         filename = arguments.length === 3 ? webidl.converters.USVString(filename, prefix, "filename") : void 0;
-        const entry = makeEntry(name, value, filename);
-        this[kState].push(entry);
+        const entry2 = makeEntry(name, value, filename);
+        this[kState].push(entry2);
       }
       delete(name) {
         webidl.brandCheck(this, _FormData);
         const prefix = "FormData.delete";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name, prefix, "name");
-        this[kState] = this[kState].filter((entry) => entry.name !== name);
+        this[kState] = this[kState].filter((entry2) => entry2.name !== name);
       }
       get(name) {
         webidl.brandCheck(this, _FormData);
         const prefix = "FormData.get";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name, prefix, "name");
-        const idx = this[kState].findIndex((entry) => entry.name === name);
+        const idx = this[kState].findIndex((entry2) => entry2.name === name);
         if (idx === -1) {
           return null;
         }
@@ -5009,14 +5009,14 @@ var require_formdata = __commonJS({
         const prefix = "FormData.getAll";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name, prefix, "name");
-        return this[kState].filter((entry) => entry.name === name).map((entry) => entry.value);
+        return this[kState].filter((entry2) => entry2.name === name).map((entry2) => entry2.value);
       }
       has(name) {
         webidl.brandCheck(this, _FormData);
         const prefix = "FormData.has";
         webidl.argumentLengthCheck(arguments, 1, prefix);
         name = webidl.converters.USVString(name, prefix, "name");
-        return this[kState].findIndex((entry) => entry.name === name) !== -1;
+        return this[kState].findIndex((entry2) => entry2.name === name) !== -1;
       }
       set(name, value, filename = void 0) {
         webidl.brandCheck(this, _FormData);
@@ -5030,16 +5030,16 @@ var require_formdata = __commonJS({
         name = webidl.converters.USVString(name, prefix, "name");
         value = isBlobLike(value) ? webidl.converters.Blob(value, prefix, "name", { strict: false }) : webidl.converters.USVString(value, prefix, "name");
         filename = arguments.length === 3 ? webidl.converters.USVString(filename, prefix, "name") : void 0;
-        const entry = makeEntry(name, value, filename);
-        const idx = this[kState].findIndex((entry2) => entry2.name === name);
+        const entry2 = makeEntry(name, value, filename);
+        const idx = this[kState].findIndex((entry3) => entry3.name === name);
         if (idx !== -1) {
           this[kState] = [
             ...this[kState].slice(0, idx),
-            entry,
-            ...this[kState].slice(idx + 1).filter((entry2) => entry2.name !== name)
+            entry2,
+            ...this[kState].slice(idx + 1).filter((entry3) => entry3.name !== name)
           ];
         } else {
-          this[kState].push(entry);
+          this[kState].push(entry2);
         }
       }
       [nodeUtil.inspect.custom](depth, options) {
@@ -8895,16 +8895,16 @@ var require_env_http_proxy_agent = __commonJS({
           return false;
         }
         for (let i = 0; i < this.#noProxyEntries.length; i++) {
-          const entry = this.#noProxyEntries[i];
-          if (entry.port && entry.port !== port) {
+          const entry2 = this.#noProxyEntries[i];
+          if (entry2.port && entry2.port !== port) {
             continue;
           }
-          if (!/^[.*]/.test(entry.hostname)) {
-            if (hostname === entry.hostname) {
+          if (!/^[.*]/.test(entry2.hostname)) {
+            if (hostname === entry2.hostname) {
               return false;
             }
           } else {
-            if (hostname.endsWith(entry.hostname.replace(/^\*/, ""))) {
+            if (hostname.endsWith(entry2.hostname.replace(/^\*/, ""))) {
               return false;
             }
           }
@@ -8916,13 +8916,13 @@ var require_env_http_proxy_agent = __commonJS({
         const noProxySplit = noProxyValue.split(/[,\s]/);
         const noProxyEntries = [];
         for (let i = 0; i < noProxySplit.length; i++) {
-          const entry = noProxySplit[i];
-          if (!entry) {
+          const entry2 = noProxySplit[i];
+          if (!entry2) {
             continue;
           }
-          const parsed = entry.match(/^(.+):(\d+)$/);
+          const parsed = entry2.match(/^(.+):(\d+)$/);
           noProxyEntries.push({
-            hostname: (parsed ? parsed[1] : entry).toLowerCase(),
+            hostname: (parsed ? parsed[1] : entry2).toLowerCase(),
             port: parsed ? Number.parseInt(parsed[2], 10) : 0
           });
         }
@@ -20012,8 +20012,8 @@ var require_light = __commonJS({
       parser$1 = parser;
       BottleneckError$1 = BottleneckError_1;
       Job = class Job {
-        constructor(task, args, options, jobDefaults, rejectOnDrop, Events2, _states, Promise2) {
-          this.task = task;
+        constructor(task2, args, options, jobDefaults, rejectOnDrop, Events2, _states, Promise2) {
+          this.task = task2;
           this.args = args;
           this.rejectOnDrop = rejectOnDrop;
           this.Events = Events2;
@@ -20405,13 +20405,13 @@ var require_light = __commonJS({
           return this._queue.length === 0;
         }
         async _tryToRun() {
-          var args, cb, error2, reject, resolve2, returned, task;
+          var args, cb, error2, reject, resolve2, returned, task2;
           if (this._running < 1 && this._queue.length > 0) {
             this._running++;
-            ({ task, args, resolve: resolve2, reject } = this._queue.shift());
+            ({ task: task2, args, resolve: resolve2, reject } = this._queue.shift());
             cb = await (async function() {
               try {
-                returned = await task(...args);
+                returned = await task2(...args);
                 return function() {
                   return resolve2(returned);
                 };
@@ -20427,14 +20427,14 @@ var require_light = __commonJS({
             return cb();
           }
         }
-        schedule(task, ...args) {
+        schedule(task2, ...args) {
           var promise, reject, resolve2;
           resolve2 = reject = null;
           promise = new this.Promise(function(_resolve, _reject) {
             resolve2 = _resolve;
             return reject = _reject;
           });
-          this._queue.push({ task, args, resolve: resolve2, reject });
+          this._queue.push({ task: task2, args, resolve: resolve2, reject });
           this._tryToRun();
           return promise;
         }
@@ -20926,7 +20926,7 @@ var require_light = __commonJS({
             }
           }
           submit(...args) {
-            var cb, fn, job, options, ref, ref1, task;
+            var cb, fn, job, options, ref, ref1, task2;
             if (typeof args[0] === "function") {
               ref = args, [fn, ...args] = ref, [cb] = splice.call(args, -1);
               options = parser$5.load({}, this.jobDefaults);
@@ -20934,14 +20934,14 @@ var require_light = __commonJS({
               ref1 = args, [options, fn, ...args] = ref1, [cb] = splice.call(args, -1);
               options = parser$5.load(options, this.jobDefaults);
             }
-            task = (...args2) => {
+            task2 = (...args2) => {
               return new this.Promise(function(resolve2, reject) {
                 return fn(...args2, function(...args3) {
                   return (args3[0] != null ? reject : resolve2)(args3);
                 });
               });
             };
-            job = new Job$1(task, args, options, this.jobDefaults, this.rejectOnDrop, this.Events, this._states, this.Promise);
+            job = new Job$1(task2, args, options, this.jobDefaults, this.rejectOnDrop, this.Events, this._states, this.Promise);
             job.promise.then(function(args2) {
               return typeof cb === "function" ? cb(...args2) : void 0;
             }).catch(function(args2) {
@@ -20954,14 +20954,14 @@ var require_light = __commonJS({
             return this._receive(job);
           }
           schedule(...args) {
-            var job, options, task;
+            var job, options, task2;
             if (typeof args[0] === "function") {
-              [task, ...args] = args;
+              [task2, ...args] = args;
               options = {};
             } else {
-              [options, task, ...args] = args;
+              [options, task2, ...args] = args;
             }
-            job = new Job$1(task, args, options, this.jobDefaults, this.rejectOnDrop, this.Events, this._states, this.Promise);
+            job = new Job$1(task2, args, options, this.jobDefaults, this.rejectOnDrop, this.Events, this._states, this.Promise);
             this._receive(job);
             return job.promise;
           }
@@ -28479,7 +28479,7 @@ async function getTestSource(token, repository, path2, sha) {
   );
   return "";
 }
-async function writeLedger(baseURL, audience, pack, decisions, model) {
+async function writeLedger(baseURL, audience, pack, decisions, model, replay = false) {
   if (decisions.length === 0) return true;
   let bearer;
   try {
@@ -28496,6 +28496,7 @@ async function writeLedger(baseURL, audience, pack, decisions, model) {
     gh_run_id: pack.group.gh_run_id,
     gh_pr_number: pack.group.gh_pr_number,
     model,
+    replay,
     verdicts: decisions.map((d, i) => {
       const c = pack.clusters[i];
       const testID = c.representative.external_test_id;
@@ -28625,8 +28626,145 @@ function splitRepo(repository) {
   return [owner, repo];
 }
 
+// src/replay.ts
+var PRODUCTION_URL2 = "https://test-system-io.internal.mattermost.com";
+var STAGING_URL2 = "https://test-system-io-staging.internal.mattermost.com";
+var MAX_AGENT_CLUSTERS2 = 8;
+async function runReplay() {
+  const baseURL = getInput("use-staging") === "true" ? STAGING_URL2 : PRODUCTION_URL2;
+  const audience = getInput("oidc-audience") || "mattermost-test-system-io";
+  const repo = getInput("replay-repo", { required: true });
+  const baseline = getInput("baseline-branch") || "main";
+  const branch = getInput("replay-branch");
+  const days = clampInt(getInput("replay-days"), 30, 1, 180);
+  const limit = clampInt(getInput("replay-limit"), 20, 1, 500);
+  const githubToken = getInput("github-token");
+  const anthropicKey = getInput("anthropic-api-key");
+  const model = getInput("claude-model") || "claude-sonnet-4-6";
+  if (!anthropicKey) {
+    warning(
+      "no anthropic-api-key: replay will record deterministic verdicts only, and the resulting accuracy figure is the classifier's, not the model's"
+    );
+  }
+  const candidates = await fetchCandidates(baseURL, repo, branch, days, limit);
+  info(`replay: ${candidates.length} candidate run(s) for ${repo} over ${days}d`);
+  if (candidates.length === 0) {
+    info("nothing to replay \u2014 every ingested failing run already has a ledger row");
+    return;
+  }
+  let adjudicated = 0;
+  let ledgerFailures = 0;
+  for (const c of candidates) {
+    const identity = {
+      repository: c.repository,
+      branch: c.branch,
+      commit_sha: c.commit_sha,
+      gh_run_id: c.gh_run_id,
+      gh_run_attempt: "1",
+      name: c.name
+    };
+    let pack;
+    try {
+      pack = await fetchEvidence(baseURL, identity, c.group_id, baseline);
+    } catch (err) {
+      warning(`skipping ${c.group_id}: ${err.message}`);
+      continue;
+    }
+    const runType = pack.group.gh_pr_number ? "PR" : "MAIN";
+    const changedFiles = await listChangedFiles(
+      githubToken,
+      pack.group.repository,
+      pack.group.gh_pr_number
+    );
+    const decisions = [];
+    for (const cluster of pack.clusters || []) {
+      const recovered = cluster.representative.retry_count > 0 || cluster.representative.status === "flaky";
+      const needsAI = cluster.suggested.needs_ai || recovered;
+      let ai = void 0;
+      if (needsAI && anthropicKey && decisions.length < MAX_AGENT_CLUSTERS2) {
+        try {
+          ai = await investigate(cluster, {
+            baseURL,
+            apiKey: anthropicKey,
+            model,
+            group: pack.group,
+            baselineBranch: baseline,
+            changedFiles,
+            compareCommits: (base, head) => compareCommits(githubToken, pack.group.repository, base, head),
+            getPrDiff: () => getPrDiff(githubToken, pack.group.repository, pack.group.gh_pr_number),
+            getTestSource: (path2, sha) => getTestSource(githubToken, pack.group.repository, path2, sha)
+          });
+        } catch (err) {
+          warning(`agent failed on ${cluster.signature}: ${err.message}`);
+        }
+      }
+      const d = decide({
+        failure: cluster.representative,
+        runType,
+        branch: pack.group.branch || "",
+        changedFiles,
+        ai,
+        // Always "gate": replay asks what the gate WOULD have done.
+        mode: "gate"
+      });
+      d.member_count = cluster.member_count;
+      decisions.push(await attachBlame(d, cluster, githubToken, pack.group.repository));
+    }
+    if (decisions.length === 0) continue;
+    const ok = await writeLedger(baseURL, audience, pack, decisions, model, true);
+    if (!ok) {
+      ledgerFailures++;
+      warning(`ledger write failed for ${c.group_id} \u2014 this run stays unmeasured`);
+      continue;
+    }
+    adjudicated++;
+    const waived = decisions.filter((d) => d.waived).length;
+    info(
+      `${c.group_id} ${runType} ${c.commit_sha.slice(0, 8)}: ${decisions.length} cluster(s), ${waived} would have been waived`
+    );
+  }
+  info(
+    `replay complete: ${adjudicated}/${candidates.length} run(s) recorded` + (ledgerFailures > 0 ? `, ${ledgerFailures} ledger failure(s)` : "")
+  );
+  setOutput("replayed", String(adjudicated));
+  setOutput("ledger_failures", String(ledgerFailures));
+  if (ledgerFailures > 0) {
+    setFailed(`${ledgerFailures} run(s) could not be recorded`);
+  }
+}
+async function fetchCandidates(baseURL, repo, branch, days, limit) {
+  const params = new URLSearchParams({
+    repo,
+    days: String(days),
+    limit: String(limit)
+  });
+  if (branch) params.set("branch", branch);
+  const res = await retryFetch(
+    `${baseURL}/api/v1/triage/replay/candidates?${params.toString()}`,
+    {},
+    "triage/replay/candidates"
+  );
+  if (!res.ok) {
+    throw new Error(`triage/replay/candidates HTTP ${res.status} ${await res.text()}`);
+  }
+  const body = await parseJSON(
+    res,
+    "triage/replay/candidates"
+  );
+  return body.candidates ?? [];
+}
+function clampInt(raw, dflt, min, max) {
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isInteger(n)) return dflt;
+  if (n < min) return min;
+  if (n > max) return max;
+  return n;
+}
+
 // src/index.ts
-run().catch((err) => {
+var task = (getInput("task") || "triage").toLowerCase();
+var entry = task === "replay" ? runReplay() : task === "triage" ? run() : Promise.reject(new Error(`unknown task ${JSON.stringify(task)} \u2014 expected triage or replay`));
+entry.catch((err) => {
   const message = err instanceof Error ? err.stack ?? err.message : String(err);
   setFailed(`ai-triage action crashed: ${message}`);
 });

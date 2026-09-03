@@ -2,13 +2,33 @@
 
 **Date:** 2026-09-03 · **Branch:** `feat/flakiness-management` · **Round:** 8
 
-**Round 8 removed the rollout-phase ladder, the throughput model and the SLA
-report** (`phase.go`, `throughput.go`, `sla.go`, migration `000029`, the
-`/triage/phase`, `/triage/sla` and `/triage/stabilization/throughput`
-endpoints, and their web surfaces). Gating is now owned by the calling
-workflow's `mode` input alone, and the rollout is a merge order rather than
-server state — see §3. Numbers below that were produced "at phase N" were
-produced in gate mode; the classifier and policy layer are unchanged.
+**Round 8 cut the machinery that had drifted away from the two goals, and
+built the one piece that was missing.**
+
+Removed: the rollout-phase ladder (`phase.go`, migration `000029`,
+`/triage/phase`), the throughput model (`throughput.go`), the SLA report
+(`sla.go`), the release-cut guard (no consumer, blocked since W0), and two of
+the five alert rules (`pass_rate_trend_7d` was `pass_rate_drop_24h` over a
+longer window; `cross_pr_cluster` announced per-test what the ranked queue
+already says). Gating is now owned by the calling workflow's `mode` input
+alone, and the rollout is a merge order rather than server state — see §3.
+
+Added: the **replay job** — a scheduled workflow plus `task: replay` on the
+existing action — which re-adjudicates already-ingested runs through the live
+policy layer and records `replay`-marked ledger rows. That is what turns the
+collection window into a measurement instead of a wait.
+
+Numbers below that were produced "at phase N" were produced in gate mode; the
+classifier and policy layer are unchanged.
+
+**Quarantine stays, and an earlier round-8 note calling it redundant was
+wrong.** It is not a second spelling of the automatic waiver: `canWaive` checks
+it *above* the NEVER_WAIVE set, the 0.85 confidence floor and the citation
+rule, so it is the only path that can green a test the classifier cannot judge
+at all (INCONCLUSIVE, TEST_DEBT, low confidence). Without it those go red
+forever, which is the pain this system exists to remove. The four things it can
+never hide — PR_REGRESSION, a product refusal, diff overlap, a shifted failure
+rate — are checked before it applies.
 
 Every number below says which model produced it. Local and production are not
 interchangeable; conflating them is how this project nearly redesigned a working
@@ -125,7 +145,7 @@ routing no longer falls back to the repo root.
 
 | What | Result | How |
 |---|---|---|
-| R7-B/C policy gates + L2/L3 levers | 151 TS tests, Go triage green, golangci-lint 0 across internal/… and tests/… | `npm test`, `go test`, `golangci-lint run` |
+| R7-B/C policy gates + L2/L3 levers | 154 TS tests, 32 Go triage unit + 17 triage e2e green, golangci-lint 0 across internal/… and tests/… | `npm test`, `go test`, `golangci-lint run` |
 | Both ABAC cases refused end-to-end | 2/2, through `decide()` in gate mode | `policy.test.ts` |
 | Unshifted control still waives | 2/2 | `policy.test.ts` |
 | Full e2e suite | all packages green. One caveat, recorded rather than hidden: `TestOrchestrationHappyPath` timed out once under full-suite testcontainers contention and passed in 4s in isolation — an infra flake, and `orchestration` imports no changed package (`go list -deps`: 0 matches) | `make test-server-e2e`, Docker |
@@ -193,24 +213,37 @@ retroactively the moment the server ships. Master health alerting
 (`triage-master-health.yml`) also runs on TSIO alone and needs only
 `TSIO_ALERTS_API_KEY` — that is what retires the 09:00 spot check.
 
-**The gap this does not close on its own.** History is not verdicts. Nothing
-writes `triage_verdicts` while the action is unwired, so the window produces
-baselines but still no accuracy or calibration number — which is the figure
-blocking gating. Closing it needs a replay job in TSIO that runs the classifier
-and the model over already-ingested failed runs and writes real ledger rows.
+**History is not verdicts, and the blocking number is a verdict number.**
+Nothing writes `triage_verdicts` while the action is unwired, so step 1 alone
+would produce baselines and still no accuracy figure. The **replay job** closes
+that, and it is built: `triage-replay.yml` in this repo runs `task: replay` on
+the existing action twice a day, walks failing runs TSIO already holds, and
+puts each through the same `fetchEvidence` → classifier → `investigate` →
+`decide` → `writeLedger` path a live run uses.
+
 Not shadow-flagged: the rows are real, `check_state` and `waived` are real, and
-nothing reads them because no CI is listening. **This is built next and is the
-one remaining piece of the plan.**
+nothing reads them because no CI is listening. Two properties make it a
+measurement rather than a rehearsal — it decides in **gate** mode (a
+shadow-mode replay would record `waived=false` everywhere and measure nothing),
+and every row is marked `replay` so `GET /triage/accuracy?source=replay` counts
+it apart from live. They are never averaged: a replay verdict is decided with
+later runs of the same test already in the database.
+
+Both properties are pinned by tests — `replay.test.ts` for gate mode,
+`replay_e2e_test.go` for the separation and for the worklist draining — because
+each is silent when it breaks.
 
 Round 6 recommended not starting because the false-green rate was 41%. That
 measurement was a weaker model judging a sample stripped of the deciding
 evidence, and it argued about a gate (`canWaive`) that grants nothing while the
 mattermost half is unmerged.
 
-**The blocker is unchanged:** screenshot upload for failing Playwright specs and
-the production `ANTHROPIC_API_KEY` wired to the triage job. Without both, the
-window produces another month of unmeasurable data and round 9 asks the same
-question.
+**The blocker moved.** The production `ANTHROPIC_API_KEY` is now needed as a
+secret in **this** repo, for the replay job, and it is needed at step 1 rather
+than step 2. Screenshot upload in mattermost is still the other half. Without
+the key the window produces another month of unmeasurable data and round 9 asks
+the same question — so the job refuses to start rather than quietly recording a
+classifier-only number under the same name.
 
 Do **not** merge mattermost#38154 on current evidence. It needs the false-green
 count measured at 0 on production-model verdicts over a screenshot-bearing
@@ -225,7 +258,7 @@ sample.
 | **Accept or reject the R7-C policy reversal** — chronic flakes now green bystander PRs; the forcing function is master red + the stabilization queue, not PR red | **needs a human call** | review of `e13544d` |
 | **Set a 48-hour stabilization review SLA** — the lever on drain, now stated rather than modelled | **Eva** (rotation owner) | rotation decision, no code |
 | **Narrow or remove R7-C once quarantine adoption is real** | test infra | quarantine in use (§4b) |
-| **Replay job** — score already-ingested failed runs into real ledger rows, so the collection window produces an accuracy number | test infra | next change on this branch (§3) |
+| **Run the replay job against production data** | test infra | `ANTHROPIC_API_KEY` in this repo (D4). The job itself is built and refuses to start without the key. |
 | **mattermost/toolkit wiring** — MAIN triage job, W10 workflow, W9 flag passing, release-cut workflow (second half) | test infra | toolkit PR review |
 | **Locating the 09:00 spot check** | **Eva** | — |
 | **CODEOWNERS `e2e-tests/**` entry** | test infra | **shipped** — confirm `@mattermost/test-infra` is the right handle |

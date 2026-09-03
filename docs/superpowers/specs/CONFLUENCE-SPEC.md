@@ -160,9 +160,22 @@ see §6.
 ### 4.1 Detection
 
 - **Raw pass-rate**, published, unaffected by waivers.
-- **Five alert rules**, deduplicated: one channel post per 24h per subject, one
-  GitHub issue opened per story and then updated in place.
+- **Three alert rules**, deduplicated: one channel post per 24h per subject,
+  one GitHub issue opened per story and then updated in place.
+  - `pass_rate_drop_24h` — today against the median of the 7 days before it.
+    "Something landed."
+  - `pass_rate_floor` — an absolute floor. Off unless a floor is configured.
+  - `new_failing_streak` — a test that has newly failed 3+ consecutive master
+    runs. This is the arrival detector, and the only per-test rule.
 - Replaces the manual 09:00 spot check.
+
+Two rules were cut as redundant rather than wrong. `pass_rate_trend_7d` was
+`pass_rate_drop_24h` over a longer window, firing the same severity on the same
+subject, and the response to both is the same: look at the queue.
+`cross_pr_cluster` fired when a test broke 3+ distinct PRs — which is exactly
+what puts it at the top of §4.2, so it announced per-test what the ranked queue
+already says. Every alert that fires has to be worth a human turning to look;
+two ways of saying one thing trains people to stop looking.
 
 ### 4.2 The fix queue, ranked by blast radius
 
@@ -309,7 +322,7 @@ see, not an automatic demotion buried in server state.
 | Master never waives a master regression | Automated test, both modes |
 | Release branches waive nothing | Automated test |
 | Six stabilization bans | 14/14 |
-| Test suite | 152 unit (ai-triage) + 46 triage unit + 43 stabilization + triage e2e, golangci-lint 0. **Caveat:** `internal/config` has 4 failures on a developer machine — `loadDotenv()` picks up the local `.env`, so `TSIO_DATABASE_URL`/`TSIO_S3_*` leak into the assertions. Pre-existing, unrelated to triage, and green in CI (proven in a clean worktree). Non-hermetic tests are still a real if minor defect. |
+| Test suite | 154 action unit tests, 32 Go triage unit tests, 17 triage e2e tests against a real server, golangci-lint 0. **Caveat:** `internal/config` has 4 failures on a developer machine — `loadDotenv()` picks up the local `.env`, so `TSIO_DATABASE_URL`/`TSIO_S3_*` leak into the assertions. Pre-existing, unrelated to triage, and green in CI. Non-hermetic tests are still a real if minor defect. |
 
 ### Not verified — stated plainly
 
@@ -347,12 +360,35 @@ The rollout is therefore a merge order:
 | **3 — gate master** | \+ `run-type: MAIN` at `mode: gate` | gate | may green on a *confirmed* flake |
 | **4 — loop** | \+ `E2E_STABILIZATION_LOOP=on` | gate | gate |
 
-**Step 1 is the measurement window, and it costs nothing to run.** Test history
-is derived from the report ingestion TSIO already receives, and migration
-`000027` backfills `external_test_id` on apply — so baselines, failure rates and
-`failing_since` are populated retroactively the moment the server ships, with no
-CI change in the mattermost repo. That is what produces the numbers §6 says do
-not exist yet.
+**Step 1 is the measurement window.** Test history is derived from the report
+ingestion TSIO already receives, and migration `000027` backfills
+`external_test_id` on apply — so baselines, failure rates and `failing_since`
+are populated retroactively the moment the server ships, with no CI change in
+the mattermost repo.
+
+**History is not verdicts, though, and the number blocking step 2 is a verdict
+number.** Nothing writes to the ledger while no CI job calls the action, so
+step 1 on its own would produce a month of baselines and still no accuracy
+figure. The **replay job** closes that: a scheduled workflow in this repo
+(`triage-replay.yml`) walks failing runs TSIO has already ingested and puts each
+through the same evidence pack, classifier, model and policy layer a live run
+uses, recording real ledger rows.
+
+Nothing it writes flips anything — it sets no commit status, posts no comment,
+and no CI job reads those rows. Two things make it a measurement rather than a
+rehearsal:
+
+- it decides in **gate** mode, because the question is what the gate *would*
+  have done; a shadow-mode replay would record `waived=false` everywhere;
+- every row is marked `replay`, and `GET /triage/accuracy?source=replay` counts
+  them separately from live. They are never averaged: a replay verdict is
+  decided with later runs of the same test already in the database, so folding
+  it into the live figure would overstate what CI does.
+
+**This moves one decision.** D4's API key is needed on the **TSIO** side, not
+the mattermost side, and it is needed at step 1 rather than step 2 — without it
+replay records deterministic verdicts only, and the resulting figure is the
+classifier's rather than the model's.
 
 **Gating is owned by the calling workflow.** The action waives only in
 `mode: gate`, an unrecognised mode fails closed to shadow, and the mattermost
@@ -375,11 +411,13 @@ than all at once.
 
 ### One decision still blocks the AI half
 
-Turn on **screenshot upload for failing specs** and wire the **production API
-key** to the triage job (decision **D4**). Without screenshots the rule written
-for the hard case cannot fire, and without the key the pipeline cannot call a
-frontier model at all. The deterministic half — rate-shift, config-delta,
-history — works without either.
+Wire the **production `ANTHROPIC_API_KEY`** — as a secret in **this** repo, for
+the replay job — and turn on **screenshot upload for failing specs** in
+mattermost (decision **D4**). Without the key the pipeline cannot call a
+frontier model at all; without screenshots the rule written for the hard case
+cannot fire. The deterministic half — rate-shift, config-delta, history — works
+without either, and the replay job says so in its log when the key is absent so
+a classifier-only number is never mistaken for the model's.
 
 ## 8. What it costs you
 
@@ -403,7 +441,7 @@ Silence on a line = we proceed with the default.
 | **D1** | Master checks may go green on confirmed flakes (step 3+) | Yes | @saturnino |
 | **D2** | Merge tsio#101 now and hold mattermost#38154 until §6's accuracy number exists | Yes | @saturnino |
 | **D3** | Named weekly test-infra rotation at the budget in §8 | Yes | @eva |
-| **D4** | Turn on screenshot upload + wire the production API key | Yes — **blocks the AI half** | @nuno |
+| **D4** | Wire `ANTHROPIC_API_KEY` in the **tsio** repo (replay) + turn on screenshot upload in mattermost | Yes — **blocks the measurement, so it blocks step 2** | @nuno |
 | **D5** | **48-hour stabilization review SLA** (§4.4) | Yes | @eva |
 | **D6** | Chronic flakes green bystander PRs; the forcing function is master red + the queue, not PR red | Yes | @saturnino |
 | **D7** | Add a CODEOWNERS `e2e-tests/**` entry | **shipped** | @eva to confirm the team handle |
@@ -435,7 +473,8 @@ sitting on an unpushed branch.
 | Piece | Where | Notes |
 |---|---|---|
 | **Master triage** | already existed | `e2e-tests-on-merge.yml` passes `report_type=MASTER`, the template maps it to `run-type=MAIN`. This was on a pending list by mistake. |
-| **Master health alerting** | tsio `triage-master-health.yml` | Every 2h. This is what retires the 09:00 spot check. Needs one secret. |
+| **Master health alerting** | tsio `triage-master-health.yml` | Every 2h. This is what retires the 09:00 spot check. Needs one secret. Three rules, not five (§4.1). |
+| **Replay (the measurement job)** | tsio `triage-replay.yml` + action `task: replay` | Twice a day. Re-adjudicates ingested runs through the live policy layer and records `replay`-marked ledger rows. Flips nothing. This is what turns step 1 of §7 from a waiting period into a measurement. |
 | **Targeted re-measurement** | mattermost `e2e-flaky-remeasure.yml` | `--grep` + `--repeat-each`, `--retries=0`. The piece that makes the loop keep up (§4.4). |
 | **Stabilization loop** | mattermost `e2e-stabilization-loop.yml` | Off until `E2E_STABILIZATION_LOOP=on`; manual runs default to dry. |
 | **The six bans, in CI** | mattermost `e2e-stabilization-bans.yml` | On every PR touching `e2e-tests/**`, not just agent PRs. Human-only override label. |
@@ -448,15 +487,17 @@ sitting on an unpushed branch.
 | What | Where | Why |
 |---|---|---|
 | Secret `TSIO_ALERTS_API_KEY` | tsio repo | The alerting job. `tsioctl keys issue --name master-health-alerts` |
+| Secret `ANTHROPIC_API_KEY` | **tsio repo** | The replay job — decision **D4**, and needed at step 1, not step 2. The job refuses to start without it rather than quietly measuring the classifier alone. |
+| Variable `TSIO_REPLAY_REPO` | tsio repo | Optional; defaults to `mattermost/mattermost` |
+| Screenshot upload | mattermost | The other half of **D4** — without it the hard-case rule cannot fire |
 | Variable `E2E_STABILIZATION_LOOP=on` | mattermost | Enables the fix loop (step 4) |
-| Screenshot upload + `ANTHROPIC_API_KEY` | mattermost | Decision **D4** — the AI half |
 | Confirm `@mattermost/test-infra` is the right handle | mattermost | CODEOWNERS routing |
 
 ### Still open, deliberately
 
 | Item | Why it is not done |
 |---|---|
-| **Release-cut guard, workflow half** | The TSIO half (`/triage/release-guard`) is built and callable. The release automation it must pause was never located — flagged since W0. Needs someone who knows where the release-cut job lives. |
+| **Release-cut guard** | **Removed.** The TSIO half was built and callable, but the release automation it was meant to pause was never located — flagged since W0 and never resolved, so nothing ever called it. It is a few lines of SQL to reinstate once someone points at the release-cut job; carrying it meanwhile was carrying an endpoint with no consumer. |
 | **`report-upload` action has no tests** | Pre-existing gap, found while fixing three other actions whose test globs were silently running nothing. Out of scope here; worth its own PR. |
 | **The loop has never opened a fix PR** | It is wired, off by default, and dry on manual runs. First real run is a step-4 activity. |
 
@@ -483,6 +524,8 @@ local dev container names and credentials.
 | `GET /triage/pass-rates` | Raw and effective pass-rates |
 | `GET /triage/alerts/evaluation` | Dry-run alert evaluation |
 | `GET /triage/quarantine` | Active quarantines |
+| `GET /triage/replay/candidates` | Ingested failing runs with no verdict — the replay worklist |
+| `GET /triage/accuracy` | Verdict accuracy and false-greens; `source=live` (default) or `replay` |
 
 **Authenticated writes**
 

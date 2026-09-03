@@ -1,0 +1,90 @@
+---
+# The collection window's measurement job.
+#
+# While mattermost#38154 is unmerged, no CI run calls the triage action, so
+# history accumulates and accuracy does not — and accuracy is the one number
+# blocking the gate. This job re-adjudicates runs Test System IO has already
+# ingested, through the same evidence pack, classifier, model and policy layer
+# a live run uses, and records real ledger rows marked `replay`.
+#
+# Nothing it writes flips a check: no commit status is set, no PR comment is
+# posted, and no CI job reads those rows. Read the numbers with
+#   GET /api/v1/triage/accuracy?repo=...&source=replay
+# which counts replay separately from live, because a replay verdict is decided
+# with later runs of the same test already in the database.
+#
+# This job costs model calls. `replay-limit` is the budget knob: 20 runs per
+# invocation twice a day is a few hundred verdicts a month, which is the order
+# of magnitude the accuracy question needs.
+name: Triage — replay (measurement, flips nothing)
+
+on:
+  schedule:
+    # Twice a day, offset from the alerting job so they do not contend.
+    - cron: "41 3,15 * * *"
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Repository to replay (owner/name or slug)"
+        type: string
+        required: false
+        default: ""
+      branch:
+        description: "Restrict to one branch. Empty replays every branch."
+        type: string
+        required: false
+        default: ""
+      days:
+        description: "How far back to look for unadjudicated failing runs"
+        type: string
+        required: false
+        default: "30"
+      limit:
+        description: "Maximum runs this invocation (each costs model calls)"
+        type: string
+        required: false
+        default: "20"
+
+permissions:
+  contents: read
+  # The ledger write authenticates with an OIDC token, the same way the live
+  # triage job does. No long-lived credential is issued for this.
+  id-token: write
+
+concurrency:
+  group: triage-replay
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    # Skip on forks: the API key is absent there, and a scheduled job that
+    # always fails trains people to ignore this workflow.
+    if: github.repository == 'mattermost/mattermost-test-system-io'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Guard — the model key is what makes this a measurement
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not set."
+            echo "Without it replay records deterministic verdicts only, and the"
+            echo "resulting number is the classifier's rather than the model's —"
+            echo "which is not the figure the rollout is waiting on (decision D4)."
+            exit 1
+          fi
+
+      - name: Replay
+        uses: ./.github/actions/test-system-io-ai-triage
+        with:
+          task: replay
+          replay-repo: ${{ inputs.repo || vars.TSIO_REPLAY_REPO || 'mattermost/mattermost' }}
+          replay-branch: ${{ inputs.branch }}
+          replay-days: ${{ inputs.days || '30' }}
+          replay-limit: ${{ inputs.limit || '20' }}
+          baseline-branch: master
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

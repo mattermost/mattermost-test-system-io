@@ -1,27 +1,25 @@
 // W14 — the stabilization queue: the ranked list of what to fix first.
 //
-// The queue is derived (flakiness leaderboard top-N, amnesty-expired promoted
-// to the top) plus recorded promotions, and it leads on blast radius — the
-// number of distinct PRs a test broke — because that is realized developer
-// cost rather than "most broken on master". The agent fix loop is action-side
-// (mattermost CI); the server owns the ranking and the record of who promoted
-// or resolved what.
+// The queue is entirely derived from ingested history, and it leads on blast
+// radius — the number of distinct PRs a test broke — because that is realized
+// developer cost rather than "most broken on master". A test leaves the queue
+// when its failures stop, which is the only definition of fixed that cannot be
+// asserted into being true.
 //
-// Two things that used to live here are gone. The release-cut guard (W5) was
-// built and callable but the release automation it was meant to pause was
-// never located, so nothing ever called it — it is a few lines of SQL when
-// someone finds that job. The SLA clocks (W15c) tracked a review latency no
-// code can enforce.
+// Three things that used to live here are gone, all for the same reason —
+// nothing called them. The release-cut guard (W5) was built and callable but
+// the release automation it was meant to pause was never located. The SLA
+// clocks (W15c) tracked a review latency no code can enforce. Manual promote
+// and resolve let a human reorder the queue by hand, but had no caller and no
+// interface once the release guard went, and the ranking is the mechanism —
+// a hand-maintained parallel ordering is the thing it exists to replace.
 
 package triage
 
 import (
-	"context"
 	"net/http"
-	"strings"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
-	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 )
 
 // StabilizationQueueDepth is the working-queue scope: the organic ranking
@@ -44,20 +42,15 @@ type queueEntry struct {
 	// developers it actually cost. When the queue drains slower than flakes
 	// arrive (measured: drain 0.10-0.37/day vs arrival 1.5/day), what you fix
 	// matters more than how fast, so this leads the ranking.
-	AffectedPRs     int     `json:"affected_prs"`
-	FailingSince    *string `json:"failing_since_commit,omitempty"`
-	Promoted        bool    `json:"promoted"`
-	PromotedBy      *string `json:"promoted_by,omitempty"`
-	PromotionSource *string `json:"promotion_source,omitempty"`
-	PromotionReason *string `json:"promotion_reason,omitempty"`
+	AffectedPRs  int     `json:"affected_prs"`
+	FailingSince *string `json:"failing_since_commit,omitempty"`
 }
 
 type queueResponse struct {
-	Repo     string       `json:"repo"`
-	Window   string       `json:"window"`
-	Depth    int          `json:"depth"`
-	Promoted []queueEntry `json:"promoted"`
-	Ranked   []queueEntry `json:"ranked"`
+	Repo   string       `json:"repo"`
+	Window string       `json:"window"`
+	Depth  int          `json:"depth"`
+	Ranked []queueEntry `json:"ranked"`
 }
 
 // StabilizationQueue serves GET /api/v1/triage/stabilization/queue?repo=
@@ -76,16 +69,7 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Promotions first — the queue's head is whatever a guard or a human
-	// filed, not whatever is statistically worst.
-	promoted, err := h.loadPromotions(r.Context(), repo)
-	if err != nil {
-		h.logError("stabilization queue promotions", err)
-		api.WriteError(w, r, api.ErrInternal)
-		return
-	}
-
-	// Then the organic ranking, excluding tests already promoted. M2 fix: the
+	// M2 fix: the
 	// rollup is per (test, report group) FIRST — the same shape the flakiness
 	// leaderboard uses — and only then aggregated per test, so runs = groups
 	// the test actually executed in and failure_rate is a real rate instead of
@@ -170,18 +154,13 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 		         m.failed DESC,
 		         m.flips DESC
 		LIMIT $3
-		`, repo, since, StabilizationQueueDepth+len(promoted))
+		`, repo, since, StabilizationQueueDepth)
 	if err != nil {
 		h.logError("stabilization queue ranking", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
 	defer rows.Close()
-
-	promotedSet := map[string]bool{}
-	for _, p := range promoted {
-		promotedSet[p.TestID] = true
-	}
 
 	ranked := []queueEntry{}
 	for rows.Next() {
@@ -195,9 +174,6 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, r, api.ErrInternal)
 			return
 		}
-		if promotedSet[e.TestID] {
-			continue
-		}
 		if e.Runs > 0 {
 			e.FailureRate = float64(e.Failed) / float64(e.Runs)
 			e.FlakeRate = float64(e.Flips) / float64(e.Runs)
@@ -209,121 +185,9 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, queueResponse{
-		Repo:     repo,
-		Window:   window,
-		Depth:    StabilizationQueueDepth,
-		Promoted: promoted,
-		Ranked:   ranked,
+		Repo:   repo,
+		Window: window,
+		Depth:  StabilizationQueueDepth,
+		Ranked: ranked,
 	})
 }
-
-func (h *Handlers) loadPromotions(ctx context.Context, repo string) ([]queueEntry, error) {
-	rows, err := h.Pool.Query(ctx, `
-		SELECT external_test_id, promoted_by, source, reason
-		FROM stabilization_promotions
-		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
-		  AND NOT resolved
-		ORDER BY created_at DESC
-	`, repo)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []queueEntry{}
-	for rows.Next() {
-		var e queueEntry
-		var by, src, reason string
-		if err := rows.Scan(&e.TestID, &by, &src, &reason); err != nil {
-			return nil, err
-		}
-		e.Promoted = true
-		e.PromotedBy = &by
-		e.PromotionSource = &src
-		e.PromotionReason = &reason
-		out = append(out, e)
-	}
-	return out, rows.Err()
-}
-
-// ---------- W14: promote / resolve ----------
-
-type promoteInput struct {
-	TestID string `json:"test_id"`
-	Reason string `json:"reason"`
-	Source string `json:"source"`
-}
-
-// PromoteStabilization serves POST /api/v1/triage/stabilization/promote —
-// file a test to the head of the queue. Authenticated: the queue's order is
-// an allocation of fixing effort, and a forged promotion would misdirect it.
-// Upsert per live (repo, test): re-promoting updates the reason.
-func (h *Handlers) PromoteStabilization(w http.ResponseWriter, r *http.Request) {
-	repo := r.URL.Query().Get("repo")
-	if repo == "" {
-		api.WriteError(w, r, errRepoRequired())
-		return
-	}
-	var in promoteInput
-	if err := decodeJSONBody(w, r, &in); err != nil {
-		api.WriteError(w, r, errRepoRequiredWith("malformed JSON body"))
-		return
-	}
-	if in.TestID == "" {
-		api.WriteError(w, r, errRepoRequiredWith("test_id is required"))
-		return
-	}
-	if in.Source == "" {
-		in.Source = "manual"
-	}
-	// M7: normalize to a full slug — a bare "mattermost" written here would
-	// make the SLA's split_part match degenerate ('' = '' → TRUE for every
-	// bare-stored row) and close unrelated clocks.
-	if !strings.Contains(repo, "/") {
-		repo = "mattermost/" + repo
-	}
-	subject, err := authapi.SubjectFromContext(r.Context())
-	if err != nil {
-		api.WriteError(w, r, err)
-		return
-	}
-
-	if _, err := h.Pool.Exec(r.Context(), `
-		INSERT INTO stabilization_promotions (repository, external_test_id, promoted_by, reason, source)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (repository, external_test_id) WHERE NOT resolved
-		DO UPDATE SET promoted_by = EXCLUDED.promoted_by,
-		              reason = EXCLUDED.reason,
-		              source = EXCLUDED.source,
-		              updated_at = now()
-	`, repo, in.TestID, subjectLabel(subject), in.Reason, in.Source); err != nil {
-		h.logError("stabilization promote", err)
-		api.WriteError(w, r, api.ErrInternal)
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"test_id": in.TestID, "source": in.Source})
-}
-
-// ResolveStabilization serves POST /api/v1/triage/stabilization/resolve —
-// mark a promotion done (fix merged / test stable) so the organic ranking
-// takes over again.
-func (h *Handlers) ResolveStabilization(w http.ResponseWriter, r *http.Request) {
-	repo := r.URL.Query().Get("repo")
-	testID := r.URL.Query().Get("test_id")
-	if repo == "" || testID == "" {
-		api.WriteError(w, r, errRepoRequiredWith("repo and test_id are required"))
-		return
-	}
-	if _, err := h.Pool.Exec(r.Context(), `
-		UPDATE stabilization_promotions
-		SET resolved = true, updated_at = now()
-		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
-		  AND external_test_id = $2 AND NOT resolved
-	`, repo, testID); err != nil {
-		h.logError("stabilization resolve", err)
-		api.WriteError(w, r, api.ErrInternal)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"test_id": testID, "resolved": true})
-}
-
-// ---------- W5: release-cut guard, TSIO half ----------

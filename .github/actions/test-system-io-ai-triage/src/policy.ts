@@ -198,50 +198,6 @@ const bystanderPreexisting = (args: {
   args.citations.includes("failing_on_baseline") &&
   (args.runType || "").toUpperCase() !== "MAIN";
 
-/**
- * R7-C — the chronic-flake bystander carve-out.
- *
- * THE FAULT THIS FIXES. Two rules were exactly complementary, and together they
- * made the product's primary promise unreachable:
- *
- *   classify.go pre-tags FLAKY_TEST only when FailureRate >= 0.10
- *   amnesty denies a waiver     whenever   FailureRate >= 0.10  (inclusive)
- *
- * So the history-based flake verdict could NEVER be waived. Any test flakier
- * than 10% on master turned every PR that touched it red — including PRs whose
- * authors had nothing to do with it. Measured live on seeded data: a 40% flake
- * and a 10% flake both came back FAILURE with reason "amnesty denied", while
- * the model's verdict was correct in both cases. No amount of model quality
- * could have fixed that.
- *
- * THE PRINCIPLE, already written into the W4 carve-out below: amnesty's pain
- * must land on master and on the test's owner, never on a bystander PR author.
- * W4 applied it only to MAIN_REGRESSION. This extends the same reasoning to
- * FLAKY_* on PR runs, which is where the promise "if it's flaky and not your
- * change, your check goes green" actually lives.
- *
- * WHY THIS IS SAFE NOW AND WAS NOT BEFORE. The original reason to exclude
- * FLAKY_* was that a chronic flake could not be distinguished from a chronic
- * flake that this time broke for real. The R7-B rate-shift gate above now
- * decides exactly that, and it runs FIRST — so anything reaching here has a
- * failure count its own baseline explains. The redundant check on
- * rateShiftedAtCommit is kept so this stays correct if the blocks are ever
- * reordered.
- *
- * WHAT IT DELIBERATELY DOES NOT DO. MAIN runs still require amnesty, so a
- * chronic flake still goes red on master, still gets an owner, and still gets
- * promoted up the stabilization ranking. The forcing function moves to master,
- * which is where the fix is owned — it is not removed.
- */
-const chronicFlakeBystander = (args: {
-  runType: string;
-  verdict: string;
-  rateShiftedAtCommit?: boolean;
-}): boolean =>
-  FLAKY.has(args.verdict) &&
-  (args.runType || "").toUpperCase() !== "MAIN" &&
-  args.rateShiftedAtCommit !== true;
-
 export function canWaive(args: {
   runType: string;
   branch: string;
@@ -320,6 +276,38 @@ export function canWaive(args: {
       };
     }
   }
+  // The infra-bystander carve-out.
+  //
+  // BUILD_OR_ENV_ERROR is never waivable, and that is right by default: a PR
+  // CAN break the build, and "the environment was broken" is the easiest thing
+  // for a model to say about any failure it cannot explain.
+  //
+  // But it left the most common "this is obviously not my change" case — the
+  // runner died, bootstrap failed, the registry timed out — as a hard red on
+  // every PR that happened to be running. That is precisely the pain this
+  // system exists to remove, and it was the largest remaining hole in the
+  // promise made on a PR check.
+  //
+  // The waiver here rests on evidence, not on the verdict: the same failure
+  // has to be visible somewhere this PR cannot have caused — on the baseline,
+  // or concurrently on other PRs. A build this PR broke appears in neither.
+  // Diff overlap still refuses, so a PR that edited CI config or the harness
+  // stays red, and MAIN is excluded because on master there is no bystander to
+  // protect — the run IS the baseline.
+  if (
+    args.verdict === "BUILD_OR_ENV_ERROR" &&
+    (args.runType || "").toUpperCase() !== "MAIN" &&
+    !args.diffOverlapsFailure &&
+    (args.citations.includes("failing_elsewhere") ||
+      args.citations.includes("failing_on_baseline"))
+  ) {
+    return {
+      waived: true,
+      reason:
+        "build/environment failure also seen off this PR (baseline or other PRs concurrently) — " +
+        "this PR is a bystander",
+    };
+  }
   if (NEVER_WAIVE.has(args.verdict)) {
     return { waived: false, reason: `${args.verdict} is not waivable` };
   }
@@ -386,17 +374,23 @@ export function canWaive(args: {
         `or in-run recovery before calling this a flake`,
     };
   }
-  // W4 bystander carve-out: amnesty's pain must land on master, not on
-  // bystander PR authors. A PR that hits a failure already failing on the
-  // baseline stays waivable even after the test's amnesty has expired — the
-  // escalation (hard red on master, promotion up the stabilization ranking)
-  // happens on the master side, where the fix is owned. FLAKY_* verdicts on
-  // any run, and everything on a MAIN run, still require amnesty.
-  if (
-    args.amnestyGranted === false &&
-    !bystanderPreexisting(args) &&
-    !chronicFlakeBystander(args)
-  ) {
+  // Amnesty caps how many times a test may be auto-waived before a human has
+  // to look at it. It is a MAIN-run rule, and saying so is the point.
+  //
+  // It used to read "deny unless one of two bystander carve-outs applies",
+  // which was a double negative hiding an empty set. Every waivable verdict
+  // reaching this line on a PR is already exempt by construction: FLAKY_* is
+  // refused above by the rate-shift gate whenever its own history stops
+  // explaining the failure, and otherwise the whole R7-C decision is that a
+  // chronic flake greens a bystander PR; MAIN_REGRESSION on a PR is granted
+  // below only with the failing_on_baseline citation, and without it falls
+  // through to "not waivable" regardless. So the carve-outs together said
+  // "amnesty never applies on a PR" — now it says that directly.
+  //
+  // The forcing function is not removed, it is relocated: a chronic flake
+  // still goes hard red on master, where the fix is owned, and still ranks in
+  // the fix queue. Amnesty's pain lands on the owner, never on a bystander.
+  if ((args.runType || "").toUpperCase() === "MAIN" && args.amnestyGranted === false) {
     return { waived: false, reason: "amnesty denied" };
   }
   if (args.confidence < WAIVE_CONFIDENCE) {

@@ -29,24 +29,10 @@ import {
 } from "./flip.ts";
 import { formatTriageComment, upsertTriageComment } from "./triage-comment.ts";
 import { decide, rollup, mayFlipChecks } from "./policy.ts";
-import {
-  collectBisectTargets,
-  collectFixTargets,
-  runFixer,
-  MAX_FIX_TARGETS,
-  type FixerContext,
-  type FixResult,
-  repoRelSpecCandidates,
-} from "./fixer.ts";
+import { repoRelSpecCandidates } from "./spec-paths.ts";
 import { buildReportURL } from "./report_url.ts";
 import { retryFetch, parseJSON } from "./retry-fetch.ts";
-import type {
-  CompositeIdentity,
-  Decision,
-  EvidenceCluster,
-  EvidencePack,
-  FixTarget,
-} from "./types.ts";
+import type { CompositeIdentity, Decision, EvidenceCluster, EvidencePack } from "./types.ts";
 
 const PRODUCTION_URL = "https://test-io.test.mattermost.com";
 const STAGING_URL = "https://staging-test-io.test.mattermost.com";
@@ -74,25 +60,6 @@ export async function run(): Promise<void> {
 
   const reportURL = buildReportURL(baseURL, identity);
   core.setOutput("report_url", reportURL);
-
-  // Fix mode: a checked-out workspace + triage's fixable-cluster JSON from the
-  // triage pass. The agent edits the spec in the workspace, pushes to the PR
-  // branch, and the standard CI loop validates the fix.
-  const fixClusters = core.getInput("fix-clusters");
-  if (fixClusters) {
-    await runFixMode(baseURL, fixClusters, {
-      apiKey: anthropicKey,
-      model,
-      workspace: core.getInput("workspace") || process.env.GITHUB_WORKSPACE || ".",
-      token: githubToken,
-      repository: identity.repository,
-      prBranch: core.getInput("pr-branch", { required: true }),
-      prNumber: identity.gh_pr_number ? Number(identity.gh_pr_number) : undefined,
-      baseURL,
-      maxTargets: Number(core.getInput("autofix-max")) || MAX_FIX_TARGETS,
-    });
-    return;
-  }
 
   const pack = await fetchEvidence(baseURL, identity, groupID, baseline);
   core.info(
@@ -175,19 +142,7 @@ export async function run(): Promise<void> {
   if (flip.reason) core.notice(flip.reason);
   await writeStepSummary(pack.clusters || [], decisions, summary, reportURL);
 
-  // Export test-bug clusters the fixer may repair (TEST_DEBT / refusal-blocked
-  // flakes on pre-existing specs). The ai-autofix job consumes this JSON.
-  core.setOutput(
-    "fixable_clusters",
-    JSON.stringify(collectFixTargets(pack.clusters || [], decisions, changedFiles)),
-  );
 
-  // MVP #2: confidently-attributed master regressions go to the bisect
-  // pipeline (finds the culprit commit on master, root-causes, tags author).
-  core.setOutput(
-    "bisect_clusters",
-    JSON.stringify(collectBisectTargets(pack.clusters || [], decisions)),
-  );
 
   // Round-2 major 6: EVERY status write belongs to the gate. In shadow mode a
   // failed ledger was tolerated and this block still posted
@@ -336,131 +291,6 @@ function agentCalls(decisions: Decision[]): number {
   return decisions.filter((d) => d.source === "model").length;
 }
 
-/**
- * Fix mode: repair each target in the PR checkout, push, and comment on the
- * PR with the diffs so a human can review what the agent changed.
- */
-async function runFixMode(baseURL: string, fixClusters: string, ctx: FixerContext): Promise<void> {
-  let targets;
-  try {
-    targets = JSON.parse(fixClusters) as FixTarget[];
-  } catch (err) {
-    core.setFailed(`fix-clusters is not valid JSON: ${(err as Error).message}`);
-    return;
-  }
-  if (!ctx.apiKey) {
-    core.warning("no anthropic key; autofix skipped");
-    return;
-  }
-  targets = targets.slice(0, ctx.maxTargets);
-  core.info(
-    `autofix: ${targets.length} cluster(s) — ${targets.map((t) => t.signature.slice(0, 8)).join(", ")}`,
-  );
-  // The unified-ci dispatch names synthetic dashboard branches (pr-N); the
-  // fixer must push to the PR's REAL head branch, so resolve it then.
-  if (/^pr-\d+$/.test(ctx.prBranch) && ctx.prNumber && ctx.token) {
-    try {
-      const res = await fetch(
-        `https://api.github.com/repos/${ctx.repository}/pulls/${ctx.prNumber}`,
-        {
-          headers: { authorization: `Bearer ${ctx.token}`, accept: "application/vnd.github+json" },
-        },
-      );
-      if (res.ok) {
-        const head = ((await res.json()) as { head?: { ref?: string } }).head?.ref;
-        if (head) {
-          core.info(`fixer: synthetic branch ${ctx.prBranch} → real PR head ${head}`);
-          ctx.prBranch = head;
-        }
-      }
-    } catch (err) {
-      core.warning(`fixer: PR head lookup failed (${(err as Error).message})`);
-    }
-  }
-  const results = await runFixer(targets, ctx);
-
-  for (const r of results) {
-    core.info(`autofix ${r.signature.slice(0, 8)}: ${r.status} — ${r.summary.slice(0, 200)}`);
-  }
-  const fixed = results.filter((r) => r.status === "fixed");
-  const blocked = results.filter((r) => r.status === "skipped" && r.skip_code);
-  core.setOutput("fixed_count", String(fixed.length));
-  core.setOutput("fixed_signatures", fixed.map((r) => r.signature).join(","));
-  core.setOutput("needs_human", blocked.map((r) => r.signature).join(","));
-  writeFixSummary(results);
-
-  if (ctx.prNumber && ctx.token && results.length > 0) {
-    await commentFixes(ctx, ctx.prNumber, results);
-  }
-}
-
-async function commentFixes(
-  ctx: FixerContext,
-  prNumber: number,
-  results: FixResult[],
-): Promise<void> {
-  const [owner, repo] = splitRepo(ctx.repository);
-  const octokit = new RetryingOctokit(getOctokitOptions(ctx.token));
-  const fixed = results.filter((r) => r.status === "fixed");
-  const blocked = results.filter((r) => r.status === "skipped" && r.skip_code);
-  const other = results.filter(
-    (r) => !(r.status === "fixed" || (r.status === "skipped" && r.skip_code)),
-  );
-  const lines = [
-    `## 🤖 AI test autofix — ${fixed.length}/${results.length} fixed`,
-    ``,
-    `Fixes were pushed to this PR branch (never a new PR) and will be validated by the next E2E run + re-triage.`,
-    ``,
-  ];
-  if (fixed.length > 0) {
-    lines.push(`### What the AI fixed`, ``);
-    for (const r of fixed) {
-      lines.push(
-        `#### ✅ \`${r.signature.slice(0, 8)}\` — commit \`${(r.commit_sha || "").slice(0, 7)}\``,
-      );
-      lines.push(r.summary.slice(0, 1200));
-      if (r.files.length > 0) lines.push(`Files: ${r.files.map((f) => `\`${f}\``).join(", ")}`);
-      if (r.diff)
-        lines.push(
-          `<details><summary>diff</summary>\n\n\`\`\`diff\n${r.diff.slice(0, 20000)}\n\`\`\`\n</details>`,
-        );
-      lines.push(``);
-    }
-  }
-  if (blocked.length > 0) {
-    lines.push(`### 🔒 Needs human review (autofix loop guard)`, ``);
-    for (const r of blocked) {
-      lines.push(`- \`${r.signature.slice(0, 8)}\` — ${r.summary.slice(0, 400)}`);
-    }
-    lines.push(``);
-  }
-  if (other.length > 0) {
-    lines.push(`### ⚠️ Not fixed — needs human`, ``);
-    for (const r of other) {
-      lines.push(
-        `- ${r.status === "failed" ? "❌" : "⏭️"} \`${r.signature.slice(0, 8)}\` — ${r.summary.slice(0, 400)}`,
-      );
-    }
-    lines.push(``);
-  }
-  try {
-    const c = await octokit.rest.issues.createComment({
-      owner,
-      repo,
-      issue_number: prNumber,
-      body: lines.join("\n"),
-    });
-    core.setOutput("comment_url", c.data.html_url);
-  } catch (err) {
-    core.warning(`PR comment failed: ${(err as Error).message}`);
-  }
-}
-
-/**
- * Unique per-test counts for the report group. Prefers the orchestration
- * rollup (one row per dispatched unit — retries collapse into flaky) and
- * falls back to test_stats, then to undefined (caller parses descriptions).
- */
 async function fetchReportCounts(baseURL: string, groupID: string): Promise<RunCounts | undefined> {
   if (!groupID) return undefined;
   try {
@@ -670,14 +500,13 @@ export async function getPrDiff(
  * while the prompt told the model to read a spec it could never see. Half of
  * round 6's "give the model the evidence" fix was silently inert.
  *
- * fixer.ts already had to solve this and documents it; the re-rooting lives
- * there as repoRelSpecCandidates, so this reuses it rather than growing a
- * second copy of the same knowledge.
+ * The re-rooting lives in spec-paths.ts as repoRelSpecCandidates rather than
+ * being inlined here, because it encodes a fact about the report format that
+ * more than one caller has needed.
  *
  * The raw path is kept as a last resort because this is a read-only fetch:
- * unlike the fixer, which must refuse to WRITE outside e2e-tests/**, reading a
- * product source the model explicitly asked for is harmless and occasionally
- * the right thing.
+ * a product source the model explicitly asked for is harmless to read, and
+ * occasionally the right thing.
  */
 export function testSourceCandidates(path: string): string[] {
   const norm = path.replace(/^\.\//, "").replace(/^\/+/, "");
@@ -829,7 +658,7 @@ async function writeStepSummary(
   summary: ReturnType<typeof rollup>,
   reportURL: string,
 ): Promise<void> {
-  // Explicit callout: product bugs can never be autofixed — they need a human.
+  // Explicit callout: a product bug is never the test's fault to fix.
   const productBugs = decisions.filter(
     (d) => d.verdict === "PR_REGRESSION" || d.verdict === "MAIN_REGRESSION",
   );
@@ -838,7 +667,7 @@ async function writeStepSummary(
     productBugs.length > 0
       ? `🔴 **PRODUCT BUG** — code broke the product; AI will not touch this. Needs a human.`
       : testBugs.length > 0
-        ? `🟡 **TEST BUG** — test-side issue; eligible clusters go to AI autofix.`
+        ? `🟡 **TEST BUG** — test-side issue; needs a test-infra fix.`
         : `✅ **NO REGRESSION** — all failures waived as flake/infra.`;
   const lines = [
     `## E2E flake triage`,
@@ -882,48 +711,7 @@ async function writeStepSummary(
     }
     if (testBugs.some((d) => !d.waived)) {
       lines.push(
-        `- 🟡 ${testBugs.filter((d) => !d.waived).length} unwaived test bug(s) — the AI autofix job will attempt repair on pre-existing specs, or a maintainer can override via \`/e2e-triage-override\`.`,
-      );
-    }
-  }
-  const file = process.env.GITHUB_STEP_SUMMARY;
-  if (file) fs.appendFileSync(file, lines.join("\n") + "\n");
-}
-
-/**
- * Fix-mode summary: what the AI changed, what the loop guard refused, and
- * what still needs a human — on the Actions run summary page.
- */
-function writeFixSummary(results: FixResult[]): void {
-  const fixed = results.filter((r) => r.status === "fixed");
-  const blocked = results.filter((r) => r.status === "skipped" && r.skip_code);
-  const other = results.filter(
-    (r) => !(r.status === "fixed" || (r.status === "skipped" && r.skip_code)),
-  );
-  const lines = [
-    `## 🤖 AI test autofix`,
-    ``,
-    fixed.length > 0
-      ? `✅ **${fixed.length} test fix(es) pushed to the PR branch** — the next E2E run is the validation.`
-      : `No fixes pushed this run.`,
-    ``,
-  ];
-  for (const r of fixed) {
-    lines.push(
-      `- ✅ \`${r.signature.slice(0, 8)}\` — commit \`${(r.commit_sha || "").slice(0, 7)}\` — ${r.files.join(", ")}\n  ${r.summary.replace(/\n/g, " ").slice(0, 300)}`,
-    );
-  }
-  if (blocked.length > 0) {
-    lines.push(``, `### Needs a human (loop guard)`, ``);
-    for (const r of blocked) {
-      lines.push(`- 🔒 \`${r.signature.slice(0, 8)}\` — ${r.summary.slice(0, 300)}`);
-    }
-  }
-  if (other.length > 0) {
-    lines.push(``, `### Not fixed`, ``);
-    for (const r of other) {
-      lines.push(
-        `- ${r.status === "failed" ? "❌" : "⏭️"} \`${r.signature.slice(0, 8)}\` — ${r.summary.slice(0, 300)}`,
+        `- 🟡 ${testBugs.filter((d) => !d.waived).length} unwaived test bug(s) — a maintainer can override via \`/e2e-triage-override\`.`,
       );
     }
   }

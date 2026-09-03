@@ -1518,7 +1518,7 @@ paths:
   /api/v1/triage/stabilization/queue:
     get:
       tags: [triage]
-      summary: W14 — the stabilization queue (promotions first, then the flakiness ranking)
+      summary: W14 — the fix queue, ranked by blast radius
       security:
         - apiKey: []
         - bearer: []
@@ -1533,7 +1533,7 @@ paths:
           schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '30d' }
       responses:
         '200':
-          description: Queue head (promoted) + organic ranking (top 10)
+          description: Top 10, ranked by distinct PRs broken then master failures
           content:
             application/json:
               schema:
@@ -1541,9 +1541,6 @@ paths:
                 properties:
                   repo: { type: string }
                   depth: { type: integer }
-                  promoted:
-                    type: array
-                    items: { $ref: '#/components/schemas/StabilizationQueueEntry' }
                   ranked:
                     type: array
                     items: { $ref: '#/components/schemas/StabilizationQueueEntry' }
@@ -1640,55 +1637,6 @@ paths:
       responses:
         '201':
           description: Recorded; the response reveals the AI verdict (post-submit reveal)
-
-  /api/v1/triage/stabilization/promote:
-    post:
-      tags: [triage]
-      summary: File a test to the head of the stabilization queue
-      security:
-        - apiKey: []
-        - bearer: []
-        - sessionCookie: []
-      parameters:
-        - in: query
-          name: repo
-          schema: { type: string }
-          required: true
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [test_id]
-              properties:
-                test_id: { type: string }
-                reason: { type: string }
-                source: { type: string, enum: [amnesty-expired, manual, override] }
-      responses:
-        '201':
-          description: Promoted (upsert on the live row)
-
-  /api/v1/triage/stabilization/resolve:
-    post:
-      tags: [triage]
-      summary: Mark a promotion resolved — the organic ranking takes over
-      security:
-        - apiKey: []
-        - bearer: []
-        - sessionCookie: []
-      parameters:
-        - in: query
-          name: repo
-          schema: { type: string }
-          required: true
-        - in: query
-          name: test_id
-          schema: { type: string }
-          required: true
-      responses:
-        '200':
-          description: Resolved
 
   /api/v1/triage/alerts/evaluate:
     post:
@@ -3210,10 +3158,6 @@ components:
         flips: { type: integer }
         failure_rate: { type: number }
         flake_rate: { type: number }
-        promoted: { type: boolean }
-        promoted_by: { type: string }
-        promotion_source: { type: string, enum: [amnesty-expired, manual, override] }
-        promotion_reason: { type: string }
 
     TriageSuggestion:
       type: object

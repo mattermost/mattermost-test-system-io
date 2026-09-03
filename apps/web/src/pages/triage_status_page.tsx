@@ -62,18 +62,10 @@ export function TriageStatusPage() {
         </h2>
         {queue.data ? (
           <div className="mt-2 space-y-2 text-sm">
-            {queue.data.promoted.length > 0 && (
-              <div>
-                <p className="text-xs font-medium text-neutral-500">Promoted (guard-filed)</p>
-                {queue.data.promoted.map((e) => (
-                  <p key={e.test_id} className="font-mono text-xs">
-                    {e.test_id} — {e.promotion_source}: {e.promotion_reason}
-                  </p>
-                ))}
-              </div>
-            )}
             <div>
-              <p className="text-xs font-medium text-neutral-500">Ranked (most unstable first)</p>
+              <p className="text-xs font-medium text-neutral-500">
+                Ranked by blast radius — distinct PRs broken, then master failures
+              </p>
               {queue.data.ranked.length === 0 ? (
                 <p className="text-sm text-neutral-500">queue empty</p>
               ) : (

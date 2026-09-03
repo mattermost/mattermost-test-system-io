@@ -215,6 +215,10 @@ func Build(d Deps) chi.Router {
 		// credential round-trip to find out whether a test is quarantined.
 		// Every WRITE is authenticated below.
 		r.Get("/triage/quarantine", triageH.ListQuarantine)
+		// W14 — the fix queue, ranked by blast radius. Public: it is counters
+		// per test id, the same shape as the flakiness leaderboard, and it is
+		// what the master side is worked from.
+		r.Get("/triage/stabilization/queue", triageH.StabilizationQueue)
 		// The replay job's worklist: ingested runs with a failure and no
 		// ledger row. Public for the same reason evidence is — it returns run
 		// coordinates the report list already exposes.
@@ -266,20 +270,15 @@ func Build(d Deps) chi.Router {
 			// it — an audit trail of who did what, which is not the same kind of
 			// data as "how flaky is this test".
 			r.Get("/triage/verdicts", triageH.ListVerdicts)
-			// B7: these two return ROWS — root_cause free text, suspect
-			// commits (named engineers), OIDC subjects in promoted_by, and
-			// the audit sample itself, which must stay unretrievable without
-			// a credential. Same standard as ListVerdicts.
+			// B7: the audit sample returns ROWS — root_cause free text and
+			// suspect commits (named engineers) — and must stay unretrievable
+			// without a credential. Same standard as ListVerdicts.
 			r.Get("/triage/audit/sample", triageH.AuditSample)
-			r.Get("/triage/stabilization/queue", triageH.StabilizationQueue)
 			// W3 — blind audit submits + the post-submit reveal are authenticated:
 			// a forged agreement row would let a reviewer manufacture their own
 			// agreement number, which is the one figure gating promotion.
 			r.Post("/triage/audit/reviews", triageH.SubmitAuditReview)
 			r.Get("/triage/audit/items/{id}", triageH.AuditItemDetail)
-			// Stabilization queue writes — allocating fixing effort is authenticated.
-			r.Post("/triage/stabilization/promote", triageH.PromoteStabilization)
-			r.Post("/triage/stabilization/resolve", triageH.ResolveStabilization)
 			// R7-L3 — quarantine writes. Hiding a test from PR gating is a
 			// human decision with an owner and a deadline, so the identity
 			// comes from the authenticated subject and never from the body.

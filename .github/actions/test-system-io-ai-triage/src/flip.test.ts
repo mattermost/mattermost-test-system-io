@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
-  contextsToFlip,
   contextsToUpdate,
   failureBlame,
   flakeSuccessDescription,
@@ -39,20 +38,6 @@ test("gate updates original even when unwaived (annotate failure)", () => {
 
 test("no classified failures does not touch a red check", () => {
   assert.deepEqual(contextsToUpdate({ mode: "gate", hasFailures: false, ...base }), []);
-});
-
-test("gate + waived flips the named original check", () => {
-  assert.deepEqual(
-    contextsToFlip({
-      mode: "gate",
-      waived: true,
-      hasFailures: true,
-      explicit: ["e2e-test/ios"],
-      discovered: [],
-      triageContext: "e2e-test/ai-triage",
-    }),
-    ["e2e-test/ios"],
-  );
 });
 
 test("gate discovers red e2e-test/* rows, ignoring ai-triage noise", () => {

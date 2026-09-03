@@ -1480,3 +1480,151 @@ test("R7-E: a history lookup failure is not double-counted", () => {
   // history depth did not add a second, separate refusal.
   assert.equal(d.waived, true);
 });
+
+// --- The infra-bystander carve-out ---
+//
+// BUILD_OR_ENV_ERROR stays never-waivable by default. The one exception is
+// evidence that the same failure is happening where this PR cannot have caused
+// it — which is the "the runner died and it is not my change" case that used
+// to be a hard red on every PR running at the time.
+
+test("infra bystander: a build failure also on the baseline waives on a PR", () => {
+  const w = canWaiveInMode({
+    runType: "PR",
+    branch: "feat/x",
+    mode: "gate",
+    verdict: "BUILD_OR_ENV_ERROR",
+    confidence: 0.4, // deliberately below the 0.85 floor — this rests on evidence
+    citations: ["failing_on_baseline"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, true);
+  assert.match(w.reason, /bystander/);
+});
+
+test("infra bystander: concurrent failures on other PRs also count", () => {
+  const w = canWaiveInMode({
+    runType: "PR",
+    branch: "feat/x",
+    mode: "gate",
+    verdict: "BUILD_OR_ENV_ERROR",
+    confidence: 0.9,
+    citations: ["failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, true);
+});
+
+test("infra bystander: no off-PR evidence means the PR may have broken the build", () => {
+  const w = canWaiveInMode({
+    runType: "PR",
+    branch: "feat/x",
+    mode: "gate",
+    verdict: "BUILD_OR_ENV_ERROR",
+    confidence: 0.99,
+    citations: ["isolated_to_this_pr"],
+    amnestyGranted: true,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /not waivable/);
+});
+
+test("infra bystander: a PR touching the failing area stays red even with evidence", () => {
+  const w = canWaiveInMode({
+    runType: "PR",
+    branch: "feat/x",
+    mode: "gate",
+    verdict: "BUILD_OR_ENV_ERROR",
+    confidence: 0.99,
+    citations: ["failing_on_baseline", "failing_elsewhere"],
+    amnestyGranted: true,
+    diffOverlapsFailure: true,
+  });
+  assert.equal(w.waived, false);
+});
+
+test("infra bystander: never applies on MAIN — the run IS the baseline", () => {
+  const w = canWaiveInMode({
+    runType: "MAIN",
+    branch: "main",
+    mode: "gate",
+    verdict: "BUILD_OR_ENV_ERROR",
+    confidence: 0.99,
+    citations: ["failing_on_baseline", "failing_elsewhere"],
+    amnestyGranted: true,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, false);
+});
+
+test("infra bystander: RELEASE waives nothing, evidence or not", () => {
+  const w = canWaiveInMode({
+    runType: "RELEASE",
+    branch: "release-10.6",
+    mode: "gate",
+    verdict: "BUILD_OR_ENV_ERROR",
+    confidence: 0.99,
+    citations: ["failing_on_baseline", "failing_elsewhere"],
+    amnestyGranted: true,
+    diffOverlapsFailure: false,
+  });
+  assert.equal(w.waived, false);
+});
+
+// --- Amnesty is a MAIN-run rule ---
+//
+// R7-C's decision, stated as a rule rather than as two carve-outs: a chronic
+// flake stops blocking bystander PRs, and the forcing function moves to master
+// where the fix is owned. Pinned because "amnesty denied" on a PR is exactly
+// the regression that made the product's primary promise unreachable before.
+
+test("amnesty: a denied chronic flake still greens a bystander PR", () => {
+  const w = canWaiveInMode({
+    runType: "PR",
+    branch: "feat/x",
+    mode: "gate",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["historical_failure_rate", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+    historyRuns: 20,
+  });
+  assert.equal(w.waived, true, "amnesty must not deny on a PR run");
+});
+
+test("amnesty: the same test goes red on master — the pain lands on the owner", () => {
+  const w = canWaiveInMode({
+    runType: "MAIN",
+    branch: "main",
+    mode: "gate",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["historical_failure_rate", "failing_elsewhere"],
+    amnestyGranted: false,
+    diffOverlapsFailure: false,
+    historyRuns: 20,
+  });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /amnesty denied/);
+});
+
+test("amnesty: a rate-shifted flake is refused before amnesty is ever consulted", () => {
+  const w = canWaiveInMode({
+    runType: "PR",
+    branch: "feat/x",
+    mode: "gate",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["historical_failure_rate", "failing_elsewhere"],
+    amnestyGranted: true,
+    diffOverlapsFailure: false,
+    rateShiftedAtCommit: true,
+    historyRuns: 20,
+  });
+  assert.equal(w.waived, false);
+  assert.match(w.reason, /rate shifted materially/);
+});

@@ -116,26 +116,6 @@ inputs:
     description: Claude model id.
     required: false
     default: claude-sonnet-4-6
-  fix-clusters:
-    description: >
-      Fix mode. JSON array of fixable clusters (the fixable_clusters output of
-      the triage pass). When non-empty the action runs the fixer agent against
-      a checked-out workspace instead of triaging.
-    required: false
-    default: ""
-  workspace:
-    description: Repo checkout root for fix mode. Defaults to GITHUB_WORKSPACE.
-    required: false
-    default: ""
-  pr-branch:
-    description: Branch fix commits are pushed to (the PR head branch).
-    required: false
-    default: ""
-  autofix-max:
-    description: Maximum clusters fixed per run.
-    required: false
-    default: "2"
-
 outputs:
   state:
     description: Final triage check state (success | failure).
@@ -149,16 +129,6 @@ outputs:
     description: Test System IO report URL for this run.
   flipped_contexts:
     description: Original e2e-test/* contexts flipped to success (empty unless mode is gate and every failure was waived).
-  fixable_clusters:
-    description: JSON array of test-bug clusters the ai-autofix job may repair.
-  fixed_count:
-    description: Fix mode — clusters successfully fixed and pushed.
-  fixed_signatures:
-    description: Comma-separated cluster signatures that were fixed.
-  needs_human:
-    description: Fix mode — signatures the loop guard blocked; a human must review these.
-  comment_url:
-    description: URL of the PR comment describing the fixes.
   replayed:
     description: Replay mode — runs re-adjudicated and recorded in the ledger.
   ledger_failures:

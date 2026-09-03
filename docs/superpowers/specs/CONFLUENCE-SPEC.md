@@ -151,7 +151,26 @@ see §6.
 | `MAIN_REGRESSION` | Already broken on master | Yes (bystander) — **never on master** |
 | `PR_REGRESSION` | This change broke it | **No** |
 | `TEST_DEBT` | Test drives unsupported state | **No** |
+| `BUILD_OR_ENV_ERROR` | Build or environment failed outright | **No**, with one evidence-based exception below |
 | `INCONCLUSIVE` | Evidence contradictory | **No** |
+
+**The one exception, and why it exists.** `BUILD_OR_ENV_ERROR` was previously
+never waivable under any circumstances, which left the most common "this is
+obviously not my change" case — the runner died, bootstrap failed, a registry
+timed out — as a hard red on every PR that happened to be running at the time.
+That is the exact pain this system exists to remove, and it was the largest
+remaining hole in what a PR check promises.
+
+It now waives on a PR only when the same failure is visible somewhere this PR
+cannot have caused: on the baseline, or concurrently on other PRs. A build this
+PR broke appears in neither. Diff overlap still refuses, so a PR that edited CI
+config or the harness stays red, and it never applies on master or a release
+branch — on master there is no bystander to protect, because the run *is* the
+baseline.
+
+Note the waiver rests on evidence rather than on the model: it does not consult
+confidence at all, so an overconfident verdict cannot buy it and an uncertain
+one cannot lose it.
 
 ---
 
@@ -192,14 +211,23 @@ Ranking by master failure count alone would put MM-T2007 fourth — below two
 tests that had each cost exactly one developer. When you can only fix a fraction
 of what arrives, *what* you fix matters more than how fast.
 
-### 4.3 The agent fix loop
+### 4.3 Who fixes a queued test
 
-The loop investigates a queued test, opens a PR, and a human reviews before
-merge. **Nothing lands on master from an agent without a reviewer.**
+**A human does, today.** The fix half of this design is not shipped, and the
+honest reading of §4.2 is that it produces a ranked worklist, not fixes.
 
-Six mechanical bans reject the cheap ways an agent "fixes" flakiness by hiding a
-real bug. CI enforces them, so the reviewer judges the *approach* rather than
-policing the obvious:
+The agent fix loop — an agent that investigates a queued test, edits the spec,
+and opens a PR for review — was designed and partly built. Its adjudication
+code has been **removed from tsio#101**, because it had never run: no fix PR was
+ever opened, so every claim about it was a design claim. Carrying 600 lines of
+unexercised agent code inside the PR that gates developers' checks made the
+reviewable part harder to review. It returns as its own change, with its own
+evidence, when there is a reviewer for step 4.
+
+What survives, and is worth keeping regardless of who writes the fix, are the
+**six mechanical bans** — the cheap ways any author, human or agent, makes a
+flaky test "pass" by hiding a real bug. They run in mattermost CI on every PR
+touching `e2e-tests/**`:
 
 1. bare sleep / fixed wait
 2. retry wrapper around a previously un-retried assertion
@@ -210,14 +238,11 @@ policing the obvious:
 
 The override label is **human-only** and applying it writes a ledger row.
 
-> ### ⚠️ Product bugs are routed, never fixed
-> The loop can only edit `e2e-tests/**`. When it diagnoses a product bug it does
-> not attempt a fix — it routes to the owning team via CODEOWNERS with the
-> evidence attached. An agent editing product code to make a test pass is the
-> exact outcome this design exists to prevent.
->
-> **Open gap:** CODEOWNERS has no `e2e-tests/**` entry, so routing currently
-> falls back to test infra.
+> ### ⚠️ A product bug is never fixed by editing the test
+> A queued test that turns out to be a product bug routes to the owning team via
+> CODEOWNERS with the evidence attached. Editing the test to make it pass is the
+> exact outcome this design exists to prevent — which is what the six bans
+> enforce mechanically rather than by review discipline.
 
 ### 4.4 Can the loop keep up?
 
@@ -331,7 +356,7 @@ see, not an automatic demotion buried in server state.
 | **The pipeline HAS now called a frontier model — once.** mattermost#38154 run 33678302436 invoked `claude-sonnet-4-6` in CI on 4 real failures across 3 clusters. | Supersedes the earlier "never called" line. But **n=3 clusters, all on tests with `runs=0`**, none independently confirmed, and nothing gated (the run was in shadow mode). Still no accuracy number. Note the `runs=0` clusters would now be refused by the 3-run history floor regardless. |
 | **No accuracy or calibration number exists.** Earlier rounds used a local 31B which was **60% correct while stating 0.90 confidence**. | The 0.85 confidence floor protects nothing against a model that says 0.9 on everything. This is precisely why the policy gate — not the model — owns every green. |
 | **The screenshot path HAS now fired.** On the same run, 2 of 3 clusters cited screenshots and one reasoned from image content ("the Members panel is fully rendered… but the visible button is labelled 'Add'"). | Supersedes the earlier "never exercised" line — this was the single biggest measurement gap in rounds 4–6. Still only 3 clusters, and none of the verdicts is independently confirmed. |
-| **The agent fix loop has never run end to end.** The six bans pass, but no fix PR has been opened. | §4.3 is designed, not demonstrated. |
+| **Nothing fixes a queued test automatically.** The agent fix loop was removed from this PR having never opened a fix PR; the six bans still run in CI. | §4.2 produces a ranked worklist. A human works it. Master gets *visible and owned*, not self-healing. |
 
 **What this means for approval.** Step 1 of §7 — merging tsio#101 and leaving
 mattermost#38154 unmerged — flips nothing on any PR and still populates history
@@ -358,7 +383,7 @@ The rollout is therefore a merge order:
 | **1 — collect** | tsio#101 only | untouched (nothing calls the action) | untouched; alerting live, queue ranked |
 | **2 — gate PRs** | \+ mattermost#38154 with `mode: gate` | **gate** — may green on a waived flake | red stays red |
 | **3 — gate master** | \+ `run-type: MAIN` at `mode: gate` | gate | may green on a *confirmed* flake |
-| **4 — loop** | \+ `E2E_STABILIZATION_LOOP=on` | gate | gate |
+| **4 — loop** | the agent fix loop, as its own change | gate | gate |
 
 **Step 1 is the measurement window.** Test history is derived from the report
 ingestion TSIO already receives, and migration `000027` backfills
@@ -476,7 +501,7 @@ sitting on an unpushed branch.
 | **Master health alerting** | tsio `triage-master-health.yml` | Every 2h. This is what retires the 09:00 spot check. Needs one secret. Three rules, not five (§4.1). |
 | **Replay (the measurement job)** | tsio `triage-replay.yml` + action `task: replay` | Twice a day. Re-adjudicates ingested runs through the live policy layer and records `replay`-marked ledger rows. Flips nothing. This is what turns step 1 of §7 from a waiting period into a measurement. |
 | **Targeted re-measurement** | mattermost `e2e-flaky-remeasure.yml` | `--grep` + `--repeat-each`, `--retries=0`. The piece that makes the loop keep up (§4.4). |
-| **Stabilization loop** | mattermost `e2e-stabilization-loop.yml` | Off until `E2E_STABILIZATION_LOOP=on`; manual runs default to dry. |
+| ~~Stabilization loop~~ | — | **Removed from tsio#101.** Never opened a fix PR, so nothing about it was measured. Returns as its own change at step 4. The six bans stay in mattermost CI, where they apply to human PRs too. |
 | **The six bans, in CI** | mattermost `e2e-stabilization-bans.yml` | On every PR touching `e2e-tests/**`, not just agent PRs. Human-only override label. |
 | **Run-config capture (W9)** | both templates + dispatch-begin | Unlocks the config-delta pre-tag — the only verdict with no AI in the loop. |
 | **CODEOWNERS** | mattermost | `/e2e-tests/` → `@mattermost/test-infra`. |
@@ -490,7 +515,6 @@ sitting on an unpushed branch.
 | Secret `ANTHROPIC_API_KEY` | **tsio repo** | The replay job — decision **D4**, and needed at step 1, not step 2. The job refuses to start without it rather than quietly measuring the classifier alone. |
 | Variable `TSIO_REPLAY_REPO` | tsio repo | Optional; defaults to `mattermost/mattermost` |
 | Screenshot upload | mattermost | The other half of **D4** — without it the hard-case rule cannot fire |
-| Variable `E2E_STABILIZATION_LOOP=on` | mattermost | Enables the fix loop (step 4) |
 | Confirm `@mattermost/test-infra` is the right handle | mattermost | CODEOWNERS routing |
 
 ### Still open, deliberately
@@ -499,7 +523,7 @@ sitting on an unpushed branch.
 |---|---|
 | **Release-cut guard** | **Removed.** The TSIO half was built and callable, but the release automation it was meant to pause was never located — flagged since W0 and never resolved, so nothing ever called it. It is a few lines of SQL to reinstate once someone points at the release-cut job; carrying it meanwhile was carrying an endpoint with no consumer. |
 | **`report-upload` action has no tests** | Pre-existing gap, found while fixing three other actions whose test globs were silently running nothing. Out of scope here; worth its own PR. |
-| **The loop has never opened a fix PR** | It is wired, off by default, and dry on manual runs. First real run is a step-4 activity. |
+| **Manual queue promote/resolve** | **Removed.** A human could reorder the fix queue by hand, but nothing called it and no interface offered it once the release guard went. The queue ranks itself by blast radius, and a hand-maintained parallel ordering is the thing that ranking replaces. |
 
 ### Reproducing the demo locally
 
@@ -534,7 +558,6 @@ local dev container names and credentials.
 | `POST /triage/verdicts` | Write ledger rows |
 | `POST /triage/quarantine` | Quarantine a test (owner + deadline mandatory) |
 | `POST /triage/quarantine/{id}/release` | End one early (reason mandatory) |
-| `POST /triage/stabilization/promote` | Push a test up the queue |
 | `POST /triage/audit/reviews` | Submit a blind audit call |
 
 **Reference:** `docs/superpowers/specs/PROJECT-STATUS.md` (current status and

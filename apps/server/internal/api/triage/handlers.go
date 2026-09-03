@@ -21,7 +21,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -232,11 +231,6 @@ type correctionInput struct {
 	CorrectedVerdict string `json:"corrected_verdict"`
 	CorrectedReason  string `json:"corrected_reason"`
 
-	// W15 — when the correction means "this blame is wrong, nobody sensible
-	// owns it yet", the maintainer can reassign the test to the
-	// stabilization queue in the same correction instead of a second call.
-	ReassignToQueue bool `json:"reassign_to_queue"`
-
 	// CorrectedBy is deliberately absent. Attribution comes from the
 	// authenticated principal, never from the body — see Correct below.
 }
@@ -294,40 +288,16 @@ func (h *Handlers) Correct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// W15 — one-comment blame reassignment: the correction carries the
-	// "this isn't the author's to fix" decision, so the test lands on the
-	// stabilization queue with the correction as the promotion reason.
-	reassigned := false
-	if in.ReassignToQueue {
-		var repository, testID *string
-		if err := h.Pool.QueryRow(r.Context(), `
-			SELECT repository, external_test_id FROM triage_verdicts WHERE id = $1
-		`, id).Scan(&repository, &testID); err == nil && testID != nil {
-			// M7: full slug on the promotion write (see PromoteStabilization).
-			if repository != nil && !strings.Contains(*repository, "/") {
-				normalized := "mattermost/" + *repository
-				repository = &normalized
-			}
-			if _, err := h.Pool.Exec(r.Context(), `
-				INSERT INTO stabilization_promotions (repository, external_test_id, promoted_by, reason, source)
-				VALUES ($1, $2, $3, $4, 'override')
-				ON CONFLICT (repository, external_test_id) WHERE NOT resolved
-				DO UPDATE SET promoted_by = EXCLUDED.promoted_by,
-				              reason = EXCLUDED.reason,
-				              updated_at = now()
-			`, *repository, *testID, correctedBy,
-				"blame corrected by "+correctedBy+": "+in.CorrectedReason); err != nil {
-				h.logError("triage correction queue reassign", err) // correction still recorded; queue write is best-effort
-			} else {
-				reassigned = true
-			}
-		}
-	}
+	// W15's "reassign to the stabilization queue" flag used to live here. It
+	// wrote a manual promotion row so a corrected blame put the test at the
+	// head of the queue. That went with the promotion table: the queue is
+	// derived from failure counts and ranked by blast radius, so a test worth
+	// reassigning is already on it — the promotion only reordered a list that
+	// orders itself, and it was the last writer that table had.
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":                  id,
-		"corrected_verdict":   in.CorrectedVerdict,
-		"reassigned_to_queue": reassigned,
+		"id":                id,
+		"corrected_verdict": in.CorrectedVerdict,
 	})
 }
 

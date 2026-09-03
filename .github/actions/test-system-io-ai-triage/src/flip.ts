@@ -34,19 +34,6 @@ export function contextsToUpdate(args: {
   return [...new Set(red.map((d) => d.context))];
 }
 
-/** @deprecated use contextsToUpdate — flip only when waived */
-export function contextsToFlip(args: {
-  mode: string;
-  waived: boolean;
-  hasFailures: boolean;
-  explicit: string[];
-  discovered: Array<{ context: string; state: string }>;
-  triageContext: string;
-}): string[] {
-  if (!args.waived) return [];
-  return contextsToUpdate(args);
-}
-
 export type FailureBlame = "product bug" | "test bug";
 
 /** PR/MAIN regressions are product; everything else that blocks merge is test-side. */

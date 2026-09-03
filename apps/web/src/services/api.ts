@@ -765,10 +765,6 @@ export interface StabilizationEntry {
   flaky?: number;
   flips?: number;
   failure_rate?: number;
-  promoted?: boolean;
-  promoted_by?: string;
-  promotion_source?: string;
-  promotion_reason?: string;
 }
 
 export interface AlertEvaluation {
@@ -786,7 +782,6 @@ export interface AlertEvaluation {
 export function useStabilizationQueue(repo: string) {
   return useQuery<{
     repo: string;
-    promoted: StabilizationEntry[];
     ranked: StabilizationEntry[];
   }>({
     queryKey: ['triage', 'stabilization-queue', repo],

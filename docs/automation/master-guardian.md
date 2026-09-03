@@ -62,6 +62,9 @@ GET /triage/signature-issues?repo=mattermost&test_id=<MM-T id>
 - `fix_attempts` with `needs_human: true` → the agent has already failed three
   times. Read the `detail` of each attempt, then classify `NEEDS_HUMAN` and stop.
   Do not attempt a fourth time.
+- `escalations` non-empty → this test has produced a product defect before.
+  That is history, **not** a decision: the ticket may since have been fixed and
+  closed. Check the tracker (step 7) before concluding anything.
 - Otherwise continue.
 
 This step costs one request and prevents the two failure modes that make an
@@ -182,39 +185,87 @@ CYPRESS_baseUrl=http://localhost:8065 \
 Never run the full suite. Verification succeeds only when the affected test
 executes and passes 3/3.
 
-## Step 7 — Product bugs: name the author, do not touch the test
+## Step 7 — Product bugs: escalate to Jira, name the author, never touch the test
 
-A product bug is routed, never fixed by editing the test. Editing a test to make a
-product bug pass is the single outcome this system exists to prevent.
+A product bug is routed, never fixed by editing the test. Editing a test to make
+a product bug pass is the single outcome this system exists to prevent.
 
-Attribution comes from the commit range the baseline gives you:
+### 7a. Is it already filed?
+
+**The tracker is the only authority on whether a ticket is open.** Test System IO
+records that defects were filed; it does not track whether they were closed, on
+purpose — a stale copy would suppress a real regression forever.
+
+```text
+JQL: labels = "e2e-flake-<MM-T id>" AND resolution = Unresolved
+```
+
+- **A match** → classify `ALREADY_HANDLED`, link the ticket, stop. Do not file a
+  second one.
+- **No match** → file it, even if `/triage/signature-issues` showed a previous
+  escalation. A previous defect that was fixed and has now regressed is a new
+  defect and needs a new ticket.
+
+### 7b. Attribute, honestly
 
 ```text
 GET /triage/attribution?repo=mattermost&test_id=<MM-T id>&baseline_branch=master
 ```
 
-Take `baseline.last_pass_commit` and `baseline.failing_since_commit`, then:
+If `baseline.failing_since_commit` and `baseline.last_pass_commit` are both
+present, that is the range that introduced it:
 
 ```bash
 git log --no-merges --format='%H %an %ae %s' <last_pass_commit>..<failing_since_commit>
 ```
 
-- **Exactly one non-merge commit in the range** — that commit introduced it. Name
-  the commit SHA, the author, and the file it touched that the failing stack names.
-  Open a GitHub issue, assign that author, and `@`-mention them in the body.
-- **More than one commit** — state the range and the candidate authors. Do not pick
-  one. Assign to the owning team via CODEOWNERS for the failing area instead.
-- **No range** (`failing_since_commit` is null, or the test has always failed) —
-  state that attribution is not possible and route by CODEOWNERS.
+- **Exactly one non-merge commit** — that commit introduced it. Name the SHA, the
+  author, and the file it touched that the failing stack names. Assign the ticket
+  to that author and `@`-mention them.
+- **More than one commit** — state the range and the candidate authors. **Do not
+  pick one.** Assign to the owning team via CODEOWNERS for the failing area.
+- **`failing_since_commit` is null** — the break predates the history window, so
+  there is no range. Say attribution is not possible and route by CODEOWNERS.
+  This is not a failure of the system; it is the honest answer.
 
-Measured single-commit attribution rate on this repository is **16%**, so expect
-the multi-commit path to be the common one. Never name an author on a range you
-did not narrow to one commit — a wrong accusation costs more than no accusation.
+Measured single-commit attribution on this repository is **16%**, so the
+multi-commit path is the common one. Never name an author on a range you did not
+narrow to exactly one commit — a wrong accusation costs more than none.
 
-The issue body must contain: the test id and title, the error signature, the
-`last_pass..failing_since` range, the master failure rate from `baseline`, the
-screenshot link, and an explicit statement that the test is correct and the
-product is wrong.
+### 7c. File the ticket
+
+Create the Jira issue with:
+
+- **Label** `e2e-flake-<MM-T id>` — this is what makes 7a exact rather than a
+  fuzzy summary search. Without it, the next run files a duplicate.
+- The test id and full title.
+- The error signature and the screenshot link.
+- The `last_pass..failing_since` range, or an explicit statement that it could
+  not be determined.
+- The master failure rate from `baseline.failure_rate`.
+- An explicit sentence: **the test is correct and the product is wrong.**
+
+### 7d. Record it
+
+```text
+POST /triage/escalations
+X-API-Key: $TSIO_API_KEY
+{
+  "test_id": "<MM-T id>",
+  "repository": "mattermost/mattermost",
+  "issue_key": "<MM-12345>",
+  "issue_url": "<browse URL>",
+  "summary": "<the ticket summary>",
+  "suspect_range": "<last_pass..failing_since, omit when unknown>"
+}
+```
+
+This is the metric — how many real bugs E2E is catching, and which tests catch
+them. Post it **after** the ticket exists. Do not post it when 7a found an open
+ticket; nothing new happened.
+
+Then stop. Do not edit the test, do not open a fix PR, and go to step 8 to record
+the outcome as `blocked`.
 
 ## Step 8 — Record the attempt, always
 
@@ -228,6 +279,8 @@ X-API-Key: $TSIO_API_KEY
   "test_id": "<MM-T id>",
   "repository": "mattermost/mattermost",
   "outcome": "fixed" | "failed" | "blocked" | "needs_human",
+  // "blocked" for a product bug: nothing was tried on the test, and nothing
+  // should be. Put the ticket key in detail so the next run sees it.
   "detail": "<what you tried and why it stopped>",
   "pr_url": "<the PR, when one was opened>"
 }
@@ -280,6 +333,7 @@ Never substitute a branch or compare URL for a PR URL.
 ```text
 <test> | <signature> | <classification> | <issue-or-PR URL/skipped> | <cause> | <attribution> | <evidence>
 attribution | <outcome> | master rate <rate> | range <last_pass>..<failing_since> | author <name|multiple|unknown>
+escalation | <filed MM-xxxxx | already open MM-xxxxx | not a product bug>
 verification | <testcontainers/local-server> | target <passes>/3 | spec <passed>/<total> | exit <code>
 recorded | outcome <outcome> | needs_human <true|false>
 ```

@@ -26,6 +26,20 @@ greens the check when the answer is `MASTER_BROKEN` or `KNOWN_FLAKE`.
 the fix and proves it 3/3, and `POST /triage/attempts` remembers what failed so
 the third failure hands the test to a person with notes.
 
+**A failing test is sometimes a real bug, and editing it would hide one.**
+
+→ The Guardian files a Jira defect instead of touching the test, and
+`POST /triage/escalations` records that it did. `GET /triage/defects` is the
+metric: which tests keep catching real bugs. That list is the opposite of the
+flakiness leaderboard and must never be confused with it.
+
+**Who owns what.** Jira owns whether a ticket is open — the Guardian dedups
+against it with a `e2e-flake-<MM-T id>` label query, so a ticket closed this
+afternoon stops suppressing an escalation this evening. Test System IO owns the
+metric, as an append-only event log with no `resolved_at`. A mirrored copy of
+ticket state would go stale the moment somebody closed one, and a regression
+could then never be escalated again — silently.
+
 ## The attribution decision
 
 Everything a check turns on. Evaluated in this order, and the order is
@@ -68,6 +82,7 @@ no hand-written special case.
 | `GET /triage/queue` | The fix queue, ranked by blast radius |
 | `GET /triage/signature-issues` | Has anyone already filed this |
 | `GET /triage/accuracy` | Verdict accuracy and the false-green count |
+| `GET /triage/defects` | Product defects E2E surfaced, per test — the bug-catching metric |
 
 **Authenticated writes**
 
@@ -76,6 +91,7 @@ no hand-written special case.
 | `POST /triage/verdicts` | Record a decision — required before greening a check |
 | `POST /triage/verdicts/{id}/correction` | A human overrules a verdict |
 | `POST /triage/attempts` | What a fix attempt did, and its handover note |
+| `POST /triage/escalations` | Record that a product defect was filed in Jira |
 | `GET /triage/verdicts` | The ledger rows — authenticated, they name their author |
 
 ## Why this is not the old "known flaky" list
@@ -127,12 +143,15 @@ Stated plainly, because the previous design's spec was too confident.
   production data. The Guardian is instructed never to name an author on a range
   it could not narrow to one commit, so expect CODEOWNERS routing to be the
   common path.
+- **No defect has been escalated yet.** The recording path is tested end to end;
+  the Jira half depends on credentials the automation does not yet hold.
 
 ## Setup
 
 | What | Where | Why |
 |---|---|---|
-| `TSIO_API_KEY` | Cursor automation secrets | The two writes. `tsioctl keys issue --name e2e-guardian` |
+| `TSIO_API_KEY` | Cursor automation secrets | The three writes. `tsioctl keys issue --name e2e-guardian` |
+| Jira credentials | Cursor automation secrets | The Guardian files defects and dedups by label. **Without these, goal 2 does not work at all** — no API design compensates. |
 | Screenshot upload for failing specs | mattermost CI | The screenshot is decisive for timeout and visibility failures |
 | `e2e-stabilization-bans.yml` | mattermost | The mechanical guardrail on the agent's own PRs |
 | CODEOWNERS `e2e-tests/**` | mattermost | Routing for product bugs the Guardian will not fix |

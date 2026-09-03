@@ -168,18 +168,6 @@ func (h *Handlers) Queue(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	// One round trip for the whole repo: the queue is capped at ten entries,
-	// but a per-entry lookup would still be ten queries to answer a question
-	// the caller always asks.
-	attempts, err := h.loadFixAttempts(r, repo)
-	if err != nil {
-		// The ranking is the answer; the annotation is a bonus. Failing the
-		// whole queue because the attempt tally could not be read would take
-		// away the more important half.
-		h.logError("stabilization queue fix attempts", err)
-		attempts = map[string]fixAttemptSummary{}
-	}
-
 	ranked := []queueEntry{}
 	for rows.Next() {
 		var e queueEntry
@@ -196,9 +184,6 @@ func (h *Handlers) Queue(w http.ResponseWriter, r *http.Request) {
 			e.FailureRate = float64(e.Failed) / float64(e.Runs)
 			e.FlakeRate = float64(e.Flips) / float64(e.Runs)
 		}
-		if a, ok := attempts[e.TestID]; ok {
-			e.FixAttempts = &a
-		}
 		ranked = append(ranked, e)
 		if len(ranked) >= QueueDepth {
 			break
@@ -211,6 +196,27 @@ func (h *Handlers) Queue(w http.ResponseWriter, r *http.Request) {
 		h.logError("stabilization queue scan", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
+	}
+
+	// Annotate after ranking, scoped to the ids actually being returned. Doing
+	// it before would group every fix attempt in the repository to decorate at
+	// most ten rows, which grows without bound as the ledger fills.
+	ids := make([]string, 0, len(ranked))
+	for _, e := range ranked {
+		ids = append(ids, e.TestID)
+	}
+	attempts, err := h.loadFixAttempts(r, repo, ids)
+	if err != nil {
+		// The ranking is the answer; the annotation is a bonus. Failing the
+		// whole queue because the attempt tally could not be read would take
+		// away the more important half.
+		h.logError("stabilization queue fix attempts", err)
+		attempts = map[string]fixAttemptSummary{}
+	}
+	for i := range ranked {
+		if a, ok := attempts[ranked[i].TestID]; ok {
+			ranked[i].FixAttempts = &a
+		}
 	}
 
 	writeJSON(w, http.StatusOK, queueResponse{

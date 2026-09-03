@@ -1512,6 +1512,16 @@ paths:
                   open_fix_pr:
                     type: string
                     description: The PR a successful fix attempt opened, when there is one.
+                  last_issue_url:
+                    type: string
+                    description: |
+                      The most recent defect filed for this test. Its state is
+                      unknown here by design — resolve it against the tracker
+                      before acting on it.
+                  escalations:
+                    type: array
+                    description: Defects previously filed for this test. History, not a lock.
+                    items: { $ref: '#/components/schemas/TriageEscalation' }
                   prior_verdict:
                     type: array
                     items: { type: object }
@@ -1557,6 +1567,93 @@ paths:
           description: Unknown outcome, or a non-fix attempt with no detail
         '401':
           description: Unauthenticated
+  /api/v1/triage/escalations:
+    post:
+      tags: [triage]
+      summary: Record that a product defect was filed in the issue tracker
+      description: |
+        When a test is correct and the product is wrong, the agent files a defect
+        and records it here. Call this AFTER the ticket exists — it records
+        something that happened.
+
+        Deduplication is not this endpoint's job. The tracker owns whether a
+        ticket is open, so the agent queries the tracker (a label on the test id)
+        and only files — and so only posts here — when nothing is open. Mirroring
+        that state here would go stale the moment somebody closed a ticket, after
+        which a regression could never be escalated again.
+
+        This service owns the metric instead: see GET /triage/defects.
+
+        `escalated_by` comes from the authenticated principal, never the body.
+      security:
+        - apiKey: []
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TriageEscalationInput' }
+      responses:
+        '201':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  escalation: { $ref: '#/components/schemas/TriageEscalation' }
+        '400':
+          description: Missing test_id, repository, issue_key or issue_url
+        '401':
+          description: Unauthenticated
+
+  /api/v1/triage/defects:
+    get:
+      tags: [triage]
+      summary: Product defects E2E surfaced, per test
+      description: |
+        How many defects E2E triage filed in the window and which tests produced
+        them, most first.
+
+        A test high on this list is NOT flaky — it keeps catching real bugs,
+        which is the opposite signal and must never be read off the flakiness
+        leaderboard.
+
+        `total_escalations` counts events, not open tickets: some are long fixed.
+        Ticket state lives in the tracker and is deliberately absent here.
+      security: []
+      parameters:
+        - in: query
+          name: repo
+          required: true
+          schema: { type: string }
+        - in: query
+          name: window
+          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '90d' }
+      responses:
+        '200':
+          description: Defect counts per test
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo: { type: string }
+                  window: { type: string }
+                  total_escalations: { type: integer }
+                  tests:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        test_id: { type: string }
+                        defects: { type: integer }
+                        last_escalated_at: { type: string, format: date-time }
+                        latest_issue_key: { type: string }
+                        latest_issue_url: { type: string }
+        '400':
+          description: Missing repo
+
   /api/v1/triage/accuracy:
     get:
       tags: [triage]
@@ -3051,6 +3148,36 @@ components:
               corrected: { type: integer }
         gate_satisfied: { type: boolean }
         gate_definition: { type: string }
+
+    TriageEscalationInput:
+      type: object
+      required: [test_id, repository, issue_key, issue_url]
+      properties:
+        test_id: { type: string }
+        repository: { type: string }
+        issue_key: { type: string, description: "The tracker's own key, e.g. MM-12345." }
+        issue_url: { type: string }
+        summary: { type: string }
+        cluster_signature:
+          type: string
+          description: Failure signature, so an escalation still matches after a rename.
+        suspect_range:
+          type: string
+          description: The last_pass..failing_since range that justified it, when one existed.
+
+    TriageEscalation:
+      type: object
+      required: [id, external_test_id, issue_key, issue_url, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        external_test_id: { type: string }
+        cluster_signature: { type: string }
+        issue_key: { type: string }
+        issue_url: { type: string }
+        summary: { type: string }
+        suspect_range: { type: string }
+        escalated_by: { type: string }
+        created_at: { type: string, format: date-time }
 
     TriageAttribution:
       type: object

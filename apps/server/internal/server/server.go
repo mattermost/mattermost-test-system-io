@@ -208,6 +208,9 @@ func Build(d Deps) chi.Router {
 		r.Get("/triage/signature-issues", triageH.SignatureIssues)
 		// Verdict accuracy and the false-green count.
 		r.Get("/triage/accuracy", triageH.Accuracy)
+		// Product defects E2E surfaced. A test high on this list is not flaky —
+		// it keeps catching real bugs, which is the opposite signal.
+		r.Get("/triage/defects", triageH.Defects)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
@@ -250,6 +253,10 @@ func Build(d Deps) chi.Router {
 			r.Post("/triage/verdicts", triageH.CreateVerdicts)
 			r.Post("/triage/verdicts/{id}/correction", triageH.Correct)
 			r.Post("/triage/attempts", triageH.RecordFixAttempt)
+			// Product bugs are filed in the issue tracker by the agent; this
+			// records that it happened, so the next master run links the
+			// existing ticket instead of opening a duplicate.
+			r.Post("/triage/escalations", triageH.RecordEscalation)
 
 			// Reading the ledger is authenticated too: unlike the aggregate
 			// reads it returns rows, and each row names the credential that

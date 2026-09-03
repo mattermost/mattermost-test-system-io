@@ -89,6 +89,25 @@ rather than paraphrasing it.
 **Every failing test on the PR must be resolved before the check can go green.**
 One `PR_SUSPECT` among ten flakes means the check stays red.
 
+### Is it a known product defect?
+
+Before reproducing anything, and before telling an author their change broke it:
+
+```text
+GET /triage/signature-issues?repo=mattermost&test_id=<MM-T id>
+JQL: labels = "e2e-flake-<MM-T id>" AND resolution = Unresolved
+```
+
+An open ticket means master already knows this test is failing for a product
+reason. Classify `PRE_EXISTING_PRODUCT_BUG`, link the ticket, and green the check
+only if `attribution.can_green` was also true — a known defect the PR did not
+cause is still not the PR's problem, but `can_green` remains the only field that
+authorises a green.
+
+Never open a Jira ticket from this automation. Diagnosing a pull request is not
+the place to file defects; the Master Guardian does that from master, where the
+break is owned.
+
 ## Step 3 — Reproduce, only for the residue
 
 The standard testcontainer image tracks master and may not contain this PR's
@@ -208,6 +227,7 @@ Classification: <FLAKY_TEST|PR_PRODUCT_REGRESSION|PRE_EXISTING_MASTER_BREAK|PRE_
 Test: <full test title> (<MM-T id>)
 Error: <concise signature>
 Master baseline: <failed>/<runs> runs failed (<rate>) over <window>
+Known defect: <MM-xxxxx | none>
 Attribution: <outcome> — <the reason field, quoted>
 Reproduction: <skipped — history settled it | <passes>/3 against PR HEAD>
 Check: <set to success | left red>
@@ -220,7 +240,8 @@ Recommendations:
   for the author to do. Link the fix queue entry if one exists.
 - `PR_PRODUCT_REGRESSION` — ask the author to fix the product behaviour. Never
   suggest weakening the test.
-- `PRE_EXISTING_PRODUCT_BUG` — state the PR did not introduce it.
+- `PRE_EXISTING_PRODUCT_BUG` — state the PR did not introduce it, and link the
+  Jira ticket so the author can see it is tracked.
 - `INFRA` — state the E2E result is not evidence against the PR.
 - `INCONCLUSIVE` — state exactly what evidence is missing.
 

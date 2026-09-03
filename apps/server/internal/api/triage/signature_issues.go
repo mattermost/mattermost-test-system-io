@@ -106,12 +106,27 @@ func (h *Handlers) SignatureIssues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Defects previously filed for this test. History, not a lock: an entry
+	// means a defect was filed once, which is a reason to check the tracker —
+	// never a reason to skip filing without checking, because the tracker owns
+	// whether that ticket is still open.
+	escalations, err := h.escalationsFor(r, normalizeRepo(repo), testID)
+	if err != nil {
+		h.logError("signature issues escalations", err)
+		api.WriteError(w, r, api.ErrInternal)
+		return
+	}
+
 	openPR := ""
 	for _, a := range attempts {
 		if a.PRURL != nil && a.Outcome == outcomeFixed {
 			openPR = *a.PRURL
 			break
 		}
+	}
+	lastIssue := ""
+	if len(escalations) > 0 {
+		lastIssue = escalations[0].IssueURL
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -120,10 +135,14 @@ func (h *Handlers) SignatureIssues(w http.ResponseWriter, r *http.Request) {
 		"signature": signature,
 		// known is the field a caller branches on: this failure has been seen
 		// and adjudicated before, so treat a fresh investigation as optional.
-		"known":         len(refs) > 0 || len(attempts) > 0,
-		"open_fix_pr":   openPR,
-		"prior_verdict": refs,
-		"fix_attempts":  attempts,
+		"known":       len(refs) > 0 || len(attempts) > 0 || len(escalations) > 0,
+		"open_fix_pr": openPR,
+		// The most recent defect filed for this test. Its state is unknown
+		// here by design — resolve it against the tracker before acting.
+		"last_issue_url": lastIssue,
+		"prior_verdict":  refs,
+		"fix_attempts":   attempts,
+		"escalations":    escalations,
 	})
 }
 

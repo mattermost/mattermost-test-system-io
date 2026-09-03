@@ -189,9 +189,14 @@ func (h *Handlers) fixAttemptsFor(r *http.Request, repo, testID string) (fixAtte
 	return s, nil
 }
 
-// loadFixAttempts returns the per-test attempt summary for a repo, keyed by
-// external_test_id, so the queue can annotate its entries in one round trip.
-func (h *Handlers) loadFixAttempts(r *http.Request, repo string) (map[string]fixAttemptSummary, error) {
+// loadFixAttempts returns the attempt summary for the given test ids, keyed by
+// external_test_id, so a caller can annotate a page of results in one round
+// trip. Scoped to the ids it was asked about: the ledger grows without bound
+// and the caller only ever renders a handful of rows.
+func (h *Handlers) loadFixAttempts(r *http.Request, repo string, testIDs []string) (map[string]fixAttemptSummary, error) {
+	if len(testIDs) == 0 {
+		return map[string]fixAttemptSummary{}, nil
+	}
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT external_test_id,
 		       count(*)::int,
@@ -201,8 +206,9 @@ func (h *Handlers) loadFixAttempts(r *http.Request, repo string) (map[string]fix
 		       max(created_at)
 		FROM stabilization_fix_attempts
 		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
+		  AND external_test_id = ANY($2)
 		GROUP BY external_test_id
-	`, repo)
+	`, repo, testIDs)
 	if err != nil {
 		return nil, err
 	}

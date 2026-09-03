@@ -350,6 +350,12 @@ func (h *Handlers) baselineFor(ctx context.Context, repo, testID, branch string,
 	// pass closes the failing streak that started after it.
 	first := true
 	streakOpen := false
+	// A streak is only usable for attribution once a PASS has bounded it. If
+	// every run in the window failed, the break predates the window and the
+	// oldest failing commit here is an artifact of the window, not the cause —
+	// reporting it would hand the Guardian a range whose left end is missing
+	// and whose right end is arbitrary, and it names authors from that range.
+	streakBounded := false
 	for rows.Next() {
 		var sha string
 		var at time.Time
@@ -375,11 +381,19 @@ func (h *Handlers) baselineFor(ctx context.Context, repo, testID, branch string,
 				c := sha
 				b.LastPass = &c
 				streakOpen = false
+				streakBounded = true
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return b, err
+	}
+	if !streakBounded {
+		// Unbounded: say the test is failing now, but offer no commit range.
+		// "I do not know where this started" is the honest answer, and the
+		// Guardian is instructed to route by CODEOWNERS rather than accuse
+		// anyone when the range is absent.
+		b.FailingSince = nil
 	}
 	if b.Runs > 0 {
 		b.FailureRate = float64(b.Failed) / float64(b.Runs)

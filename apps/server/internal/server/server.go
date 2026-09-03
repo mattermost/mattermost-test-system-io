@@ -284,6 +284,11 @@ func Build(d Deps) chi.Router {
 			// comes from the authenticated subject and never from the body.
 			r.Post("/triage/quarantine", triageH.Quarantine)
 			r.Post("/triage/quarantine/{id}/release", triageH.ReleaseQuarantine)
+			// The fix loop's record of what it tried. Authenticated: this is
+			// what decides whether a test is attempted again, so a forged
+			// "fixed" would silently re-enter the loop and a forged "failed"
+			// would park a test on a human who never agreed to take it.
+			r.Post("/triage/stabilization/attempts", triageH.RecordFixAttempt)
 			// W7 — the alerting job's apply: posts, opens/updates issues, records.
 			r.Post("/triage/alerts/evaluate", triageH.AlertEvaluate)
 

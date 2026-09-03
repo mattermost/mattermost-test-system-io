@@ -43,3 +43,13 @@ func postJSON(t *testing.T, env *testenv.Env, key, path string, body any) map[st
 	out["status"] = float64(resp.StatusCode)
 	return out
 }
+
+// decodeJSON reads a response body as a JSON object.
+func decodeJSON(t *testing.T, resp *http.Response) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return out
+}

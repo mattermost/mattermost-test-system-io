@@ -1545,6 +1545,58 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/StabilizationQueueEntry' }
 
+  /api/v1/triage/stabilization/attempts:
+    post:
+      tags: [triage]
+      summary: Record what a fix attempt did — the AI's handover note to a human
+      description: |
+        The agent fix loop attempts a repair and a human reviews before anything
+        merges, so an unsuccessful attempt is cheap. What is not cheap is an
+        unsuccessful attempt with no record: the loop picks the same test again
+        next cycle, and whoever eventually takes it starts from nothing.
+
+        After MaxFixAttempts (3) failed or blocked attempts, the queue reports
+        `fix_attempts.needs_human` for that test and the loop stops choosing it.
+        `detail` is mandatory for anything but a successful fix — it is what the
+        next person reads.
+
+        `attempted_by` comes from the authenticated principal and is never read
+        from the body.
+      security:
+        - apiKey: []
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [test_id, repository, outcome]
+              properties:
+                test_id: { type: string }
+                repository: { type: string }
+                outcome: { type: string, enum: [fixed, failed, blocked, needs_human] }
+                detail:
+                  type: string
+                  description: Required unless outcome is `fixed`. What was tried, and why it stopped.
+                pr_url: { type: string }
+                cluster_signature: { type: string }
+      responses:
+        '201':
+          description: Attempt recorded, with the running tally for that test
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  test_id: { type: string }
+                  attempts: { type: integer }
+                  failed: { type: integer }
+                  needs_human: { type: boolean }
+        '400':
+          description: Unknown outcome, or a non-fix attempt with no detail
+
   /api/v1/triage/alerts/evaluation:
     get:
       tags: [triage]
@@ -3158,6 +3210,22 @@ components:
         flips: { type: integer }
         failure_rate: { type: number }
         flake_rate: { type: number }
+        affected_prs:
+          type: integer
+          description: Distinct PRs this test failed on in the window — the blast radius the queue ranks by.
+        failing_since_commit: { type: string }
+        fix_attempts:
+          type: object
+          description: What happened the last time the fix loop tried this test.
+          properties:
+            attempts: { type: integer }
+            failed: { type: integer }
+            last_outcome: { type: string, enum: [fixed, failed, blocked, needs_human] }
+            last_detail: { type: string }
+            last_attempt_at: { type: string, format: date-time }
+            needs_human:
+              type: boolean
+              description: Computed — the agent has failed enough times that the test is a human's.
 
     TriageSuggestion:
       type: object

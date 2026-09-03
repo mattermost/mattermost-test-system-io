@@ -44,6 +44,12 @@ type queueEntry struct {
 	// matters more than how fast, so this leads the ranking.
 	AffectedPRs  int     `json:"affected_prs"`
 	FailingSince *string `json:"failing_since_commit,omitempty"`
+
+	// What happened the last time the agent fix loop tried this test. Present
+	// on the queue rather than behind a second call because "has anything
+	// tried this yet, and did it work" is part of choosing what to work on —
+	// both for the loop and for the human reading the list.
+	FixAttempts *fixAttemptSummary `json:"fix_attempts,omitempty"`
 }
 
 type queueResponse struct {
@@ -162,6 +168,18 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	// One round trip for the whole repo: the queue is capped at ten entries,
+	// but a per-entry lookup would still be ten queries to answer a question
+	// the caller always asks.
+	attempts, err := h.loadFixAttempts(r, repo)
+	if err != nil {
+		// The ranking is the answer; the annotation is a bonus. Failing the
+		// whole queue because the attempt tally could not be read would take
+		// away the more important half.
+		h.logError("stabilization queue fix attempts", err)
+		attempts = map[string]fixAttemptSummary{}
+	}
+
 	ranked := []queueEntry{}
 	for rows.Next() {
 		var e queueEntry
@@ -177,6 +195,9 @@ func (h *Handlers) StabilizationQueue(w http.ResponseWriter, r *http.Request) {
 		if e.Runs > 0 {
 			e.FailureRate = float64(e.Failed) / float64(e.Runs)
 			e.FlakeRate = float64(e.Flips) / float64(e.Runs)
+		}
+		if a, ok := attempts[e.TestID]; ok {
+			e.FixAttempts = &a
 		}
 		ranked = append(ranked, e)
 		if len(ranked) >= StabilizationQueueDepth {

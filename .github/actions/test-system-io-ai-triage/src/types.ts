@@ -183,3 +183,16 @@ export interface ClaudeVerdict {
   product_refusal?: boolean;
 }
 
+/** A test-bug cluster the fixer agent may repair. */
+export interface FixTarget {
+  signature: string;
+  external_test_id?: string;
+  full_title: string;
+  file: string;
+  error_message?: string;
+  error_stack?: string;
+  /** Root-cause reason from triage (why this is not a product regression). */
+  reason: string;
+  confidence: number;
+  screenshots: string[];
+}

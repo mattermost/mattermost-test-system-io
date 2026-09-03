@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Test System IO API
-  version: 0.12.0
+  version: 0.14.0
   description: |
     HTTP API for uploading and viewing Playwright, Cypress, and Detox test
     reports. This spec is hand-authored and is the source of truth for the
@@ -750,7 +750,9 @@ paths:
                 commit_sha: { type: string }
                 gh_run_id: { type: string }
                 name: { type: string }
-                gh_run_attempt: { type: string, default: "1" }
+                gh_run_attempt: { type: string }
+                branch: { type: string, maxLength: 256 }
+                framework: { type: string, enum: [playwright, cypress, detox, maestro] }
                 gh_job_name: { type: string }
                 gh_job_id: { type: string }
                 spec_path:
@@ -2122,7 +2124,7 @@ components:
           type: integer
         framework:
           type: string
-          enum: [playwright, cypress]
+          enum: [playwright, cypress, detox, maestro]
           default: playwright
 
     WorkerIdentity:
@@ -2250,6 +2252,10 @@ components:
             (other workers in flight, retest pool non-empty); the worker
             SHOULD sleep that long and re-poll. When absent, the run has
             no work outstanding anywhere — the worker SHOULD exit cleanly.
+
+            Workers SHOULD also bound how many consecutive times they're
+            willing to re-poll (e.g. `max-idle-polls`) rather than rely
+            solely on the server — that decision is entirely client-side.
         retry_after_ms:
           type: integer
           minimum: 0
@@ -2259,6 +2265,9 @@ components:
             subsequent call (other workers leased, or retest pool not
             empty). Workers SHOULD sleep this long and re-call /checkout
             instead of exiting. Absent ⇒ truly nothing left, exit cleanly.
+
+            Randomized per response so concurrently-polling workers don't
+            converge on and stay locked to the same cadence.
         is_retest:
           type: boolean
           default: false
@@ -2282,6 +2291,49 @@ components:
                 description: |
                   Present only when the unit is being dispatched as a retest.
                   Indicates how many times this unit has previously failed.
+        counts:
+          type: object
+          description: |
+            Best-effort: the run's dispatch_units breakdown as of a fresh
+            read taken while building this response. Lets a polling worker
+            log queue depth alongside its own "queue empty; sleeping" line
+            without a separate /status call.
+          properties:
+            pending: { type: integer, minimum: 0 }
+            leased: { type: integer, minimum: 0 }
+            completed_pass: { type: integer, minimum: 0 }
+            completed_fail: { type: integer, minimum: 0 }
+            completed_skipped: { type: integer, minimum: 0 }
+            abandoned: { type: integer, minimum: 0 }
+            retest_eligible: { type: integer, minimum: 0 }
+            total: { type: integer, minimum: 0 }
+        db_pool:
+          type: object
+          description: |
+            Best-effort snapshot of the server's shared Postgres connection
+            pool (in-memory counters, no extra DB round trip). Global to
+            the whole server process, not scoped to this run.
+          properties:
+            total_conns: { type: integer, minimum: 0 }
+            acquired_conns: { type: integer, minimum: 0 }
+            idle_conns: { type: integer, minimum: 0 }
+            max_conns: { type: integer, minimum: 0 }
+            empty_acquire_count:
+              type: integer
+              minimum: 0
+              description: |
+                Cumulative count of acquire calls that had to wait because
+                no connection was immediately available.
+        workers:
+          type: object
+          description: |
+            Best-effort worker-presence snapshot for this run. `active` is
+            workers currently holding an unreleased lease. `seen_total` is
+            every worker that has ever held a lease here, active or
+            released.
+          properties:
+            active: { type: integer, minimum: 0 }
+            seen_total: { type: integer, minimum: 0 }
 
     TestCaseStatus:
       type: string
@@ -2424,6 +2476,39 @@ components:
               new_state:
                 type: string
                 enum: [completed_pass, completed_fail, completed_skipped]
+        counts:
+          type: object
+          description: |
+            The run's dispatch_units breakdown immediately after applying
+            this completion — same shape as `CheckoutResponse.counts`.
+          properties:
+            pending: { type: integer, minimum: 0 }
+            leased: { type: integer, minimum: 0 }
+            completed_pass: { type: integer, minimum: 0 }
+            completed_fail: { type: integer, minimum: 0 }
+            completed_skipped: { type: integer, minimum: 0 }
+            abandoned: { type: integer, minimum: 0 }
+            retest_eligible: { type: integer, minimum: 0 }
+            total: { type: integer, minimum: 0 }
+        db_pool:
+          type: object
+          description: |
+            Best-effort snapshot of the server's shared Postgres connection
+            pool — same shape as `CheckoutResponse.db_pool`.
+          properties:
+            total_conns: { type: integer, minimum: 0 }
+            acquired_conns: { type: integer, minimum: 0 }
+            idle_conns: { type: integer, minimum: 0 }
+            max_conns: { type: integer, minimum: 0 }
+            empty_acquire_count: { type: integer, minimum: 0 }
+        workers:
+          type: object
+          description: |
+            Best-effort worker-presence snapshot — same shape as
+            `CheckoutResponse.workers`.
+          properties:
+            active: { type: integer, minimum: 0 }
+            seen_total: { type: integer, minimum: 0 }
 
     RunSnapshot:
       allOf:

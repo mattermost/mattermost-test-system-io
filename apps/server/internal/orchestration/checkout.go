@@ -18,6 +18,13 @@ import (
 // unit, and UPDATE the picked units to state='leased' with current_lease_id
 // set. Bounded by batchSize.
 //
+// Most calls land on an empty queue — workers poll on a fixed interval for a
+// run's entire lifetime, long after all units are dispatched. The
+// materialized pending count (already loaded on run, adjusted for whatever
+// this call's own lazy expiration just reclaimed) short-circuits that case
+// before touching leases at all, rather than inserting a lease row just to
+// delete it again moments later.
+//
 // Returns ErrRunNotInProgress when the run has reached a terminal state and
 // ErrWorkerHasActiveLease when the partial unique index on
 // leases(run_id, gh_job_id) WHERE released_at IS NULL rejects the insert.
@@ -46,11 +53,41 @@ func (s *Store) AtomicCheckout(
 	// Lazy expiration: clean up any overdue leases on this run before picking
 	// new units. Failures here are non-fatal; the periodic reaper is the
 	// authoritative backstop.
-	if expireErr := s.expireOverdueLeasesForRun(ctx, run.ID); expireErr != nil {
+	reclaimed, expireErr := s.expireOverdueLeasesForRun(ctx, run.ID)
+	if expireErr != nil {
 		// Best-effort. Log via slog default; do not bubble.
 		slog.Default().DebugContext(ctx, "lazy lease expiration failed",
 			slog.String("run_id", run.ID.String()),
 			slog.String("err", expireErr.Error()))
+	}
+
+	// Fast path: most checkout calls land on an empty queue (workers poll on
+	// a fixed interval for a run's whole lifetime). run.Counts.Pending was
+	// read before the lazy expiration above, so add back whatever that just
+	// reclaimed — otherwise a unit reclaimed this call would be invisible to
+	// this check. Skips the insert-then-maybe-delete leases churn below
+	// entirely; no extra query needed for the pending count itself.
+	//
+	// Still must preserve the WORKER_HAS_ACTIVE_LEASE contract: previously
+	// that conflict was detected unconditionally via insertLeaseTx's unique
+	// constraint, regardless of whether any units were pending. A worker
+	// that leases the last unit(s) and then calls checkout again without
+	// completing must still get that error here, not a silent queue_empty.
+	if run.Counts.Pending+reclaimed == 0 {
+		hasActive, err := s.workerHasActiveLease(ctx, run.ID, worker.GHJobID)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		if hasActive {
+			return nil, nil, false, ErrWorkerHasActiveLease
+		}
+		logEvent(ctx, s.Logger, "orchestration.checkout.empty", "orchestration checkout empty", run,
+			slog.String("gh_job_id", worker.GHJobID),
+			slog.String("gh_job_name", worker.GHJobName),
+			slog.Bool("is_retest", false),
+		)
+		logMetric(ctx, s.Logger, "orchestration_checkouts_total", "empty", 1)
+		return nil, nil, false, nil
 	}
 
 	var (
@@ -69,8 +106,10 @@ func (s *Store) AtomicCheckout(
 			return err
 		}
 		if len(dispatched) == 0 {
-			// Nothing to lease — discard the empty lease row so the partial
-			// unique index does not retain a phantom active lease.
+			// The pending-count gate above only prevents the common case; a
+			// concurrent worker can still win the race between that check and
+			// this SKIP LOCKED pick. Discard the empty lease row so the
+			// partial unique index does not retain a phantom active lease.
 			if _, delErr := tx.Exec(ctx, `DELETE FROM leases WHERE id = $1`, l.ID); delErr != nil {
 				return fmt.Errorf("delete empty lease: %w", delErr)
 			}
@@ -318,7 +357,7 @@ func dispatchRetestUnitsTx(
 		     ORDER BY (du.last_lease_gh_job_name IS NOT DISTINCT FROM $4),
 		              du.dispatch_seq
 		     LIMIT $2
-		     FOR UPDATE SKIP LOCKED
+		     FOR UPDATE OF du SKIP LOCKED
 		)
 		UPDATE dispatch_units du
 		   SET state = 'leased',
@@ -350,6 +389,51 @@ func dispatchRetestUnitsTx(
 		return nil, err
 	}
 	return out, nil
+}
+
+// workerHasActiveLease reports whether the given worker already holds an
+// unreleased lease on this run, via the same leases_active_worker_uq index
+// insertLeaseTx's conflict check relies on. Used by AtomicCheckout's empty
+// fast path, which bypasses that INSERT and so needs its own check to
+// preserve the WORKER_HAS_ACTIVE_LEASE contract.
+func (s *Store) workerHasActiveLease(ctx context.Context, runID uuid.UUID, ghJobID string) (bool, error) {
+	var exists bool
+	err := s.Pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM leases
+			 WHERE run_id = $1 AND gh_job_id = $2 AND released_at IS NULL
+		)
+	`, runID, ghJobID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check active lease: %w", err)
+	}
+	return exists, nil
+}
+
+// WorkerCounts is a run-scoped worker-presence snapshot, distinct from the
+// unit-level RunCounts. Active is workers currently holding an unreleased
+// lease. SeenTotal is every worker that has ever held one, active or
+// released — a worker that crashed before its first checkout never appears
+// in either.
+type WorkerCounts struct {
+	Active    int
+	SeenTotal int
+}
+
+// CountWorkers computes WorkerCounts with a single aggregate query over
+// leases_run_idx.
+func (s *Store) CountWorkers(ctx context.Context, runID uuid.UUID) (WorkerCounts, error) {
+	var c WorkerCounts
+	err := s.Pool.QueryRow(ctx, `
+		SELECT COUNT(*) FILTER (WHERE released_at IS NULL),
+		       COUNT(DISTINCT gh_job_id)
+		  FROM leases
+		 WHERE run_id = $1
+	`, runID).Scan(&c.Active, &c.SeenTotal)
+	if err != nil {
+		return WorkerCounts{}, fmt.Errorf("count workers: %w", err)
+	}
+	return c, nil
 }
 
 // insertLeaseTx inserts a leases row for the given run + worker with deadline
@@ -480,31 +564,38 @@ func insertInitialAttemptsTx(
 // expireOverdueLeasesForRun runs the same lease-expiry sweep the reaper does
 // but scoped to a single run. Used by AtomicCheckout for tighter response
 // latency on reclaim. Best-effort: errors are returned but the caller may
-// log-and-continue.
-func (s *Store) expireOverdueLeasesForRun(ctx context.Context, runID uuid.UUID) error {
+// log-and-continue. Returns the number of units reclaimed back to pending,
+// so the caller can fold it into a stale in-memory pending count without an
+// extra query.
+func (s *Store) expireOverdueLeasesForRun(ctx context.Context, runID uuid.UUID) (int, error) {
 	rows, err := s.Pool.Query(ctx, `
 		SELECT id FROM leases
 		 WHERE run_id = $1 AND released_at IS NULL AND deadline < now()
 	`, runID)
 	if err != nil {
-		return fmt.Errorf("scan overdue leases: %w", err)
+		return 0, fmt.Errorf("scan overdue leases: %w", err)
 	}
 	defer rows.Close()
 	var leaseIDs []uuid.UUID
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {
-			return err
+			return 0, err
 		}
 		leaseIDs = append(leaseIDs, id)
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return 0, err
 	}
+	var reclaimed int
 	for _, id := range leaseIDs {
-		if _, err := s.expireOneLease(ctx, id); err != nil {
-			return err
+		outcome, err := s.expireOneLease(ctx, id)
+		if err != nil {
+			return reclaimed, err
+		}
+		if outcome != nil {
+			reclaimed += len(outcome.ReclaimedUnitIDs)
 		}
 	}
-	return nil
+	return reclaimed, nil
 }

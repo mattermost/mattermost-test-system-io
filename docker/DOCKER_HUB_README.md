@@ -19,7 +19,7 @@ docker build -t mattermost-test-system-io:dev -f apps/server/Dockerfile .
 | Tag | Description |
 |-----|-------------|
 | `latest` | Latest production release |
-| `X.Y.Z` (e.g., `0.1.0`) | Specific production release |
+| `X.Y.Z.{run_id}` (e.g., `0.13.0.30331189149`) | Specific production release — `X.Y.Z` is the semver, `run_id` uniquely identifies the promotion |
 | `X.Y.Z-abcdefg.beta` | Staging prerelease (not recommended for production) |
 
 ## Environment Variables

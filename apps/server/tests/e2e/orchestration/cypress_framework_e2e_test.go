@@ -331,12 +331,12 @@ func TestUnknownFrameworkRejected(t *testing.T) {
 
 	body := merge(
 		identity(map[string]any{
-			"name":      "detox-rejected",
-			"framework": "detox",
+			"name":      "webdriverio-rejected",
+			"framework": "webdriverio",
 		}),
 		map[string]any{
 			"total_reports_expected": 1,
-			"dispatch_units":         []map[string]any{{"spec_path": "tests/foo.detox.ts"}},
+			"dispatch_units":         []map[string]any{{"spec_path": "tests/foo.wdio.ts"}},
 		},
 	)
 	resp := postJSON(t, env, tok, "/api/v1/orchestration/begin", body)

@@ -155,9 +155,22 @@ jobs:
         id: retag
         env:
           BETA_TAG: ${{ inputs.beta_tag }}
+          GH_RUN_ID: ${{ github.run_id }}
         run: |
-          # Extract release version by stripping -{sha}.beta suffix
-          RELEASE_VERSION=$(echo "$BETA_TAG" | sed 's/-[a-f0-9]*\.beta$//')
+          # Require the exact {version}-{7-hex-sha}.beta shape produced by
+          # deploy_staging.yml before extraction. Without this, a malformed
+          # tag would silently pass through sed below and be promoted as-is.
+          if ! [[ "$BETA_TAG" =~ ^.+-[0-9a-f]{7}\.beta$ ]]; then
+            echo "::error::Beta tag '${BETA_TAG}' does not match expected format '{version}-{7-hex-sha}.beta'"
+            exit 1
+          fi
+
+          # Extract base version by stripping -{sha}.beta suffix
+          BASE_VERSION=$(echo "$BETA_TAG" | sed 's/-[a-f0-9]*\.beta$//')
+
+          # Suffix with this workflow run's ID so every production promotion
+          # gets a unique Docker tag / GitHub release.
+          RELEASE_VERSION="${BASE_VERSION}.${GH_RUN_ID}"
 
           RELEASE_TAG="release-${RELEASE_VERSION}"
 

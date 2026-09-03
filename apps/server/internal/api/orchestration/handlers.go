@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"strconv"
@@ -39,11 +40,24 @@ const defaultMaxSpecsPerRun = 5000
 // unparseable values fall back to defaultMaxSpecsPerRun.
 const maxSpecsPerRunEnvVar = "TSIO_ORCH_MAX_SPECS_PER_RUN"
 
-// checkoutRetryAfterMs is the polling hint returned to a worker that called
-// /checkout while there was no work for it but more might still arrive
-// (other workers leased, retest pool non-empty). The worker is expected to
-// sleep this long and re-poll, instead of exiting on queue_empty.
-const checkoutRetryAfterMs = 5000
+// checkoutRetryAfterBaseMs / checkoutRetryAfterJitterMs form the polling
+// hint returned to a worker that called /checkout with no work available
+// but more that might still arrive (other workers leased, retest pool
+// non-empty). The worker sleeps this long and re-polls instead of exiting.
+//
+// Jitter is randomized per response, not fixed, so concurrently-polling
+// workers desynchronize instead of staying phase-locked on the same
+// interval indefinitely.
+const (
+	checkoutRetryAfterBaseMs   = 5000
+	checkoutRetryAfterJitterMs = 2000
+)
+
+// checkoutRetryAfterMs returns a randomized hint in
+// [checkoutRetryAfterBaseMs, checkoutRetryAfterBaseMs+checkoutRetryAfterJitterMs).
+func checkoutRetryAfterMs() int {
+	return checkoutRetryAfterBaseMs + rand.IntN(checkoutRetryAfterJitterMs) //nolint:gosec // non-cryptographic jitter
+}
 
 // Handlers bundles the orchestration HTTP handlers. All fields are populated
 // by server.Build; nil-checks are the responsibility of individual handler
@@ -337,9 +351,16 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 		if freshRun, ferr := h.Store.FindRunByIdentity(r.Context(), identity); ferr == nil {
 			c := freshRun.Counts
 			if c.Leased > 0 || c.RetestEligible > 0 {
-				resp["retry_after_ms"] = checkoutRetryAfterMs
+				resp["retry_after_ms"] = checkoutRetryAfterMs()
+			}
+			// Lets a polling worker log queue depth alongside its own
+			// "queue empty; sleeping" line.
+			resp["counts"] = queueCountsPayload(c)
+			if wc, werr := h.Store.CountWorkers(r.Context(), freshRun.ID); werr == nil {
+				resp["workers"] = workersPayload(wc)
 			}
 		}
+		resp["db_pool"] = dbPoolPayload(h.Pool)
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -353,12 +374,65 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 			unitIDs, lease.Deadline, isRetest)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"deadline":    lease.Deadline.UTC(),
 		"queue_empty": false,
 		"is_retest":   isRetest,
 		"units":       checkoutUnitsPayload(units, isRetest),
-	})
+	}
+	// Best-effort: a failure here doesn't fail the checkout — the units
+	// are already leased and durable.
+	if freshRun, ferr := h.Store.FindRunByIdentity(r.Context(), identity); ferr == nil {
+		resp["counts"] = queueCountsPayload(freshRun.Counts)
+		if wc, werr := h.Store.CountWorkers(r.Context(), freshRun.ID); werr == nil {
+			resp["workers"] = workersPayload(wc)
+		}
+	}
+	resp["db_pool"] = dbPoolPayload(h.Pool)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// workersPayload projects WorkerCounts into the response's "workers"
+// object. `active` is workers currently holding an unreleased lease on
+// this run; `seen_total` is every worker that has ever held one, active or
+// released. A worker that crashed before its first successful checkout
+// appears in neither.
+func workersPayload(w orchestration.WorkerCounts) map[string]any {
+	return map[string]any{
+		"active":     w.Active,
+		"seen_total": w.SeenTotal,
+	}
+}
+
+// queueCountsPayload projects RunCounts using the same field names as
+// runSnapshotPayload's "counts" object (plus "total").
+func queueCountsPayload(c orchestration.RunCounts) map[string]any {
+	return map[string]any{
+		"pending":           c.Pending,
+		"leased":            c.Leased,
+		"completed_pass":    c.CompletedPass,
+		"completed_fail":    c.CompletedFail,
+		"completed_skipped": c.CompletedSkipped,
+		"abandoned":         c.Abandoned,
+		"retest_eligible":   c.RetestEligible,
+		"total":             c.Total,
+	}
+}
+
+// dbPoolPayload snapshots the shared pgxpool.Pool's in-memory counters (no
+// DB round trip). The pool is server-wide, not scoped to a single run.
+func dbPoolPayload(pool *pgxpool.Pool) map[string]any {
+	if pool == nil {
+		return nil
+	}
+	s := pool.Stat()
+	return map[string]any{
+		"total_conns":         s.TotalConns(),
+		"acquired_conns":      s.AcquiredConns(),
+		"idle_conns":          s.IdleConns(),
+		"max_conns":           s.MaxConns(),
+		"empty_acquire_count": s.EmptyAcquireCount(),
+	}
 }
 
 // Complete serves POST /api/v1/orchestration/complete. The worker reports
@@ -440,12 +514,26 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Best-effort; computed once and reused by both response branches below.
+	var workers map[string]any
+	if wc, werr := h.Store.CountWorkers(r.Context(), run.ID); werr == nil {
+		workers = workersPayload(wc)
+	}
+
 	if outcome.Idempotent {
-		writeJSON(w, http.StatusOK, map[string]any{
+		resp := map[string]any{
 			"accepted":            true,
 			"late_report":         outcome.LateReport,
 			"unit_states_changed": []any{},
-		})
+			// outcome.RunCounts is populated on every RecordCompletion path,
+			// idempotent replay included — no extra query needed here.
+			"counts":  queueCountsPayload(outcome.RunCounts),
+			"db_pool": dbPoolPayload(h.Pool),
+		}
+		if workers != nil {
+			resp["workers"] = workers
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -460,11 +548,17 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"accepted":            true,
 		"late_report":         outcome.LateReport,
 		"unit_states_changed": unitStateChangesPayload(outcome.UnitStatesChanged),
-	})
+		"counts":              queueCountsPayload(outcome.RunCounts),
+		"db_pool":             dbPoolPayload(h.Pool),
+	}
+	if workers != nil {
+		resp["workers"] = workers
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // Status serves GET /api/v1/orchestration/status. Returns the run's current
@@ -873,7 +967,7 @@ func identityFromFields(f identityFields) (orchestration.CompositeIdentity, erro
 	}
 	if !orchestration.IsSupportedFramework(framework) {
 		return orchestration.CompositeIdentity{},
-			fmt.Errorf("framework %q is not supported (must be one of: playwright, cypress)", framework)
+			fmt.Errorf("framework %q is not supported (must be one of: %s)", framework, strings.Join(orchestration.SupportedFrameworksList(), ", "))
 	}
 	attempt := f.GHRunAttempt
 	if attempt == "" {

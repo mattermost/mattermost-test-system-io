@@ -570,9 +570,12 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The URL carries the repository slug (e.g. "mattermost"); the DB stores
-	// the full "owner/repo". Match on suffix so "mattermost" hits
-	// "mattermost/mattermost". The commit comparator supports prefix matching
-	// so short SHAs in the URL still find the record.
+	// the full "owner/repo". Match on the trailing segment so "mattermost"
+	// hits "mattermost/mattermost" — via split_part rather than a leading-
+	// wildcard LIKE, so report_groups_repo_suffix_idx can serve it as a
+	// plain indexed equality lookup instead of a table scan. The commit
+	// comparator supports prefix matching so short SHAs in the URL still
+	// find the record.
 	//
 	// The LATERAL subquery attaches each test_case's linked screenshots as a
 	// JSON array so the web can render per-attempt galleries without a
@@ -581,6 +584,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		SELECT r.id, g.commit_sha, g.gh_run_attempt, r.created_at, g.id,
 		       COALESCE(s.title, '') || ' › ' || tc.title AS full_title,
 		       tc.status, COALESCE(tc.duration_ms, 0), tc.error_message, tc.error_stack,
+		       COALESCE(NULLIF(r.gh_job_name, ''), r.name) AS shard_label,
 		       COALESCE(ss.shots, '[]'::jsonb) AS screenshots
 		FROM test_cases tc
 		JOIN suites s ON s.id = tc.suite_id
@@ -597,7 +601,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 			FROM report_screenshots rs
 			WHERE rs.case_id = tc.id
 		) ss ON TRUE
-		WHERE (g.repository = $1 OR g.repository LIKE '%/' || $1)
+		WHERE (g.repository = $1 OR split_part(g.repository, '/', 2) = $1)
 		  AND (g.branch = $2 OR ($8::int IS NOT NULL AND g.gh_pr_number = $8::int))
 		  AND g.commit_sha LIKE $3 || '%'
 		  AND (g.run_group = $4 OR g.name = $4)
@@ -610,7 +614,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		      AND (g.gh_run_id, g.gh_run_attempt) = (
 		        SELECT g_pick.gh_run_id, g_pick.gh_run_attempt
 		        FROM report_groups g_pick
-		        WHERE (g_pick.repository = $1 OR g_pick.repository LIKE '%/' || $1)
+		        WHERE (g_pick.repository = $1 OR split_part(g_pick.repository, '/', 2) = $1)
 		          AND (g_pick.branch = $2 OR ($8::int IS NOT NULL AND g_pick.gh_pr_number = $8::int))
 		          AND g_pick.commit_sha LIKE $3 || '%'
 		          AND (g_pick.run_group = $4 OR g_pick.name = $4)
@@ -641,6 +645,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		DurationMs   int64
 		ErrorMessage *string
 		ErrorStack   *string
+		ShardLabel   string
 		Screenshots  []shotInfo
 	}
 	var inputs []caseInput
@@ -650,7 +655,7 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&ci.ReportID, &ci.CommitSHA, &ci.RunAttempt, &ci.CreatedAt, &ci.GroupID,
 			&ci.FullTitle, &ci.Status, &ci.DurationMs, &ci.ErrorMessage, &ci.ErrorStack,
-			&shotsJSON,
+			&ci.ShardLabel, &shotsJSON,
 		); err != nil {
 			api.WriteError(w, r, err)
 			return
@@ -783,26 +788,26 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		})
 		winner := cases[0]
 		winAttempt := atoiDefault(winner.RunAttempt, 1)
-		// Promote to "flaky" when the title has at least one passed and
-		// one failed/timed_out attempt across the cases set — same rule
-		// countStatuses applies inside a single suite, lifted here to the
-		// cross-report rollup so retest survivors don't get
-		// double-counted as failed. The winner-based tiebreak above is
-		// unstable when retest rows share a created_at (one shard, two
-		// ingestions), so we check the full set rather than relying on
-		// which row sorted first.
-		rollupStatus := winner.Status
-		var hasPassed, hasFailed bool
+		// Peer platforms (ios vs android, linux vs macos) are rolled up
+		// independently — pass on one + fail on another is failed, not
+		// flaky. Flaky stays for same-platform retries / retest survivors.
+		titleCases := make([]titleCase, 0, len(cases))
 		for _, c := range cases {
-			switch c.Status {
-			case statusPassed, statusFlaky:
-				hasPassed = true
-			case statusFailed, statusTimedOut:
-				hasFailed = true
-			}
+			titleCases = append(titleCases, titleCase{
+				ReportID:   c.ReportID,
+				ShardLabel: c.ShardLabel,
+				Status:     c.Status,
+			})
 		}
-		if hasPassed && hasFailed {
-			rollupStatus = statusFlaky
+		rollupStatus := rollupTitleStatus(titleCases)
+		if statusIsFail(rollupStatus) {
+			for _, c := range cases {
+				if statusIsFail(c.Status) {
+					winner = c
+					winAttempt = atoiDefault(c.RunAttempt, 1)
+					break
+				}
+			}
 		}
 		history := make([]historyEntry, 0, len(cases))
 		for _, c := range cases {

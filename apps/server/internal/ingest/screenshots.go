@@ -113,7 +113,7 @@ func LinkScreenshots(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 		matched := false
 		for _, c := range cases {
 			for _, cand := range candidates {
-				if c.fullTitle == cand || strings.HasPrefix(c.fullTitle, cand+" [") {
+				if fullTitleMatchesCandidate(c.fullTitle, cand) {
 					if _, err := pool.Exec(ctx,
 						`UPDATE report_screenshots SET case_id = $1 WHERE id = $2 AND case_id IS NULL`,
 						c.id, s.id); err != nil {
@@ -132,6 +132,23 @@ func LinkScreenshots(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 	return linked, nil
 }
 
+// fullTitleMatchesCandidate reports whether a test_cases.full_title refers to
+// the same logical case as a screenshot-derived candidate name.
+func fullTitleMatchesCandidate(fullTitle, cand string) bool {
+	if cand == "" {
+		return false
+	}
+	if fullTitle == cand || strings.HasPrefix(fullTitle, cand+" [") {
+		return true
+	}
+	// Maestro/JUnit: "<flow-path.yml> > <flowName>" — screenshots staged under
+	// "<flowName>/<shot>.png" derive cand=<flowName>.
+	if strings.HasSuffix(fullTitle, " > "+cand) {
+		return true
+	}
+	return false
+}
+
 // candidateTestNames produces the alternate forms the screenshot's derived
 // test_name may take in test_cases.full_title. Covers:
 //   - exact match (Playwright "Suite > Test")
@@ -141,6 +158,8 @@ func LinkScreenshots(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 //     "<spec-file>/<Suite> -- <Test> (failed).png"; Mochawesome's fullTitle
 //     concatenates describe/it titles with a single space, so the two only
 //     align after both transforms.
+//   - parent folder basename (Detox <fullName>/testFnFailure.png after
+//     DeriveTestNameFromPath, and Maestro <flowName>/<shot>.png layouts).
 func candidateTestNames(testName string) []string {
 	out := []string{testName, strings.ReplaceAll(testName, "/", " > ")}
 	if i := strings.LastIndex(testName, "/"); i >= 0 {
@@ -149,6 +168,14 @@ func candidateTestNames(testName string) []string {
 			out = append(out, tail)
 			if strings.Contains(tail, " -- ") {
 				out = append(out, strings.ReplaceAll(tail, " -- ", " "))
+			}
+		}
+		parent := testName[:i]
+		if parent != "" && parent != "screenshots" {
+			if j := strings.LastIndex(parent, "/"); j >= 0 {
+				out = append(out, parent[j+1:])
+			} else {
+				out = append(out, parent)
 			}
 		}
 	} else if strings.Contains(testName, " -- ") {
@@ -214,17 +241,24 @@ func loadTestCases(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID) 
 }
 
 // DeriveTestNameFromPath pulls the folder-level identity out of a screenshot
-// filepath the way Cypress/Playwright emit them. Expected shapes:
+// filepath the way Cypress/Playwright/Detox emit them. Expected shapes:
 //
 //	"<spec-file>/<Suite> -- <Test> (failed).png"         Cypress
 //	"<Suite>/<Test>-<retry-index>.png"                   Cypress (older)
 //	"<Suite-chain-joined-by-">>>">/<leaf>.png"           Playwright
+//	"<session>/<fullName>/testFnFailure.png"             Detox
+//	"<session>/<fullName>/DETOX_VISIBILITY_…__SCREEN.png" Detox
 //
 // We strip the extension + any trailing "-N" / " (failed)" markers and
 // return the result; the screenshot linker then normalizes "/" to " > " and
 // matches against test_cases.full_title. The path-parsing is intentionally
 // lenient — a match that fails here still lets the file stay in S3 for
 // later manual linking.
+//
+// Detox puts the Jest fullName in the parent folder and uses fixed leaf
+// names (testStart / testFnFailure / testDone / DETOX_VISIBILITY_*). For
+// those leaves we return the parent folder basename so LinkScreenshots can
+// exact-match full_title.
 func DeriveTestNameFromPath(relativePath string) string {
 	p := relativePath
 	if i := strings.LastIndex(p, "."); i >= 0 {
@@ -239,7 +273,28 @@ func DeriveTestNameFromPath(relativePath string) string {
 			p = p[:i]
 		}
 	}
+
+	leaf := basename(p)
+	if isDetoxArtifactLeaf(leaf) {
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			parent := p[:i]
+			if j := strings.LastIndex(parent, "/"); j >= 0 {
+				return parent[j+1:]
+			}
+			return parent
+		}
+	}
 	return p
+}
+
+func isDetoxArtifactLeaf(name string) bool {
+	switch name {
+	case "testStart", "testFnFailure", "testDone",
+		"beforeAllFailure", "afterAllFailure",
+		"beforeEachFailure", "afterEachFailure":
+		return true
+	}
+	return strings.HasPrefix(name, "DETOX_VISIBILITY_")
 }
 
 // DeriveScreenshotType labels Detox's three well-known screenshot kinds so

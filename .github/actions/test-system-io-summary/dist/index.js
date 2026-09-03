@@ -26029,6 +26029,20 @@ function truncateDescription(s) {
   return `${s.slice(0, DESCRIPTION_MAX - 1)}\u2026`;
 }
 
+// src/report_url.ts
+function encodeBranchPathSegment(branch) {
+  return (branch || "main").replace(/^refs\/heads\//, "").replace(/^refs\/tags\//, "").replace(/\//g, "~");
+}
+function buildReportURL(baseURL, c) {
+  const repoTrailing = (c.repository || "").split("/").pop() || c.repository;
+  const repo = encodeURIComponent(repoTrailing);
+  const branch = encodeURIComponent(encodeBranchPathSegment(c.branch || "main"));
+  const shortSha = (c.commit_sha || "").slice(0, 7);
+  const name = encodeURIComponent(c.name);
+  const attempt = encodeURIComponent(c.gh_run_attempt || "1");
+  return `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(c.gh_run_id)}&gh_run_attempt=${attempt}`;
+}
+
 // src/retry-fetch.ts
 var DEFAULT_DELAYS_MS = [400, 1200, 3e3];
 async function retryFetch(input, init, label) {
@@ -26098,16 +26112,34 @@ async function run() {
   info(
     `orchestration status: status=${status.status ?? "unknown"} total=${status.total_units ?? "?"} pass=${counts.completed_pass ?? 0} fail=${counts.completed_fail ?? 0} skip=${counts.completed_skipped ?? 0} pending=${counts.pending ?? 0} leased=${counts.leased ?? 0}`
   );
-  const repoSlug = compositeIdentity.repository || "";
-  const repoTrailing = repoSlug.split("/").pop() || repoSlug;
-  const repo = encodeURIComponent(repoTrailing);
-  const branch = encodeURIComponent(compositeIdentity.branch || "main");
-  const shortSha = (compositeIdentity.commit_sha || "").slice(0, 7);
-  const name = encodeURIComponent(compositeIdentity.name);
-  const reportURL = `${baseURL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(compositeIdentity.gh_run_id)}`;
+  const unitPass = status.counts?.completed_pass ?? 0;
+  const unitFail = status.counts?.completed_fail ?? 0;
+  const unitSkip = status.counts?.completed_skipped ?? 0;
+  const totalSpecs = unitPass + unitFail + unitSkip;
+  const missedCount = computeMissedCount(status.total_units, totalSpecs);
+  const incomplete = status.status !== "completed" || missedCount > 0;
+  const { passed, failed, skipped, flaky } = resolveHeadlineCounts({
+    unitPass,
+    unitFail,
+    unitSkip,
+    tests: status.tests
+  });
+  const rateDenom = passed + failed;
+  const rate = rateDenom > 0 ? passed * 100 / rateDenom : 0;
+  const rateStr = rate === 100 ? "100%" : `${rate.toFixed(1)}%`;
+  const commitStatusMessage = buildCommitStatusMessage({
+    incomplete,
+    rate,
+    rateStr,
+    passed,
+    rateDenom,
+    failed,
+    totalSpecs,
+    missedCount
+  });
+  const reportURL = buildReportURL(baseURL, compositeIdentity);
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) {
-    const counts2 = status.counts || {};
     const total = status.total_units ?? "?";
     const lines = [
       `## E2E Test Results \u2014 ${framework}`,
@@ -26116,35 +26148,23 @@ async function run() {
       "",
       `**Run status:** \`${status.status ?? "unknown"}\``,
       "",
+      `**Result:** ${commitStatusMessage}`,
+      "",
       "| metric | value |",
       "|---|---|",
       `| total units | ${total} |`,
-      `| pass | ${counts2.completed_pass ?? 0} |`,
-      `| fail | ${counts2.completed_fail ?? 0} |`,
-      `| skipped | ${counts2.completed_skipped ?? 0} |`,
-      `| pending | ${counts2.pending ?? 0} |`,
-      `| leased | ${counts2.leased ?? 0} |`,
+      `| pass | ${counts.completed_pass ?? 0} |`,
+      `| fail | ${counts.completed_fail ?? 0} |`,
+      `| skipped | ${counts.completed_skipped ?? 0} |`,
+      `| pending | ${counts.pending ?? 0} |`,
+      `| leased | ${counts.leased ?? 0} |`,
+      `| abandoned | ${counts.abandoned ?? 0} |`,
       "",
       `[Open Report Group](${reportURL})`,
       ""
     ];
     fs3.appendFileSync(summaryPath, lines.join("\n"));
   }
-  const unitPass = status.counts?.completed_pass ?? 0;
-  const unitFail = status.counts?.completed_fail ?? 0;
-  const unitSkip = status.counts?.completed_skipped ?? 0;
-  const totalSpecs = unitPass + unitFail + unitSkip;
-  const t = status.tests;
-  const haveTestRollup = !!t && (t.total ?? 0) > 0;
-  const passed = haveTestRollup ? (t.passed ?? 0) + (t.flaky ?? 0) : unitPass;
-  const failed = haveTestRollup ? t.failed ?? 0 : unitFail;
-  const skipped = haveTestRollup ? t.skipped ?? 0 : unitSkip;
-  const flaky = haveTestRollup ? t.flaky ?? 0 : 0;
-  const rateDenom = passed + failed;
-  const rate = rateDenom > 0 ? passed * 100 / rateDenom : 0;
-  const rateStr = rate === 100 ? "100%" : `${rate.toFixed(1)}%`;
-  const specSuffix = totalSpecs > 0 ? `, ${totalSpecs} specs` : "";
-  const commitStatusMessage = rate === 100 ? `${rateStr} passed (${passed})${specSuffix}` : `${rateStr} passed (${passed}/${rateDenom})${specSuffix}, ${failed} failed`;
   const setupMs = computeSetupMs(status.durations?.begin_at, status.durations?.first_test_at);
   const rawFirstPassMs = status.durations?.first_pass_ms ?? null;
   const firstPassMs = rawFirstPassMs != null && setupMs != null ? Math.max(0, rawFirstPassMs - setupMs) : rawFirstPassMs;
@@ -26165,7 +26185,7 @@ async function run() {
   const imageTagSegment = imageTag ? `, image_tag:${imageTag}${aliasesSuffix}` : "";
   const durationSegment = durationDisplay ? `, ${durationDisplay}` : "";
   const commitStatusDescription = `${commitStatusMessage}${durationSegment}${imageTagSegment}`;
-  const webhookColor = colorForRate(rate);
+  const webhookColor = incomplete ? "#F44336" : colorForRate(rate);
   const retestDisplay = retestUnitCount > 0 ? `:repeat: re-run ${retestUnitCount} spec(s)` : "";
   const webhookPayload = renderWebhookPayload({
     username: webhookUsername,
@@ -26204,26 +26224,54 @@ async function run() {
     await finalizeCommitStatus({
       compositeIdentity,
       contextName,
-      runStatus: status.status ?? "unknown",
+      incomplete,
       failedUnitCount: unitFail,
       description: commitStatusDescription,
       targetURL: reportURL
     });
   }
-  if (status.status !== "completed") {
-    const msg = `run did not complete cleanly: ${status.status}`;
-    if (failOnTestFailures) throw new Error(msg);
-    warning(msg);
+  const failureMessage = buildFailureMessage(incomplete, status.status, missedCount, unitFail);
+  if (failureMessage) {
+    if (failOnTestFailures) throw new Error(failureMessage);
+    warning(failureMessage);
   }
-  if (failed > 0) {
-    const msg = `${failed} unit(s) failed`;
-    if (failOnTestFailures) throw new Error(msg);
-    warning(msg);
+}
+function resolveHeadlineCounts(a) {
+  const t = a.tests;
+  const haveTestRollup = !!t && (t.total ?? 0) > 0;
+  const testFailed = haveTestRollup ? t.failed ?? 0 : 0;
+  if (!haveTestRollup || a.unitFail > 0 && testFailed === 0) {
+    return {
+      passed: a.unitPass,
+      failed: a.unitFail,
+      skipped: a.unitSkip,
+      flaky: 0
+    };
   }
+  return {
+    passed: (t.passed ?? 0) + (t.flaky ?? 0),
+    failed: testFailed,
+    skipped: t.skipped ?? 0,
+    flaky: t.flaky ?? 0
+  };
 }
 function resolveBaseURL() {
   const useStaging = getInput("use-staging").trim().toLowerCase() === "true";
   return useStaging ? STAGING_URL : PRODUCTION_URL;
+}
+function computeMissedCount(totalUnits, totalSpecs) {
+  return Math.max(0, (totalUnits ?? 0) - totalSpecs);
+}
+function buildFailureMessage(incomplete, status, missedCount, failed) {
+  if (incomplete) return `run incomplete: status=${status ?? "unknown"} missed=${missedCount}`;
+  if (failed > 0) return `${failed} unit(s) failed`;
+  return null;
+}
+function buildCommitStatusMessage(args) {
+  const { incomplete, rate, rateStr, passed, rateDenom, failed, totalSpecs, missedCount } = args;
+  const specSuffix = totalSpecs > 0 ? `, ${totalSpecs} specs` : "";
+  const missedClause = missedCount > 0 ? `\u26A0 ${missedCount} spec(s) missed, the rest ` : incomplete ? `\u26A0 run incomplete, ` : "";
+  return rate === 100 ? `${missedClause}${rateStr} passed (${passed})${specSuffix}` : `${missedClause}${rateStr} passed (${passed}/${rateDenom})${specSuffix}, ${failed} failed`;
 }
 async function fetchOrchestrationStatus(endpoint2, params, bearer) {
   const url = `${endpoint2}?${params.toString()}`;
@@ -26289,6 +26337,10 @@ function colorForRate(rate) {
   if (rate >= 98) return "#FF9800";
   return "#F44336";
 }
+function deriveCommitState(incomplete, failedUnitCount) {
+  if (incomplete) return "error";
+  return failedUnitCount > 0 ? "failure" : "success";
+}
 async function finalizeCommitStatus(a) {
   const c = a.compositeIdentity;
   const [owner, repo] = (c.repository || "").split("/");
@@ -26300,7 +26352,7 @@ async function finalizeCommitStatus(a) {
     warning("update-commit-status is true but commit-status-context is empty; skipping.");
     return;
   }
-  const state = a.runStatus !== "completed" ? "error" : a.failedUnitCount > 0 ? "failure" : "success";
+  const state = deriveCommitState(a.incomplete, a.failedUnitCount);
   await setCommitStatus({
     token: getInput("github-token"),
     owner,

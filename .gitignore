@@ -1,3 +1,7 @@
+# Local-only scratch (incident investigation notes, pulled logs/metrics —
+# never committed, kept on disk for review only)
+.local/
+
 # Go
 apps/server/bin/
 apps/server/coverage.out

@@ -29,56 +29,76 @@ Developer opens PR → CI runs on PR (auto)
 
 | Environment | URL | Trigger |
 |-------------|-----|---------|
-| Staging | `https://staging-test-io.test.mattermost.com` | Manual (`workflow_dispatch`, no input) |
+| Staging | `https://staging-test-io.test.mattermost.com` | Manual (`workflow_dispatch`; optional `pr_number`) |
 | Production | `https://test-io.test.mattermost.com` | Manual (`workflow_dispatch`, input: beta tag) |
 
 ## Deploy to Staging
 
 ### When to deploy
 
-After a PR is merged to `main` and CI passes on the merge commit.
+- **From `main`:** after a PR is merged and you want a promotable beta on staging.
+- **From a PR:** to try an unmerged branch on staging without a GitHub prerelease (not promotable to production).
 
 ### How to deploy
 
 1. Go to **Actions** → **Deploy Staging**
 2. Click **Run workflow**
-3. No input needed — deploys the current `main` branch
+3. Inputs:
+   - Leave **pr_number** empty → deploy current `main` as `{version}-{sha}.beta` and publish a GitHub **prerelease**
+   - Set **pr_number** (e.g. `83`) and set **confirm_pr_deploy** to the same number → deploy that open same-repo PR's head as `{version}-{sha}.pr-83` and **do not** create a GitHub release/prerelease
+   - Fork PRs are rejected (staging secrets must not build untrusted heads)
 
 ### What happens
 
-```
+```text
 1. check-concurrent    → Rejects if another staging deploy is running
-2. build-and-tag       → Reads version from apps/server/VERSION
-                        → Computes beta tag: {version}-{short_sha}.beta
-                        → Builds Docker image and pushes to Docker Hub
-                        → Creates GitHub prerelease with the beta tag
-3. deploy              → Restarts PostgreSQL container (fresh database)
+2. resolve             → main → .beta + prerelease; PR → .pr-<n>, no release
+3. ci                  → Runs checks on the resolved commit
+4. build-and-tag       → Builds/pushes Docker image with the resolved tag
+                        → Creates GitHub prerelease only for .beta (main)
+5. deploy              → Restarts PostgreSQL container (fresh database)
                         → If a previous release exists:
                             → Deploys latest release version first
                             → Waits for stable
-                            → Then deploys beta version (exercises migrations)
+                            → Then deploys the new image (exercises migrations)
                         → If no previous release:
-                            → Deploys beta directly
+                            → Deploys the new image directly
                         → Waits for ECS service to stabilize
                         → Health check: curl $APP_URL/ready
 ```
 
 ### Version tag format
 
-```
+**Main (promotable):**
+
+```text
 {version}-{short_sha}.beta
 Example: 0.1.0-abcdefg.beta
+```
+
+**PR (staging-only, not promotable):**
+
+```text
+{version}-{short_sha}.pr-{number}
+Example: 0.1.0-abcdefg.pr-83
 ```
 
 - Version is read from `apps/server/VERSION`
 - Short SHA is the first 7 characters of the commit hash
 - No `v` prefix
+- Production deploy still requires a `.beta` GitHub prerelease, so `.pr-*` images cannot be promoted by mistake
 
 ### What is created
 
+**Main:**
+
 - Docker Hub image: `mattermostdevelopment/mattermost-test-system-io:0.1.0-abcdefg.beta`
-- GitHub prerelease: `0.1.0-abcdefg.beta`
-- Git tag: `0.1.0-abcdefg.beta`
+- GitHub prerelease + git tag: `0.1.0-abcdefg.beta`
+
+**PR:**
+
+- Docker Hub image: `mattermostdevelopment/mattermost-test-system-io:0.1.0-abcdefg.pr-83`
+- No GitHub release/prerelease
 
 ## Promote to Production
 
@@ -99,7 +119,8 @@ After validating the staging deployment (checking the staging URL, running tests
 1. check-concurrent    → Rejects if another production deploy is running
 2. validate-and-retag  → Validates beta tag exists as GitHub prerelease
                         → Validates beta Docker image exists in Docker Hub
-                        → Extracts release version (strips -{sha}.beta suffix)
+                        → Extracts release version (strips -{sha}.beta suffix,
+                          appends this workflow run's ID)
                         → Retags image as release version + latest (NO rebuild)
                         → Creates GitHub release (not prerelease) with release tag
 3. deploy              → Updates ECS service with release version image
@@ -108,24 +129,37 @@ After validating the staging deployment (checking the staging URL, running tests
                         → Health check: curl $APP_URL/ready
 ```
 
+### Version tag format
+
+```text
+{version}.{run_id}
+Example: 0.13.0.30331189149
+```
+
+- `{version}` is the semver `major.minor.patch` from `apps/server/VERSION` at the time the beta was built (the `-{sha}.beta` suffix is stripped off the beta tag)
+- `{run_id}` is the `deploy_production.yml` workflow run's own `github.run_id`
+- The run ID makes each fresh production workflow run's Docker tag / GitHub release unique, even when re-promoting without bumping `VERSION` first (e.g. promoting a follow-up beta of the same version). This removes the requirement to bump `VERSION` before every production deploy — you still bump it for real semver-significant changes (see below), but a same-version re-promotion from a new run no longer collides with or overwrites the previous release's tag.
+- `VERSION` still follows [semver](https://semver.org/): bump `patch` for fixes, `minor` for backwards-compatible features, `major` for breaking changes. The run ID is a uniqueness suffix on top of that, not a replacement for semver discipline.
+- **Caveat:** `run_id` stays the same across "Re-run failed jobs." If a promotion fails partway, trigger a fresh **Deploy Production** run instead — reruns can collide on the same tag.
+
 ### Key: No rebuild
 
 The production deployment does **not** rebuild the Docker image. It retags the exact same image that was tested in staging:
 
 ```
 docker buildx imagetools create \
-  --tag mattermostdevelopment/mattermost-test-system-io:0.1.0 \
+  --tag mattermostdevelopment/mattermost-test-system-io:0.13.0.30331189149 \
   --tag mattermostdevelopment/mattermost-test-system-io:latest \
-  mattermostdevelopment/mattermost-test-system-io:0.1.0-abcdefg.beta
+  mattermostdevelopment/mattermost-test-system-io:0.13.0-abcdefg.beta
 ```
 
 This guarantees 100% artifact parity between staging and production.
 
 ### What is created
 
-- Docker Hub image: `mattermostdevelopment/mattermost-test-system-io:0.1.0` + `:latest`
-- GitHub release: `0.1.0`
-- Git tag: `0.1.0`
+- Docker Hub image: `mattermostdevelopment/mattermost-test-system-io:0.13.0.30331189149` + `:latest`
+- GitHub release: `0.13.0.30331189149`
+- Git tag: `release-0.13.0.30331189149`
 
 ## Deployment Flow Example
 
@@ -144,7 +178,7 @@ curl https://staging-test-io.test.mattermost.com/ready
 #    Actions → Deploy Production → Run workflow
 #    Input: 0.1.0-abc1234.beta
 #    Approve in GitHub Environment review
-#    Creates: 0.1.0 (release)
+#    Creates: 0.1.0.<run_id> (release)
 ```
 
 ## Rollback
@@ -159,6 +193,8 @@ Re-promote the previous beta tag:
 
 1. Go to **Actions** → **Deploy Production**
 2. Enter the **previous** beta tag (find it in GitHub Releases under prereleases)
+
+This re-promotion gets its own `run_id` suffix, so it produces a new Docker tag / GitHub release distinct from the one being rolled back from — no manual version bump needed.
 
 ### Staging
 

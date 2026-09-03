@@ -1,18 +1,10 @@
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Loader2, Activity, Clock, ListTodo, BellRing, Gauge } from 'lucide-react';
-import {
-  useTriagePhase,
-  useSlaReport,
-  useStabilizationQueue,
-  useAlertEvaluation,
-} from '@/services/api';
-
-const PHASES = ['shadow', 'PR gate', 'master gate', 'self-healing'];
+import { ListTodo, BellRing, Gauge } from 'lucide-react';
+import { useStabilizationQueue, useAlertEvaluation } from '@/services/api';
 
 /**
- * The triage status surface: rollout phase, past-SLA list (the weekly review's
- * one-click view — W15c), the stabilization queue head (W14), and the dry
+ * The triage status surface: the stabilization queue head (W14) and the dry
  * alert evaluation (W7). Read-only by design: writes go through the
  * authenticated API by CI jobs and maintainers.
  */
@@ -20,8 +12,6 @@ export function TriageStatusPage() {
   const [params] = useSearchParams();
   const repo = params.get('repo') || 'mattermost';
   const [repoInput, setRepoInput] = useState(repo);
-  const phase = useTriagePhase();
-  const sla = useSlaReport(repo);
   const queue = useStabilizationQueue(repo);
   const alerts = useAlertEvaluation(repo);
 
@@ -39,7 +29,7 @@ export function TriageStatusPage() {
             Triage status
           </h1>
           <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
-            Rollout phase, SLA clocks, stabilization queue, and the dry alert view.
+            The stabilization queue and the dry alert view.
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm">
@@ -64,79 +54,6 @@ export function TriageStatusPage() {
           </button>
         </div>
       </header>
-
-      <section className="mb-6 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-        <h2 className="flex items-center gap-2 font-medium">
-          <Activity className="size-4" />
-          Rollout phase
-        </h2>
-        {phase.isLoading ? (
-          <div className="mt-2 flex items-center gap-2 text-sm text-neutral-500">
-            <Loader2 className="size-4 animate-spin" /> loading…
-          </div>
-        ) : phase.data ? (
-          <div className="mt-2 flex flex-wrap items-baseline gap-3">
-            <span className="text-3xl font-semibold">{phase.data.phase}</span>
-            <span className="text-sm font-medium">{PHASES[phase.data.phase]}</span>
-            <span className="text-xs text-neutral-500">
-              set by {phase.data.updated_by} · {new Date(phase.data.updated_at).toLocaleString()}
-            </span>
-          </div>
-        ) : null}
-      </section>
-
-      <section className="mb-6 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-        <h2 className="flex items-center gap-2 font-medium">
-          <Clock className="size-4" />
-          Past SLA {sla.data && sla.data.entries.length > 0 && `(${sla.data.entries.length})`}
-        </h2>
-        <p className="mt-1 text-xs text-neutral-500">
-          The weekly review list — flag2 notifies the owning lead; flag1 lands on the review agenda.
-        </p>
-        {sla.data && sla.data.entries.length > 0 ? (
-          <table className="mt-3 w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-neutral-500">
-                <th className="py-1">Test</th>
-                <th>Verdict</th>
-                <th>Age / limit</th>
-                <th>State</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sla.data.entries.map((e) => (
-                <tr
-                  key={e.verdict_id}
-                  className="border-t border-neutral-100 dark:border-neutral-900"
-                >
-                  <td className="py-1 font-mono text-xs">{e.external_test_id ?? '—'}</td>
-                  <td>{e.verdict}</td>
-                  <td>
-                    {e.age_days}d / {e.limit_days}d
-                  </td>
-                  <td>
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-xs ${
-                        e.state === 'flag2'
-                          ? 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'
-                          : e.state === 'flag1'
-                            ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300'
-                            : 'bg-neutral-100 dark:bg-neutral-900'
-                      }`}
-                    >
-                      {e.state}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="mt-2 text-sm text-neutral-500">
-            {sla.isLoading ? 'loading…' : 'No open SLA clocks — nothing past its limit.'}
-          </p>
-        )}
-      </section>
 
       <section className="mb-6 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
         <h2 className="flex items-center gap-2 font-medium">

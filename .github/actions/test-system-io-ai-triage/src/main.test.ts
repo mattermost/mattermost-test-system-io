@@ -122,9 +122,6 @@ const evidencePack = {
 
 globalThis.fetch = (async (input: RequestInfo | URL) => {
   const url = String(input);
-  if (url.includes("/api/v1/triage/phase")) {
-    return new Response(JSON.stringify({ phase: 0 }), { status: 200 });
-  }
   if (url.includes("/api/v1/triage/evidence")) {
     return new Response(JSON.stringify(evidencePack), { status: 200 });
   }

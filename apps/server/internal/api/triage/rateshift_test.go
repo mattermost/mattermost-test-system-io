@@ -209,7 +209,7 @@ func TestSuggestCitesRateShift(t *testing.T) {
 			ElsewhereOK: true, RateShift: shifted,
 		}
 		got := Suggest(s)
-		if got.Verdict != slaVerdictFlakyTest {
+		if got.Verdict != verdictFlakyTest {
 			t.Fatalf("verdict = %q, want FLAKY_TEST (the verdict is deliberately unchanged)", got.Verdict)
 		}
 		if !hasCite(got.Citations, citeRateShift) {

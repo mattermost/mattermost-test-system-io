@@ -37,7 +37,7 @@ test("parseJSON: valid JSON is accepted whatever the content-type claims", async
   for (const ct of ["application/json", "text/plain;charset=UTF-8", ""]) {
     const got = await parseJSON<{ ok: boolean }>(
       res('{"ok":true}', ct ? { headers: { "content-type": ct } } : {}),
-      "triage/phase",
+      "triage/pass-rates",
     );
     assert.deepEqual(got, { ok: true }, `content-type ${JSON.stringify(ct)} must be accepted`);
   }

@@ -2,6 +2,10 @@ package triage
 
 import "strings"
 
+// verdictFlakyTest is the one verdict name this package both produces and
+// asserts on in several places; the rest are written at their single use site.
+const verdictFlakyTest = "FLAKY_TEST"
+
 // Signals is the subset of a failure the deterministic classifier needs.
 // History fields are ignored when HistoryOK is false.
 type Signals struct {
@@ -79,7 +83,7 @@ func Suggest(s Signals) Suggestion {
 			cites = append(cites, citeRateShift)
 		}
 		return Suggestion{
-			Verdict:    "FLAKY_TEST",
+			Verdict:    verdictFlakyTest,
 			Confidence: 1,
 			NeedsAI:    false,
 			Reason:     "this run recovered after a retry — flakiness was measured, not inferred",
@@ -163,7 +167,7 @@ func Suggest(s Signals) Suggestion {
 			reason += "; but the failure rate shifted materially at this commit, which historical flakiness does not explain"
 		}
 		return Suggestion{
-			Verdict:    "FLAKY_TEST",
+			Verdict:    verdictFlakyTest,
 			Confidence: 0.8,
 			NeedsAI:    true,
 			Reason:     reason,

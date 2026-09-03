@@ -16,43 +16,11 @@ export const WAIVE_CONFIDENCE = 0.85;
  * is elsewhere).
  *
  * Observed live on mattermost#38154: three clusters, all runs=0, all
- * FLAKY_* at 0.87-0.88. Nothing was waived only because a missing
- * /triage/phase pinned the run to shadow mode. At phase 1 all three would
- * have greened the check on no history at all.
+ * FLAKY_* at 0.87-0.88. Nothing was waived only because the run was in
+ * shadow mode. In gate mode all three would have greened the check on no
+ * history at all — which is what this floor now refuses on its own.
  */
 export const MIN_HISTORY_RUNS_FOR_WAIVER = 3;
-
-/**
- * W13/W6 — the server's rollout phase caps what a run type may gate.
- *
- *   phase 0 (shadow)  → nothing flips, everything observes + comments
- *   phase 1 (PR gate) → PR checks may green on waived flakes
- *   phase 2 (master)  → MAIN checks may green on waived confirmed flakes
- *   phase 3 (loop)    → as 2 (the stabilization loop is separate machinery)
- *
- * RELEASE runs "gate" from phase 1 too, but neverAutoWaive means nothing is
- * waivable there — release trains stay fail-closed by policy, not by phase.
- */
-export function modeForPhase(runType: string, phase: number): "shadow" | "gate" {
-  if (phase <= 0) return "shadow";
-  const t = (runType || "").toUpperCase();
-  if (t === "MAIN" && phase < 2) return "shadow";
-  return "gate";
-}
-
-/**
- * B4: the phase payload parser, fail-closed on any shape but a conforming
- * integer. A string ("phase-2") or object passes both naive range checks as
- * falses and must NEVER silently enable gating.
- */
-export function parsePhasePayload(body: unknown): number {
-  if (typeof body !== "object" || body === null) return 0;
-  const raw = (body as Record<string, unknown>).phase;
-  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 3) {
-    return 0;
-  }
-  return raw;
-}
 
 /**
  * B2/B3: nothing greens unless the ledger recorded it. Gate mode refuses the
@@ -75,15 +43,23 @@ export function mayFlipChecks(
   };
 }
 
-/** The full waiver decision: policy (canWaive) AND phase (modeForPhase). */
-export function canWaiveAtPhase(args: Parameters<typeof canWaive>[0] & { phase: number }): {
+/**
+ * The full waiver decision: policy (canWaive) AND the run's mode.
+ *
+ * Gating is owned by the caller's workflow, not by server state: the action
+ * only ever waives in gate mode, so a workflow not wired to gate cannot green
+ * anything, whatever the classifier or the model concluded. RELEASE runs may
+ * be in gate mode too, but neverAutoWaive means nothing is waivable there —
+ * release trains stay fail-closed by policy, not by mode.
+ */
+export function canWaiveInMode(args: Parameters<typeof canWaive>[0] & { mode: string }): {
   waived: boolean;
   reason: string;
 } {
-  if (modeForPhase(args.runType, args.phase) !== "gate") {
+  if ((args.mode || "").toLowerCase() !== "gate") {
     return {
       waived: false,
-      reason: `phase ${args.phase} keeps ${args.runType || "PR"} runs in shadow mode`,
+      reason: `shadow mode observes only — ${args.runType || "PR"} run flips nothing`,
     };
   }
   return canWaive(args);
@@ -445,11 +421,11 @@ export function decide(args: {
   branch: string;
   changedFiles: string[];
   ai?: ClaudeVerdict;
-  /** W13 rollout phase — gates the waiver decision itself (B5 fix): the
-   * decision, the ledger row, and the outputs must all agree with the
-   * phase ladder, not just the local mode variable. REQUIRED — a missing
-   * phase must be a compile error, never a silent default. */
-  phase: number;
+  /** The run's mode ("gate" | "shadow") — gates the waiver decision itself
+   * (B5 fix): the decision, the ledger row and the outputs must all agree
+   * with it, not just a local variable read later. REQUIRED — a missing mode
+   * must be a compile error, never a silent default. */
+  mode: string;
 }): Decision {
   const suggested: Suggestion = args.failure.suggested;
   const overlaps = diffOverlaps(args.changedFiles, args.failure.file, args.failure.error_stack);
@@ -473,7 +449,7 @@ export function decide(args: {
   // the classifier already fails closed to INCONCLUSIVE on a history error, so
   // treating "unknown" as "insufficient" here would double-count it.
   const historyRuns = args.failure.history_error ? undefined : args.failure.history?.runs;
-  const waiver = canWaiveAtPhase({
+  const waiver = canWaiveInMode({
     runType: args.runType,
     branch: args.branch,
     verdict: merged.verdict,
@@ -485,7 +461,7 @@ export function decide(args: {
     rateShiftedAtCommit: rateShifted,
     quarantined,
     historyRuns,
-    phase: args.phase,
+    mode: args.mode,
   });
   const d: Decision = {
     ...merged,

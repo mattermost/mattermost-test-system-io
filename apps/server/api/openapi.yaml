@@ -1515,61 +1515,6 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TriageAuditAgreement' }
 
-  /api/v1/triage/phase:
-    get:
-      tags: [triage]
-      summary: The rollout phase (0-3) — the single value every gating decision reads
-      description: |
-        W13 — shadow(0) / PR gate(1) / master gate(2) / self-healing(3).
-        Demotion is automatic by exactly one phase; promotion is a manual human
-        action offered only after two consecutive clean weeks.
-      security: []
-      responses:
-        '200':
-          description: Current phase
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [phase, updated_at, updated_by]
-                properties:
-                  phase: { type: integer, minimum: 0, maximum: 3 }
-                  updated_at: { type: string, format: date-time }
-                  updated_by: { type: string }
-
-  /api/v1/triage/phase/evaluation:
-    get:
-      tags: [triage]
-      summary: Live phase-gate inputs and decision (dry — nothing applied)
-      security: []
-      parameters:
-        - in: query
-          name: repo
-          schema: { type: string }
-          required: true
-      responses:
-        '200':
-          description: Measured inputs + the gate's decision
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  inputs:
-                    type: object
-                    properties:
-                      reviews: { type: integer }
-                      agreement_pooled: { type: number }
-                      false_greens_30d: { type: integer }
-                      release_false_greens: { type: integer, description: Stub until W5 release-run linkage. }
-                  decision:
-                    type: object
-                    properties:
-                      demote: { type: boolean }
-                      demote_reason: { type: string }
-                      promote_eligible: { type: boolean }
-                      clean_weeks: { type: integer }
-
   /api/v1/triage/release-guard:
     get:
       tags: [triage]
@@ -1643,40 +1588,6 @@ paths:
                   ranked:
                     type: array
                     items: { $ref: '#/components/schemas/StabilizationQueueEntry' }
-
-  /api/v1/triage/sla:
-    get:
-      tags: [triage]
-      summary: W15c — the past-SLA list the weekly review opens (worst first)
-      security:
-        - apiKey: []
-        - bearer: []
-        - sessionCookie: []
-      parameters:
-        - in: query
-          name: repo
-          schema: { type: string }
-          required: true
-      responses:
-        '200':
-          description: Open SLA clocks with 1x/2x breach flags
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  repo: { type: string }
-                  entries:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        verdict_id: { type: string }
-                        verdict: { type: string }
-                        attributed: { type: boolean }
-                        age_days: { type: integer }
-                        limit_days: { type: integer }
-                        state: { type: string, enum: [open, flag1, flag2] }
 
   /api/v1/triage/alerts/evaluation:
     get:

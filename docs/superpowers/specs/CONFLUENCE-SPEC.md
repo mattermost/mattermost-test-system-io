@@ -206,62 +206,48 @@ The override label is **human-only** and applying it writes a ledger row.
 > **Open gap:** CODEOWNERS has no `e2e-tests/**` entry, so routing currently
 > falls back to test infra.
 
-### 4.4 The loop cannot keep up, and we should say so
+### 4.4 Can the loop keep up?
 
 | Input | Value |
 |---|---|
 | Arrival | **1.5 new flaky tests/day** (measured) |
-| Re-measurement window | 7 days (irreducible — it is the proof a fix worked) |
+| Re-measurement window | one job, not 7 days — see below |
 | Review latency | up to 7 days on a weekly rotation |
-| Cycle time | 9–14 days |
-| Drain | **0.10–0.37/day** |
-| Concurrency needed to break even | **20–32** |
 | Concurrency cap | **5** (review capacity, not agent capacity) |
 
-**With the naive sampling strategy, coverage is 6–25% and the backlog grows by
-roughly 1.1–1.4 tests/day.** That is not the end of the story — see below.
+Two things decide this, and only two: how long a fix waits for review, and how
+long it takes to prove the fix worked.
 
-This is the most important number in this document, and it inverts a natural
-assumption. "Fix master and PR pain goes away" is right in direction — a fix
-removes a recurring source of noise permanently, where a waiver only mitigates
-one occurrence — but it does **not** close at planned capacity. **PR-side
-waivers are load-bearing indefinitely, not a temporary bridge.**
+**The re-measurement window is not 7 days.** The naive way to collect 20 samples
+of a test is to wait for 20 natural master runs, which takes a week. Re-run the
+one test 20 times with `--grep` on its `MM-T` id and 20 samples take a single
+job. It is also a *better* measurement: 20 consecutive executions at one commit
+isolate that test's own flakiness, whereas 20 master runs spread over a week
+confound it with everything else that landed. That workflow is built and
+shipped (§10).
 
-Only one input is a real lever. The window is irreducible, attempts-per-fix is a
-property of the tests, concurrency is capped by review capacity. That leaves
-**review latency**:
+**Review latency is the other one**, and it is the only input a decision can
+change: attempts-per-fix is a property of the tests, and concurrency is capped
+by review capacity. A weekly rotation puts a fix a week behind its own
+re-measurement; a 48-hour SLA (**D5**) removes that wait.
 
-| Review latency | Cycle | Drain | Change |
-|---|---|---|---|
-| 7 days (weekly rotation) | 14d | 0.24/day | — |
-| **2 days (SLA)** | **9d** | **0.37/day** | **+55%** |
+Both are required. Targeted re-measurement on a weekly review cadence still
+leaves the queue growing, because the fix sits waiting longer than it took to
+prove.
 
-### The 7-day window was never irreducible — and that changes the answer
+**We are not modelling this any further.** An earlier draft carried a queueing
+model with a `/triage/stabilization/throughput` endpoint that computed a drain
+rate against arrival and declared whether the loop kept up. It has been removed:
+it affected no verdict, it was a spreadsheet served over HTTP, and pinning its
+output as a test proved the arithmetic rather than the world. The honest
+statement is the one above — two levers, both needed — and the real number
+arrives from running the loop, not from predicting it.
 
-An earlier version of this document claimed the re-measurement window could not
-be shortened because it *is* the proof a fix worked. That was wrong, and the
-error was in the sampling strategy rather than the arithmetic.
-
-The 7 days exist only because the naive way to collect 20 samples of a test is
-to wait for 20 natural master runs. **Re-run the one test 20 times with
-`--grep` on its `MM-T` id and 20 samples take a single job.** It is also a
-*better* measurement: 20 consecutive executions at one commit isolate that
-test's own flakiness, whereas 20 master runs spread over a week confound it
-with everything else that landed.
-
-| Configuration | Drain | vs arrival 1.47/day |
-|---|---|---|
-| Baseline — wait for master, weekly review, concurrency 2 | 0.10/day | 7% |
-| \+ targeted re-measurement | 0.18/day | 12% |
-| \+ targeted re-measurement **and** 48h review SLA at concurrency 5 | **1.48/day** | **keeps up** ✅ |
-
-**Both levers are required.** Targeted re-measurement alone at a weekly review
-cadence reaches only 0.46/day. This is pinned as a test, not asserted as a
-claim, so it cannot quietly stop being true.
-
-So the loop *can* keep master clean — which is what makes gating PRs from the
-start defensible. It needs decisions **D5** (the review SLA) and the
-re-measurement workflow, which is built and shipped (§10).
+**What this means for PR-side waivers.** Whether or not the loop keeps up, "fix
+master and PR pain goes away" is right in direction — a fix removes a recurring
+source of noise permanently, where a waiver only mitigates one occurrence — but
+the queue is long and the arrival rate is real. **PR-side waivers are
+load-bearing for the foreseeable future, not a two-week bridge.**
 
 ### 4.5 Quarantine — the third state
 
@@ -301,7 +287,8 @@ the ABAC case. **If the ledger write fails, the check is not flipped.**
 waivers. The payload genuinely does not contain the answer — verified by
 asserting that `verdict`, `confidence`, `root_cause`, `model`, `stratum` and
 `suspect_commit` are all absent from the raw API response. If agreement slips,
-the system drops a rollout phase automatically.
+gating is turned off at the workflow variable — a change a human makes and can
+see, not an automatic demotion buried in server state.
 
 ---
 
@@ -319,7 +306,7 @@ the system drops a rollout phase automatically.
 | Waivers cannot move the raw pass-rate | Live, before/after |
 | Nothing greens without a ledger row | Automated test |
 | The blind audit payload has no verdict | Automated test, six banned keys |
-| Master never waives a master regression | Automated test, all phases |
+| Master never waives a master regression | Automated test, both modes |
 | Release branches waive nothing | Automated test |
 | Six stabilization bans | 14/14 |
 | Test suite | 152 unit (ai-triage) + 46 triage unit + 43 stabilization + triage e2e, golangci-lint 0. **Caveat:** `internal/config` has 4 failures on a developer machine — `loadDotenv()` picks up the local `.env`, so `TSIO_DATABASE_URL`/`TSIO_S3_*` leak into the assertions. Pre-existing, unrelated to triage, and green in CI (proven in a clean worktree). Non-hermetic tests are still a real if minor defect. |
@@ -328,45 +315,59 @@ the system drops a rollout phase automatically.
 
 | Gap | Why it matters |
 |---|---|
-| **The pipeline HAS now called a frontier model — once.** mattermost#38154 run 33678302436 invoked `claude-sonnet-4-6` in CI on 4 real failures across 3 clusters. | Supersedes the earlier "never called" line. But **n=3 clusters, all on tests with `runs=0`**, none independently confirmed, and nothing gated (a missing `/triage/phase` on staging pinned the run to shadow). Still no accuracy number. |
+| **The pipeline HAS now called a frontier model — once.** mattermost#38154 run 33678302436 invoked `claude-sonnet-4-6` in CI on 4 real failures across 3 clusters. | Supersedes the earlier "never called" line. But **n=3 clusters, all on tests with `runs=0`**, none independently confirmed, and nothing gated (the run was in shadow mode). Still no accuracy number. Note the `runs=0` clusters would now be refused by the 3-run history floor regardless. |
 | **No accuracy or calibration number exists.** Earlier rounds used a local 31B which was **60% correct while stating 0.90 confidence**. | The 0.85 confidence floor protects nothing against a model that says 0.9 on everything. This is precisely why the policy gate — not the model — owns every green. |
 | **The screenshot path HAS now fired.** On the same run, 2 of 3 clusters cited screenshots and one reasoned from image content ("the Members panel is fully rendered… but the visible button is labelled 'Add'"). | Supersedes the earlier "never exercised" line — this was the single biggest measurement gap in rounds 4–6. Still only 3 clusters, and none of the verdicts is independently confirmed. |
 | **The agent fix loop has never run end to end.** The six bans pass, but no fix PR has been opened. | §4.3 is designed, not demonstrated. |
 
-**What this means for approval.** Phase 0 is shadow mode: nothing flips,
-everything observes. The risk of starting is bounded by construction, and it is
-the only way to obtain the two things every remaining question needs —
-production-model verdicts and failures that carry screenshots. **Do not promote
-past Phase 0 until those numbers exist.**
+**What this means for approval.** Step 1 of §7 — merging tsio#101 and leaving
+mattermost#38154 unmerged — flips nothing on any PR and still populates history
+retroactively from traffic TSIO already receives. The risk of starting is
+bounded by construction, and it is the only way to obtain the two things every
+remaining question needs — production-model verdicts and failures that carry
+screenshots. **Do not merge the mattermost half until those numbers exist.**
 
 ---
 
 ## 7. Rollout
 
-The ladder below changed after the throughput work in §4.4. The original plan
-was four weeks of shadow before anything could gate. Now that the loop can
-actually keep master clean, **PR gating starts in week one, with master
-enforcement alongside it** — because gating PRs is only safe if master is being
-kept clean, and keeping master clean is only worth it if PRs stop being red for
-reasons nobody owns. The two halves need each other.
+**There is no phase ladder any more.** An earlier draft carried one as server
+state — a `/triage/phase` value from 0 to 3 that capped what each run type
+could gate, with automatic demotion when blind-audit agreement slipped. It has
+been removed. What it encoded is already expressed by which pull request is
+merged, and a rollout stage that lives in two places (a database row and a
+merge state) can disagree with itself.
 
-| Phase | PR checks | Master checks | Exit criteria |
+The rollout is therefore a merge order:
+
+| Step | What is merged | PR checks | Master checks |
 |---|---|---|---|
-| **1 — PR gate + master watch** (week 1) | **gate** — may green on a waived flake | red stays red; alerting live; queue ranked | zero false greens in the ledger audit |
-| **2 — Master gate** (+2 weeks) | gate | may green on a *confirmed* flake | blind-audit agreement holds |
-| **3 — Loop** (+2 weeks) | gate | gate | agent fix PRs begin, review SLA holding |
+| **1 — collect** | tsio#101 only | untouched (nothing calls the action) | untouched; alerting live, queue ranked |
+| **2 — gate PRs** | \+ mattermost#38154 with `mode: gate` | **gate** — may green on a waived flake | red stays red |
+| **3 — gate master** | \+ `run-type: MAIN` at `mode: gate` | gate | may green on a *confirmed* flake |
+| **4 — loop** | \+ `E2E_STABILIZATION_LOOP=on` | gate | gate |
 
-Phase drops happen automatically if blind-audit agreement slips.
+**Step 1 is the measurement window, and it costs nothing to run.** Test history
+is derived from the report ingestion TSIO already receives, and migration
+`000027` backfills `external_test_id` on apply — so baselines, failure rates and
+`failing_since` are populated retroactively the moment the server ships, with no
+CI change in the mattermost repo. That is what produces the numbers §6 says do
+not exist yet.
 
-**Why starting at the gate is defensible rather than reckless.** Every green
+**Gating is owned by the calling workflow.** The action waives only in
+`mode: gate`, an unrecognised mode fails closed to shadow, and the mattermost
+templates read that input from a repo variable — so the kill switch is a
+variable change, not a revert, and it does not need server state to exist.
+
+**Why this is defensible rather than reckless once step 2 lands.** Every green
 still has to pass five independent policy refusals that the AI cannot influence
 (§3), a green is impossible without a ledger row, and `PR_REGRESSION` is never
-waivable. The failure mode of a wrong verdict in week one is one wrongly-green
-check on a PR whose author can see the reasoning and the evidence — not a silent
-one, and not a release.
+waivable. The failure mode of a wrong verdict is one wrongly-green check on a
+PR whose author can see the reasoning and the evidence — not a silent one, and
+not a release.
 
-**Expect master to look bad in week one.** The raw pass-rate is 88.40% today,
-so enforcing master will make it visibly red a lot. That is the point: it is
+**Expect master to look bad at step 3.** The raw pass-rate is 88.40% today, so
+enforcing master will make it visibly red a lot. That is the point: it is
 already broken, and the current arrangement just distributes the pain across
 every PR author instead of showing it in one place. The blast-radius ranking
 (§4.2) and quarantine (§4.5) exist so the queue is worked worst-first rather
@@ -384,8 +385,8 @@ history — works without either.
 
 | | Effort | When |
 |---|---|---|
-| Blind waiver audit | **45 min/week** | From Phase 0 |
-| Stabilization PR review | **up to 2h/week** | From Phase 3 |
+| Blind waiver audit | **45 min/week** | From step 2 (once verdicts exist) |
+| Stabilization PR review | **up to 2h/week** | From step 4 |
 
 One named test-infra reviewer per week. **If the open-PR count exceeds the
 budget, concurrency drops rather than review quality.** A reviewer may not audit
@@ -399,11 +400,11 @@ Silence on a line = we proceed with the default.
 
 | # | Decision | Default | Who |
 |---|---|---|---|
-| **D1** | Master checks may go green on confirmed flakes (Phase 2+) | Yes | @saturnino |
-| **D2** | Start at **Phase 1 — PR gating live in week one**, not four weeks of shadow | Yes | @saturnino |
+| **D1** | Master checks may go green on confirmed flakes (step 3+) | Yes | @saturnino |
+| **D2** | Merge tsio#101 now and hold mattermost#38154 until §6's accuracy number exists | Yes | @saturnino |
 | **D3** | Named weekly test-infra rotation at the budget in §8 | Yes | @eva |
-| **D4** | Turn on screenshot upload + wire the production API key | Yes — **blocks Phase 0** | @nuno |
-| **D5** | **48-hour stabilization review SLA** (+55% drain, §4.4) | Yes | @eva |
+| **D4** | Turn on screenshot upload + wire the production API key | Yes — **blocks the AI half** | @nuno |
+| **D5** | **48-hour stabilization review SLA** (§4.4) | Yes | @eva |
 | **D6** | Chronic flakes green bystander PRs; the forcing function is master red + the queue, not PR red | Yes | @saturnino |
 | **D7** | Add a CODEOWNERS `e2e-tests/**` entry | **shipped** | @eva to confirm the team handle |
 | **D8** | Enforce master alongside the PR gate from week one, accepting a visibly red master while the queue drains | Yes | @saturnino |
@@ -447,7 +448,7 @@ sitting on an unpushed branch.
 | What | Where | Why |
 |---|---|---|
 | Secret `TSIO_ALERTS_API_KEY` | tsio repo | The alerting job. `tsioctl keys issue --name master-health-alerts` |
-| Variable `E2E_STABILIZATION_LOOP=on` | mattermost | Enables the fix loop (Phase 3) |
+| Variable `E2E_STABILIZATION_LOOP=on` | mattermost | Enables the fix loop (step 4) |
 | Screenshot upload + `ANTHROPIC_API_KEY` | mattermost | Decision **D4** — the AI half |
 | Confirm `@mattermost/test-infra` is the right handle | mattermost | CODEOWNERS routing |
 
@@ -457,7 +458,7 @@ sitting on an unpushed branch.
 |---|---|
 | **Release-cut guard, workflow half** | The TSIO half (`/triage/release-guard`) is built and callable. The release automation it must pause was never located — flagged since W0. Needs someone who knows where the release-cut job lives. |
 | **`report-upload` action has no tests** | Pre-existing gap, found while fixing three other actions whose test globs were silently running nothing. Out of scope here; worth its own PR. |
-| **The loop has never opened a fix PR** | It is wired, off by default, and dry on manual runs. First real run is a Phase 3 activity. |
+| **The loop has never opened a fix PR** | It is wired, off by default, and dry on manual runs. First real run is a step-4 activity. |
 
 ### Reproducing the demo locally
 
@@ -482,8 +483,6 @@ local dev container names and credentials.
 | `GET /triage/pass-rates` | Raw and effective pass-rates |
 | `GET /triage/alerts/evaluation` | Dry-run alert evaluation |
 | `GET /triage/quarantine` | Active quarantines |
-| `GET /triage/stabilization/throughput` | Arrival vs drain, and the binding lever |
-| `GET /triage/phase` | Current rollout phase |
 
 **Authenticated writes**
 
@@ -494,7 +493,6 @@ local dev container names and credentials.
 | `POST /triage/quarantine/{id}/release` | End one early (reason mandatory) |
 | `POST /triage/stabilization/promote` | Push a test up the queue |
 | `POST /triage/audit/reviews` | Submit a blind audit call |
-| `POST /triage/phase` | Change rollout phase |
 
 **Reference:** `docs/superpowers/specs/PROJECT-STATUS.md` (current status and
 every measured number) · `2026-08-31-e2e-flakiness-management-strategy.md` (the

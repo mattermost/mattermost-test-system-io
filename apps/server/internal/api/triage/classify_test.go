@@ -4,7 +4,7 @@ import "testing"
 
 func TestSuggest_thisRunRecoveredIsMeasuredFlake(t *testing.T) {
 	got := Suggest(Signals{Status: "flaky", HistoryOK: true, Flips: 2})
-	if got.Verdict != "FLAKY_TEST" || got.Confidence != 1 || got.NeedsAI {
+	if got.Verdict != verdictFlakyTest || got.Confidence != 1 || got.NeedsAI {
 		t.Fatalf("got %+v", got)
 	}
 	if !contains(got.Citations, citeThisRunRecovered) || !contains(got.Citations, citeFlipCount) {
@@ -40,7 +40,7 @@ func TestSuggest_historicalFlipsNeedScreenshots(t *testing.T) {
 		Flips:       5,
 		FailureRate: 0.4,
 	})
-	if got.Verdict != "FLAKY_TEST" || !got.NeedsAI || got.Confidence != 0.8 {
+	if got.Verdict != verdictFlakyTest || !got.NeedsAI || got.Confidence != 0.8 {
 		t.Fatalf("got %+v", got)
 	}
 }

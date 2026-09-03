@@ -27139,20 +27139,6 @@ async function upsertTriageComment(args) {
 // src/policy.ts
 var WAIVE_CONFIDENCE = 0.85;
 var MIN_HISTORY_RUNS_FOR_WAIVER = 3;
-function modeForPhase(runType, phase) {
-  if (phase <= 0) return "shadow";
-  const t = (runType || "").toUpperCase();
-  if (t === "MAIN" && phase < 2) return "shadow";
-  return "gate";
-}
-function parsePhasePayload(body) {
-  if (typeof body !== "object" || body === null) return 0;
-  const raw = body.phase;
-  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 3) {
-    return 0;
-  }
-  return raw;
-}
 function mayFlipChecks(mode, ledgerOK) {
   if (ledgerOK) return { allowed: true };
   if (mode !== "gate")
@@ -27165,11 +27151,11 @@ function mayFlipChecks(mode, ledgerOK) {
     reason: "ledger write failed \u2014 refusing to flip: a waiver without a ledger row is silent"
   };
 }
-function canWaiveAtPhase(args) {
-  if (modeForPhase(args.runType, args.phase) !== "gate") {
+function canWaiveInMode(args) {
+  if ((args.mode || "").toLowerCase() !== "gate") {
     return {
       waived: false,
-      reason: `phase ${args.phase} keeps ${args.runType || "PR"} runs in shadow mode`
+      reason: `shadow mode observes only \u2014 ${args.runType || "PR"} run flips nothing`
     };
   }
   return canWaive(args);
@@ -27318,7 +27304,7 @@ function decide(args) {
   const q = args.failure.quarantine;
   const quarantined = q?.active === true ? { owner: q.owner, expiresAt: q.expires_at, daysRemaining: q.days_remaining } : void 0;
   const historyRuns = args.failure.history_error ? void 0 : args.failure.history?.runs;
-  const waiver = canWaiveAtPhase({
+  const waiver = canWaiveInMode({
     runType: args.runType,
     branch: args.branch,
     verdict: merged.verdict,
@@ -27330,7 +27316,7 @@ function decide(args) {
     rateShiftedAtCommit: rateShifted,
     quarantined,
     historyRuns,
-    phase: args.phase
+    mode: args.mode
   });
   const d = {
     ...merged,
@@ -27968,14 +27954,7 @@ async function run() {
   const groupID = getInput("group-id");
   const baseline = getInput("baseline-branch") || "main";
   const runType = getInput("run-type") || "PR";
-  let mode = (getInput("mode") || "shadow").toLowerCase();
-  const phase = await fetchRolloutPhase(baseURL);
-  if (mode === "gate" && modeForPhase(runType, phase) !== "gate") {
-    notice(
-      `run-type ${runType} gated to shadow by rollout phase ${phase} (server /triage/phase) \u2014 observing only`
-    );
-    mode = "shadow";
-  }
+  const mode = (getInput("mode") || "shadow").toLowerCase() === "gate" ? "gate" : "shadow";
   const contextName = getInput("commit-status-context") || "e2e-test/ai-triage";
   const originalContexts = parseContextList(getInput("original-commit-status-contexts"));
   const githubToken = getInput("github-token");
@@ -28041,7 +28020,7 @@ async function run() {
       branch: pack.group.branch || identity.branch || "",
       changedFiles,
       ai,
-      phase
+      mode
     });
     d.member_count = cluster.member_count;
     const blamed = await attachBlame(d, cluster, githubToken, pack.group.repository);
@@ -28354,25 +28333,6 @@ function parseIdentity(raw) {
   }
   parsed.gh_run_attempt = String(parsed.gh_run_attempt || "1");
   return parsed;
-}
-async function fetchRolloutPhase(baseURL) {
-  try {
-    const res = await retryFetch(`${baseURL}/api/v1/triage/phase`, {}, "triage/phase");
-    if (!res.ok) throw new Error(`status ${res.status}`);
-    const body = await parseJSON(res, "triage/phase");
-    const phase = parsePhasePayload(body);
-    if (phase === 0) {
-      warning(
-        `rollout phase payload unconforming (${JSON.stringify(body)}) \u2014 fail closed to shadow (phase 0)`
-      );
-    }
-    return phase;
-  } catch (err) {
-    warning(
-      `rollout phase fetch failed (${err.message}) \u2014 fail closed to shadow (phase 0)`
-    );
-    return 0;
-  }
 }
 async function fetchEvidence(baseURL, identity, groupID, baseline) {
   const params = new URLSearchParams({

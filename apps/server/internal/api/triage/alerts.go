@@ -873,8 +873,8 @@ func (h *Handlers) updateAlertIssue(ctx context.Context, repo string, a Alert, r
 		return fmt.Errorf("invalid repo slug: %q", repo)
 	}
 	_, err := postJSONTo(ctx,
-		"https://api.github.com/repos/"+fullRepo+"/issues/"+itoa(*rec.IssueNumber)+"/comments",
-		map[string]any{"body": "Still firing (`" + a.Rule + "`, fire count " + itoa(rec.FireCount) + ").\n" + alertEvidenceMarkdown(a)},
+		"https://api.github.com/repos/"+fullRepo+"/issues/"+strconv.Itoa(*rec.IssueNumber)+"/comments",
+		map[string]any{"body": "Still firing (`" + a.Rule + "`, fire count " + strconv.Itoa(rec.FireCount) + ").\n" + alertEvidenceMarkdown(a)},
 		token)
 	return err
 }

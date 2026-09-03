@@ -1,6 +1,14 @@
 # E2E flakiness management — project status
 
-**Date:** 2026-09-02 · **Branch:** `feat/flakiness-management` · **Round:** 7 (final)
+**Date:** 2026-09-03 · **Branch:** `feat/flakiness-management` · **Round:** 8
+
+**Round 8 removed the rollout-phase ladder, the throughput model and the SLA
+report** (`phase.go`, `throughput.go`, `sla.go`, migration `000029`, the
+`/triage/phase`, `/triage/sla` and `/triage/stabilization/throughput`
+endpoints, and their web surfaces). Gating is now owned by the calling
+workflow's `mode` input alone, and the rollout is a merge order rather than
+server state — see §3. Numbers below that were produced "at phase N" were
+produced in gate mode; the classifier and policy layer are unchanged.
 
 Every number below says which model produced it. Local and production are not
 interchangeable; conflating them is how this project nearly redesigned a working
@@ -45,12 +53,10 @@ by the model: the rate-shift gate refuses it whatever the verdict says.
   then MM-T5824 and MM-T2001 (40% each, 1 PR each). The chronic flakes that now
   go green on PRs are exactly the ones at the top of the fix queue — the forcing
   function moved to master, it did not disappear.
-- Throughput: `keeping_up=false`, coverage 47.6% on this small dataset;
-  6.5% on the measured production numbers (§4b).
 
 ### Goal 3 — master regression and its author
 
-The same MM-T2004 failure, seen from a MAIN run at phase 2:
+The same MM-T2004 failure, seen from a MAIN run in gate mode:
 `MAIN_REGRESSION`, `waived=false`, **check FAILURE**, reason *"MAIN runs never
 waive MAIN_REGRESSION — the baseline is this run"*, with
 `last_pass=d…13` / `failing_since=d…14` recorded in the ledger. That commit
@@ -119,14 +125,13 @@ routing no longer falls back to the repo root.
 
 | What | Result | How |
 |---|---|---|
-| R7-B/C policy gates + L1/L2/L3 levers | 127 TS tests (was 101), Go triage green, golangci-lint 0 across internal/… and tests/… | `npm test`, `go test`, `golangci-lint run` |
-| Both ABAC cases refused end-to-end | 2/2, through `decide()` at phase 1 | `policy.test.ts` |
+| R7-B/C policy gates + L2/L3 levers | 151 TS tests, Go triage green, golangci-lint 0 across internal/… and tests/… | `npm test`, `go test`, `golangci-lint run` |
+| Both ABAC cases refused end-to-end | 2/2, through `decide()` in gate mode | `policy.test.ts` |
 | Unshifted control still waives | 2/2 | `policy.test.ts` |
 | Full e2e suite | all packages green. One caveat, recorded rather than hidden: `TestOrchestrationHappyPath` timed out once under full-suite testcontainers contention and passed in 4s in isolation — an infra flake, and `orchestration` imports no changed package (`go list -deps`: 0 matches) | `make test-server-e2e`, Docker |
 | Blind audit is blind | 6 banned keys absent from the raw sample payload; `ai_verdict` absent before submit, revealed after | `TestBlindAuditSampleAndReview` |
 | A waiver never edits history or rates | pass | `TestWaiverNeverEditsHistoryOrRates` |
 | Master alerting fires and dedups | pass | `TestMasterAlertingFiresAndDedups` |
-| Phase ladder enforced at the API | pass | `TestPhaseGateEndpoints` |
 | Six stabilization bans | 14/14 | `stabilization-ban-checker.test.js` |
 
 ### Assumed, or not measurable here
@@ -153,7 +158,7 @@ routing no longer falls back to the repo root.
   Playwright data, no MM-T cases. The e2e tests above pass because they build
   their own migrated schema in testcontainers.
 
-### The three Phase 0 numbers already in hand
+### The three baseline numbers already in hand
 
 From [backtest-results.md](backtest-results.md), production TSIO data:
 
@@ -169,29 +174,47 @@ Attribution is below 20%, so **M4 ships ledger-only — no author pings.**
 
 ## 3. Recommendation
 
-**Start Phase 0 (4 weeks shadow). All three goals now pass end to end on real
-API calls; what shadow mode buys is the blind accuracy number.**
+**Merge tsio#101 now. Hold mattermost#38154 until the accuracy number exists.**
 
-Phase 0 is shadow mode: nothing flips, everything observes and comments
-(`modeForPhase` returns `shadow` at phase 0, and `canWaiveAtPhase` refuses every
-waiver there). The risk of starting is therefore bounded by construction — a
-wrong verdict in shadow costs a wrong comment, not a shipped bug. And shadow
-mode is the only way to obtain the two things every remaining question needs:
-**production-model verdicts** and **failures that carry screenshots**.
+This replaces "start Phase 0 (4 weeks shadow)". It buys the same thing — a
+measurement window in which nothing can flip a check — without a shadow-mode
+flag, a phase ladder, or any code path that exists only to be inert.
+
+**Why it flips nothing.** The action lives in tsio#101 but nothing calls it
+until the mattermost workflows land. Uncalled is not the same as a dead branch:
+there is no `phase` to fetch, no ladder to demote, and the only gating control
+is the workflow's own `mode` input, which fails closed to shadow.
+
+**Why the window is not idle.** Test history is derived from `report_groups` →
+`reports` → `suites` → `test_cases`, which TSIO already ingests, and migration
+`000027` backfills `external_test_id` on apply. Baselines, failure rates,
+`failing_since` and the blast-radius ranking are therefore populated
+retroactively the moment the server ships. Master health alerting
+(`triage-master-health.yml`) also runs on TSIO alone and needs only
+`TSIO_ALERTS_API_KEY` — that is what retires the 09:00 spot check.
+
+**The gap this does not close on its own.** History is not verdicts. Nothing
+writes `triage_verdicts` while the action is unwired, so the window produces
+baselines but still no accuracy or calibration number — which is the figure
+blocking gating. Closing it needs a replay job in TSIO that runs the classifier
+and the model over already-ingested failed runs and writes real ledger rows.
+Not shadow-flagged: the rows are real, `check_state` and `waived` are real, and
+nothing reads them because no CI is listening. **This is built next and is the
+one remaining piece of the plan.**
 
 Round 6 recommended not starting because the false-green rate was 41%. That
-recommendation rested on a measurement that cannot gate a shadow phase: it was a
-weaker model judging a sample stripped of the deciding evidence, and the gate it
-was arguing about (`canWaive`) does not grant anything at phase 0 anyway.
+measurement was a weaker model judging a sample stripped of the deciding
+evidence, and it argued about a gate (`canWaive`) that grants nothing while the
+mattermost half is unmerged.
 
-**The blocker:** a decision that shadow-phase evidence capture is turned on —
-screenshot upload for failing Playwright specs, and the production
-`ANTHROPIC_API_KEY` wired to the triage job. Without both, Phase 0 produces
-another 4 weeks of unmeasurable data and round 8 asks the same question.
+**The blocker is unchanged:** screenshot upload for failing Playwright specs and
+the production `ANTHROPIC_API_KEY` wired to the triage job. Without both, the
+window produces another month of unmeasurable data and round 9 asks the same
+question.
 
-Do **not** promote past Phase 0 on current evidence. Promotion to phase 1 (PR
-checks may green) needs the false-green count measured at 0 on production-model
-verdicts over a screenshot-bearing sample.
+Do **not** merge mattermost#38154 on current evidence. It needs the false-green
+count measured at 0 on production-model verdicts over a screenshot-bearing
+sample.
 
 ---
 
@@ -200,9 +223,9 @@ verdicts over a screenshot-bearing sample.
 | Item | Owner | Blocked on |
 |---|---|---|
 | **Accept or reject the R7-C policy reversal** — chronic flakes now green bystander PRs; the forcing function is master red + the stabilization queue, not PR red | **needs a human call** | review of `e13544d` |
-| **Set a 48-hour stabilization review SLA** — the only real lever on drain (14d → 9d cycle, +55% drain) | **Eva** (rotation owner) | rotation decision, no code |
+| **Set a 48-hour stabilization review SLA** — the lever on drain, now stated rather than modelled | **Eva** (rotation owner) | rotation decision, no code |
 | **Narrow or remove R7-C once quarantine adoption is real** | test infra | quarantine in use (§4b) |
-| **W12** — waiver-authority auto-demotion tuning | test infra | 4 weeks of shadow data |
+| **Replay job** — score already-ingested failed runs into real ledger rows, so the collection window produces an accuracy number | test infra | next change on this branch (§3) |
 | **mattermost/toolkit wiring** — MAIN triage job, W10 workflow, W9 flag passing, release-cut workflow (second half) | test infra | toolkit PR review |
 | **Locating the 09:00 spot check** | **Eva** | — |
 | **CODEOWNERS `e2e-tests/**` entry** | test infra | **shipped** — confirm `@mattermost/test-infra` is the right handle |
@@ -230,7 +253,7 @@ implemented against that.
 
 | Lever | What shipped | Commit |
 |---|---|---|
-| **1. Make the constraint visible** | `GET /triage/stabilization/throughput` — arrival vs drain, every input echoed, and the one lever worth pulling named. Observed drain reported next to modeled, with a note when modeled is only an upper bound. | `79ec6c9` |
+| **1. Make the constraint visible** | ~~`GET /triage/stabilization/throughput`~~ — **removed in round 8.** It served a queueing model over HTTP, affected no verdict, and pinning its output as a test proved the arithmetic rather than the world. The constraint is now stated in prose (spec §4.4) and will be measured by running the loop. | `79ec6c9`, reverted |
 | **2. Rank by blast radius** | The queue now leads on **distinct PRs a test failed on**, then master failure count. Realized developer cost, not "most broken". Falls back to the old master-only order when there is no PR data. | `68b02c0` |
 | **3. Quarantine — the missing third state** | Owned, expiring, auditable. Migration 000033 + `POST/GET/release`. | `8a836cc` |
 
@@ -311,9 +334,10 @@ was silently never executed — I hit it immediately when my new test file did n
 move the suite total. And the committed `ai-triage` dist had drifted from source,
 failing the `actions-dist-check` CI gate. Both fixed.
 
-**The rollout changed.** PR gating now starts in week one with master enforced
-alongside, rather than four weeks of shadow first — see the throughput result in
-§4b, which is what makes it defensible.
+**The rollout changed, twice.** Round 7 moved PR gating to week one on the
+strength of the throughput model. Round 8 removed both the model and the phase
+ladder: the rollout is now a merge order (spec §7), and the measurement window
+is "tsio#101 merged, mattermost#38154 not" — see §3.
 
 ---
 

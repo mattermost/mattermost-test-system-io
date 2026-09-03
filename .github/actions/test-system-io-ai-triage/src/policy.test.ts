@@ -2,9 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
   canWaive,
-  canWaiveAtPhase,
-  modeForPhase,
-  parsePhasePayload,
+  canWaiveInMode,
   mayFlipChecks,
   decide,
   diffOverlaps,
@@ -80,7 +78,7 @@ test("AI bug verdict on a recovered test is never re-flipped to flaky", () => {
   const d = decide({
     failure: failure(),
     runType: "PR",
-    phase: 2,
+    mode: "gate",
     branch: "feat/x",
     changedFiles: ["e2e-tests/playwright/specs/login.spec.ts"],
     ai: {
@@ -100,7 +98,7 @@ test("chronic flag from the model survives decide()", () => {
   const d = decide({
     failure: failure(),
     runType: "PR",
-    phase: 2,
+    mode: "gate",
     branch: "feat/x",
     changedFiles: [],
     ai: {
@@ -157,6 +155,7 @@ test("PR_REGRESSION never waives", () => {
 
 test("diff overlap blocks an AI flake waiver", () => {
   const d = decide({
+    mode: "gate",
     failure: failure({
       file: "detox/e2e/test/login.e2e.ts",
       suggested: {
@@ -268,7 +267,7 @@ test("decide uses history suggestion when no model call", () => {
   const d = decide({
     failure: failure({ status: "flaky" }),
     runType: "PR",
-    phase: 2,
+    mode: "gate",
     branch: "feat/x",
     changedFiles: [],
   });
@@ -278,6 +277,7 @@ test("decide uses history suggestion when no model call", () => {
 
 test("AI INCONCLUSIVE with error text is overridden to a waived flake", () => {
   const d = decide({
+    mode: "gate",
     failure: failure({
       error_message: "Wait for LoginAvailable timed out",
       screenshots: [],
@@ -306,6 +306,7 @@ test("AI INCONCLUSIVE with error text is overridden to a waived flake", () => {
 
 test("PR that edits the failing spec cannot have its bug waived as CI-only", () => {
   const d = decide({
+    mode: "gate",
     failure: failure({
       file: "e2e-tests/playwright/specs/functional/login.spec.ts",
       error_message: "expect(locator).toBeVisible() failed",
@@ -334,6 +335,7 @@ test("PR that edits the failing spec cannot have its bug waived as CI-only", () 
 
 test("model-observed screenshot refusal blocks flake waivers (MM-67594_13 case)", () => {
   const d = decide({
+    mode: "gate",
     failure: failure({
       status: "failed",
       retry_count: 1,
@@ -364,6 +366,7 @@ test("model-observed screenshot refusal blocks flake waivers (MM-67594_13 case)"
 
 test("product-rejection errors are never waived as flake, regardless of confidence", () => {
   const d = decide({
+    mode: "gate",
     failure: failure({
       status: "failed",
       retry_count: 1,
@@ -405,7 +408,7 @@ test("waivers at the confidence floor are flagged borderline", () => {
   const floor = decide({
     failure: failure(),
     runType: "PR",
-    phase: 2,
+    mode: "gate",
     branch: "feat/x",
     changedFiles: [],
     ai: {
@@ -421,7 +424,7 @@ test("waivers at the confidence floor are flagged borderline", () => {
   const solid = decide({
     failure: failure(),
     runType: "PR",
-    phase: 2,
+    mode: "gate",
     branch: "feat/x",
     changedFiles: [],
     ai: {
@@ -436,6 +439,7 @@ test("waivers at the confidence floor are flagged borderline", () => {
 
   // Unwaived decisions are never borderline — the row is already red.
   const red = decide({
+    mode: "gate",
     failure: failure({
       status: "failed",
       retry_count: 0,
@@ -457,6 +461,7 @@ test("waivers at the confidence floor are flagged borderline", () => {
 
 test("AI PR_REGRESSION on CI-only PR is overridden to FLAKY_INFRA", () => {
   const d = decide({
+    mode: "gate",
     failure: failure({
       file: "detox/e2e/test/login.e2e.ts",
       error_message: "ConnectToServer timed out",
@@ -677,43 +682,43 @@ test("R7-C: RELEASE runs are untouched — still waive nothing", () => {
   assert.match(w.reason, /release runs never auto-waive/);
 });
 
-// --- W6/W13 full matrix: 3 run types × 4 phases × the verdict set ---
+// --- W6 full matrix: 3 run types × both modes × the verdict set ---
 
-test("W6 matrix: MAIN never waives MAIN_REGRESSION at any phase", () => {
-  for (const phase of [0, 1, 2, 3]) {
-    const w = canWaiveAtPhase({
+test("W6 matrix: MAIN never waives MAIN_REGRESSION in either mode", () => {
+  for (const mode of ["shadow", "gate"]) {
+    const w = canWaiveInMode({
       runType: "MAIN",
       branch: "main",
-      phase,
+      mode,
       verdict: "MAIN_REGRESSION",
       confidence: 1,
       citations: ["failing_on_baseline", "failing_elsewhere"],
       amnestyGranted: true,
       diffOverlapsFailure: false,
     });
-    assert.equal(w.waived, false, `phase ${phase}`);
+    assert.equal(w.waived, false, `mode ${mode}`);
   }
 });
 
-test("W6 matrix: RELEASE waives nothing at any phase", () => {
-  for (const phase of [0, 1, 2, 3]) {
+test("W6 matrix: RELEASE waives nothing in either mode", () => {
+  for (const mode of ["shadow", "gate"]) {
     for (const verdict of ["FLAKY_TEST", "FLAKY_INFRA", "MAIN_REGRESSION"]) {
-      const w = canWaiveAtPhase({
+      const w = canWaiveInMode({
         runType: "RELEASE",
         branch: "release-10.6",
-        phase,
+        mode,
         verdict,
         confidence: 1,
         citations: ["history", "failing_elsewhere"],
         amnestyGranted: true,
         diffOverlapsFailure: false,
       });
-      assert.equal(w.waived, false, `phase ${phase} verdict ${verdict}`);
+      assert.equal(w.waived, false, `mode ${mode} verdict ${verdict}`);
     }
   }
 });
 
-test("W6/W13 matrix: PR gates from phase 1; MAIN confirmed flakes only from phase 2", () => {
+test("W6: shadow waives nothing; gate waives a clean flake on PR and MAIN alike", () => {
   const prArgs = {
     runType: "PR",
     branch: "feat/x",
@@ -723,44 +728,32 @@ test("W6/W13 matrix: PR gates from phase 1; MAIN confirmed flakes only from phas
     amnestyGranted: true,
     diffOverlapsFailure: false,
   };
-  assert.equal(canWaiveAtPhase({ ...prArgs, phase: 0 }).waived, false, "PR shadow at phase 0");
-  assert.equal(canWaiveAtPhase({ ...prArgs, phase: 1 }).waived, true, "PR gates at phase 1");
+  assert.equal(canWaiveInMode({ ...prArgs, mode: "shadow" }).waived, false, "PR shadow");
+  assert.equal(canWaiveInMode({ ...prArgs, mode: "gate" }).waived, true, "PR gate");
 
   const mainArgs = { ...prArgs, runType: "MAIN", branch: "main" };
-  assert.equal(
-    canWaiveAtPhase({ ...mainArgs, phase: 1 }).waived,
-    false,
-    "MAIN still shadow at phase 1",
-  );
-  assert.equal(canWaiveAtPhase({ ...mainArgs, phase: 2 }).waived, true, "MAIN gates at phase 2");
-  assert.equal(canWaiveAtPhase({ ...mainArgs, phase: 3 }).waived, true, "MAIN gates at phase 3");
+  assert.equal(canWaiveInMode({ ...mainArgs, mode: "shadow" }).waived, false, "MAIN shadow");
+  assert.equal(canWaiveInMode({ ...mainArgs, mode: "gate" }).waived, true, "MAIN gate");
 });
 
-test("W13: modeForPhase ladder", () => {
-  assert.equal(modeForPhase("PR", 0), "shadow");
-  assert.equal(modeForPhase("PR", 1), "gate");
-  assert.equal(modeForPhase("MAIN", 1), "shadow");
-  assert.equal(modeForPhase("MAIN", 2), "gate");
-  assert.equal(modeForPhase("RELEASE", 1), "gate"); // gates, but policy waives nothing
-  assert.equal(modeForPhase("", 0), "shadow");
+test("W6: an unset or unrecognised mode fails closed to shadow", () => {
+  const args = {
+    runType: "PR",
+    branch: "feat/x",
+    verdict: "FLAKY_TEST",
+    confidence: 0.95,
+    citations: ["history", "failing_elsewhere"],
+    amnestyGranted: true,
+    diffOverlapsFailure: false,
+  };
+  for (const mode of ["", "GATEKEEPER", "observe", "1"]) {
+    assert.equal(canWaiveInMode({ ...args, mode }).waived, false, `mode ${JSON.stringify(mode)}`);
+  }
+  // Case-insensitive on the one value that does gate.
+  assert.equal(canWaiveInMode({ ...args, mode: "GATE" }).waived, true);
 });
 
-// --- B4/B2/B3 regression: fail-closed phase parse; ledger-gated flips ---
-
-test("B4: parsePhasePayload fails closed on every non-conforming shape", () => {
-  assert.equal(parsePhasePayload({ phase: "gremlin" }), 0);
-  assert.equal(parsePhasePayload({ phase: {} }), 0);
-  assert.equal(parsePhasePayload({ phase: null }), 0);
-  assert.equal(parsePhasePayload({ phase: 1.5 }), 0);
-  assert.equal(parsePhasePayload({ phase: -1 }), 0);
-  assert.equal(parsePhasePayload({ phase: 4 }), 0);
-  assert.equal(parsePhasePayload("phase-2"), 0);
-  assert.equal(parsePhasePayload(null), 0);
-  // Conforming values pass through.
-  assert.equal(parsePhasePayload({ phase: 0 }), 0);
-  assert.equal(parsePhasePayload({ phase: 2 }), 2);
-  assert.equal(parsePhasePayload({ phase: 3 }), 3);
-});
+// --- B2/B3 regression: ledger-gated flips ---
 
 test("B2/B3: gate mode refuses flips when the ledger did not record", () => {
   const refused = mayFlipChecks("gate", false);
@@ -913,7 +906,7 @@ for (const testId of ["MM-T5824", "MM-T5820"]) {
         reason: "the history shows a high failure rate (40%) with multiple flips",
         citations: ["history", "pr_diff"],
       },
-      phase: 1,
+      mode: "gate",
     });
     assert.equal(d.waived, false, `${testId} must not green — this was a false green in round 6`);
     assert.equal(d.check_state, "failure");
@@ -946,7 +939,7 @@ for (const testId of ["MM-T5824", "MM-T5820"]) {
         reason: "recovered, matches its usual flake signature",
         citations: ["history", "pr_diff"],
       },
-      phase: 1,
+      mode: "gate",
     });
     assert.equal(d.waived, true, `${testId} at its baseline rate must stay waivable`);
     assert.equal(d.check_state, "success");
@@ -976,7 +969,7 @@ test("R7-B: decide() reads the shift from the pack and never recomputes it", () 
       reason: "flake",
       citations: ["history", "pr_diff"],
     },
-    phase: 1,
+    mode: "gate",
   });
   assert.equal(d.waived, false, "shifted:true is authoritative regardless of ok");
 });
@@ -1115,7 +1108,7 @@ test("R7-L3: an inactive quarantine in the pack is ignored by decide()", () => {
     runType: "PR",
     branch: "feat/x",
     changedFiles: ["webapp/src/thing.tsx"],
-    phase: 1,
+    mode: "gate",
   });
   assert.equal(d.waived, false, "an expired quarantine must not green anything");
 });
@@ -1145,7 +1138,7 @@ test("R7-L3: decide() passes an active quarantine through to a green check", () 
     runType: "PR",
     branch: "feat/x",
     changedFiles: ["webapp/src/unrelated.tsx"],
-    phase: 1,
+    mode: "gate",
   });
   assert.equal(d.waived, true);
   assert.equal(d.check_state, "success");
@@ -1178,7 +1171,7 @@ test("R7-D: an INCONCLUSIVE override marks its confidence as policy-asserted", (
     runType: "PR",
     branch: "feat/x",
     changedFiles: ["webapp/channels/src/components/unrelated/thing.tsx"],
-    phase: 1,
+    mode: "gate",
   });
 
   // The floor was manufactured from a model confidence of 0.
@@ -1216,7 +1209,7 @@ test("R7-D: a model that was already confident enough gets NO marker", () => {
       reason: "looks like a real break",
       citations: ["error_message", "history"],
     },
-    phase: 1,
+    mode: "gate",
   });
   // The no-product-overlap override fires, but 0.97 already clears the floor.
   assert.equal(d.confidence, 0.97);
@@ -1248,7 +1241,7 @@ test("R7-D: the CI-only override marks its asserted confidence too", () => {
       reason: "guessing",
       citations: ["error_message", "history"],
     },
-    phase: 1,
+    mode: "gate",
   });
   assert.equal(d.verdict, "FLAKY_INFRA");
   assert.equal(d.confidence, WAIVE_CONFIDENCE);
@@ -1285,7 +1278,7 @@ test("R7-D: a policy-asserted confidence still cannot pass the rate-shift gate",
     runType: "PR",
     branch: "feat/x",
     changedFiles: [".github/workflows/e2e-tests.yml"],
-    phase: 1,
+    mode: "gate",
   });
   assert.equal(d.confidence, WAIVE_CONFIDENCE, "the floor is still manufactured");
   assert.equal(d.waived, false, "but the rate-shift gate refuses it anyway");
@@ -1452,7 +1445,7 @@ test("R7-E: decide() actually passes history depth through — the live shape", 
       reason: "channel body empty despite ABAC policy match — testcontainer setup race",
       citations: ["screenshot", "error_message", "empty_history", "pr_diff"],
     },
-    phase: 1, // PR gating live — this is what shadow mode was hiding
+    mode: "gate", // gating live — this is what shadow mode was hiding
   });
   assert.equal(d.waived, false, "runs=0 with no measured recovery must not green the check");
   assert.equal(d.check_state, "failure");
@@ -1481,7 +1474,7 @@ test("R7-E: a history lookup failure is not double-counted", () => {
       reason: "timing race",
       citations: ["error_message", "this_run_recovered"],
     },
-    phase: 1,
+    mode: "gate",
   });
   // Recovery is cited, so this is allowed — the point is that an unknown
   // history depth did not add a second, separate refusal.

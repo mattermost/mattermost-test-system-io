@@ -1491,6 +1491,10 @@ paths:
           schema: { type: string }
         - in: query
           name: signature
+          description: |
+            Failure signature. Either this or test_id is required, and every
+            part of the answer honors both — a request carrying only one must
+            not get a partial reply.
           schema: { type: string }
         - in: query
           name: window
@@ -1509,6 +1513,12 @@ paths:
                   known:
                     type: boolean
                     description: This failure has been adjudicated before.
+                  needs_human:
+                    type: boolean
+                    description: |
+                      The agent has failed enough times that this test is a
+                      person's. Same rule and field name as the queue entry
+                      carries; check it before attempting a fix.
                   open_fix_pr:
                     type: string
                     description: The PR a successful fix attempt opened, when there is one.
@@ -1640,7 +1650,12 @@ paths:
                 properties:
                   repo: { type: string }
                   window: { type: string }
-                  total_escalations: { type: integer }
+                  total_escalations:
+                    type: integer
+                    description: Escalation events across the whole window, not just the returned page.
+                  total_tests:
+                    type: integer
+                    description: Distinct tests matched, so a caller can tell a truncated page from a complete one.
                   tests:
                     type: array
                     items:

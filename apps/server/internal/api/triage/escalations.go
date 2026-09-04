@@ -138,12 +138,19 @@ func (h *Handlers) Defects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The window aggregate is computed across every matching group BEFORE the
+	// LIMIT, so total_escalations counts the whole window rather than the top
+	// hundred tests. Summing the returned rows instead would silently
+	// understate the metric exactly when it matters — a repository with more
+	// than a hundred defect-producing tests.
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT external_test_id,
 		       count(*)::int,
 		       max(created_at),
 		       (array_agg(issue_key ORDER BY created_at DESC))[1],
-		       (array_agg(issue_url ORDER BY created_at DESC))[1]
+		       (array_agg(issue_url ORDER BY created_at DESC))[1],
+		       sum(count(*)) OVER ()::bigint AS total_all_tests,
+		       count(*) OVER ()::int          AS tests_all
 		FROM triage_defect_escalations
 		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
 		  AND created_at >= $2::timestamptz
@@ -159,15 +166,16 @@ func (h *Handlers) Defects(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	out := []defectRow{}
-	total := 0
+	var total int64
+	var testsAll int
 	for rows.Next() {
 		var d defectRow
-		if err := rows.Scan(&d.TestID, &d.Defects, &d.LastAt, &d.LatestKey, &d.LatestURL); err != nil {
+		if err := rows.Scan(&d.TestID, &d.Defects, &d.LastAt, &d.LatestKey, &d.LatestURL,
+			&total, &testsAll); err != nil {
 			h.logError("defects scan", err)
 			api.WriteError(w, r, api.ErrInternal)
 			return
 		}
-		total += d.Defects
 		out = append(out, d)
 	}
 	if err := rows.Err(); err != nil {
@@ -180,8 +188,12 @@ func (h *Handlers) Defects(w http.ResponseWriter, r *http.Request) {
 		"repo":   normalizeRepo(repo),
 		"window": window,
 		// Escalation EVENTS, not open tickets: some of these are long fixed.
+		// Counted across the whole window, not just the returned page.
 		"total_escalations": total,
-		"tests":             out,
+		// How many distinct tests matched, so a caller can tell a truncated
+		// page from a complete one without guessing at the limit.
+		"total_tests": testsAll,
+		"tests":       out,
 	})
 }
 
@@ -192,8 +204,13 @@ func (h *Handlers) Defects(w http.ResponseWriter, r *http.Request) {
 // This is history, not a lock. An entry means "a defect was filed once", which
 // is a reason to go and check the tracker — never a reason to skip filing
 // without checking.
-func (h *Handlers) escalationsFor(r *http.Request, repo, testID string) ([]Escalation, error) {
-	if testID == "" {
+// Matched on either key, because callers legitimately hold only one: a test id
+// survives an error message being reworded, a signature survives a test being
+// renamed. A signature-only request that silently returned nothing would look
+// exactly like "no defect was ever filed", which is the answer that leads to a
+// duplicate ticket.
+func (h *Handlers) escalationsFor(r *http.Request, repo, testID, signature string) ([]Escalation, error) {
+	if testID == "" && signature == "" {
 		return nil, nil
 	}
 	rows, err := h.Pool.Query(r.Context(), `
@@ -201,10 +218,11 @@ func (h *Handlers) escalationsFor(r *http.Request, repo, testID string) ([]Escal
 		       summary, suspect_range, escalated_by, created_at
 		FROM triage_defect_escalations
 		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
-		  AND external_test_id = $2
+		  AND ( ($2 <> '' AND external_test_id = $2)
+		     OR ($3 <> '' AND cluster_signature = $3) )
 		ORDER BY created_at DESC
 		LIMIT 10
-	`, repo, testID)
+	`, repo, testID, signature)
 	if err != nil {
 		return nil, err
 	}

@@ -8,10 +8,12 @@ package triage
 // knows, because every verdict carries the failure-signature hash that grouped
 // the failures, and the rows that produced an issue carry its URL.
 //
-// Matching is on the signature first and the test id second. A signature is the
+// Matching is on the signature or the test id, and every part of the answer —
+// prior verdicts, fix attempts, escalations — honors both. A signature is the
 // normalized error text, so it survives a test being renamed; a test id is
-// stable across an error message being reworded. Neither alone is enough, which
-// is why both are accepted and either can match.
+// stable across an error message being reworded. A request carrying only one of
+// them must not get a partial answer, because "nothing found" is precisely the
+// reply that produces a duplicate ticket.
 
 import (
 	"net/http"
@@ -95,27 +97,43 @@ func (h *Handlers) SignatureIssues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fix attempts carry the PR each one opened, which is the more direct
-	// answer to "is someone already fixing this".
-	var attempts []fixAttemptRef
-	if testID != "" {
-		attempts, err = h.attemptRefs(r, normalizeRepo(repo), testID)
-		if err != nil {
-			h.logError("signature issues attempts", err)
-			api.WriteError(w, r, api.ErrInternal)
-			return
-		}
+	// answer to "is someone already fixing this". Matched on either key for the
+	// same reason as escalations below.
+	attempts, err := h.attemptRefs(r, normalizeRepo(repo), testID, signature)
+	if err != nil {
+		h.logError("signature issues attempts", err)
+		api.WriteError(w, r, api.ErrInternal)
+		return
 	}
 
 	// Defects previously filed for this test. History, not a lock: an entry
 	// means a defect was filed once, which is a reason to check the tracker —
 	// never a reason to skip filing without checking, because the tracker owns
 	// whether that ticket is still open.
-	escalations, err := h.escalationsFor(r, normalizeRepo(repo), testID)
+	escalations, err := h.escalationsFor(r, normalizeRepo(repo), testID, signature)
 	if err != nil {
 		h.logError("signature issues escalations", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
+
+	// The handover verdict, computed from the same rule the queue uses. It has
+	// to be here and not only on /triage/queue: this is the endpoint an agent
+	// consults before deciding whether to attempt a test, and without it the
+	// three-strikes rule silently never fires — the agent re-attempts a test it
+	// has already given up on, forever.
+	failedAttempts := 0
+	lastOutcome := ""
+	for i, a := range attempts {
+		if i == 0 {
+			lastOutcome = a.Outcome
+		}
+		if a.Outcome == "failed" || a.Outcome == "blocked" {
+			failedAttempts++
+		}
+	}
+	needsHuman := lastOutcome != outcomeFixed &&
+		(failedAttempts >= MaxFixAttempts || lastOutcome == outcomeNeedsHuman)
 
 	openPR := ""
 	for _, a := range attempts {
@@ -142,7 +160,10 @@ func (h *Handlers) SignatureIssues(w http.ResponseWriter, r *http.Request) {
 		"last_issue_url": lastIssue,
 		"prior_verdict":  refs,
 		"fix_attempts":   attempts,
-		"escalations":    escalations,
+		// The agent has failed enough times that this test is a person's now.
+		// Same rule and same field name as the queue entry carries.
+		"needs_human": needsHuman,
+		"escalations": escalations,
 	})
 }
 
@@ -153,15 +174,19 @@ type fixAttemptRef struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func (h *Handlers) attemptRefs(r *http.Request, repo, testID string) ([]fixAttemptRef, error) {
+func (h *Handlers) attemptRefs(r *http.Request, repo, testID, signature string) ([]fixAttemptRef, error) {
+	if testID == "" && signature == "" {
+		return nil, nil
+	}
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT outcome, detail, pr_url, created_at
 		FROM stabilization_fix_attempts
 		WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
-		  AND external_test_id = $2
+		  AND ( ($2 <> '' AND external_test_id = $2)
+		     OR ($3 <> '' AND cluster_signature = $3) )
 		ORDER BY created_at DESC
 		LIMIT 20
-	`, repo, testID)
+	`, repo, testID, signature)
 	if err != nil {
 		return nil, err
 	}

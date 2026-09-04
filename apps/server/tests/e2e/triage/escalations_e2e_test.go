@@ -11,6 +11,7 @@
 package triage
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -195,5 +196,136 @@ func TestEscalation_WritesNeedACredential(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 — a forged escalation would misreport the defect metric",
 			resp.StatusCode)
+	}
+}
+
+func TestDefects_TotalCountsTheWholeWindowNotJustThePage(t *testing.T) {
+	env := testenv.Start(t)
+	key := env.IssueAPIKey(t, "guardian")
+
+	// The response is capped at 100 tests. Summing the returned rows would
+	// understate the metric exactly when a repository is worst — which is the
+	// moment anyone would go looking at it.
+	const tests = 130
+	for i := 0; i < tests; i++ {
+		escalate(t, env, key, fmt.Sprintf("MM-T8%03d", i), fmt.Sprintf("MM-43%03d", i))
+	}
+	// One test with a second defect, so the total is not simply the test count.
+	escalate(t, env, key, "MM-T8000", "MM-43999")
+
+	got := getJSON(t, env, "/api/v1/triage/defects?repo=mattermost&window=90d")
+
+	if n := len(got["tests"].([]any)); n != 100 {
+		t.Fatalf("returned tests = %d, want the 100-row page", n)
+	}
+	if total := got["total_escalations"].(float64); total != tests+1 {
+		t.Fatalf("total_escalations = %v, want %d — the total is being summed from the page",
+			total, tests+1)
+	}
+	if all := got["total_tests"].(float64); all != tests {
+		t.Fatalf("total_tests = %v, want %d — a caller cannot tell the page was truncated",
+			all, tests)
+	}
+}
+
+func TestSignatureIssues_SignatureOnlyRequestKeepsEscalationHistory(t *testing.T) {
+	env := testenv.Start(t)
+	key := env.IssueAPIKey(t, "guardian")
+	const sig = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+
+	postJSON(t, env, key, "/api/v1/triage/escalations", map[string]any{
+		"test_id":           "MM-T8500",
+		"repository":        "mattermost/mattermost",
+		"issue_key":         "MM-44001",
+		"issue_url":         "https://mattermost.atlassian.net/browse/MM-44001",
+		"cluster_signature": sig,
+	})
+
+	// A caller holding only the failure signature — the case where the test was
+	// renamed — must get the same answer. Returning nothing here reads as "no
+	// defect was ever filed", which is what produces a duplicate ticket.
+	got := getJSON(t, env, "/api/v1/triage/signature-issues?repo=mattermost&signature="+sig)
+
+	if !got["known"].(bool) {
+		t.Fatal("signature-only lookup reported unknown despite a filed defect")
+	}
+	if got["last_issue_url"] != "https://mattermost.atlassian.net/browse/MM-44001" {
+		t.Fatalf("last_issue_url = %v", got["last_issue_url"])
+	}
+	if n := len(got["escalations"].([]any)); n != 1 {
+		t.Fatalf("escalations = %d, want 1", n)
+	}
+}
+
+func TestSignatureIssues_SignatureOnlyRequestKeepsFixAttempts(t *testing.T) {
+	env := testenv.Start(t)
+	key := env.IssueAPIKey(t, "guardian")
+	const sig = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+
+	postJSON(t, env, key, "/api/v1/triage/attempts", map[string]any{
+		"test_id":           "MM-T8501",
+		"repository":        "mattermost/mattermost",
+		"outcome":           "failed",
+		"detail":            "no deterministic signal exists in the DOM for this state",
+		"cluster_signature": sig,
+	})
+
+	got := getJSON(t, env, "/api/v1/triage/signature-issues?repo=mattermost&signature="+sig)
+
+	if !got["known"].(bool) {
+		t.Fatal("signature-only lookup missed a recorded fix attempt")
+	}
+	if n := len(got["fix_attempts"].([]any)); n != 1 {
+		t.Fatalf("fix_attempts = %d, want 1", n)
+	}
+}
+
+func TestSignatureIssues_CarriesTheHandoverVerdict(t *testing.T) {
+	env := testenv.Start(t)
+	key := env.IssueAPIKey(t, "guardian")
+
+	attempt := func(outcome, detail string) map[string]any {
+		return postJSON(t, env, key, "/api/v1/triage/attempts", map[string]any{
+			"test_id": "MM-T8600", "repository": "mattermost/mattermost",
+			"outcome": outcome, "detail": detail,
+		})
+	}
+	known := func() map[string]any {
+		return getJSON(t, env, "/api/v1/triage/signature-issues?repo=mattermost&test_id=MM-T8600")
+	}
+
+	// This is the field the Guardian branches on BEFORE attempting a test. If it
+	// is missing or wrong the three-strikes rule never fires and the agent
+	// re-attempts a test it has already given up on, indefinitely.
+	attempt("failed", "rewrote the wait; the assertion still raced")
+	attempt("failed", "awaited network idle; the panel renders before the data")
+	if known()["needs_human"].(bool) {
+		t.Fatal("handed over after 2 failures — the agent had another attempt left")
+	}
+
+	attempt("failed", "no deterministic signal exists in the DOM for this state")
+	if !known()["needs_human"].(bool) {
+		t.Fatal("not handed over after 3 failures — the agent would try forever")
+	}
+
+	// The queue and this endpoint must never disagree: they are two views of one
+	// decision, and an agent reading either has to reach the same conclusion.
+	q := getJSON(t, env, "/api/v1/triage/queue?repo=mattermost&window=30d")
+	for _, e := range q["ranked"].([]any) {
+		m := e.(map[string]any)
+		if m["test_id"] != "MM-T8600" {
+			continue
+		}
+		fa := m["fix_attempts"].(map[string]any)
+		if fa["needs_human"] != known()["needs_human"] {
+			t.Fatalf("queue says needs_human=%v, signature-issues says %v",
+				fa["needs_human"], known()["needs_human"])
+		}
+	}
+
+	// A later success releases it on both surfaces.
+	attempt("fixed", "")
+	if known()["needs_human"].(bool) {
+		t.Fatal("still flagged for a human after a successful fix")
 	}
 }

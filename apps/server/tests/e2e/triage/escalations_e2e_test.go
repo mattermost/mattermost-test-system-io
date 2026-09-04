@@ -284,14 +284,40 @@ func TestSignatureIssues_CarriesTheHandoverVerdict(t *testing.T) {
 	env := testenv.Start(t)
 	key := env.IssueAPIKey(t, "guardian")
 
+	// The queue is derived from run history, so the test has to have actually
+	// failed on master to appear on it. Without these the queue assertion below
+	// would pass by finding nothing.
+	for i := 0; i < 6; i++ {
+		seedRun(t, env, "MM-T8600", sha("e5", i), i < 3, i+1)
+	}
+
 	attempt := func(outcome, detail string) map[string]any {
 		return postJSON(t, env, key, "/api/v1/triage/attempts", map[string]any{
 			"test_id": "MM-T8600", "repository": "mattermost/mattermost",
 			"outcome": outcome, "detail": detail,
 		})
 	}
-	known := func() map[string]any {
-		return getJSON(t, env, "/api/v1/triage/signature-issues?repo=mattermost&test_id=MM-T8600")
+	known := func() bool {
+		return getJSON(t, env,
+			"/api/v1/triage/signature-issues?repo=mattermost&test_id=MM-T8600")["needs_human"].(bool)
+	}
+	// queued returns the queue's view of the same decision, and fails when the
+	// test is absent — a loop that silently matched nothing would assert nothing.
+	queued := func() bool {
+		q := getJSON(t, env, "/api/v1/triage/queue?repo=mattermost&window=30d")
+		for _, e := range q["ranked"].([]any) {
+			m := e.(map[string]any)
+			if m["test_id"] != "MM-T8600" {
+				continue
+			}
+			fa, ok := m["fix_attempts"].(map[string]any)
+			if !ok {
+				t.Fatal("queue entry carries no fix_attempts — the loop cannot see its own history")
+			}
+			return fa["needs_human"].(bool)
+		}
+		t.Fatal("MM-T8600 is not on the queue, so the handover verdict was never compared")
+		return false
 	}
 
 	// This is the field the Guardian branches on BEFORE attempting a test. If it
@@ -299,33 +325,30 @@ func TestSignatureIssues_CarriesTheHandoverVerdict(t *testing.T) {
 	// re-attempts a test it has already given up on, indefinitely.
 	attempt("failed", "rewrote the wait; the assertion still raced")
 	attempt("failed", "awaited network idle; the panel renders before the data")
-	if known()["needs_human"].(bool) {
+	if known() {
 		t.Fatal("handed over after 2 failures — the agent had another attempt left")
 	}
 
 	attempt("failed", "no deterministic signal exists in the DOM for this state")
-	if !known()["needs_human"].(bool) {
+	if !known() {
 		t.Fatal("not handed over after 3 failures — the agent would try forever")
 	}
 
-	// The queue and this endpoint must never disagree: they are two views of one
-	// decision, and an agent reading either has to reach the same conclusion.
-	q := getJSON(t, env, "/api/v1/triage/queue?repo=mattermost&window=30d")
-	for _, e := range q["ranked"].([]any) {
-		m := e.(map[string]any)
-		if m["test_id"] != "MM-T8600" {
-			continue
-		}
-		fa := m["fix_attempts"].(map[string]any)
-		if fa["needs_human"] != known()["needs_human"] {
-			t.Fatalf("queue says needs_human=%v, signature-issues says %v",
-				fa["needs_human"], known()["needs_human"])
-		}
+	// The queue and the known-check are two views of one decision. An agent
+	// reading either has to reach the same conclusion, so they are compared
+	// rather than checked independently.
+	if q := queued(); q != known() {
+		t.Fatalf("queue says needs_human=%v, signature-issues says %v", q, known())
 	}
 
-	// A later success releases it on both surfaces.
+	// A later success releases it — on BOTH surfaces. Checking only one would
+	// let them drift apart in exactly the state that matters most: a test the
+	// agent repaired but the queue still shows as a person's problem.
 	attempt("fixed", "")
-	if known()["needs_human"].(bool) {
+	if known() {
 		t.Fatal("still flagged for a human after a successful fix")
+	}
+	if queued() {
+		t.Fatal("the queue still flags a human after a successful fix")
 	}
 }

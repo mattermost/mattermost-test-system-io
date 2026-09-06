@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -72,8 +73,41 @@ Test failed due to assertion
 	if tc.ErrorMessage == nil {
 		t.Fatal("expected error message, got nil")
 	}
-	if *tc.ErrorMessage != "AssertionError: expected 'Login Failed' to include 'success'\nTest failed due to assertion" {
+	if *tc.ErrorMessage != "AssertionError: expected 'Login Failed' to include 'success'" {
 		t.Errorf("error message mismatch: %q", *tc.ErrorMessage)
+	}
+	if tc.ErrorStack == nil || *tc.ErrorStack != "Test failed due to assertion" {
+		t.Errorf("error stack mismatch: %v", tc.ErrorStack)
+	}
+}
+
+// A message attribute never changes just because the stack body does — two
+// occurrences of the same failure at different lines must cluster as one
+// cause, which depends on ErrorMessage staying stable while ErrorStack
+// varies.
+func TestExtractMaestro_SameMessageDifferentStackKeepsMessageEqual(t *testing.T) {
+	xmlAt := func(line int) string {
+		return `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="Test Run" tests="1" failures="1" errors="0" time="2.5">
+  <testsuite name="Login Tests" tests="1" failures="1" errors="0" time="2.5">
+    <testcase classname="Login Tests" name="should fail on bad credentials" time="2.5">
+      <failure message="AssertionError: expected 'Login Failed' to include 'success'">
+at login_test.go:` + strconv.Itoa(line) + `
+      </failure>
+    </testcase>
+  </testsuite>
+</testsuites>`
+	}
+
+	seq := 0
+	a := extractMaestro([]byte(xmlAt(12)), &seq)[0].Cases[0]
+	b := extractMaestro([]byte(xmlAt(97)), &seq)[0].Cases[0]
+
+	if a.ErrorMessage == nil || b.ErrorMessage == nil || *a.ErrorMessage != *b.ErrorMessage {
+		t.Fatalf("error messages diverged on differing stacks: %v vs %v", a.ErrorMessage, b.ErrorMessage)
+	}
+	if a.ErrorStack == nil || b.ErrorStack == nil || *a.ErrorStack == *b.ErrorStack {
+		t.Fatalf("error stacks should differ: %v vs %v", a.ErrorStack, b.ErrorStack)
 	}
 }
 
@@ -188,8 +222,11 @@ Timeout waiting for element to appear
 	if tc.ErrorMessage == nil {
 		t.Fatal("expected error message, got nil")
 	}
-	if *tc.ErrorMessage != "TimeoutError: wait for element timed out\nTimeout waiting for element to appear" {
+	if *tc.ErrorMessage != "TimeoutError: wait for element timed out" {
 		t.Errorf("error message mismatch: %q", *tc.ErrorMessage)
+	}
+	if tc.ErrorStack == nil || *tc.ErrorStack != "Timeout waiting for element to appear" {
+		t.Errorf("error stack mismatch: %v", tc.ErrorStack)
 	}
 }
 

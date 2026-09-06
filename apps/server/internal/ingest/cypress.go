@@ -127,11 +127,15 @@ func walkCypressSuite(s cypressSuite, inheritedFile string, seq *int, startTime 
 
 func extractCypressTest(t cypressTest, seq *int, startTime *time.Time) ExtractedCase {
 	status := cypressStatus(t)
-	var errMsg *string
+	var errMsg, errStack *string
 	if t.Err != nil {
 		msg := firstNonEmpty(t.Err.Message, t.Err.Estack)
 		if msg != "" {
 			errMsg = &msg
+		}
+		if t.Err.Estack != "" {
+			stack := t.Err.Estack
+			errStack = &stack
 		}
 	}
 	full := t.FullTitle
@@ -145,6 +149,7 @@ func extractCypressTest(t cypressTest, seq *int, startTime *time.Time) Extracted
 		DurationMs:   t.Duration,
 		RetryCount:   0,
 		ErrorMessage: errMsg,
+		ErrorStack:   errStack,
 		Sequence:     *seq,
 		StartTime:    startTime,
 		Attachments:  parseCypressContext(t.Context),

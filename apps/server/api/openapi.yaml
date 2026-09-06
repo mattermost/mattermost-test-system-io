@@ -1064,6 +1064,98 @@ paths:
       responses:
         '204': { description: Deleted }
 
+  /api/v1/tests/history:
+    get:
+      tags: [tests]
+      summary: Outcome series for one test across commits, newest first
+      description: |
+        Answers "was this already failing before the PR?" without spending runner
+        minutes on a baseline rerun. Returns one entry per report group that ran
+        the test, plus a precomputed summary (flip count, failure rate, last
+        passing commit, and the oldest commit in the current failing streak) so
+        every caller derives those the same way.
+      security: []
+      parameters:
+        - in: query
+          name: test_id
+          description: The test's stable_key — its MM-T id (e.g. MM-T4783_1) or, for repositories without ids, its full title
+          schema: { type: string }
+          required: true
+        - in: query
+          name: repo
+          description: Full "owner/repo" slug or just the trailing repo segment
+          schema: { type: string }
+          required: true
+        - in: query
+          name: branch
+          schema: { type: string }
+        - in: query
+          name: framework
+          schema: { type: string, enum: [playwright, cypress, detox, maestro] }
+        - in: query
+          name: run_group
+          schema: { type: string }
+        - in: query
+          name: window
+          description: Lookback window (30d, 24h, 90m). Unbounded when omitted; capped at 180d.
+          schema: { type: string, pattern: '^[0-9]+[dhm]$' }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+      responses:
+        '200':
+          description: Test history series
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestHistoryResponse' }
+  /api/v1/tests/evidence:
+    get:
+      tags: [tests]
+      summary: One run's failures with error, stack and screenshots, grouped by cause
+      description: |
+        Everything stored about the failures of one run: error message, stack,
+        screenshots, retry count, and the `stable_key` each failure is looked
+        up by in `/tests/history`. Failures are grouped by normalized error
+        text so 300 identical "element not visible" failures read as one
+        cluster with 300 members.
+
+        Identify the run with `group_id` or with the same composite identity
+        the upload used: repository + commit_sha + gh_run_id + name
+        (+ gh_run_attempt, default "1").
+
+        No judgement is made here. Whether a failure is flaky or a regression
+        is for the consumer to decide.
+      security: []
+      parameters:
+        - in: query
+          name: group_id
+          schema: { type: string, format: uuid }
+        - in: query
+          name: repository
+          schema: { type: string }
+        - in: query
+          name: commit_sha
+          schema: { type: string }
+        - in: query
+          name: gh_run_id
+          schema: { type: string }
+        - in: query
+          name: name
+          schema: { type: string }
+        - in: query
+          name: gh_run_attempt
+          schema: { type: string, default: '1' }
+      responses:
+        '200':
+          description: Evidence pack
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestEvidence' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     apiKey:
@@ -2135,6 +2227,158 @@ components:
         message:
           type: string
           description: Human-readable message suitable for direct display.
+
+
+    TestOutcome:
+      type: string
+      enum: [passed, failed, flaky, skipped, unknown]
+      description: |
+        One test's outcome in one report group, rolled up across that group's
+        shards. `flaky` means it failed and then passed on retry within the same
+        run — measured flakiness rather than inferred, which is why it is not
+        folded into `failed`.
+
+    TestHistoryEntry:
+      type: object
+      required: [commit, gh_run_id, branch, name, outcome, shard_rows, duration_ms, created_at]
+      properties:
+        commit: { type: string }
+        gh_run_id: { type: string }
+        gh_pr_number: { type: integer }
+        branch: { type: string }
+        name:
+          type: string
+          description: Report group name, e.g. mobile-pr-detox-ios
+        run_group: { type: string }
+        outcome: { $ref: '#/components/schemas/TestOutcome' }
+        shard_rows:
+          type: integer
+          description: How many per-shard test_case rows rolled into this outcome.
+        duration_ms: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+
+    TestHistorySummary:
+      type: object
+      required: [runs, passed, failed, flaky, skipped, flips, failure_rate, flake_rate, series]
+      properties:
+        runs:
+          type: integer
+          description: >-
+            Report groups in which this test actually executed. Skipped runs are
+            excluded, so runs = passed + failed + flaky, and failure_rate is the
+            share of runs that did not cleanly pass.
+        passed: { type: integer }
+        failed: { type: integer }
+        flaky: { type: integer }
+        skipped:
+          type: integer
+          description: Counted and reported, but not part of runs.
+        flips:
+          type: integer
+          description: |
+            Adjacent pass↔fail transitions over the series. Skipped runs are
+            carried over rather than counted, since a skip says nothing about
+            stability.
+        failure_rate:
+          type: number
+          description: (failed + flaky) / runs. Flaky counts as failure — a run that needed a retry did not cleanly pass.
+        flake_rate:
+          type: number
+          description: flaky / runs.
+        last_pass_commit: { type: string }
+        failing_since_commit:
+          type: string
+          description: Oldest commit in the current unbroken failing streak; absent when the newest run passed.
+        series:
+          type: array
+          description: Outcomes newest-first, for compact rendering.
+          items: { $ref: '#/components/schemas/TestOutcome' }
+
+    TestHistoryResponse:
+      type: object
+      required: [test_id, repo, entries, summary]
+      properties:
+        test_id: { type: string }
+        repo: { type: string }
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/TestHistoryEntry' }
+        summary: { $ref: '#/components/schemas/TestHistorySummary' }
+
+    TestEvidenceFailure:
+      type: object
+      required: [stable_key, full_title, title, status, retry_count, duration_ms, screenshots]
+      properties:
+        external_test_id: { type: string }
+        stable_key:
+          type: string
+          description: The identity to pass as `test_id` to /tests/history — the MM-T id where one exists, the full title otherwise.
+        full_title: { type: string }
+        title: { type: string }
+        file: { type: string }
+        status: { type: string, enum: [failed, flaky, timedOut, interrupted] }
+        retry_count: { type: integer }
+        duration_ms: { type: integer, format: int64 }
+        error_message: { type: string }
+        error_stack: { type: string }
+        screenshots:
+          type: array
+          items:
+            type: object
+            required: [s3_key, url]
+            properties:
+              s3_key: { type: string }
+              screenshot_type: { type: string }
+              url: { type: string }
+
+    TestEvidence:
+      type: object
+      required: [group, failure_count, cluster_count, clusters, truncated]
+      properties:
+        group:
+          type: object
+          required: [id, repository, branch, commit_sha, gh_run_id, gh_run_attempt, framework, name, status]
+          properties:
+            id: { type: string, format: uuid }
+            repository: { type: string }
+            branch: { type: string }
+            commit_sha: { type: string }
+            gh_run_id: { type: string }
+            gh_run_attempt: { type: string }
+            gh_pr_number: { type: integer }
+            framework: { type: string }
+            name: { type: string }
+            status: { type: string }
+            environment_metadata: { type: object, additionalProperties: true }
+        failure_count:
+          type: integer
+          description: Distinct failing tests before clustering.
+        cluster_count:
+          type: integer
+          description: Distinct error signatures returned (capped at 15).
+        clusters:
+          type: array
+          items:
+            type: object
+            required: [signature, label, member_count, members, representative]
+            properties:
+              signature: { type: string }
+              label: { type: string }
+              member_count: { type: integer }
+              members:
+                type: array
+                items:
+                  type: object
+                  required: [stable_key, full_title, status]
+                  properties:
+                    external_test_id: { type: string }
+                    stable_key: { type: string }
+                    full_title: { type: string }
+                    status: { type: string }
+              representative: { $ref: '#/components/schemas/TestEvidenceFailure' }
+        truncated:
+          type: boolean
+          description: True when more than 2000 failure rows or more than 15 clusters existed and the response is incomplete.
 
   responses:
     BadRequest:

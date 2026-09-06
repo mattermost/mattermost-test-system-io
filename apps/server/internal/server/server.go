@@ -20,6 +20,7 @@ import (
 	apimw "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/middleware"
 	orchapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	testhistoryapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/testhistory"
 	wsapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/ws"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
@@ -176,6 +177,18 @@ func Build(d Deps) chi.Router {
 		r.Get("/reports/{id}/cases", reportsH.Cases)
 		r.Get("/reports/{id}/json", reportsH.JSONFile)
 		r.Get("/reports/{id}/search", reportsH.Search)
+
+		// --- Public: per-test history and per-run evidence ---
+		//
+		// Unauthenticated on purpose. These are reads over data the report
+		// pages already serve publicly, and the automation that consults them
+		// on every failing run gains nothing from carrying a credential.
+		testsH := &testhistoryapi.Handlers{Pool: d.Pool, Logger: d.Logger}
+		// Where and when one test passed or failed, across branches and PRs.
+		r.Get("/tests/history", testsH.History)
+		// What one run's failures looked like: error, stack and screenshots,
+		// grouped by normalized error so identical causes read as one.
+		r.Get("/tests/evidence", testsH.Evidence)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)

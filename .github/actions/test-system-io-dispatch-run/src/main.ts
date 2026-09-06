@@ -37,6 +37,16 @@ const STAGING_URL = "https://staging-test-io.test.mattermost.com";
 export async function run(): Promise<void> {
   const baseURL = resolveBaseURL();
   const audience = core.getInput("oidc-audience") || "mattermost-test-system-io";
+  const environmentMetadataRaw = core.getInput("environment-metadata").trim();
+  if (environmentMetadataRaw) {
+    try {
+      JSON.parse(environmentMetadataRaw);
+    } catch (err) {
+      throw new Error(
+        `environment-metadata must be valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   const compositeIdentityRaw = core.getInput("composite-identity", { required: true });
   const repoDir = core.getInput("repo-dir", { required: true });
   const artifactsRoot = core.getInput("artifacts-root", { required: true });
@@ -166,6 +176,7 @@ export async function run(): Promise<void> {
       ghJobName: resolvedJobName,
       framework,
       compositeIdentity,
+      environmentMetadata: environmentMetadataRaw || undefined,
     };
     try {
       await uploadShard(uploadCfg, invocations);

@@ -27,9 +27,15 @@ type ExtractedCase struct {
 	DurationMs   int64
 	RetryCount   int
 	ErrorMessage *string
-	Sequence     int
-	StartTime    *time.Time
-	Attachments  []ExtractedAttachment
+	// ErrorStack is the framework's own stack trace, kept separate from
+	// ErrorMessage so evidence can show both and clustering can normalize on
+	// the shorter, more stable message. Nil where the framework's failure
+	// report carries no distinct stack (Jest's failureMessages already embed
+	// it in the message).
+	ErrorStack  *string
+	Sequence    int
+	StartTime   *time.Time
+	Attachments []ExtractedAttachment
 }
 
 // ExtractedAttachment is a reference a framework made to a file (Cypress

@@ -24653,6 +24653,9 @@ async function uploadShard(cfg, jsonPath, screenshotsDir) {
     json_files: jsonParts.map((p) => ({ path: p.relPath, size: p.size })),
     screenshots: screenshotParts.map((s) => ({ path: s.relPath, size: s.size }))
   };
+  if (cfg.environmentMetadata) {
+    regBody.environment_metadata = JSON.parse(cfg.environmentMetadata);
+  }
   const regRes = await postJSON(
     cfg,
     "/api/v1/reports/register",
@@ -24798,6 +24801,16 @@ var STAGING_URL = "https://staging-test-io.test.mattermost.com";
 async function run() {
   const baseURL = resolveBaseURL();
   const audience = getInput("oidc-audience") || "mattermost-test-system-io";
+  const environmentMetadataRaw = getInput("environment-metadata").trim();
+  if (environmentMetadataRaw) {
+    try {
+      JSON.parse(environmentMetadataRaw);
+    } catch (err) {
+      throw new Error(
+        `environment-metadata must be valid JSON: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
   const compositeIdentityRaw = getInput("composite-identity", { required: true });
   const framework = getInput("framework", { required: true });
   const githubToken = getInput("github-token", { required: true });
@@ -24826,7 +24839,8 @@ async function run() {
     ghJobName,
     framework,
     totalReportsExpected,
-    compositeIdentity
+    compositeIdentity,
+    environmentMetadata: environmentMetadataRaw || void 0
   };
   await uploadShard(cfg, jsonPath, screenshotsDir);
 }

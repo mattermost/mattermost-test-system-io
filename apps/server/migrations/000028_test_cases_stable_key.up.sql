@@ -28,6 +28,20 @@
 -- UPDATE, which set the precedent.
 ALTER TABLE test_cases ADD COLUMN file text;
 
+-- Backfill for rows that predate this column, same precedent as migration
+-- 27's external_test_id backfill: without it, every test_case ingested
+-- before this migration keeps file NULL forever, so stable_key falls through
+-- to the un-prefixed full_title/title branch for old rows while new rows
+-- get the file-qualified form — two eras of key generation for the same
+-- test, silently, which is exactly the kind of drift a backfill exists to
+-- prevent.
+UPDATE test_cases tc
+SET file = s.file
+FROM suites s
+WHERE s.id = tc.suite_id
+  AND tc.file IS NULL
+  AND s.file IS NOT NULL;
+
 ALTER TABLE test_cases
     ADD COLUMN stable_key text
     GENERATED ALWAYS AS (

@@ -125,13 +125,17 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 		case tc.Failure != nil:
 			status = StatusFailed
 			msg := tc.Failure.Message
-			if tc.Failure.Text != "" {
-				text := strings.TrimSpace(tc.Failure.Text)
+			// The message attribute and the element body are two different
+			// things: message is the short, stable summary; the body is the
+			// stack. Two failures with the same message and a different
+			// stack (a different line, a different element) must produce
+			// the same ErrorMessage, or clustering by message treats one
+			// cause as many. Text only stands in for message when there is
+			// no message attribute at all.
+			if text := strings.TrimSpace(tc.Failure.Text); text != "" {
 				stack := text
 				errStack = &stack
-				if msg != "" {
-					msg = msg + "\n" + text
-				} else {
+				if msg == "" {
 					msg = text
 				}
 			}
@@ -141,13 +145,10 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 		case tc.Error != nil:
 			status = StatusFailed
 			msg := tc.Error.Message
-			if tc.Error.Text != "" {
-				text := strings.TrimSpace(tc.Error.Text)
+			if text := strings.TrimSpace(tc.Error.Text); text != "" {
 				stack := text
 				errStack = &stack
-				if msg != "" {
-					msg = msg + "\n" + text
-				} else {
+				if msg == "" {
 					msg = text
 				}
 			}

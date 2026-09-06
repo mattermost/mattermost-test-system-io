@@ -1,6 +1,9 @@
 package testhistory
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNormalizeError_stripsVolatileTokens(t *testing.T) {
 	a := normalizeError("Timed out after 15234ms waiting for 0xdeadbeef id=018f0000-0000-7000-8000-000000000001")
@@ -81,5 +84,19 @@ func TestClusterFailures_capsClusterCount(t *testing.T) {
 	}
 	if len(got) != maxClusters {
 		t.Fatalf("clusters = %d, want cap %d", len(got), maxClusters)
+	}
+}
+
+// Playwright colors its expect() output. Two occurrences of the same
+// failure must cluster together whether or not the reporter emitted escape
+// sequences, and the label a human reads must not carry them.
+func TestNormalizeError_stripsANSIEscapes(t *testing.T) {
+	colored := "Error: \x1b[2mexpect(\x1b[22m\x1b[31mlocator\x1b[39m\x1b[2m).\x1b[22mtoBeHidden\x1b[2m()\x1b[22m failed"
+	plain := "Error: expect(locator).toBeHidden() failed"
+	if got, want := normalizeError(colored), normalizeError(plain); got != want {
+		t.Fatalf("colored and plain diverged:\n  %q\n  %q", got, want)
+	}
+	if got := normalizeError(colored); strings.Contains(got, "\x1b") || strings.Contains(got, "[2m") {
+		t.Fatalf("escape residue in label: %q", got)
 	}
 }

@@ -73,13 +73,19 @@ const groupRollupSQL = `
 		       count(*)::int                                                   AS shard_rows,
 		       sum(coalesce(duration_ms, 0))::bigint                           AS duration_ms,
 		       bool_or(status IN ('passed', 'flaky'))                          AS ever_passed,
-		       bool_or(status IN ('failed', 'timedOut', 'interrupted'))        AS ever_failed
+		       bool_or(status IN ('failed', 'timedOut', 'interrupted'))        AS ever_failed,
+		       -- Playwright stores every attempt of a retried test as 'flaky',
+		       -- the failed attempt included, so a group can be flaky with no
+		       -- 'failed' row at all. Without this a retry-survivor rolled up as
+		       -- a clean pass and history never saw the flake evidence did.
+		       bool_or(status = 'flaky')                                       AS ever_flaky
 		FROM matched
 		GROUP BY id, commit_sha, gh_run_id, gh_pr_number, branch, name, run_group, created_at
 	),
 	outcomes AS (
 		SELECT *,
 		       CASE
+		           WHEN ever_flaky                  THEN 'flaky'
 		           WHEN ever_passed AND ever_failed THEN 'flaky'
 		           WHEN ever_failed                 THEN 'failed'
 		           WHEN ever_passed                 THEN 'passed'

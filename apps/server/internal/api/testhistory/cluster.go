@@ -20,6 +20,9 @@ var (
 	hexRe   = regexp.MustCompile(`0x[0-9a-fA-F]+`)
 	numRe   = regexp.MustCompile(`\d{2,}`)
 	spaceRe = regexp.MustCompile(`\s+`)
+	// Playwright's reporter colors its expect() failures; the escape
+	// sequences are not part of the cause and must not reach the label.
+	ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 )
 
 type evidenceMember struct {
@@ -115,7 +118,8 @@ func signatureOf(f evidenceFailure) (hash, label string) {
 }
 
 func normalizeError(msg string) string {
-	s := strings.ToLower(msg)
+	s := ansiRe.ReplaceAllString(msg, "")
+	s = strings.ToLower(s)
 	s = uuidRe.ReplaceAllString(s, "<id>")
 	s = hexRe.ReplaceAllString(s, "<hex>")
 	s = numRe.ReplaceAllString(s, "<n>")

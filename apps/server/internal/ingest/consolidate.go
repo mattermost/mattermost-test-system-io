@@ -116,8 +116,8 @@ func Consolidate(
 			var caseID uuid.UUID
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, duration_ms,
-				                        error_message, error_stack, attachments, ordinal, external_test_id)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+				                        error_message, error_stack, attachments, ordinal, external_test_id, file)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 				RETURNING id
 			`, suiteID, c.Title, c.FullTitle, c.Status, c.RetryCount, c.DurationMs,
 				c.ErrorMessage, c.ErrorStack, attachmentsJSON, c.Sequence,
@@ -125,7 +125,12 @@ func Consolidate(
 				// one-time backfill. Without this every row after the migration
 				// carried a NULL id and the 30-day attribution window emptied
 				// within a month of deploy — silently, for every repository.
-				testreport.ExternalTestID(c.Title, c.FullTitle)).Scan(&caseID); err != nil {
+				testreport.ExternalTestID(c.Title, c.FullTitle),
+				// Denormalized from the suite (s.FilePath, in scope from the
+				// outer loop) so stable_key's generated expression — which
+				// cannot reach across to suites.file — can disambiguate two
+				// same-titled tests in different files.
+				s.FilePath).Scan(&caseID); err != nil {
 				return Totals{}, fmt.Errorf("insert test_case %q: %w", c.Title, err)
 			}
 			for _, sid := range perCaseLinks {

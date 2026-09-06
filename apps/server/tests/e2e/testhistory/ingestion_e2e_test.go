@@ -39,6 +39,7 @@ const (
 	ingestSubject = "repo:mattermost/mattermost:ref:refs/heads/master"
 	ingestName    = "playwright-full-enterprise-master"
 	ingestError   = "Error: expect(locator).toBeVisible() failed — Join Call"
+	ingestStack   = "at ChannelPage.joinCall (channel_page.ts:42:11)"
 	mmTitle       = "MM-T9801 channel switcher opens"
 	plainTitle    = "sidebar collapses on narrow window"
 )
@@ -47,7 +48,7 @@ const (
 // title, both with the same error. Shape mirrors what the reporter emits.
 func playwrightReport(status string) string {
 	result := fmt.Sprintf(`{"status": %q, "duration": 100, "retry": 0, "startTime": "2026-01-01T00:00:00.000Z",
-	   "errors": [{"message": %q}]}`, status, ingestError)
+	   "errors": [{"message": %q, "stack": %q}]}`, status, ingestError, ingestStack)
 	if status == "passed" {
 		result = fmt.Sprintf(`{"status": %q, "duration": 100, "retry": 0, "startTime": "2026-01-01T00:00:00.000Z"}`, status)
 	}
@@ -297,6 +298,10 @@ func TestEvidence_ReturnsErrorAndStableKeyPerFailureGroupedByCause(t *testing.T)
 	msg, _ := rep["error_message"].(string)
 	if !strings.Contains(msg, "toBeVisible") {
 		t.Fatalf("representative error_message = %q, want the Playwright error", msg)
+	}
+	stack, _ := rep["error_stack"].(string)
+	if stack != ingestStack {
+		t.Fatalf("representative error_stack = %q, want %q — the stack must survive ingest, not just the message", stack, ingestStack)
 	}
 	if rep["stable_key"] == "" || rep["stable_key"] == nil {
 		t.Fatal("representative has no stable_key")

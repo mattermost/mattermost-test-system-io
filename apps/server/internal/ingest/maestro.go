@@ -114,7 +114,7 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 	var pending []junitPendingCase
 	for _, tc := range suite.TestCases {
 		status := StatusPassed
-		var errMsg *string
+		var errMsg, errStack *string
 
 		switch {
 		case tc.Skipped != nil:
@@ -126,10 +126,13 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 			status = StatusFailed
 			msg := tc.Failure.Message
 			if tc.Failure.Text != "" {
+				text := strings.TrimSpace(tc.Failure.Text)
+				stack := text
+				errStack = &stack
 				if msg != "" {
-					msg = msg + "\n" + strings.TrimSpace(tc.Failure.Text)
+					msg = msg + "\n" + text
 				} else {
-					msg = strings.TrimSpace(tc.Failure.Text)
+					msg = text
 				}
 			}
 			if msg != "" {
@@ -139,10 +142,13 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 			status = StatusFailed
 			msg := tc.Error.Message
 			if tc.Error.Text != "" {
+				text := strings.TrimSpace(tc.Error.Text)
+				stack := text
+				errStack = &stack
 				if msg != "" {
-					msg = msg + "\n" + strings.TrimSpace(tc.Error.Text)
+					msg = msg + "\n" + text
 				} else {
-					msg = strings.TrimSpace(tc.Error.Text)
+					msg = text
 				}
 			}
 			if msg != "" {
@@ -168,6 +174,7 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 			Status:       status,
 			DurationMs:   durationMs,
 			ErrorMessage: errMsg,
+			ErrorStack:   errStack,
 			Sequence:     *seq,
 			StartTime:    suiteStart,
 		}

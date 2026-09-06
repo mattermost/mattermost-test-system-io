@@ -20,8 +20,18 @@ ALTER TABLE test_cases ADD COLUMN external_test_id text;
 -- migration — would not, so backfilled and live rows would disagree about the
 -- same title. The group stays non-capturing: substring() returns the captured
 -- group when the pattern has one, which would truncate the "_N" sub-case.
+--
+-- Mirrors internal/testreport.ExternalTestID exactly: try full_title first,
+-- and fall back to title only when full_title has no match — not only when
+-- full_title is empty. A non-Playwright report can carry a full_title that
+-- does not simply prefix the title (Cypress's fullTitle comes straight off
+-- the mochawesome JSON), so an id present on the title alone must still be
+-- found rather than backfilling to NULL while the Go path finds it.
 UPDATE test_cases
-SET external_test_id = substring(coalesce(nullif(full_title, ''), title) from '\yMM-T[0-9]+(?:_[0-9]+)?')
+SET external_test_id = coalesce(
+    substring(full_title from '\yMM-T[0-9]+(?:_[0-9]+)?'),
+    substring(title from '\yMM-T[0-9]+(?:_[0-9]+)?')
+)
 WHERE external_test_id IS NULL;
 
 -- Partial index: the majority of rows in a non-Mattermost-convention repository

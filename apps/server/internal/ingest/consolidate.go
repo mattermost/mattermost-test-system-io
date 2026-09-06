@@ -116,11 +116,11 @@ func Consolidate(
 			var caseID uuid.UUID
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, duration_ms,
-				                        error_message, attachments, ordinal, external_test_id)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+				                        error_message, error_stack, attachments, ordinal, external_test_id)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 				RETURNING id
 			`, suiteID, c.Title, c.FullTitle, c.Status, c.RetryCount, c.DurationMs,
-				c.ErrorMessage, attachmentsJSON, c.Sequence,
+				c.ErrorMessage, c.ErrorStack, attachmentsJSON, c.Sequence,
 				// The MM-T id is written at ingest, not only by migration 27's
 				// one-time backfill. Without this every row after the migration
 				// carried a NULL id and the 30-day attribution window emptied

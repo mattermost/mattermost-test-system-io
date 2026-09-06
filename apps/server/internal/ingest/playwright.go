@@ -111,6 +111,9 @@ func walkPlaywrightSuite(
 					if msg != "" {
 						tc.ErrorMessage = &msg
 					}
+					if stack := res.Errors[0].Stack; stack != "" {
+						tc.ErrorStack = &stack
+					}
 				}
 				if res.StartTime != "" {
 					if dt, err := time.Parse(time.RFC3339Nano, res.StartTime); err == nil {

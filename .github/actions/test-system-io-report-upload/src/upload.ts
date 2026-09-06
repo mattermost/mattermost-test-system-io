@@ -27,6 +27,11 @@ export interface UploadConfig {
   framework: string;
   totalReportsExpected: number;
   compositeIdentity: CompositeIdentity;
+  // Raw JSON string, validated by the caller. Forwarded verbatim into
+  // /reports/register so a consumer reproducing this run's failures (human
+  // or automation) can configure its own server the same way this one ran,
+  // instead of guessing at defaults that may not match what actually failed.
+  environmentMetadata?: string;
 }
 
 /** Soft caps so one gateway timeout does not redo a huge multipart body. */
@@ -81,6 +86,9 @@ export async function uploadShard(
     json_files: jsonParts.map((p) => ({ path: p.relPath, size: p.size })),
     screenshots: screenshotParts.map((s) => ({ path: s.relPath, size: s.size })),
   };
+  if (cfg.environmentMetadata) {
+    regBody.environment_metadata = JSON.parse(cfg.environmentMetadata);
+  }
   const regRes = await postJSON<ReportsRegisterResponseBody>(
     cfg,
     "/api/v1/reports/register",

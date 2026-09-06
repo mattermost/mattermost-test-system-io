@@ -21,6 +21,16 @@ const STAGING_URL = "https://staging-test-io.test.mattermost.com";
 export async function run(): Promise<void> {
   const baseURL = resolveBaseURL();
   const audience = core.getInput("oidc-audience") || "mattermost-test-system-io";
+  const environmentMetadataRaw = core.getInput("environment-metadata").trim();
+  if (environmentMetadataRaw) {
+    try {
+      JSON.parse(environmentMetadataRaw);
+    } catch (err) {
+      throw new Error(
+        `environment-metadata must be valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   const compositeIdentityRaw = core.getInput("composite-identity", { required: true });
   const framework = core.getInput("framework", { required: true });
   const githubToken = core.getInput("github-token", { required: true });
@@ -56,6 +66,7 @@ export async function run(): Promise<void> {
     framework,
     totalReportsExpected,
     compositeIdentity,
+    environmentMetadata: environmentMetadataRaw || undefined,
   };
   await uploadShard(cfg, jsonPath, screenshotsDir);
 }

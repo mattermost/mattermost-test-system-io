@@ -1,4 +1,4 @@
-package triage
+package testhistory
 
 import "testing"
 

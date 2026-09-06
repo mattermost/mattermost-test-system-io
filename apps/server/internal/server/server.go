@@ -21,7 +21,6 @@ import (
 	orchapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 	testhistoryapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/testhistory"
-	triageapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/triage"
 	wsapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/ws"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
@@ -179,38 +178,17 @@ func Build(d Deps) chi.Router {
 		r.Get("/reports/{id}/json", reportsH.JSONFile)
 		r.Get("/reports/{id}/search", reportsH.Search)
 
-		// --- Public: per-test history and triage reads ---
+		// --- Public: per-test history and per-run evidence ---
 		//
-		// Unauthenticated on purpose. These answer questions about a test in
-		// aggregate — counters, rates, prior verdicts — and both CI and the
-		// triage agent consult them on every failing run. Handing a read-only
-		// consumer a credential to fetch counters buys nothing.
+		// Unauthenticated on purpose. These are reads over data the report
+		// pages already serve publicly, and the automation that consults them
+		// on every failing run gains nothing from carrying a credential.
 		testsH := &testhistoryapi.Handlers{Pool: d.Pool, Logger: d.Logger}
+		// Where and when one test passed or failed, across branches and PRs.
 		r.Get("/tests/history", testsH.History)
-		r.Get("/tests/flakiness", testsH.Flakiness)
-		r.Get("/tests/failing-elsewhere", testsH.FailingElsewhere)
-
-		triageH := &triageapi.Handlers{Pool: d.Pool, Logger: d.Logger}
-		// The short-circuit, and the only endpoint that says whether a check may
-		// go green. Arithmetic over stored history — no model, and none can be
-		// consulted, which is why a green from here is explicable later.
-		r.Get("/triage/attribution", triageH.Attribution)
-		// One payload with everything needed to adjudicate a run: failures
-		// clustered by normalized error, plus history and screenshots.
-		r.Get("/triage/evidence", triageH.Evidence)
-		// Raw and effective pass-rates. Raw is computed from run outcomes, so no
-		// waiver can move the number the team is judged by.
-		r.Get("/triage/pass-rates", triageH.Rates)
-		// The fix queue, ranked by blast radius, with each entry's fix-attempt
-		// history attached.
-		r.Get("/triage/queue", triageH.Queue)
-		// "Has anyone already filed this?" — before the agent opens a duplicate.
-		r.Get("/triage/signature-issues", triageH.SignatureIssues)
-		// Verdict accuracy and the false-green count.
-		r.Get("/triage/accuracy", triageH.Accuracy)
-		// Product defects E2E surfaced. A test high on this list is not flaky —
-		// it keeps catching real bugs, which is the opposite signal.
-		r.Get("/triage/defects", triageH.Defects)
+		// What one run's failures looked like: error, stack and screenshots,
+		// grouped by normalized error so identical causes read as one.
+		r.Get("/tests/evidence", testsH.Evidence)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
@@ -245,24 +223,6 @@ func Build(d Deps) chi.Router {
 			// Legacy single-shot bundle upload (returns 410).
 			r.Post("/reports", reportsH.Upload)
 			r.Delete("/reports/{id}", reportsH.Delete)
-
-			// Triage ledger writes. Authenticated because a forged verdict
-			// would corrupt the false-green metric, and a forged fix attempt
-			// would either re-enter a test into the loop or park it on a human
-			// who never agreed to take it.
-			r.Post("/triage/verdicts", triageH.CreateVerdicts)
-			r.Post("/triage/verdicts/{id}/correction", triageH.Correct)
-			r.Post("/triage/attempts", triageH.RecordFixAttempt)
-			// Product bugs are filed in the issue tracker by the agent; this
-			// records that it happened, so the next master run links the
-			// existing ticket instead of opening a duplicate.
-			r.Post("/triage/escalations", triageH.RecordEscalation)
-
-			// Reading the ledger is authenticated too: unlike the aggregate
-			// reads it returns rows, and each row names the credential that
-			// wrote the verdict plus whatever a maintainer typed when
-			// overruling it.
-			r.Get("/triage/verdicts", triageH.ListVerdicts)
 
 			r.Get("/artifacts/{id}", artifactsH.Get)
 

@@ -1078,7 +1078,7 @@ paths:
       parameters:
         - in: query
           name: test_id
-          description: External test ID, e.g. MM-T4783_1
+          description: The test's stable_key — its MM-T id (e.g. MM-T4783_1) or, for repositories without ids, its full title
           schema: { type: string }
           required: true
         - in: query
@@ -1108,170 +1108,23 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TestHistoryResponse' }
-  /api/v1/tests/flakiness:
+  /api/v1/tests/evidence:
     get:
       tags: [tests]
-      summary: Per-test stability aggregates over a window, most unstable first
+      summary: One run's failures with error, stack and screenshots, grouped by cause
       description: |
-        Leaderboard of unstable tests over a window. Unlike /tests/history this
-        is not scoped to a single test, so the rollup happens in SQL — returning
-        every run row for every test in the window would be unbounded. Amnesty
-        computes its own failure-rate check; this endpoint is for humans.
-      security: []
-      parameters:
-        - in: query
-          name: repo
-          schema: { type: string }
-          required: true
-        - in: query
-          name: branch
-          schema: { type: string }
-        - in: query
-          name: framework
-          schema: { type: string, enum: [playwright, cypress, detox, maestro] }
-        - in: query
-          name: run_group
-          schema: { type: string }
-        - in: query
-          name: window
-          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '30d' }
-        - in: query
-          name: min_runs
-          description: Ignore tests with fewer runs than this in the window
-          schema: { type: integer, minimum: 1, maximum: 1000, default: 5 }
-        - in: query
-          name: limit
-          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
-      responses:
-        '200':
-          description: Flakiness leaderboard
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TestFlakinessResponse' }
-  /api/v1/tests/failing-elsewhere:
-    get:
-      tags: [tests]
-      summary: Other branches and PRs where the same test failed recently
-      description: |
-        The cheapest high-value "not your fault" signal available: if a test is
-        failing on five unrelated PRs right now, it is not the sixth PR's change.
-        No rerun, no model call, one indexed query.
-
-        `occurrences` is capped at the 50 most recent matches and there is no
-        paging; it is evidence to cite, not an exhaustive list. `distinct_prs`
-        and `distinct_branch` are counted over *every* match in the window, not
-        over the returned page, so they stay correct when a failure is more
-        widespread than 50 occurrences.
-      security: []
-      parameters:
-        - in: query
-          name: test_id
-          schema: { type: string }
-          required: true
-        - in: query
-          name: repo
-          schema: { type: string }
-          required: true
-        - in: query
-          name: window
-          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '24h' }
-        - in: query
-          name: exclude_pr
-          description: PR number to exclude, so the answer is strictly "elsewhere"
-          schema: { type: integer }
-        - in: query
-          name: branch
-          schema: { type: string }
-        - in: query
-          name: framework
-          schema: { type: string, enum: [playwright, cypress, detox, maestro] }
-        - in: query
-          name: run_group
-          schema: { type: string }
-      responses:
-        '200':
-          description: Occurrences elsewhere
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TestFailingElsewhereResponse' }
-  /api/v1/triage/attribution:
-    get:
-      tags: [triage]
-      summary: Is this failure the pull request's fault? Answered from stored history alone
-      description: |
-        The short-circuit, and the only endpoint that says whether a check may go
-        green.
-
-        The expensive path is to build Mattermost from the PR head and run the
-        failing spec three times. At an 88.4% master pass-rate most pull requests
-        meet a failure, so paying that on every one is not affordable — and most
-        failures do not need it. Ask here first: if the test is already failing on
-        the baseline, or its failure count is what its own history predicts, the
-        answer is settled and no server has to start.
-
-        Everything here is arithmetic over stored rows. No model is consulted and
-        none can be, so a green from this endpoint is still explicable months later
-        from the fields it echoes back.
-      security: []
-      parameters:
-        - in: query
-          name: repo
-          required: true
-          schema: { type: string }
-        - in: query
-          name: test_id
-          required: true
-          description: Stable external id, e.g. MM-T2001.
-          schema: { type: string }
-        - in: query
-          name: baseline_branch
-          schema: { type: string, default: master }
-        - in: query
-          name: window
-          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '30d' }
-        - in: query
-          name: attempts
-          description: How many times the test ran on this branch.
-          schema: { type: integer, minimum: 1, default: 1 }
-        - in: query
-          name: failed
-          description: How many of those failed. Defaults to attempts.
-          schema: { type: integer, minimum: 0 }
-        - in: query
-          name: branch
-          description: Echoed back only.
-          schema: { type: string }
-        - in: query
-          name: commit
-          description: Echoed back only.
-          schema: { type: string }
-      responses:
-        '200':
-          description: The attribution decision, with every input it used
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TriageAttribution' }
-        '400':
-          description: Missing repo or test_id, or incoherent attempts/failed counts
-  /api/v1/triage/evidence:
-    get:
-      tags: [triage]
-      summary: Clustered evidence pack for AI flake classification
-      description: |
-        Joins this run's failures (error, stack, screenshots) to the history
-        APIs and groups them by normalized error signature.
-
-        Cost scales with distinct causes, not failure count: 300 identical
-        "element not visible" failures are one cluster, one history lookup,
-        and one agent investigation — never 300 reruns.
-
-        Each cluster carries a representative (error, screenshots, history,
-        amnesty) and a deterministic suggestion. An agent then fetches
-        artifacts and, for bugs, the suspect commit range
-        (`last_pass_commit` … `failing_since_commit`).
+        Everything stored about the failures of one run: error message, stack,
+        screenshots, retry count, and the `stable_key` each failure is looked
+        up by in `/tests/history`. Failures are grouped by normalized error
+        text so 300 identical "element not visible" failures read as one
+        cluster with 300 members.
 
         Identify the run with `group_id` or with the same composite identity
-        `/orchestration/status` uses.
+        the upload used: repository + commit_sha + gh_run_id + name
+        (+ gh_run_attempt, default "1").
+
+        No judgement is made here. Whether a failure is flaky or a regression
+        is for the consumer to decide.
       security: []
       parameters:
         - in: query
@@ -1292,416 +1145,16 @@ paths:
         - in: query
           name: gh_run_attempt
           schema: { type: string, default: '1' }
-        - in: query
-          name: baseline_branch
-          description: Branch history is measured on (not the PR branch)
-          schema: { type: string, default: main }
-        - in: query
-          name: window
-          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '30d' }
-        - in: query
-          name: elsewhere_window
-          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '24h' }
       responses:
         '200':
           description: Evidence pack
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TriageEvidence' }
+              schema: { $ref: '#/components/schemas/TestEvidence' }
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
-  /api/v1/triage/verdicts:
-    get:
-      tags: [triage]
-      summary: Triage verdict audit trail
-      description: >-
-        Authenticated, unlike the aggregate triage reads. Each row names the
-        principal that recorded the verdict and carries the free-text reason a
-        maintainer gave when overruling it.
-      parameters:
-        - in: query
-          name: repo
-          schema: { type: string }
-          required: true
-        - in: query
-          name: commit
-          schema: { type: string }
-        - in: query
-          name: pr
-          schema: { type: integer }
-        - in: query
-          name: test_id
-          schema: { type: string }
-        - in: query
-          name: verdict
-          schema: { $ref: '#/components/schemas/TriageVerdictType' }
-        - in: query
-          name: limit
-          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
-      responses:
-        '200':
-          description: Verdict list
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [verdicts]
-                properties:
-                  verdicts:
-                    type: array
-                    items: { $ref: '#/components/schemas/TriageVerdict' }
-    post:
-      tags: [triage]
-      summary: Upsert a run's triage verdicts
-      description: |
-        Upsert rather than insert: a retry of the triage job must correct the
-        record for that run rather than append a second, contradictory row.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/TriageVerdictBatch' }
-      responses:
-        '201':
-          description: Verdicts stored
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [ids, count]
-                properties:
-                  ids:
-                    type: array
-                    items: { type: string, format: uuid }
-                  count: { type: integer }
-  /api/v1/triage/verdicts/{id}/correction:
-    parameters:
-      - in: path
-        name: id
-        schema: { type: string, format: uuid }
-        required: true
-    post:
-      tags: [triage]
-      summary: Record that a human disagreed with a verdict
-      description: |
-        Corrections are the only ground truth this system gets. They feed the
-        accuracy metrics and, when they land on a waived verdict, the false-green
-        count.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [corrected_verdict]
-              properties:
-                corrected_verdict: { $ref: '#/components/schemas/TriageVerdictType' }
-                corrected_reason: { type: string }
-              # corrected_by is deliberately absent, and additional properties are
-              # not accepted in its place: attribution comes from the
-              # authenticated principal, never from the body. Request validation
-              # runs before the handler derives identity, so the schema and the
-              # handler have to agree that the caller does not supply it.
-              additionalProperties: false
-      responses:
-        '200':
-          description: Correction recorded
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id: { type: string, format: uuid }
-                  corrected_verdict: { $ref: '#/components/schemas/TriageVerdictType' }
-  /api/v1/triage/pass-rates:
-    get:
-      tags: [triage]
-      summary: Raw and effective pass rates over a window
-      description: |
-        W1 — one labeled source for both numbers. raw_pass_rate counts every
-        rolled outcome that is not a clean pass (flaky included) as a failure;
-        effective_pass_rate subtracts waived failures from the verdict ledger.
-        Alerting and dashboards read raw; check status reads effective. No
-        endpoint may serve an unlabelled pass rate. Master windows count only
-        master-run verdicts (a PR-side waiver never greens master).
-      security: []
-      parameters:
-        - in: query
-          name: repo
-          schema: { type: string }
-          required: true
-        - in: query
-          name: branch
-          schema: { type: string, default: main }
-        - in: query
-          name: window
-          description: Trailing window for both outcomes and verdicts
-          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '7d' }
-      responses:
-        '200':
-          description: Labeled rate pair
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TriagePassRates' }
-  /api/v1/triage/queue:
-    get:
-      tags: [triage]
-      summary: The fix queue, ranked by blast radius
-      security: []
-      parameters:
-        - in: query
-          name: repo
-          schema: { type: string }
-          required: true
-        - in: query
-          name: window
-          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '30d' }
-      responses:
-        '200':
-          description: Top 10, ranked by distinct PRs broken then master failures
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  repo: { type: string }
-                  depth: { type: integer }
-                  ranked:
-                    type: array
-                    items: { $ref: '#/components/schemas/StabilizationQueueEntry' }
-  /api/v1/triage/signature-issues:
-    get:
-      tags: [triage]
-      summary: Has anyone already filed this failure?
-      description: |
-        Checked before opening an issue or a fix PR, so a recurring flake does not
-        produce a duplicate every time it recurs. Matching is on the failure
-        signature (which survives a test being renamed) or the test id (which
-        survives an error message being reworded).
-      security: []
-      parameters:
-        - in: query
-          name: repo
-          required: true
-          schema: { type: string }
-        - in: query
-          name: test_id
-          schema: { type: string }
-        - in: query
-          name: signature
-          description: |
-            Failure signature. Either this or test_id is required, and every
-            part of the answer honors both — a request carrying only one must
-            not get a partial reply.
-          schema: { type: string }
-        - in: query
-          name: window
-          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '90d' }
-      responses:
-        '200':
-          description: Prior verdicts and fix attempts for the same failure
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  repo: { type: string }
-                  test_id: { type: string }
-                  signature: { type: string }
-                  known:
-                    type: boolean
-                    description: This failure has been adjudicated before.
-                  needs_human:
-                    type: boolean
-                    description: |
-                      The agent has failed enough times that this test is a
-                      person's. Same rule and field name as the queue entry
-                      carries; check it before attempting a fix.
-                  open_fix_pr:
-                    type: string
-                    description: The PR a successful fix attempt opened, when there is one.
-                  last_issue_url:
-                    type: string
-                    description: |
-                      The most recent defect filed for this test. Its state is
-                      unknown here by design — resolve it against the tracker
-                      before acting on it.
-                  escalations:
-                    type: array
-                    description: Defects previously filed for this test. History, not a lock.
-                    items: { $ref: '#/components/schemas/TriageEscalation' }
-                  prior_verdict:
-                    type: array
-                    items: { type: object }
-                  fix_attempts:
-                    type: array
-                    items: { type: object }
-        '400':
-          description: Neither test_id nor signature supplied
-  /api/v1/triage/attempts:
-    post:
-      tags: [triage]
-      summary: Record what a fix attempt did — the agent's handover note
-      description: |
-        After three failed or blocked attempts the queue reports
-        fix_attempts.needs_human for that test and the agent stops choosing it.
-        Without this record the loop re-attempts the same unfixable test every
-        cycle, and whoever eventually takes it starts from nothing.
-
-        attempted_by comes from the authenticated principal and is never read from
-        the request body.
-      security:
-        - apiKey: []
-        - bearer: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/TriageFixAttemptInput' }
-      responses:
-        '201':
-          description: Recorded, with the running tally for that test
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id: { type: string, format: uuid }
-                  test_id: { type: string }
-                  attempts: { type: integer }
-                  failed: { type: integer }
-                  needs_human: { type: boolean }
-        '400':
-          description: Unknown outcome, or a non-fix attempt with no detail
-        '401':
-          description: Unauthenticated
-  /api/v1/triage/escalations:
-    post:
-      tags: [triage]
-      summary: Record that a product defect was filed in the issue tracker
-      description: |
-        When a test is correct and the product is wrong, the agent files a defect
-        and records it here. Call this AFTER the ticket exists — it records
-        something that happened.
-
-        Deduplication is not this endpoint's job. The tracker owns whether a
-        ticket is open, so the agent queries the tracker (a label on the test id)
-        and only files — and so only posts here — when nothing is open. Mirroring
-        that state here would go stale the moment somebody closed a ticket, after
-        which a regression could never be escalated again.
-
-        This service owns the metric instead: see GET /triage/defects.
-
-        `escalated_by` comes from the authenticated principal, never the body.
-      security:
-        - apiKey: []
-        - bearer: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/TriageEscalationInput' }
-      responses:
-        '201':
-          description: Recorded
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  escalation: { $ref: '#/components/schemas/TriageEscalation' }
-        '400':
-          description: Missing test_id, repository, issue_key or issue_url
-        '401':
-          description: Unauthenticated
-
-  /api/v1/triage/defects:
-    get:
-      tags: [triage]
-      summary: Product defects E2E surfaced, per test
-      description: |
-        How many defects E2E triage filed in the window and which tests produced
-        them, most first.
-
-        A test high on this list is NOT flaky — it keeps catching real bugs,
-        which is the opposite signal and must never be read off the flakiness
-        leaderboard.
-
-        `total_escalations` counts events, not open tickets: some are long fixed.
-        Ticket state lives in the tracker and is deliberately absent here.
-      security: []
-      parameters:
-        - in: query
-          name: repo
-          required: true
-          schema: { type: string }
-        - in: query
-          name: window
-          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '90d' }
-      responses:
-        '200':
-          description: Defect counts per test
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  repo: { type: string }
-                  window: { type: string }
-                  total_escalations:
-                    type: integer
-                    description: Escalation events across the whole window, not just the returned page.
-                  total_tests:
-                    type: integer
-                    description: Distinct tests matched, so a caller can tell a truncated page from a complete one.
-                  tests:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        test_id: { type: string }
-                        defects: { type: integer }
-                        last_escalated_at: { type: string, format: date-time }
-                        latest_issue_key: { type: string }
-                        latest_issue_url: { type: string }
-        '400':
-          description: Missing repo
-
-  /api/v1/triage/accuracy:
-    get:
-      tags: [triage]
-      summary: Triage accuracy metrics — the rollout gate
-      description: |
-        false_greens is the number the design hangs on: verdicts that waived a
-        red result and were later corrected to a real-bug class. It must stay at
-        zero before triage is given gating authority; a non-zero value means the
-        system shipped a bug.
-      security: []
-      parameters:
-        - in: query
-          name: repo
-          schema: { type: string }
-          required: true
-        - in: query
-          name: window
-          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '30d' }
-        - in: query
-          name: source
-          description: |
-            live (default) counts verdicts CI actually produced. replay counts
-            those the replay job measured offline over already-ingested runs.
-            The two are never averaged: a replay verdict is decided with later
-            runs of the same test already in the database, so folding it into
-            the live figure would overstate what CI does.
-          schema: { type: string, enum: [live, replay], default: live }
-      responses:
-        '200':
-          description: Accuracy metrics
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TriageAccuracy' }
 
 components:
   securitySchemes:
@@ -2813,9 +2266,7 @@ components:
           description: >-
             Report groups in which this test actually executed. Skipped runs are
             excluded, so runs = passed + failed + flaky, and failure_rate is the
-            share of runs that did not cleanly pass. The same definition is used
-            by /tests/flakiness and by the amnesty failure rate, so all three
-            agree for a given test.
+            share of runs that did not cleanly pass.
         passed: { type: integer }
         failed: { type: integer }
         flaky: { type: integer }
@@ -2854,219 +2305,14 @@ components:
           items: { $ref: '#/components/schemas/TestHistoryEntry' }
         summary: { $ref: '#/components/schemas/TestHistorySummary' }
 
-    TestFailingElsewhereResponse:
+    TestEvidenceFailure:
       type: object
-      required: [test_id, repo, distinct_prs, distinct_branch, occurrences]
-      properties:
-        test_id: { type: string }
-        repo: { type: string }
-        distinct_prs: { type: integer }
-        distinct_branch: { type: integer }
-        occurrences:
-          type: array
-          items:
-            type: object
-            required: [branch, commit, outcome, created_at]
-            properties:
-              branch: { type: string }
-              gh_pr_number: { type: integer }
-              commit: { type: string }
-              outcome: { $ref: '#/components/schemas/TestOutcome' }
-              created_at: { type: string, format: date-time }
-
-    TestFlakinessRow:
-      type: object
-      required: [test_id, runs, passed, failed, flaky, flips, failure_rate, flake_rate, titles]
-      properties:
-        test_id: { type: string }
-        runs:
-          type: integer
-          description: >-
-            Report groups in which this test actually executed. Skipped runs are
-            excluded, so runs = passed + failed + flaky, and failure_rate is the
-            share of runs that did not cleanly pass. The same definition is used
-            by /tests/flakiness and by the amnesty failure rate, so all three
-            agree for a given test.
-        passed: { type: integer }
-        failed: { type: integer }
-        flaky: { type: integer }
-        flips: { type: integer }
-        failure_rate: { type: number }
-        flake_rate: { type: number }
-        last_pass_commit: { type: string }
-        failing_since_commit: { type: string }
-        titles:
-          type: array
-          description: Up to three observed titles, so a renamed test is still recognisable.
-          items: { type: string }
-
-    TestFlakinessResponse:
-      type: object
-      required: [repo, tests]
-      properties:
-        repo: { type: string }
-        tests:
-          type: array
-          items: { $ref: '#/components/schemas/TestFlakinessRow' }
-
-    TriageVerdictType:
-      type: string
-      description: |
-        PR_REGRESSION      — the change under test broke it.
-        MAIN_REGRESSION    — already broken on the baseline branch.
-        FLAKY_TEST         — test-side non-determinism.
-        FLAKY_INFRA        — runner, emulator, or simulator.
-        FLAKY_SERVER       — the test server or its provisioning.
-        BUILD_OR_ENV_ERROR — bundler/dependency/signing; looks like infra, is a code problem.
-        TEST_DEBT          — the test is wrong, the app is right.
-        INCONCLUSIVE       — evidence bar not met; resolves red.
-      enum:
-        - PR_REGRESSION
-        - MAIN_REGRESSION
-        - FLAKY_TEST
-        - FLAKY_INFRA
-        - FLAKY_SERVER
-        - BUILD_OR_ENV_ERROR
-        - TEST_DEBT
-        - INCONCLUSIVE
-
-    TriageVerdictInput:
-      type: object
-      required: [verdict, confidence]
-      description: |
-        One decision. Needs external_test_id or cluster_signature (or both): a
-        whole-shard failure has a signature but no single test, while a lone
-        failing test has an ID.
+      required: [stable_key, full_title, title, status, retry_count, duration_ms, screenshots]
       properties:
         external_test_id: { type: string }
-        cluster_signature:
+        stable_key:
           type: string
-          description: Failure-signature hash shared by every member of one cluster.
-        member_count:
-          type: integer
-          minimum: 0
-          default: 1
-          description: How many failing tests this verdict covers.
-        verdict: { $ref: '#/components/schemas/TriageVerdictType' }
-        confidence: { type: number, minimum: 0, maximum: 1 }
-        root_cause: { type: string }
-        evidence:
-          type: array
-          description: Free-form evidence references (history, log excerpts, screenshots).
-          items: { type: object }
-        suspect_commit: { type: string }
-        check_state:
-          type: string
-          enum: [success, failure, pending, error]
-          default: failure
-        waived:
-          type: boolean
-          default: false
-          description: True when this verdict turned a red result green. The false-green metric counts these.
-
-    TriageVerdictBatch:
-      type: object
-      required: [repository, commit_sha, verdicts]
-      properties:
-        repository: { type: string }
-        branch: { type: string }
-        commit_sha: { type: string }
-        gh_run_id: { type: string }
-        gh_pr_number: { type: integer }
-        model: { type: string }
-        verdicts:
-          type: array
-          minItems: 1
-          maxItems: 500
-          items: { $ref: '#/components/schemas/TriageVerdictInput' }
-
-    TriageVerdict:
-      type: object
-      required: [id, repository, commit_sha, verdict, confidence, check_state, waived, created_at, member_count, branch, gh_run_id]
-      properties:
-        id: { type: string, format: uuid }
-        repository: { type: string }
-        branch: { type: string }
-        commit_sha: { type: string }
-        gh_run_id: { type: string }
-        gh_pr_number: { type: integer }
-        external_test_id: { type: string }
-        cluster_signature: { type: string }
-        member_count: { type: integer }
-        verdict: { $ref: '#/components/schemas/TriageVerdictType' }
-        confidence: { type: number }
-        root_cause: { type: string }
-        suspect_commit: { type: string }
-        check_state: { type: string, enum: [success, failure, pending, error] }
-        waived: { type: boolean }
-        model: { type: string }
-        corrected_verdict: { $ref: '#/components/schemas/TriageVerdictType' }
-        corrected_by: { type: string }
-        corrected_at: { type: string, format: date-time }
-        created_at: { type: string, format: date-time }
-
-    TriagePassRates:
-      type: object
-      required: [repository, branch, window, rolled_outcomes, raw_failures, waived_failures, effective_failures, raw_pass_rate, effective_pass_rate]
-      properties:
-        repository: { type: string }
-        branch: { type: string }
-        window: { type: string }
-        rolled_outcomes: { type: integer, description: Per-test rolled outcomes in the window (flaky collapses to one outcome). }
-        raw_failures:
-          type: integer
-          description: Outcomes that did not cleanly pass — flaky included, waived included.
-        waived_failures: { type: integer, description: Sum of waived verdict member_count in the window. }
-        effective_failures: { type: integer, description: 'raw_failures minus waived_failures, clamped at zero.' }
-        raw_pass_rate: { type: number, description: '(outcomes - raw_failures) / outcomes, percent. Alerting reads this.' }
-        effective_pass_rate: { type: number, description: '(outcomes - effective_failures) / outcomes, percent. Check status reads this.' }
-
-    StabilizationQueueEntry:
-      type: object
-      required: [test_id]
-      properties:
-        test_id: { type: string }
-        runs: { type: integer }
-        failed: { type: integer }
-        flaky: { type: integer }
-        flips: { type: integer }
-        failure_rate: { type: number }
-        flake_rate: { type: number }
-        affected_prs:
-          type: integer
-          description: Distinct PRs this test failed on in the window — the blast radius the queue ranks by.
-        failing_since_commit: { type: string }
-        fix_attempts:
-          type: object
-          description: What happened the last time the fix loop tried this test.
-          properties:
-            attempts: { type: integer }
-            failed: { type: integer }
-            last_outcome: { type: string, enum: [fixed, failed, blocked, needs_human] }
-            last_detail: { type: string }
-            last_attempt_at: { type: string, format: date-time }
-            needs_human:
-              type: boolean
-              description: Computed — the agent has failed enough times that the test is a human's.
-    TriageSuggestion:
-      type: object
-      required: [verdict, confidence, needs_ai, reason, citations]
-      properties:
-        verdict: { $ref: '#/components/schemas/TriageVerdictType' }
-        confidence: { type: number, minimum: 0, maximum: 1 }
-        needs_ai:
-          type: boolean
-          description: True when screenshots, logs, or the PR diff are needed to raise confidence.
-        reason: { type: string }
-        citations:
-          type: array
-          items: { type: string }
-
-    TriageEvidenceFailure:
-      type: object
-      required: [full_title, title, status, retry_count, duration_ms, screenshots, suggested]
-      properties:
-        external_test_id: { type: string }
+          description: The identity to pass as `test_id` to /tests/history — the MM-T id where one exists, the full title otherwise.
         full_title: { type: string }
         title: { type: string }
         file: { type: string }
@@ -3084,15 +2330,10 @@ components:
               s3_key: { type: string }
               screenshot_type: { type: string }
               url: { type: string }
-        history: { $ref: '#/components/schemas/TestHistorySummary' }
-        history_error: { type: string }
-        distinct_prs: { type: integer }
-        distinct_branches: { type: integer }
-        suggested: { $ref: '#/components/schemas/TriageSuggestion' }
 
-    TriageEvidence:
+    TestEvidence:
       type: object
-      required: [group, failure_count, cluster_count, clusters, truncated, lookups, max_lookups]
+      required: [group, failure_count, cluster_count, clusters, truncated]
       properties:
         group:
           type: object
@@ -3108,17 +2349,18 @@ components:
             framework: { type: string }
             name: { type: string }
             status: { type: string }
+            environment_metadata: { type: object, additionalProperties: true }
         failure_count:
           type: integer
           description: Distinct failing tests before clustering.
         cluster_count:
           type: integer
-          description: Distinct error signatures returned (capped).
+          description: Distinct error signatures returned (capped at 15).
         clusters:
           type: array
           items:
             type: object
-            required: [signature, label, member_count, members, representative, suggested]
+            required: [signature, label, member_count, members, representative]
             properties:
               signature: { type: string }
               label: { type: string }
@@ -3127,141 +2369,16 @@ components:
                 type: array
                 items:
                   type: object
-                  required: [full_title, status]
+                  required: [stable_key, full_title, status]
                   properties:
                     external_test_id: { type: string }
+                    stable_key: { type: string }
                     full_title: { type: string }
                     status: { type: string }
-              representative: { $ref: '#/components/schemas/TriageEvidenceFailure' }
-              suggested: { $ref: '#/components/schemas/TriageSuggestion' }
-        truncated: { type: boolean }
-        lookups: { type: integer }
-        max_lookups: { type: integer }
-
-    TriageAccuracy:
-      type: object
-      required: [repo, window, total_verdicts, waived, corrected, false_greens, precision, by_verdict, gate_satisfied, gate_definition]
-      properties:
-        repo: { type: string }
-        window: { type: string }
-        total_verdicts: { type: integer }
-        waived: { type: integer }
-        corrected: { type: integer }
-        false_greens:
-          type: integer
-          description: Waived verdicts a human later reclassified as a real bug. Must be zero before triage gates anything.
-        precision: { type: number }
-        by_verdict:
-          type: array
-          items:
-            type: object
-            required: [verdict, count, waived, corrected]
-            properties:
-              verdict: { $ref: '#/components/schemas/TriageVerdictType' }
-              count: { type: integer }
-              waived: { type: integer }
-              corrected: { type: integer }
-        gate_satisfied: { type: boolean }
-        gate_definition: { type: string }
-
-    TriageEscalationInput:
-      type: object
-      required: [test_id, repository, issue_key, issue_url]
-      properties:
-        test_id: { type: string }
-        repository: { type: string }
-        issue_key: { type: string, description: "The tracker's own key, e.g. MM-12345." }
-        issue_url: { type: string }
-        summary: { type: string }
-        cluster_signature:
-          type: string
-          description: Failure signature, so an escalation still matches after a rename.
-        suspect_range:
-          type: string
-          description: The last_pass..failing_since range that justified it, when one existed.
-
-    TriageEscalation:
-      type: object
-      required: [id, external_test_id, issue_key, issue_url, created_at]
-      properties:
-        id: { type: string, format: uuid }
-        external_test_id: { type: string }
-        cluster_signature: { type: string }
-        issue_key: { type: string }
-        issue_url: { type: string }
-        summary: { type: string }
-        suspect_range: { type: string }
-        escalated_by: { type: string }
-        created_at: { type: string, format: date-time }
-
-    TriageAttribution:
-      type: object
-      required: [outcome, can_green, needs_reproduction, reason, baseline, observed]
-      properties:
-        repository: { type: string }
-        external_test_id: { type: string }
-        branch: { type: string }
-        commit_sha: { type: string }
-        outcome:
-          type: string
-          enum: [NO_FAILURE, PR_SUSPECT, MASTER_BROKEN, KNOWN_FLAKE, NEEDS_REPRODUCTION]
-          description: |
-            NO_FAILURE — the observation has no failures; nothing to attribute.
-            PR_SUSPECT — clean on the baseline and failing here; never green.
-            MASTER_BROKEN — the baseline is failing it too; this run is a bystander.
-            KNOWN_FLAKE — the count is what this test's own baseline predicts.
-            NEEDS_REPRODUCTION — history cannot settle it; run the test.
-        can_green:
+              representative: { $ref: '#/components/schemas/TestEvidenceFailure' }
+        truncated:
           type: boolean
-          description: The only field a CI integration needs. Never true for PR_SUSPECT or NEEDS_REPRODUCTION.
-        needs_reproduction:
-          type: boolean
-          description: Spend a server build. The inverse of "history settled it", not of can_green.
-        reason:
-          type: string
-          description: Prose a developer reads on the pull request.
-        baseline:
-          type: object
-          properties:
-            branch: { type: string }
-            window: { type: string }
-            runs:
-              type: integer
-              description: Report groups, not case rows — a sharded suite counts once.
-            failed: { type: integer }
-            failure_rate: { type: number }
-            failing_now: { type: boolean }
-            last_pass_commit: { type: string, nullable: true }
-            failing_since_commit:
-              type: string
-              nullable: true
-              description: With last_pass_commit, the range author attribution consumes.
-            last_run_at: { type: string, format: date-time, nullable: true }
-        observed:
-          type: object
-          properties:
-            attempts: { type: integer }
-            failed: { type: integer }
-            p_value:
-              type: number
-              nullable: true
-              description: P(at least this many failures) under the baseline rate. Null with no usable baseline.
-            threshold:
-              type: number
-              description: Echoed so a caller never needs it out of band.
-
-    TriageFixAttemptInput:
-      type: object
-      required: [test_id, repository, outcome]
-      properties:
-        test_id: { type: string }
-        repository: { type: string }
-        outcome: { type: string, enum: [fixed, failed, blocked, needs_human] }
-        detail:
-          type: string
-          description: Required unless outcome is `fixed`. What was tried and why it stopped — this is what the next person reads.
-        pr_url: { type: string }
-        cluster_signature: { type: string }
+          description: True when more than 2000 failure rows or more than 15 clusters existed and the response is incomplete.
 
   responses:
     BadRequest:

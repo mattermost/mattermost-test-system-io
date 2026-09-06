@@ -1,4 +1,4 @@
-package triage
+package testhistory
 
 import (
 	"crypto/sha256"
@@ -24,6 +24,7 @@ var (
 
 type evidenceMember struct {
 	ExternalTestID *string `json:"external_test_id,omitempty"`
+	StableKey      string  `json:"stable_key"`
 	FullTitle      string  `json:"full_title"`
 	Status         string  `json:"status"`
 }
@@ -34,12 +35,11 @@ type evidenceCluster struct {
 	MemberCount    int              `json:"member_count"`
 	Members        []evidenceMember `json:"members"`
 	Representative evidenceFailure  `json:"representative"`
-	Suggested      Suggestion       `json:"suggested"`
 }
 
 // clusterFailures groups failures by normalized error text. Three hundred
 // "element not visible" failures are one cause, not three hundred
-// investigations — and not three hundred reruns.
+// investigations.
 func clusterFailures(failures []evidenceFailure) ([]evidenceCluster, bool) {
 	type bucket struct {
 		label string
@@ -72,6 +72,7 @@ func clusterFailures(failures []evidenceFailure) ([]evidenceCluster, bool) {
 			}
 			members = append(members, evidenceMember{
 				ExternalTestID: it.ExternalTestID,
+				StableKey:      it.StableKey,
 				FullTitle:      it.FullTitle,
 				Status:         it.Status,
 			})

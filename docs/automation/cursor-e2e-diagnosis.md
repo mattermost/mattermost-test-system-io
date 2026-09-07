@@ -75,6 +75,13 @@ Use `stable_key` exactly as returned; never remove project/file prefixes or
 construct aliases. Clustering is a normalized-error grouping, not proof that all
 members share one cause. An unexplained member stays unresolved.
 
+External IDs can be reused by different tests. Compare each member's full title
+and file with the orchestration cases and source matches for that ID. If one
+stable key covers different tests, its history summary combines observations;
+do not attribute those passes or failures to one test. Report the ambiguity and
+use the observed spec/full-title attempts for this run. A shared ID cannot
+establish a matching baseline without evidence for the same test.
+
 Also fetch `GET /orchestration/status` with the same composite identity. Reconcile
 `total_units`, terminal counts and every unit. Call out pending, leased, abandoned,
 retest-eligible or interrupted units and failed workers/hooks without test-case

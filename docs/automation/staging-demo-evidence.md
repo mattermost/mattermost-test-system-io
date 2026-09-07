@@ -9,6 +9,10 @@ not a Cursor review or proof that the PR cannot cause a regression.
   `d5b2bde060dca0e93091ebc6bd2870dd3f0a26d3` deployed successfully in
   [run 34167892341](https://github.com/mattermost/mattermost-test-system-io/actions/runs/34167892341).
   `reset_database=false`; six existing MM-T188 history observations survived.
+- The final counter correction, `6c385b88b82f68be5ebcb7e6fdd96ce405d0bcb3`,
+  passed all repository CI jobs and deployed in
+  [run 34170478185](https://github.com/mattermost/mattermost-test-system-io/actions/runs/34170478185),
+  again preserving the database. The live API reports that revision.
 - Mattermost PR [38356](https://github.com/mattermost/mattermost/pull/38356):
   `5ed5f7d29ae67d6ecf7864022e37c66792280a45` tested in
   [run 34168873085, attempt 1](https://github.com/mattermost/mattermost/actions/runs/34168873085).
@@ -27,6 +31,10 @@ not a Cursor review or proof that the PR cannot cause a regression.
 Both evidence packs report `complete=true` and `truncated=false`. Both
 orchestration runs completed with zero pending, leased, abandoned or
 retest-eligible units.
+
+Playwright's test status is green, but worker 19's debug-artifact upload timed
+out after dispatch completed. That failed job remains in the raw workflow;
+the scoped Cypress waiver does not change it.
 
 - [Cypress evidence](https://staging-test-io.test.mattermost.com/api/v1/tests/evidence?repository=mattermost%2Fmattermost&commit_sha=5ed5f7d29ae67d6ecf7864022e37c66792280a45&gh_run_id=34168873085&gh_run_attempt=1&name=cypress-full-enterprise)
   contains all three identities with a failed attempt. Two remain failed;
@@ -66,12 +74,32 @@ observations passed, subject to the reused-ID ambiguity above.
 
 ## Demo acceptance
 
-The backend, real E2E execution and retry preservation are demonstrated. The
-orchestration summary also exposed a separate native-flaky counting bug during
-verification; its correction must be validated before showing that counter.
+**GO for the demo of Cursor diagnosis followed by deliberate maintainer
+verification.** The backend, real E2E execution and retry preservation are
+demonstrated. The native-flaky counter correction passed regression tests and
+live verification: Cypress now shows 1,347 passed, 2 failed, 1 flaky and 20 skipped
+tests, total 1,370. All 40 Cypress reports and three evidence identities survived
+the final deployment.
 
-The Cursor diagnosis and scoped maintainer status waiver need their own durable
-review and workflow receipts. A pending or stale review is not acceptance.
+The fresh [Cursor review 5135830599](https://github.com/mattermost/mattermost/pull/38356#pullrequestreview-5135830599)
+used staging and inspected the exact head/run/attempt. It covered both persistent
+failures and the retry survivor, disclosed incomplete baseline configuration,
+and avoided confidence percentages and causal clearance. Its attempt wording
+describes two spec executions per persistent PR failure; stored history retains
+four internal attempts. The maintainer record additionally discloses MM-T1's
+reused-ID ambiguity.
+
+The scoped [verification workflow 34170697788](https://github.com/mattermost/mattermost/actions/runs/34170697788)
+succeeded using its repository `GITHUB_TOKEN`. The
+[approval and copied diagnosis](https://github.com/mattermost/mattermost/pull/38356#issuecomment-5576794663)
+were stored at 23:38:20 UTC, before Cypress success status `53701176449` at
+23:38:23 UTC. The
+[verified receipt](https://github.com/mattermost/mattermost/pull/38356#issuecomment-5576795350)
+followed at 23:38:25 UTC. Both E2E commit statuses are green on the unchanged
+assessed head. Raw failed CI jobs and TSIO observations remain visible.
+
 Use the [replacement prompt](cursor-e2e-diagnosis.md); no Cursor label token is
-needed. The supported demo is diagnosis followed by deliberate maintainer
-verification. It does not establish autonomous classifier accuracy.
+needed. The current run demonstrated the diagnosis-only prompt and structured
+binding. The latest prompt also adds the reused-ID guard discovered during this
+verification. The demo does not establish autonomous classifier accuracy or
+authorize automatic future waivers.

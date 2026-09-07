@@ -80,31 +80,7 @@ func ingestReport(t *testing.T, env *testenv.Env, tok, framework, name, commit, 
 	if err := json.Unmarshal(reg.Body, &ids); err != nil {
 		t.Fatalf("register response: %v", err)
 	}
-	buf := &bytes.Buffer{}
-	w := multipart.NewWriter(buf)
-	part, err := w.CreateFormFile("files", "results.json")
-	if err != nil {
-		t.Fatalf("form file: %v", err)
-	}
-	if _, err := io.WriteString(part, body); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	_ = w.Close()
-	req, err := http.NewRequest(http.MethodPost,
-		fmt.Sprintf("%s/api/v1/reports/upload/%s/%s/json", env.ServerURL, ids.ReportID, ids.UploadID), buf)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	req.Header.Set("Content-Type", w.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+tok)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("upload: %v", err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("upload: status %d", resp.StatusCode)
-	}
+	postMultipartJSON(t, env, tok, ids.ReportID, ids.UploadID, body)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var n int
@@ -181,5 +157,37 @@ func TestHistory_ARetrySurvivorRollsUpAsFlakyNotPassed(t *testing.T) {
 	s := got["summary"].(map[string]any)
 	if s["flaky"].(float64) != 1 || s["passed"].(float64) != 0 || s["failure_rate"].(float64) != 1 {
 		t.Fatalf("summary = %v, want flaky=1 passed=0 failure_rate=1", s)
+	}
+}
+
+// postMultipartJSON uploads one results.json and waits for a 200. Shared by the
+// ingestion helpers and by the diagnoser contract test, so both drive the same
+// upload path.
+func postMultipartJSON(t *testing.T, env *testenv.Env, tok, reportID, uploadID, body string) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	w := multipart.NewWriter(buf)
+	part, err := w.CreateFormFile("files", "results.json")
+	if err != nil {
+		t.Fatalf("form file: %v", err)
+	}
+	if _, err := io.WriteString(part, body); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = w.Close()
+	req, err := http.NewRequest(http.MethodPost,
+		fmt.Sprintf("%s/api/v1/reports/upload/%s/%s/json", env.ServerURL, reportID, uploadID), buf)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload: status %d", resp.StatusCode)
 	}
 }

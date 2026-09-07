@@ -157,109 +157,109 @@ what makes the pair a bisectable range. See
 `internal/api/testhistory/summarize_test.go` →
 `TestSummarize_StreakReachingTheStartOfTheWindow`.
 
-### 3.1 Proposed: the rest of the API surface
+### 3.1 The consumer
 
-None of the following exists. There is no `internal/api/triage` package, no
-`/triage/*` route in `internal/server/server.go`, and no occurrence of "triage"
-in `api/openapi.yaml`.
+The PR Diagnoser — a Cursor automation, not code in this repository — is the
+only caller. It reads those three endpoints, classifies each failure itself
+(`MASTER_BROKEN`, `KNOWN_FLAKE`, `NEW_TO_THIS_PR`, `NO_HISTORY`), reproduces the
+residue, and unblocks by adding the **`E2E Tests/verified`** label, which
+`.github/workflows/e2e-tests-verified-label.yml` on `mattermost` turns into a
+`success` on the four full-run contexts.
 
-| Proposed endpoint | Purpose |
-|---|---|
-| `GET /triage/attribution` | Is this the PR's fault (see §4) |
-| `GET /tests/flakiness` | The flakiness leaderboard |
-| `GET /tests/failing-elsewhere` | Is this failing on other branches right now |
-| `GET /triage/pass-rates` | Raw and effective pass-rates |
-| `GET /triage/queue` | The fix queue, ranked by blast radius |
-| `GET /triage/quarantine` | The quarantine list and its ages (see §7) |
+So the mechanism is a whole-run label, not a per-test status. There is no
+finer-grained lever today, which is exactly why the automation requires *every*
+failing test in the run to clear before it labels.
 
-Nothing above should be built before it has a caller that exists, and no field
-should be added before it has a reader.
+Because the automation cannot be caught by a compiler, the field set it reads is
+pinned by a test here:
+`tests/e2e/testhistory/diagnoser_contract_e2e_test.go` →
+`TestDiagnoserContract_*` (six cases). A rename or a dropped key breaks a test
+rather than silently breaking an automation nobody can grep.
 
-Deliberately **not** proposed, and not to be built: any endpoint that sets a
-commit status. Setting a check is the consumer's action, taken with its own
-credentials, on its own evidence. Moving it here would make this repository the
-thing that greens a build, which is exactly the authority a data plane should
-not hold.
+#### Two changes on this branch that the current prompt does not yet account for
 
----
+1. **`stable_key` gained the Playwright project prefix** (§2.1), so
+   `MM-T1234` is now `chrome :: MM-T1234`. The prompt is already safe here — it
+   says *"always use the stable_key the evidence response gives you… Never
+   construct it"* — but any hard-coded key in a saved comment or test fixture
+   will no longer match.
 
-## 4. Proposed: the attribution decision
+2. **`environment_metadata.licensed` was renamed `license_secret_present`.** The
+   prompt's step 3 says *"load MM_LICENSE if `licensed` is true"*, and that key
+   no longer exists. The rename is deliberate: the value is
+   `secrets.MM_LICENSE != ''`, which measures whether the secret was configured
+   on the runner, not whether the server was licensed — and the old name invited
+   exactly that misreading. **The prompt needs the one-word edit.**
 
-**Status: proposed.** Nothing below is implemented.
+   The same change adds `server_image` (the resolved name, which the prompt
+   currently derives itself from `server_image_repo` + edition) and
+   `server_image_digest`. Step 3 should prefer those: `server_image_tag` is very
+   often the mutable `master`, so a reproduction pinned to the tag can run
+   against a different binary than the one that failed — which is what makes
+   "verified 3/3 against a real server" unsound.
+
+## 4. Proposed: moving the decision server-side
+
+**Status: proposed. Nothing below is implemented, and it should not be built
+until the baseline in §4.2 exists.**
+
+Today the classification lives in the automation's prompt. That is the right
+place for it while there is no measurement: a prompt can be edited and re-run
+against history in minutes, and there is no accuracy number yet that would
+justify freezing the rule in Go.
 
 ### 4.1 Why the previous rule does not survive retries
 
-The previous version of this rule required, for a `KNOWN_FLAKE` verdict, that
-`p = P(at least k failures | baseline rate) >= 0.10`, guarded by a baseline
-failure rate of at least 5% and at least 5 baseline runs.
+An earlier version of this design proposed a `GET /triage/attribution` endpoint
+whose `KNOWN_FLAKE` branch required
+`p = P(at least k failures | baseline rate) >= 0.10`.
 
-With retries on, a reported failure is 2-of-2, so `p = r²` for a per-attempt
-failure rate `r`. Requiring `p >= 0.10` therefore requires:
+That rule cannot fire. Both CI configs retry once
+(`playwright.config.ts` `retries: isCI ? 1 : 0`, `cypress.config.ts`
+`retries.runMode: 1`), so a reported failure is two attempts out of two and
+`p = r²`. Requiring `p >= 0.10` requires a per-attempt failure rate above
+**31.6%** — almost no real test — and everything else falls through to the
+expensive reproduction path the rule existed to avoid. Its documented
+`failure_rate >= 0.05` guard was also unreachable: at one observation
+`P(at least 1 failure) = r` exactly, so the real floor was always 10%.
 
-```
-r² ≥ 0.10   →   r ≥ 0.316
-```
+Both are what happens when a significance test is applied to something that was
+never a sample of independent draws.
 
-A test must fail **more than 31.6% of attempts** to be dismissible as a known
-flake. Almost nothing clears that. Everything else falls through to
-`NEEDS_REPRODUCTION` — the expensive path, a server build plus repeated runs —
-which is the opposite of what the rule was for.
+The current prompt's `KNOWN_FLAKE` rule — `runs >= 5`, both passed and failed,
+`failure_rate >= 0.05`, `flips >= 2` — has **no such problem**, because
+`/tests/history` computes over runs rather than attempts (§2.2). It is already
+the shape a server-side rule should take.
 
-The guards are broken in a second, quieter way. At a single observation,
-`P(at least 1 failure) = r` exactly, so `p ≥ 0.10` *is* `r ≥ 0.10`. The
-documented `failure_rate >= 0.05` floor can never bind: it is dead code, and
-the real floor was always 10%.
+### 4.2 What has to exist first
 
-Neither problem is a tuning error. Both come from applying a significance test
-to a quantity that was never a sample of independent draws.
+Per the roadmap, the next piece of work is **not** an endpoint. It is the
+baseline: the share of PR blocks caused by non-PR failures, and the master flake
+rate per suite, computed over 60–90 days of already-ingested traffic, with the
+query committed alongside the number.
 
-### 4.2 The v1 rule: no statistics
+That measurement is unrecoverable once triage behaviour changes anything, and
+without it there is no way to say whether this system helped. It also answers
+the question that decides whether a better classifier is worth building at all:
+if the binding constraint turns out to be fan-out (how many report groups a PR
+touches) or master's own pass-rate, then a sharper verdict moves nothing.
 
-For v1, no statistics at all. One lookup against the master baseline, three
-outcomes:
+### 4.3 Constraints on any server-side rule, when one is built
 
-| Outcome | When |
-|---|---|
-| `not_pr_caused` | This `stable_key` failed on the master baseline within the last K master runs |
-| `pr_suspect` | Spotless on master across the window, failing here |
-| `unknown` | Thin baseline, or the key is absent from the baseline |
-
-Four constraints on any implementation of this, each of which is a way the
-previous design could have granted a green it should not have:
-
-1. **The baseline is master, and only master.** A key is resolved against the
-   master baseline. A key that is not already in that baseline is `unknown` —
-   never `not_pr_caused`, never "master is broken". A `stable_key` is derived
-   from a test's title and file, both of which a pull request controls. If an
-   unrecognised key could reach any branch that grants a green, then adding a
-   test named after a known-flaky one would select a green check.
-
-2. **`pr_suspect` is evaluated first.** It is decided before any branch that
-   can grant a green, so nothing below can reach past it.
-
-3. **`unknown` is not a green.** Thin evidence is a reason to look, not a
-   reason to pass.
-
-4. **Nothing greens without a stored record of why, written before the check is
-   touched.** If that write fails, the check stays red. A green whose reasoning
-   was never recorded is indistinguishable from a bug.
-
-### 4.3 Proposed: what statistics must look like if they return
-
-Not before there is a labelled dataset to tune against. When there is:
-
-- **Rates over runs, not attempts.** Per §2.2. An attempt-level rate double-counts
-  the shared cause of a retried failure.
-- **A lower bound, not a point estimate.** A Wilson or Jeffreys lower bound on
-  the failure rate, so a test with 1 failure in 3 runs cannot present a 33%
-  rate as though it were established.
-- **A staleness guard on the master-broken branch.** If the baseline
-  observation is older than `max(2 × master cadence, 4h)`, the branch is
-  unassertable. Master being broken four hours ago is not evidence that it is
-  broken now, and treating it as such greens a PR against a master that has
-  since been fixed.
-
----
+- **Baseline-only key resolution.** `stable_key` is derived from a test's title
+  and file, both of which a pull request controls. A key not already in the
+  master baseline is `unknown` — never `flake`, never `master_broken`. No
+  PR-controlled string may select a green check.
+- **`pr_suspect` before any branch that can unblock.**
+- **A staleness guard.** "Master is broken" is unassertable if the newest
+  baseline observation is older than `max(2 × master cadence, 4h)`; master may
+  have been fixed since.
+- **Rates over runs, and a Wilson or Jeffreys lower bound** rather than a raw
+  point estimate, if statistics return at all.
+- **Nothing unblocks without a stored record of why, written first.** If that
+  write fails, the check stays red.
+- **Two accuracy numbers, never one.** Wrong-toward-red costs a re-run.
+  Wrong-toward-green costs the project. Never average them.
 
 ## 5. Proposed: the master fix loop
 
@@ -358,16 +358,39 @@ modelled at best.
 Stated plainly, because the previous version of this document was too
 confident. This section is longer than it was, not shorter.
 
-**Never run end to end.** No triage agent has run against this data plane. No
-fix pull request has been opened. No check has been greened or left red by any
-of this. The reads in §3 are exercised by tests, not by a consumer in
-production.
+**The reads work; the automation reading them has not been measured.** The three
+endpoints in §3 are exercised end to end against a real Postgres, and the exact
+field set the PR Diagnoser reads is pinned
+(`TestDiagnoserContract_*`, six cases). That proves the contract holds. It says
+nothing about whether the automation's classification is *right* — no verdict
+has been compared against what a pull request author actually concluded, and no
+`E2E Tests/verified` label has been applied by it.
 
-**No accuracy number exists, and no instrument to produce one exists.** The
-previous version said accuracy "reports zero until verdicts accumulate", which
-implied an endpoint that would report it. There is no such endpoint and no
-verdict store. Until verdicts are recorded and compared against outcomes, the
-accuracy of any rule in §4 is unknown — including the v1 rule proposed here.
+**The label is whole-run.** Applying it overrides all four full-run contexts on
+the head commit at once. There is no per-test mechanism, so one wrong "this is a
+flake" does not degrade a single check — it greens the entire E2E result for
+that commit. That is the blast radius of a wrong verdict, and it is why the
+automation requires every failing test to clear.
+
+**The labelling identity needs write or admin on `mattermost/mattermost`.** The
+override workflow checks `github.event.sender.login`'s permission. That is a
+real grant on the product repository, and it should be made deliberately rather
+than as a setup step.
+
+**No accuracy number exists, and no instrument to produce one exists.** There is
+no verdict store, so nothing records what was decided or lets it be compared
+against what turned out to be true. The honest first measurement is a shadow
+replay: run the last N failed PR runs through the classification and compare
+each verdict to what the author did — re-ran and went green, or pushed a fix.
+Report it as **two** numbers. Wrong-toward-red costs a re-run; wrong-toward-green
+costs the project; averaging them hides the only one that matters.
+
+**No baseline exists.** Neither of the two numbers this system is meant to move
+— the share of PR blocks caused by non-PR failures, and the master flake rate
+per suite — has been computed over historical traffic. Until they are, "it
+helped" is unfalsifiable. That measurement is also unrecoverable once triage
+starts changing outcomes, which is why it is the next piece of work (§4.2) and
+not an endpoint.
 
 **No labelled dataset exists.** Nothing separates, in stored form, a failure
 that was the PR's fault from one that was not. Every threshold in §4 and §7 is
@@ -389,6 +412,17 @@ pass-rate would move. Those numbers would be modelled, and modelling them
 against no labelled data would produce a number with the shape of evidence and
 none of the substance.
 
+**The diagnoser's `failing_since_commit` reading has a trap.** Its step 6
+comment template prints that commit "so the author sees it is upstream". When
+the failing streak reaches the oldest run in the window, the field names the
+oldest commit the window *has*, not the commit that broke it — and the only
+signal that the two differ is `last_pass_commit` being absent. An automation
+that prints the first without checking the second sends the author to the wrong
+commit. Pinned by
+`tests/e2e/testhistory/diagnoser_contract_e2e_test.go` →
+`TestDiagnoserContract_FailingSinceCommitIsAFloorNotAnAnswer`; the prompt does
+not currently make the check.
+
 **The retry semantics fix does not repair stored history.** Rows ingested before
 it cannot be reconstructed: a Cypress retry-survivor from before the change
 stored a single `passed` row, and the attempt that would prove otherwise was
@@ -409,6 +443,15 @@ of this table is still unknown.
 
 | What | Where | Why |
 |---|---|---|
-| `tsioctl db backfill-stable-key` | Run once after deploying migration 28 | Populates `stable_key` on pre-existing rows and builds its index concurrently. Until it runs, older rows have no history. |
-| Screenshot upload for failing specs | mattermost CI | The screenshot is decisive for timeout and visibility failures |
-| CODEOWNERS `e2e-tests/**` | mattermost | Routing for product bugs a fix loop would not fix (§5) |
+| `tsioctl db backfill-stable-key` | Run once after deploying migration 28 | Populates `stable_key` on pre-existing rows and builds its index concurrently. Until it runs, older rows have no history, so every classification falls through to `NO_HISTORY` and the reproduction path. |
+| Screenshot upload for failing specs | mattermost CI | Decisive for timeout and visibility failures |
+| The two prompt edits in §3.1 | The Cursor automation | `licensed` → `license_secret_present`, and prefer `server_image` + `server_image_digest` over deriving the image from the tag |
+| Write/admin for the labelling identity | mattermost | The override workflow checks the sender's permission. A deliberate grant, not a formality (§8) |
+| `CODEOWNERS e2e-tests/**` | mattermost | Routing for product bugs, when capability C is built |
+
+### 9.1 Before turning anything on
+
+Run the automation **comment-only** first. It already stops without labelling
+when the evidence cannot settle a classification; keeping it there for a week
+costs nothing and produces the shadow-accuracy numbers §8 says do not exist.
+Only then let it label, and read both accuracy numbers rather than their average.

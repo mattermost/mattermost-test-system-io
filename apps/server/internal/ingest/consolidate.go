@@ -240,7 +240,7 @@ func basename(p string) string {
 	return p
 }
 
-// countStatuses collapses results for the same test (by full_title) down
+// countStatuses collapses results for the same test (by project and full_title) down
 // to one "unique" case and returns the per-suite
 // passed/failed/skipped/flaky/unique counts.
 //
@@ -250,7 +250,8 @@ func basename(p string) string {
 // MULTIPLE Playwright JSON files (e.g. an orchestration retest re-runs
 // the same spec under the same gh_job_id), each file independently
 // produces retry=0 entries for the same test, and the retry filter does
-// not catch the duplicates. Grouping by full_title catches both cases.
+// not catch the duplicates. Grouping by project and full_title catches both cases
+// without merging failures in one browser into passes in another.
 //
 // The collapsed status uses the LAST entry per title (the test's terminal
 // outcome) and promotes to `flaky` when at least one earlier entry was a
@@ -261,15 +262,20 @@ func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, uniqu
 		final      ExtractedCase
 		everFailed bool
 	}
-	byTitle := make(map[string]*group, len(cases))
-	order := make([]string, 0, len(cases))
+	type identity struct{ project, title string }
+	byTitle := make(map[identity]*group, len(cases))
+	order := make([]identity, 0, len(cases))
 	for _, c := range cases {
-		isFailure := c.Status == StatusFailed || c.Status == StatusTimedOut
-		g, ok := byTitle[c.FullTitle]
+		key := identity{title: c.FullTitle}
+		if c.Project != nil {
+			key.project = *c.Project
+		}
+		isFailure := isAttemptFailure(c.Status)
+		g, ok := byTitle[key]
 		if !ok {
 			g = &group{final: c, everFailed: isFailure}
-			byTitle[c.FullTitle] = g
-			order = append(order, c.FullTitle)
+			byTitle[key] = g
+			order = append(order, key)
 			continue
 		}
 		g.final = c
@@ -285,7 +291,7 @@ func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, uniqu
 			flaky++
 		case g.final.Status == StatusPassed:
 			passed++
-		case g.final.Status == StatusFailed, g.final.Status == StatusTimedOut:
+		case isAttemptFailure(g.final.Status):
 			failed++
 		case g.final.Status == StatusSkipped:
 			skipped++

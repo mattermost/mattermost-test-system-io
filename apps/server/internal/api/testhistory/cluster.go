@@ -10,9 +10,8 @@ import (
 )
 
 const (
-	maxClusters     = 15
-	maxMembersShown = 20
-	signatureLen    = 240
+	maxClusters  = 15
+	signatureLen = 240
 )
 
 var (
@@ -69,10 +68,9 @@ func clusterFailures(failures []evidenceFailure) ([]evidenceCluster, bool) {
 			rep = mergeFailure(rep, it)
 		}
 		members := make([]evidenceMember, 0, len(b.items))
-		for i, it := range b.items {
-			if i >= maxMembersShown {
-				break
-			}
+		// Identities are the consumer's coverage checklist. Bound detailed
+		// representatives, never silently omit a failing test from that list.
+		for _, it := range b.items {
 			members = append(members, evidenceMember{
 				ExternalTestID: it.ExternalTestID,
 				StableKey:      it.StableKey,

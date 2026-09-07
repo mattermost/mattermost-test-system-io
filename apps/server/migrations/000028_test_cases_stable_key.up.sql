@@ -10,7 +10,8 @@
 -- weaker key — a reworded test starts a fresh series — but for a repository
 -- with no ids it is the only key there is, and a renamed test is arguably a new
 -- test for flakiness purposes anyway. Where an MM-T id exists it still wins, so
--- mattermost/mattermost loses nothing.
+-- project-specific series remain separate. Historical project-less rows need
+-- fresh baseline coverage; their missing project cannot be inferred here.
 --
 -- Two disambiguators, both denormalized onto test_cases:
 --
@@ -53,8 +54,8 @@
 -- there is no reachable production or staging database here, and nothing in
 -- the repository records the number. Rather than ship a rewrite whose cost is
 -- unknown, this migration is written so the cost does not depend on the count.
--- Every statement below is catalog-only and completes in milliseconds on a
--- table of any size:
+-- Every statement below is catalog-only. It avoids table-sized work, but
+-- acquiring its locks can still wait for other transactions:
 --
 --   * ADD COLUMN of a nullable column with no default is a catalog update in
 --     PostgreSQL 11+; no heap pages are touched.
@@ -62,8 +63,8 @@
 --     a STORED generated column. A generated column keeps the database
 --     authoritative — which is why it was chosen — but it cannot be added
 --     without a full rewrite. The trigger keeps the same property (no writer
---     can forget to set the key, and the expression lives in one place) at no
---     lock cost.
+--     can forget to set the key, and the expression lives in one place) without a
+--     heap rewrite.
 --   * CREATE TRIGGER takes a brief ACCESS EXCLUSIVE to write one catalog row.
 --
 -- What is NOT here, deliberately: the backfill of pre-existing rows and the

@@ -151,7 +151,10 @@ build-web: ## Build web production bundle
 
 ##@ Test
 
-test: test-server test-web test-infra ## Run unit tests for server + web + infra
+test: test-server test-web test-infra test-automation ## Run unit tests for server + web + infra + automation helpers
+
+test-automation: ## Verify diagnosis and scoped status-writer guards
+	node --test docs/automation/*.test.mjs
 
 test-server: ## Run Go unit tests (race)
 	@echo "$(CYAN)Running Go tests with -race...$(RESET)"
@@ -159,7 +162,7 @@ test-server: ## Run Go unit tests (race)
 
 test-server-e2e: ensure-docker ## Run every -tags=e2e package (admin_cli, oidc, contract); Docker required
 	@echo "$(CYAN)Running all -tags=e2e tests (DOCKER_HOST=$(DOCKER_HOST_AUTO))...$(RESET)"
-	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(E2E_ENV) $(GO) test -race -tags=e2e -count=1 ./tests/...
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(E2E_ENV) $(GO) test -race -tags=e2e -count=1 ./tests/... ./cmd/tsioctl/db
 
 test-web: ## Run web tests (vitest)
 	cd $(WEB_DIR) && npm run test

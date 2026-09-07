@@ -62,7 +62,8 @@ func ingestDiag(t *testing.T, env *testenv.Env, tok, branch, commit, runID, stat
 		"repository": diagRepo, "framework": "playwright", "name": diagJobName,
 		"branch": branch, "commit": commit, "gh_run_id": runID, "gh_run_attempt": "1",
 		"gh_job_id": runID, "gh_job_name": "playwright/" + runID,
-		"json_files": []any{map[string]any{"path": "results.json", "size": len(body)}},
+		"total_reports_expected": 1,
+		"json_files":             []any{map[string]any{"path": "results.json", "size": len(body)}},
 	}
 	if pr != nil {
 		identity["gh_pr_number"] = *pr
@@ -303,6 +304,10 @@ func TestDiagnoserContract_BranchMasterNarrowsToTheBaseline(t *testing.T) {
 		ingestDiag(t, env, tok, fmt.Sprintf("pr-%d", prNum), sha("dp", i),
 			fmt.Sprintf("diag-p-%d", i), "failed", &pr)
 	}
+	// A fork can legitimately open its master branch as a pull request.
+	// Its failures must not become evidence about the product's master.
+	forkPR := 9104
+	ingestDiag(t, env, tok, "master", sha("dp", 4), "diag-fork-master", "failed", &forkPR)
 
 	base := url.Values{}
 	base.Set("repo", "mattermost")

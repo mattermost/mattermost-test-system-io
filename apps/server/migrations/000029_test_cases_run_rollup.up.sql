@@ -26,7 +26,7 @@
 -- counting them as such overstates both the sample size and the failure rate.
 --
 -- Nullable with no default, so this is a catalog-only change: no heap pages
--- are rewritten and no long lock is taken, on a table of any size. NULL means
+-- are rewritten. Lock acquisition can still wait for other transactions. NULL means
 -- "written before this migration"; readers fall back to the per-attempt
 -- status columns for those rows (see groupRollupSQL in
 -- internal/api/testhistory). There is deliberately no backfill: the attempt

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "spec_path": "tests/integration/retry_spec.js",
+  "tests": [
+    {
+      "attempts": [{ "state": "failed" }, { "state": "passed" }],
+      "displayError": null,
+      "duration": 168,
+      "state": "passed",
+      "title": ["Cypress retry contract", "fails once then passes"]
+    },
+    {
+      "attempts": [{ "state": "passed" }],
+      "displayError": null,
+      "duration": 10,
+      "state": "passed",
+      "title": ["Cypress retry contract", "passes first try"]
+    },
+    {
+      "attempts": [{ "state": "pending" }],
+      "displayError": null,
+      "duration": 0,
+      "state": "pending",
+      "title": ["Cypress retry contract", "is skipped"]
+    }
+  ]
+}

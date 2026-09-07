@@ -18,7 +18,7 @@ func New() *cobra.Command {
 		Use:   "db",
 		Short: "Database utilities",
 	}
-	cmd.AddCommand(migrateCmd(), statusCmd(), resetCmd(), seedCmd(), backfillStableKeyCmd())
+	cmd.AddCommand(migrateCmd(), statusCmd(), resetCmd(), seedCmd(), backfillStableKeyCmd(), baselineCmd())
 	return cmd
 }
 

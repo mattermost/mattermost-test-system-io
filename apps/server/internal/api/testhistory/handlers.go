@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -71,8 +72,8 @@ const attemptFailureStatuses = `('failed', 'timedOut', 'interrupted')`
 // failure rate.
 //
 // Args, in order: $1 stable_key, $2 repository, $3 branch, $4 framework,
-// $5 run_group, $6 since. The three filter args treat an empty string as "any";
-// since treats NULL as unbounded.
+// $5 run_group, $6 since, $7 baseline, $8 name, $9 before. String filters
+// treat an empty string as "any"; nullable timestamps omit that bound.
 const groupRollupSQL = `
 	WITH matched AS (
 		SELECT g.id, g.commit_sha, g.gh_run_id, g.gh_pr_number, g.branch,
@@ -86,6 +87,15 @@ const groupRollupSQL = `
 		WHERE tc.stable_key = $1
 		  AND (g.repository = $2 OR split_part(g.repository, '/', 2) = $2)
 		  AND ($3 = '' OR g.branch = $3)
+          AND ($3 <> 'master' OR g.gh_pr_number IS NULL)
+          AND ($8 = '' OR g.name = $8)
+          AND ($9::timestamptz IS NULL OR g.created_at <= $9::timestamptz)
+          AND (NOT $7 OR (
+              g.repository = $2 AND g.gh_pr_number IS NULL AND g.status = 'completed'
+              AND g.total_reports_expected > 0
+              AND (SELECT count(*) FROM reports cr WHERE cr.report_group_id = g.id) = g.total_reports_expected
+              AND NOT EXISTS (SELECT 1 FROM reports cr WHERE cr.report_group_id = g.id AND cr.status <> 'complete')
+          ))
 		  AND ($4 = '' OR g.framework = $4)
 		  AND ($5 = '' OR g.run_group = $5)
 		  AND ($6::timestamptz IS NULL OR g.created_at >= $6::timestamptz)
@@ -146,16 +156,21 @@ const groupRollupSQL = `
 `
 
 type historyEntry struct {
-	Commit     string    `json:"commit"`
-	GHRunID    string    `json:"gh_run_id"`
-	GHPRNumber *int      `json:"gh_pr_number,omitempty"`
-	Branch     string    `json:"branch"`
-	Name       string    `json:"name"`
-	RunGroup   *string   `json:"run_group,omitempty"`
-	Outcome    string    `json:"outcome"`
-	ShardRows  int       `json:"shard_rows"`
-	DurationMs int64     `json:"duration_ms"`
-	CreatedAt  time.Time `json:"created_at"`
+	GroupID             string          `json:"group_id"`
+	Repository          string          `json:"repository"`
+	Framework           string          `json:"framework"`
+	GHRunAttempt        string          `json:"gh_run_attempt"`
+	EnvironmentMetadata json.RawMessage `json:"environment_metadata,omitempty"`
+	Commit              string          `json:"commit"`
+	GHRunID             string          `json:"gh_run_id"`
+	GHPRNumber          *int            `json:"gh_pr_number,omitempty"`
+	Branch              string          `json:"branch"`
+	Name                string          `json:"name"`
+	RunGroup            *string         `json:"run_group,omitempty"`
+	Outcome             string          `json:"outcome"`
+	ShardRows           int             `json:"shard_rows"`
+	DurationMs          int64           `json:"duration_ms"`
+	CreatedAt           time.Time       `json:"created_at"`
 
 	// Attempts and AttemptsFailed describe how the run reached its outcome:
 	// both CI configs retry once, so a failed-then-passed run reports
@@ -179,25 +194,52 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := parseLimit(q.Get("limit"), 20, 200)
-	since, err := parseSince(q.Get("window"))
+	window := q.Get("window")
+	if window == "" {
+		window = "30d"
+	}
+	since, err := parseSince(window)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
 
-	entries, err := loadEntries(r.Context(), h.Pool, testID, repo,
-		q.Get("branch"), q.Get("framework"), q.Get("run_group"), since, limit)
+	baseline := false
+	if value := q.Get("baseline"); value != "" {
+		baseline, err = strconv.ParseBool(value)
+		if err != nil {
+			api.WriteError(w, r, fmt.Errorf("%w: baseline must be a boolean", api.ErrBadRequest))
+			return
+		}
+	}
+	branch := q.Get("branch")
+	if baseline {
+		if strings.Count(repo, "/") != 1 || strings.HasPrefix(repo, "/") || strings.HasSuffix(repo, "/") || (branch != "" && branch != "master") {
+			api.WriteError(w, r, fmt.Errorf("%w: baseline requires an owner/repo slug and the master branch", api.ErrBadRequest))
+			return
+		}
+		branch = "master"
+	}
+	var before *time.Time
+	if value := q.Get("before"); value != "" {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, value)
+		if parseErr != nil {
+			api.WriteError(w, r, fmt.Errorf("%w: before must be an RFC3339 timestamp", api.ErrBadRequest))
+			return
+		}
+		before = &parsed
+	}
+	entries, summary, total, err := loadHistory(r.Context(), h.Pool, testID, repo,
+		branch, q.Get("framework"), q.Get("run_group"), since, limit, baseline, q.Get("name"), before)
 	if err != nil {
 		h.logError("tests history", err)
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
-		"test_id": testID,
-		"repo":    repo,
-		"entries": entries,
-		"summary": summarize(entries),
+		"test_id": testID, "repo": repo, "entries": entries, "summary": summary,
+		"total_entries": total, "truncated": total > len(entries), "window": window,
+		"baseline": baseline,
 	})
 }
 
@@ -285,34 +327,45 @@ func summarize(entries []historyEntry) HistorySummary {
 	return s
 }
 
-func loadEntries(ctx context.Context, pool *pgxpool.Pool, testID, repo, branch, framework, runGroup string, since *time.Time, limit int) ([]historyEntry, error) {
+// loadHistory reads the complete bounded time window. Only the requested page
+// carries detailed metadata; rates and streak boundaries include every row.
+func loadHistory(ctx context.Context, pool *pgxpool.Pool, testID, repo, branch, framework, runGroup string, since *time.Time, limit int, baseline bool, name string, before *time.Time) ([]historyEntry, HistorySummary, int, error) {
 	rows, err := pool.Query(ctx, groupRollupSQL+`
-		SELECT commit_sha, gh_run_id, gh_pr_number, branch, name, run_group,
-		       outcome, shard_rows, duration_ms, created_at,
-		       attempts, attempts_failed, run_failed
-		FROM outcomes
-		ORDER BY created_at DESC
-		LIMIT $7
-	`, testID, repo, branch, framework, runGroup, since, limit)
+  SELECT o.commit_sha, o.gh_run_id, o.gh_pr_number, o.branch, o.name, o.run_group,
+         o.outcome, o.shard_rows, o.duration_ms, o.created_at,
+         o.attempts, o.attempts_failed, o.run_failed,
+         g.id::text, g.repository, g.framework, g.gh_run_attempt, g.environment_metadata
+  FROM outcomes o JOIN report_groups g ON g.id = o.id
+  ORDER BY o.created_at DESC, o.id DESC
+ `, testID, repo, branch, framework, runGroup, since, baseline, name, before)
 	if err != nil {
-		return nil, fmt.Errorf("history query: %w", err)
+		return nil, HistorySummary{}, 0, fmt.Errorf("history query: %w", err)
 	}
 	defer rows.Close()
-
 	entries := make([]historyEntry, 0, limit)
+	var observations []historyEntry
 	for rows.Next() {
 		var e historyEntry
 		if err := rows.Scan(&e.Commit, &e.GHRunID, &e.GHPRNumber, &e.Branch, &e.Name,
 			&e.RunGroup, &e.Outcome, &e.ShardRows, &e.DurationMs, &e.CreatedAt,
-			&e.Attempts, &e.AttemptsFailed, &e.RunFailed); err != nil {
-			return nil, fmt.Errorf("history scan: %w", err)
+			&e.Attempts, &e.AttemptsFailed, &e.RunFailed, &e.GroupID, &e.Repository,
+			&e.Framework, &e.GHRunAttempt, &e.EnvironmentMetadata); err != nil {
+			return nil, HistorySummary{}, 0, fmt.Errorf("history scan: %w", err)
 		}
-		entries = append(entries, e)
+		if len(entries) < limit {
+			entries = append(entries, e)
+		}
+		observations = append(observations, historyEntry{Commit: e.Commit, Outcome: e.Outcome})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("history rows: %w", err)
+		return nil, HistorySummary{}, 0, fmt.Errorf("history rows: %w", err)
 	}
-	return entries, nil
+	summary := summarize(observations)
+	// series is a compact rendering of entries, not a second unbounded payload.
+	if len(summary.Series) > limit {
+		summary.Series = summary.Series[:limit]
+	}
+	return entries, summary, len(observations), nil
 }
 
 // ---------- helpers ----------
@@ -360,22 +413,22 @@ func parseSince(window string) (*time.Time, error) {
 	if err != nil || n <= 0 {
 		return nil, fmt.Errorf("%w: window must look like 30d, 24h or 90m", api.ErrBadRequest)
 	}
-	var d time.Duration
+	var unit time.Duration
 	switch window[len(window)-1] {
 	case 'd':
-		d = time.Duration(n) * 24 * time.Hour
+		unit = 24 * time.Hour
 	case 'h':
-		d = time.Duration(n) * time.Hour
+		unit = time.Hour
 	case 'm':
-		d = time.Duration(n) * time.Minute
+		unit = time.Minute
 	default:
 		return nil, fmt.Errorf("%w: window unit must be d, h or m", api.ErrBadRequest)
 	}
 	// Reject rather than silently clamp: a clamped window would make the
 	// response claim more data than it covers.
-	if d > maxWindow {
+	if int64(n) > int64(maxWindow/unit) {
 		return nil, fmt.Errorf("%w: window may not exceed 180d", api.ErrBadRequest)
 	}
-	t := time.Now().Add(-d)
+	t := time.Now().Add(-time.Duration(n) * unit)
 	return &t, nil
 }

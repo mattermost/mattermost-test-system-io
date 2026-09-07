@@ -1069,11 +1069,12 @@ paths:
       tags: [tests]
       summary: Outcome series for one test across commits, newest first
       description: |
-        Answers "was this already failing before the PR?" without spending runner
-        minutes on a baseline rerun. Returns one entry per report group that ran
+        Records whether the test failed in earlier runs. Returns one entry per report group that ran
         the test, plus a precomputed summary (flip count, failure rate, last
         passing commit, and the oldest commit in the current failing streak) so
-        every caller derives those the same way.
+        every caller derives those the same way. Summary counts and streaks cover
+        the full requested time window even when entries are limited. Historical
+        failures alone do not establish that a PR has no effect on a test.
       security: []
       parameters:
         - in: query
@@ -1088,7 +1089,20 @@ paths:
           required: true
         - in: query
           name: branch
+          description: Exact branch. master excludes pull request groups, including PRs whose head branch is named master.
           schema: { type: string }
+        - in: query
+          name: baseline
+          description: Require a full owner/repo slug, master branch, no pull request, and completed groups with every declared report uploaded.
+          schema: { type: boolean, default: false }
+        - in: query
+          name: name
+          description: Exact report group name, for keeping different suites and editions separate.
+          schema: { type: string }
+        - in: query
+          name: before
+          description: Include only groups created at or before this timestamp.
+          schema: { type: string, format: date-time }
         - in: query
           name: framework
           schema: { type: string, enum: [playwright, cypress, detox, maestro] }
@@ -1097,8 +1111,8 @@ paths:
           schema: { type: string }
         - in: query
           name: window
-          description: Lookback window (30d, 24h, 90m). Unbounded when omitted; capped at 180d.
-          schema: { type: string, pattern: '^[0-9]+[dhm]$' }
+          description: Lookback window from now (30d, 24h, 90m). Defaults to 30d; values above 180d are rejected.
+          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '30d' }
         - in: query
           name: limit
           schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
@@ -2241,9 +2255,14 @@ components:
     TestHistoryEntry:
       type: object
       required:
-        [commit, gh_run_id, branch, name, outcome, shard_rows, duration_ms,
+        [group_id, repository, framework, gh_run_attempt, commit, gh_run_id, branch, name, outcome, shard_rows, duration_ms,
          created_at, attempts, attempts_failed, run_failed]
       properties:
+        group_id: { type: string, format: uuid }
+        repository: { type: string }
+        framework: { type: string }
+        gh_run_attempt: { type: string }
+        environment_metadata: { type: object, additionalProperties: true }
         commit: { type: string }
         gh_run_id: { type: string }
         gh_pr_number: { type: integer }
@@ -2320,15 +2339,23 @@ components:
           description: Oldest commit in the current unbroken failing streak; absent when the newest run passed.
         series:
           type: array
-          description: Outcomes newest-first, for compact rendering.
+          description: Outcomes newest-first for the returned entries. Counts, rates, and streak boundaries use the full time window.
           items: { $ref: '#/components/schemas/TestOutcome' }
 
     TestHistoryResponse:
       type: object
-      required: [test_id, repo, entries, summary]
+      required: [test_id, repo, entries, summary, total_entries, truncated, window, baseline]
       properties:
         test_id: { type: string }
         repo: { type: string }
+        total_entries:
+          type: integer
+          description: Matching report groups across the full time window, including skipped groups.
+        truncated:
+          type: boolean
+          description: True when the entries limit omits matching groups. The summary still covers the full window.
+        window: { type: string }
+        baseline: { type: boolean }
         entries:
           type: array
           items: { $ref: '#/components/schemas/TestHistoryEntry' }
@@ -2362,11 +2389,11 @@ components:
 
     TestEvidence:
       type: object
-      required: [group, failure_count, cluster_count, clusters, truncated]
+      required: [group, failure_count, cluster_count, clusters, truncated, complete]
       properties:
         group:
           type: object
-          required: [id, repository, branch, commit_sha, gh_run_id, gh_run_attempt, framework, name, status]
+          required: [id, repository, branch, commit_sha, gh_run_id, gh_run_attempt, framework, name, status, created_at, total_reports_expected, reports_registered, reports_complete]
           properties:
             id: { type: string, format: uuid }
             repository: { type: string }
@@ -2378,6 +2405,10 @@ components:
             framework: { type: string }
             name: { type: string }
             status: { type: string }
+            created_at: { type: string, format: date-time }
+            total_reports_expected: { type: integer, nullable: true }
+            reports_registered: { type: integer }
+            reports_complete: { type: integer }
             environment_metadata: { type: object, additionalProperties: true }
         failure_count:
           type: integer
@@ -2396,6 +2427,7 @@ components:
               member_count: { type: integer }
               members:
                 type: array
+                description: Every failing test identity in this returned cluster; members are not sampled.
                 items:
                   type: object
                   required: [stable_key, full_title, status]
@@ -2408,6 +2440,9 @@ components:
         truncated:
           type: boolean
           description: True when more than 2000 failure rows or more than 15 clusters existed and the response is incomplete.
+        complete:
+          type: boolean
+          description: True only when the group is completed and every declared report is registered and complete. This describes upload coverage, independently of truncation. Consumers must also reconcile orchestration results to detect tests that produced no report.
 
   responses:
     BadRequest:

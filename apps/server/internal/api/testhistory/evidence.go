@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,16 +20,20 @@ const (
 )
 
 type evidenceGroup struct {
-	ID           string `json:"id"`
-	Repository   string `json:"repository"`
-	Branch       string `json:"branch"`
-	CommitSHA    string `json:"commit_sha"`
-	GHRunID      string `json:"gh_run_id"`
-	GHRunAttempt string `json:"gh_run_attempt"`
-	GHPRNumber   *int   `json:"gh_pr_number,omitempty"`
-	Framework    string `json:"framework"`
-	Name         string `json:"name"`
-	Status       string `json:"status"`
+	ID                   string    `json:"id"`
+	Repository           string    `json:"repository"`
+	Branch               string    `json:"branch"`
+	CommitSHA            string    `json:"commit_sha"`
+	GHRunID              string    `json:"gh_run_id"`
+	GHRunAttempt         string    `json:"gh_run_attempt"`
+	GHPRNumber           *int      `json:"gh_pr_number,omitempty"`
+	Framework            string    `json:"framework"`
+	Name                 string    `json:"name"`
+	Status               string    `json:"status"`
+	CreatedAt            time.Time `json:"created_at"`
+	TotalReportsExpected *int      `json:"total_reports_expected"`
+	ReportsRegistered    int       `json:"reports_registered"`
+	ReportsComplete      int       `json:"reports_complete"`
 	// The run configuration this group executed under, as captured at
 	// register time (feature flags, edition, notable env).
 	EnvironmentMetadata json.RawMessage `json:"environment_metadata,omitempty"`
@@ -88,6 +93,9 @@ func (h *Handlers) Evidence(w http.ResponseWriter, r *http.Request) {
 		"cluster_count": len(clusters),
 		"clusters":      clusters,
 		"truncated":     rowTruncated || clusterTruncated,
+		"complete": g.Status == "completed" && g.TotalReportsExpected != nil &&
+			*g.TotalReportsExpected > 0 && g.ReportsRegistered == *g.TotalReportsExpected &&
+			g.ReportsComplete == *g.TotalReportsExpected,
 	})
 }
 
@@ -127,6 +135,15 @@ func (h *Handlers) findEvidenceGroup(ctx context.Context, groupID, repo, commit,
 			return g, api.ErrNotFound
 		}
 		h.logError("tests evidence group lookup", err)
+		return g, api.ErrInternal
+	}
+	if err := h.Pool.QueryRow(ctx, `
+		SELECT g.created_at, g.total_reports_expected,
+		       count(r.id)::int, count(r.id) FILTER (WHERE r.status = 'complete')::int
+		FROM report_groups g LEFT JOIN reports r ON r.report_group_id = g.id
+		WHERE g.id = $1::uuid GROUP BY g.id
+	`, g.ID).Scan(&g.CreatedAt, &g.TotalReportsExpected, &g.ReportsRegistered, &g.ReportsComplete); err != nil {
+		h.logError("tests evidence coverage", err)
 		return g, api.ErrInternal
 	}
 	return g, nil

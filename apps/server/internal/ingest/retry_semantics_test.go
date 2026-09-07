@@ -65,8 +65,9 @@ const oneFailOnePassPlaywright = `{
   ]
 }`
 
-// oneFailOnePassCypress is the mochawesome equivalent: the test object holds
-// the final passing state, and "attempts" holds both attempts.
+// oneFailOnePassCypress is a synthetic TSIO extension payload for focused unit
+// tests, not native Mochawesome output. The real producer acceptance fixture
+// is exercised by TestCypressCapturedBrowserRetry below.
 const oneFailOnePassCypress = `{
   "stats": {"start": "2026-01-01T00:00:00.000Z"},
   "results": [
@@ -93,7 +94,7 @@ const oneFailOnePassCypress = `{
   ]
 }`
 
-// TestRetrySemantics_BothParsersAgreeOnOneFailOnePass is the acceptance case:
+// TestRetrySemantics_BothParsersAgreeOnOneFailOnePass checks the parser contract:
 // the same run, reported by two frameworks, must produce the same run-level
 // rollup. It is the whole reason the three columns exist — without it, no
 // rate can be computed across both frameworks.

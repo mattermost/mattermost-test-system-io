@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,6 +40,7 @@ func TestValidate_rejectsNegativeMaxArtifact(t *testing.T) {
 }
 
 func TestLoad_readsEnv(t *testing.T) {
+	isolatedConfigEnv(t)
 	t.Setenv("TSIO_DATABASE_URL", "postgres://user:pass@localhost/db?sslmode=disable")
 	t.Setenv("TSIO_S3_BUCKET", "reports")
 	t.Setenv("TSIO_S3_ACCESS_KEY", "minioadmin")
@@ -75,6 +78,7 @@ func TestLoad_readsEnv(t *testing.T) {
 }
 
 func TestLoad_assemblesDatabaseURLFromParts(t *testing.T) {
+	isolatedConfigEnv(t)
 	t.Setenv("TSIO_DB_HOST", "db.internal")
 	t.Setenv("TSIO_DB_PORT", "5433")
 	t.Setenv("TSIO_DB_USER", "tsio")
@@ -98,6 +102,7 @@ func TestLoad_assemblesDatabaseURLFromParts(t *testing.T) {
 }
 
 func TestLoad_directURLWinsOverParts(t *testing.T) {
+	isolatedConfigEnv(t)
 	t.Setenv("TSIO_DATABASE_URL", "postgres://direct@host/db")
 	t.Setenv("TSIO_DB_HOST", "should-be-ignored")
 	t.Setenv("TSIO_DB_USER", "ignored")
@@ -116,6 +121,7 @@ func TestLoad_directURLWinsOverParts(t *testing.T) {
 }
 
 func TestLoad_missingDatabaseConfigErrors(t *testing.T) {
+	isolatedConfigEnv(t)
 	t.Setenv("TSIO_S3_BUCKET", "reports")
 	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
 
@@ -125,6 +131,7 @@ func TestLoad_missingDatabaseConfigErrors(t *testing.T) {
 }
 
 func TestLoad_partialDatabasePartsErrors(t *testing.T) {
+	isolatedConfigEnv(t)
 	t.Setenv("TSIO_DB_HOST", "db.internal")
 	t.Setenv("TSIO_DB_USER", "tsio")
 	// Missing TSIO_DB_PASSWORD and TSIO_DB_NAME.
@@ -137,6 +144,7 @@ func TestLoad_partialDatabasePartsErrors(t *testing.T) {
 }
 
 func TestLoad_s3KeysOptional(t *testing.T) {
+	isolatedConfigEnv(t)
 	// S3 keys are optional so the AWS SDK can fall back to ECS task-role
 	// credentials. Load() must succeed without them.
 	t.Setenv("TSIO_DATABASE_URL", "postgres://user:pass@localhost/db?sslmode=disable")
@@ -149,5 +157,18 @@ func TestLoad_s3KeysOptional(t *testing.T) {
 	}
 	if cfg.S3AccessKey != "" || cfg.S3SecretKey != "" {
 		t.Errorf("expected empty S3 keys, got access=%q secret=%q", cfg.S3AccessKey, cfg.S3SecretKey)
+	}
+}
+
+// Load searches parent directories for .env. Unit tests must not consume the
+// developer's local credentials or inherit unrelated TSIO configuration.
+func isolatedConfigEnv(t *testing.T) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "TSIO_") {
+			t.Setenv(key, "")
+		}
 	}
 }

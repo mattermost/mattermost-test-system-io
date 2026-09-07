@@ -2,172 +2,180 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/config"
 )
 
-// Migration 28 deliberately ships DDL only. It adds test_cases.file,
-// test_cases.project and test_cases.stable_key plus the trigger that maintains
-// the key, all of which are catalog-only and finish in milliseconds on a table
-// of any size. The two operations whose cost is proportional to the table —
-// populating the new columns on pre-existing rows, and building the index the
-// history queries read — are here instead, because neither can run inside a
-// migration: golang-migrate executes each file as one implicit transaction, so
-// a loop cannot commit between batches and CREATE INDEX CONCURRENTLY is
-// rejected outright.
-//
-// Run this once after deploying migration 28. It is safe to interrupt and
-// re-run: each batch commits on its own, and the WHERE clause only selects
-// rows that still need work, so a second run resumes where the first stopped.
-// Rows written after the migration need nothing — the trigger fills them in on
-// insert.
-
 const backfillBatchDefault = 5000
 
-// backfillStableKeySQL updates one batch of rows that predate migration 28.
-//
-// It sets only file and project; stable_key is left to the BEFORE UPDATE
-// trigger, so the key's definition stays in exactly one place. project is
-// NULL for every pre-existing row and stays NULL: the ingest path threw
-// Playwright's projectName away before this change, so it was never stored
-// and cannot be recovered. Those rows keep their unprefixed key, which is the
-// same key they had before — old history stays joinable to itself, and new
-// rows start a correctly-disambiguated series.
-//
-// ctid is the batching handle rather than a key range: it needs no index,
-// never collides with concurrent inserts (which are already correct), and the
-// LIMIT keeps each statement's lock footprint to one batch of rows.
+// Also repair rows from installations which applied the earlier migration 28
+// before external IDs were populated. The trigger recomputes stable_key. Do not
+// infer project: old Playwright rows lost that dimension at ingestion, and
+// merging them into a browser-specific history would manufacture evidence.
+// The primary-key cursor prevents each committed batch rescanning all the rows
+// already visited. Restarting begins at the first still-unfilled identity.
 const backfillStableKeySQL = `
 	WITH batch AS (
-		SELECT tc.ctid AS ctid, s.file AS file
+		SELECT tc.ctid, tc.id, s.file,
+		       coalesce(substring(tc.full_title from '\yMM-T[0-9]+(?:_[0-9]+)?'),
+		                substring(tc.title from '\yMM-T[0-9]+(?:_[0-9]+)?')) AS external_id
 		FROM test_cases tc
-		JOIN suites s ON s.id = tc.suite_id
-		WHERE tc.stable_key IS NULL
-		  AND s.file IS NOT NULL
+		LEFT JOIN suites s ON s.id = tc.suite_id
+		WHERE tc.id > $2::uuid AND (tc.stable_key IS NULL
+		   OR (tc.external_test_id IS NULL AND
+		       (tc.full_title ~ '\yMM-T[0-9]+' OR tc.title ~ '\yMM-T[0-9]+')))
+		ORDER BY tc.id
 		LIMIT $1
-	)
+		FOR UPDATE OF tc
+	), updated AS (
 	UPDATE test_cases tc
-	SET file = batch.file
-	FROM batch
-	WHERE tc.ctid = batch.ctid
+	SET file = coalesce(tc.file, batch.file),
+	    external_test_id = coalesce(tc.external_test_id, batch.external_id)
+	FROM batch WHERE tc.ctid = batch.ctid
+	RETURNING tc.id
+	)
+	SELECT count(*), (SELECT id::text FROM updated ORDER BY id DESC LIMIT 1)
+	FROM updated
 `
 
-// backfillNoFileSQL handles rows whose suite carries no file at all. They still
-// need a stable_key — the fallback branch produces one from the title alone —
-// and touching the row is what makes the trigger compute it. Setting file to
-// itself is a no-op write whose only purpose is to fire the trigger.
-const backfillNoFileSQL = `
-	WITH batch AS (
-		SELECT ctid FROM test_cases WHERE stable_key IS NULL LIMIT $1
-	)
-	UPDATE test_cases tc
-	SET file = tc.file
-	FROM batch
-	WHERE tc.ctid = batch.ctid
-`
-
-// The index the history lookups read: (stable_key -> recent rows). Built
-// CONCURRENTLY so it never blocks ingest, and after the backfill so it is
-// built once over populated data rather than maintained through it.
-const createStableKeyIndexSQL = `
-	CREATE INDEX CONCURRENTLY IF NOT EXISTS test_cases_stable_key_idx
-	    ON test_cases (stable_key)
-`
+var historyIndexes = []struct{ name, definition string }{
+	{"test_cases_external_id_idx", "ON test_cases (external_test_id) WHERE external_test_id IS NOT NULL"},
+	{"report_groups_repo_branch_created_idx", "ON report_groups (repository, branch, created_at DESC)"},
+	{"test_cases_stable_key_idx", "ON test_cases (stable_key)"},
+}
 
 func backfillStableKeyCmd() *cobra.Command {
 	var batchSize int
 	var pause time.Duration
 	cmd := &cobra.Command{
 		Use:   "backfill-stable-key",
-		Short: "Populate test_cases.stable_key on rows predating migration 28, then index it",
-		Long: "Backfills test_cases.file in committed batches so the migration-28 trigger " +
-			"computes stable_key for pre-existing rows, then builds the stable_key index " +
-			"concurrently. Safe to interrupt and re-run; rows written after migration 28 " +
-			"already have their key and are skipped.",
+		Short: "Backfill historical test identities in batches and build history indexes concurrently",
+		Long: "Populate external IDs and file in committed batches, letting the migration-28 " +
+			"trigger compute stable_key. Resume interrupted work and repair invalid concurrent " +
+			"indexes. Historical Playwright project identity cannot be inferred; its old " +
+			"unprefixed keys remain separate from new browser-specific history.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if batchSize <= 0 {
-				return fmt.Errorf("--batch-size must be positive, got %d", batchSize)
+			if batchSize <= 0 || pause < 0 {
+				return errors.New("--batch-size must be positive and --pause non-negative")
 			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
-			ctx := cmd.Context()
-			pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+			pool, err := pgxpool.New(cmd.Context(), cfg.DatabaseURL)
 			if err != nil {
 				return fmt.Errorf("connect: %w", err)
 			}
 			defer pool.Close()
-			return runStableKeyBackfill(ctx, pool, batchSize, pause)
+			return runStableKeyBackfill(cmd.Context(), pool, batchSize, pause)
 		},
 	}
-	cmd.Flags().IntVar(&batchSize, "batch-size", backfillBatchDefault,
-		"rows per committed batch")
-	cmd.Flags().DurationVar(&pause, "pause", 100*time.Millisecond,
-		"delay between batches, to leave headroom for ingest")
+	cmd.Flags().IntVar(&batchSize, "batch-size", backfillBatchDefault, "rows per committed batch")
+	cmd.Flags().DurationVar(&pause, "pause", 100*time.Millisecond, "delay between batches")
 	return cmd
 }
 
 func runStableKeyBackfill(ctx context.Context, pool *pgxpool.Pool, batchSize int, pause time.Duration) error {
-	var remaining int64
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM test_cases WHERE stable_key IS NULL`).Scan(&remaining); err != nil {
-		return fmt.Errorf("count rows needing backfill: %w", err)
+	if batchSize <= 0 || pause < 0 {
+		return errors.New("invalid batch size or pause")
 	}
-	// The number this migration's lock cost would have depended on, measured
-	// against the database actually being migrated rather than guessed.
-	fmt.Printf("rows needing stable_key: %d (batch size %d)\n", remaining, batchSize)
-
-	// Both loops terminate because the trigger cannot leave stable_key NULL:
-	// title and full_title are NOT NULL (migration 5), so the fallback branch
-	// always yields a value and a backfilled row drops out of the next batch.
-	// The ceiling is a guard against that reasoning being wrong in some future
-	// schema — an unbounded UPDATE loop against production is not something to
-	// leave resting on an invariant declared three migrations away.
-	ceiling := remaining*2 + int64(batchSize)
+	// Keep advisory lock and timeouts on one session, including concurrent index
+	// builds (which PostgreSQL forbids inside a transaction).
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	var locked bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(114, 28)`).Scan(&locked); err != nil {
+		return err
+	}
+	if !locked {
+		return errors.New("another stable-key backfill is running")
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// Close the physical connection so session locks/settings cannot leak
+		// back to an application connection pool, even after cancellation.
+		_ = conn.Conn().Close(cleanup)
+	}()
+	if _, err := conn.Exec(ctx, `SET lock_timeout = '10s'; SET statement_timeout = '5min'`); err != nil {
+		return err
+	}
+	var initial int64
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM test_cases`).Scan(&initial); err != nil {
+		return err
+	}
+	fmt.Printf("test rows before backfill: %d; batch size: %d\n", initial, batchSize)
 	var total int64
-	for _, stmt := range []string{backfillStableKeySQL, backfillNoFileSQL} {
-		for {
-			tag, err := pool.Exec(ctx, stmt, batchSize)
-			if err != nil {
-				return fmt.Errorf("backfill batch (%d rows done): %w", total, err)
-			}
-			n := tag.RowsAffected()
-			if n == 0 {
-				break
-			}
-			total += n
-			if total > ceiling {
-				return fmt.Errorf(
-					"backfill wrote %d rows for %d needing it and stable_key is still NULL: "+
-						"the trigger is not populating the key, aborting rather than looping",
-					total, remaining)
-			}
-			fmt.Printf("  backfilled %d / %d\n", total, remaining)
-			if pause > 0 {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(pause):
-				}
+	cursor := "00000000-0000-0000-0000-000000000000"
+	for {
+		var n int64
+		var lastID *string
+		err := conn.QueryRow(ctx, backfillStableKeySQL, batchSize, cursor).Scan(&n, &lastID)
+		if err != nil {
+			return fmt.Errorf("backfill batch (%d rows done): %w", total, err)
+		}
+		if n == 0 {
+			break
+		}
+		cursor = *lastID
+		total += n
+		if total > initial+int64(batchSize) {
+			return fmt.Errorf("backfill did not converge after %d writes; check stable-key trigger", total)
+		}
+		fmt.Printf("backfilled %d rows\n", total)
+		if pause > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(pause):
 			}
 		}
 	}
-	fmt.Printf("backfill complete: %d rows\n", total)
-
-	// CONCURRENTLY cannot run inside a transaction; pool.Exec issues it
-	// outside one. It is slower than a plain CREATE INDEX and can leave an
-	// INVALID index behind if it fails — re-running this command drops
-	// nothing, so an invalid index must be dropped by hand before retrying.
-	fmt.Println("building test_cases_stable_key_idx concurrently...")
-	if _, err := pool.Exec(ctx, createStableKeyIndexSQL); err != nil {
-		return fmt.Errorf("create stable_key index: %w", err)
+	for _, idx := range historyIndexes {
+		var valid bool
+		err := conn.QueryRow(ctx, `SELECT i.indisvalid FROM pg_index i
+		    WHERE i.indexrelid = to_regclass($1)`, idx.name).Scan(&valid)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err == nil && valid {
+			continue
+		}
+		if err == nil {
+			fmt.Printf("repairing interrupted index %s\n", idx.name)
+			if _, err := conn.Exec(ctx, "DROP INDEX CONCURRENTLY "+idx.name); err != nil {
+				return err
+			}
+		}
+		fmt.Printf("building %s concurrently\n", idx.name)
+		if _, err := conn.Exec(ctx, "CREATE INDEX CONCURRENTLY "+idx.name+" "+idx.definition); err != nil {
+			return fmt.Errorf("build %s (safe to rerun): %w", idx.name, err)
+		}
 	}
-	fmt.Println("index ready.")
+	var missingKeys, unknownProjects int64
+	if err := conn.QueryRow(ctx, `SELECT count(*) FILTER (WHERE tc.stable_key IS NULL),
+	    count(*) FILTER (WHERE g.framework = 'playwright' AND nullif(tc.project, '') IS NULL)
+	    FROM test_cases tc JOIN suites s ON s.id = tc.suite_id
+	    JOIN reports r ON r.id = s.report_id JOIN report_groups g ON g.id = r.report_group_id`).
+		Scan(&missingKeys, &unknownProjects); err != nil {
+		return err
+	}
+	fmt.Printf("backfill complete: %d writes; missing keys: %d; Playwright rows without project identity: %d\n", total, missingKeys, unknownProjects)
+	if missingKeys > 0 {
+		return fmt.Errorf("%d rows still have no stable key", missingKeys)
+	}
+	if unknownProjects > 0 {
+		fmt.Println("coverage boundary: old Playwright keys cannot support a new project-prefixed history; collect fresh baseline or replay retained raw reports with verified project identity")
+	}
 	return nil
 }

@@ -3,6 +3,7 @@ package ingest
 import (
 	"encoding/json"
 	"net/url"
+	"path/filepath"
 	"time"
 )
 
@@ -42,17 +43,13 @@ type cypressTest struct {
 	Skipped   bool          `json:"skipped"`
 	Context   *string       `json:"context"`
 	Err       *cypressError `json:"err"`
-	// Attempts is mochawesome's per-attempt array, present when mocha
-	// retries are on (cypress.config.ts sets retries.runMode: 1, so a
-	// failing test in CI is always retried once). It holds every attempt
-	// including the final one, so len(Attempts) == 1 means no retry
-	// happened. Absent in reports from a run with retries disabled.
+	// Attempts is the TSIO extension populated by joining Cypress's actual
+	// after:spec results to Mochawesome. Mochawesome 7 itself never emits it,
+	// even with retries enabled; legacy raw reports cannot recover retries.
 	Attempts []cypressAttempt `json:"attempts"`
 }
 
-// cypressAttempt is one entry of mochawesome's attempts array. Mochawesome
-// clones the test object per attempt, so the outcome fields carry the same
-// names; only the ones that identify an attempt's own result are read here.
+// cypressAttempt is one captured Cypress attempt normalized by the dispatcher.
 type cypressAttempt struct {
 	Duration int64         `json:"duration"`
 	State    string        `json:"state"`
@@ -61,6 +58,7 @@ type cypressAttempt struct {
 	Pending  bool          `json:"pending"`
 	Skipped  bool          `json:"skipped"`
 	Err      *cypressError `json:"err"`
+	Context  *string       `json:"context"`
 }
 
 type cypressError struct {
@@ -147,24 +145,23 @@ func walkCypressSuite(s cypressSuite, inheritedFile string, seq *int, startTime 
 // extractCypressTest returns one ExtractedCase per attempt, in attempt order,
 // with the run-level rollup stamped across the set.
 //
-// Mochawesome reports the final state on the test object and the full attempt
-// list under "attempts". Reading only the test object — as this did before —
+// Mochawesome reports only the final state; TSIO's dispatcher adds the actual
+// Cypress after:spec attempt list under "attempts". Reading only the test object
 // stored a single final-state row and a hardcoded retry_count of 0, so a
 // Cypress test that failed once and passed on retry was indistinguishable
 // from one that passed first try, while the same run under Playwright stored
 // two rows. Any rate computed across the two frameworks was comparing a
 // per-run number against a per-attempt one.
 //
-// When "attempts" is absent or empty the test is treated as a single attempt,
-// which is what a report from a run with retries disabled looks like.
+// When "attempts" is absent or empty only the final observed result is known.
+// Legacy reports cannot distinguish a clean pass from a retry survivor.
 func extractCypressTest(t cypressTest, seq *int, startTime *time.Time) []ExtractedCase {
 	full := t.FullTitle
 	if full == "" {
 		full = t.Title
 	}
-	// Screenshots are attached to the test, not to an attempt; hang them on
-	// the final attempt so exactly one row owns them and the linker cannot
-	// match the same file twice.
+	// Legacy reporter context is test-level. Prefer captured per-attempt
+	// screenshot ownership, then retain any additional context on the final row.
 	attachments := parseCypressContext(t.Context)
 
 	attempts := make([]ExtractedCase, 0, max(1, len(t.Attempts)))
@@ -195,10 +192,27 @@ func extractCypressTest(t cypressTest, seq *int, startTime *time.Time) []Extract
 				e = t.Err
 			}
 			setCypressError(&c, e)
+			c.Attachments = parseCypressContext(a.Context)
+			for j := range c.Attachments {
+				c.Attachments[j].Retry = i
+			}
 			attempts = append(attempts, c)
 		}
 	}
-	attempts[len(attempts)-1].Attachments = attachments
+	seenScreenshots := make(map[string]bool)
+	for _, a := range attempts {
+		for _, attachment := range a.Attachments {
+			seenScreenshots[filepath.Base(attachment.Path)] = true
+		}
+	}
+	last := &attempts[len(attempts)-1]
+	for _, attachment := range attachments {
+		if !seenScreenshots[filepath.Base(attachment.Path)] {
+			attachment.Retry = last.RetryCount
+			attachment.Sequence = len(last.Attachments)
+			last.Attachments = append(last.Attachments, attachment)
+		}
+	}
 	stampRunRollup(attempts)
 	for i := range attempts {
 		attempts[i].Sequence = *seq
@@ -207,11 +221,8 @@ func extractCypressTest(t cypressTest, seq *int, startTime *time.Time) []Extract
 	return attempts
 }
 
-// cypressAttemptStatus maps one attempt's own outcome. Mochawesome's attempt
-// entries are clones of the test object, but older reporters emit them with
-// the outcome flags unset; for the final attempt the test object's own state
-// is authoritative, and a bare earlier attempt can only be a failure — an
-// attempt is retried precisely because it did not pass.
+// cypressAttemptStatus maps the captured attempt's own outcome. The fallback
+// supports older TSIO extension payloads with only the final state populated.
 func cypressAttemptStatus(a cypressAttempt, t cypressTest, isFinal bool) string {
 	switch {
 	case a.Pending || a.Skipped:

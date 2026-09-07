@@ -19,6 +19,7 @@ import {
   type ConnectionStatus,
   ReconnectingWebSocket,
   getWebSocketUrl,
+  onGlobalOrchestrationEvent,
 } from '@/services/websocket';
 import type { WsEventMessage } from '@/types/websocket';
 
@@ -112,6 +113,23 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
       wsRef.current = null;
     };
   }, [handleMessage]);
+
+  // Invalidate lists on orchestration events.
+  useEffect(() => {
+    return onGlobalOrchestrationEvent((event) => {
+      switch (event.type) {
+        case 'orchestration.run.started':
+        case 'orchestration.unit.leased':
+        case 'orchestration.unit.completed':
+        case 'orchestration.lease.expired':
+        case 'orchestration.run.completed':
+        case 'orchestration.run.timed_out':
+          queryClient.invalidateQueries({ queryKey: ['reports-grouped'] });
+          queryClient.invalidateQueries({ queryKey: ['reports'] });
+          break;
+      }
+    });
+  }, [queryClient]);
 
   // Reconnect function
   const reconnect = useCallback(() => {

@@ -27,9 +27,10 @@
  *   INJECT_LEASE_TIMEOUT_RATE=0 # 0..1, synthetic: probability a worker skips /complete
  *   API_BASE=http://localhost:8080
  *   TSIO_API_KEY=...            # required (make seed prints a full export line)
- *   TSIO_COMMIT_SHA=...         # pin an exact commit_sha; default is the current minute,
- *                               # shared automatically across terminals started together
- *                               # (e.g. one per group, replicating 4 parallel CI jobs on one commit)
+ *   TSIO_COMMIT_SHA=...         # pin an exact commit_sha; default is a random
+ *                               # 40-char hex SHA (override in batch scripts to
+ *                               # share one commit per repo family)
+ *   TSIO_GH_RUN_ID=...          # pin gh_run_<number> (default: gh_run_<epoch_ms>)
  *   UPLOAD_SHARDS=0             # opt-in: also do the Cypress inline screenshot attach and
  *                               # each worker's end-of-drain shard upload — see reports_client.js
  *   VERIFY_TIMEOUT_MS=120000    # UPLOAD_SHARDS=1 only: poll timeout for ingest to converge.
@@ -41,6 +42,7 @@
 const { loadCorpus, percentileDurationMs } = require('./corpus');
 const { request, sleep } = require('./client');
 const { runWorker } = require('./worker');
+const { randomCommitSha, ghRunId } = require('./identity');
 
 const API_BASE = process.env.API_BASE || 'http://localhost:8080';
 const WEB_BASE = process.env.WEB_BASE || 'http://localhost:3000';
@@ -92,10 +94,6 @@ const post = (p, body) => request(API_BASE, API_KEY, 'POST', p, body);
 const get = (p) => request(API_BASE, API_KEY, 'GET', p, null);
 
 const NOW_MS = Date.now();
-// Rounded down to the minute so terminals started around the same time
-// (e.g. one per group) share a commit_sha with no coordination needed.
-// Override with TSIO_COMMIT_SHA to pin an exact value.
-const COMMIT_MINUTE_MS = Math.floor(NOW_MS / 60_000) * 60_000;
 
 function buildIdentity(framework) {
   return {
@@ -103,10 +101,8 @@ function buildIdentity(framework) {
     // Must be pure hex — the web dashboard's URL router only treats
     // /reports/:repo/:branch/:commit/:name as a single-run page when the
     // commit segment matches /^[0-9a-f]{7,40}$/i.
-    commit_sha: (
-      process.env.TSIO_COMMIT_SHA || COMMIT_MINUTE_MS.toString(16).padEnd(40, '0')
-    ).toLowerCase(),
-    gh_run_id: `replay-${GROUP}-${NOW_MS}`,
+    commit_sha: (process.env.TSIO_COMMIT_SHA || randomCommitSha()).toLowerCase(),
+    gh_run_id: ghRunId(NOW_MS),
     name: GROUP,
     gh_run_attempt: '1',
     framework,

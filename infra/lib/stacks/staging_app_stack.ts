@@ -115,6 +115,7 @@ export class StagingAppStack extends cdk.Stack {
         // Enforce GitHub Actions OIDC `aud` claim. Workflows MUST request this
         // exact audience or token validation fails.
         TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE: "mattermost-test-system-io",
+        TSIO_HTML_VIEW_ENABLED: "true",
         // Re-seed the org-wide CI policy on every deploy. Staging recreates
         // its Postgres task on each deploy, so the github_oidc_policies row
         // would otherwise have to be POSTed manually after every cdk deploy.

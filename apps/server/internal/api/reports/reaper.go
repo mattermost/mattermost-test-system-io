@@ -119,6 +119,9 @@ func (r *Reaper) loop(ctx context.Context) {
 			if err := r.markIncomplete(ctx); err != nil {
 				r.Logger.Error("reports reaper: mark incomplete", slog.String("error", err.Error()))
 			}
+			if err := RefreshStaleGroupSummaries(ctx, r.Pool, r.Logger, reaperBatchLimit); err != nil {
+				r.Logger.Warn("reports reaper: refresh stale summaries", slog.String("error", err.Error()))
+			}
 		}
 	}
 }

@@ -286,6 +286,18 @@ const orchestrationSubscribers = new Map<string, Array<(event: OrchestrationEven
 /** Identities for which we have already issued a `subscribe.orchestration` frame. */
 const subscribedIdentities = new Map<string, CompositeIdentity>();
 
+const globalOrchestrationListeners = new Set<(event: OrchestrationEvent) => void>();
+
+/** Global orchestration WS events. */
+export function onGlobalOrchestrationEvent(
+  listener: (event: OrchestrationEvent) => void,
+): () => void {
+  globalOrchestrationListeners.add(listener);
+  return () => {
+    globalOrchestrationListeners.delete(listener);
+  };
+}
+
 /**
  * Register a `ReconnectingWebSocket` as the transport used for orchestration
  * subscriptions. The provider calls this once after constructing its client.
@@ -303,6 +315,13 @@ export function registerOrchestrationTransport(client: ReconnectingWebSocket | n
 }
 
 function dispatchOrchestrationEvent(event: OrchestrationEvent): void {
+  for (const listener of globalOrchestrationListeners) {
+    try {
+      listener(event);
+    } catch (error) {
+      console.error('[WS] Global orchestration listener threw:', error);
+    }
+  }
   // Match subscribers by composite identity key. The server scopes events by
   // identity already, but a single client may hold multiple subscriptions
   // and the demux happens here.

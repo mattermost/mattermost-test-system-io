@@ -1,0 +1,191 @@
+{{define "icon-live-dot"}}
+<span class="live-status-icon" aria-hidden="true"><span class="live-status-ping"></span><span class="live-status-dot"></span></span>
+{{end}}
+{{define "icon-check"}}
+<svg class="icon icon-status icon-passed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>
+{{end}}
+{{define "icon-x"}}
+<svg class="icon icon-status icon-failed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg>
+{{end}}
+{{define "icon-check-plain"}}
+<svg class="icon icon-status icon-passed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+{{end}}
+{{define "icon-x-plain"}}
+<svg class="icon icon-status icon-failed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+{{end}}
+{{define "icon-alert"}}
+<svg class="icon icon-status" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+{{end}}
+{{define "icon-folder"}}
+<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+{{end}}
+{{define "icon-branch"}}
+<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+{{end}}
+{{define "icon-pr"}}
+<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/></svg>
+{{end}}
+{{define "icon-commit"}}
+<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><line x1="3" x2="9" y1="12" y2="12"/><line x1="15" x2="21" y1="12" y2="12"/></svg>
+{{end}}
+{{define "icon-play"}}
+<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+{{end}}
+{{define "icon-rotate"}}
+<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+{{end}}
+{{define "icon-clock"}}
+<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+{{end}}
+{{define "icon-inbox"}}
+<svg class="icon icon-empty" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+{{end}}
+{{define "icon-chevron-right"}}
+<svg class="breadcrumb-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+{{end}}
+
+{{define "home-run-item"}}
+<div class="run-row{{if .HasFailed}} run-row-failed{{end}}"
+     data-group-id="{{.GroupID}}"
+     data-tsio-region="{{.Region}}"
+     data-tsio-mode="{{if .IsLive}}live{{else}}static{{end}}"
+     data-filter-repo="{{.FilterRepo}}"
+     data-filter-branch="{{.FilterBranch}}">
+  <div class="run-item">
+      <a href="{{.Href}}" class="run-link">
+        <span class="run-num">{{.RowNum}}</span>
+        <span class="run-status-col">
+          <span class="run-status-icon">{{if eq .StatusIcon "live"}}{{template "icon-live-dot"}}{{else if eq .StatusIcon "failed"}}<span class="status-pill status-pill-fail">FAIL</span>{{else}}<span class="status-pill status-pill-pass">PASS</span>{{end}}</span>
+          {{if .IsNew}}<span class="status-new" title="Created within the last hour">NEW</span>{{end}}
+        </span>
+        <div class="run-identity">
+            <div class="run-identity-row1">
+              <span class="run-name">{{.Name}}</span>
+              {{if .GHRunID}}
+              <span class="run-gh-id" title="GitHub Actions run {{.GHRunID}}">
+                {{template "icon-play"}}<span class="mono">{{.GHRunID}}</span>
+              </span>
+              {{end}}
+              {{if and .GHRunAttempt (ne .GHRunAttempt "1")}}
+              <span class="run-attempt" title="GitHub Actions run attempt {{.GHRunAttempt}}">
+                {{template "icon-rotate"}}attempt {{.GHRunAttempt}}
+              </span>
+              {{end}}
+            </div>
+            <div class="run-identity-row2">
+              {{if .RepositoryName}}
+              <span class="run-meta-item run-repo">{{template "icon-folder"}}{{.RepositoryName}}</span>
+              {{end}}
+              {{if .GHPRNumber}}
+              <span class="run-meta-item run-meta-branch">{{template "icon-pr"}}#{{.GHPRNumber}}</span>
+              {{else if .Branch}}
+              <span class="run-meta-item run-meta-branch">{{template "icon-branch"}}{{.Branch}}</span>
+              {{end}}
+              {{if .ShortSHA}}
+              <span class="run-meta-item mono">{{template "icon-commit"}}{{.ShortSHA}}</span>
+              {{end}}
+            </div>
+        </div>
+        <div class="run-middle">
+          {{if gt .SpecTotal 0}}
+          <span class="run-specs run-stats-line" title="{{.SpecTotal}} specs · {{.SpecPass}} passed{{if gt .SpecFail 0}} · {{.SpecFail}} failed{{end}}{{if gt .SpecSkipped 0}} · {{.SpecSkipped}} skipped{{end}}{{if gt .SpecPending 0}} · {{.SpecPending}} pending{{end}}{{if gt .SpecLeased 0}} · {{.SpecLeased}} running{{end}}{{if and (not .IsLive) (gt .SpecUntested 0)}} · {{.SpecUntested}} no report{{end}}{{if gt .SpecRetest 0}} · ({{.SpecRetest}} for retest){{end}}"><span class="run-stat-part">{{.SpecTotal}} specs</span><span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="text-pass">{{.SpecPass}}<span class="stat-word"> passed</span></span></span>{{if gt .SpecFail 0}}<span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="text-fail">{{.SpecFail}}<span class="stat-word"> failed</span></span></span>{{end}}{{if gt .SpecSkipped 0}}<span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="text-muted">{{.SpecSkipped}}<span class="stat-word"> skipped</span></span></span>{{end}}{{if gt .SpecPending 0}}<span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="text-muted">{{.SpecPending}}<span class="stat-word"> pending</span></span></span>{{end}}{{if gt .SpecLeased 0}}<span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="spec-blue">{{.SpecLeased}}<span class="stat-word"> running</span></span></span>{{end}}{{if and (not .IsLive) (gt .SpecUntested 0)}}<span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="{{.SpecUntestedClass}}">{{.SpecUntested}}<span class="stat-word"> no report</span></span></span>{{end}}{{if gt .SpecRetest 0}}<span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="text-orange">({{.SpecRetest}}<span class="stat-word"> for retest</span>)</span></span>{{end}}</span>
+          {{end}}
+          {{if or .HasStats .PassRate}}
+          <div class="run-tests-row">
+          {{if .HasStats}}
+          <span class="run-tests run-stats-line" title="{{.Total}} tests · {{.Passed}} passed{{if gt .Failed 0}} · {{.Failed}} failed{{end}}{{if gt .Flaky 0}} · {{.Flaky}} flaky{{end}}{{if gt .Skipped 0}} · {{.Skipped}} skipped{{end}}"><span class="run-stat-part">{{.Total}} tests</span><span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="text-pass">{{.Passed}}<span class="stat-word"> passed</span></span></span>{{if gt .Failed 0}}<span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="text-fail">{{.Failed}}<span class="stat-word"> failed</span></span></span>{{end}}{{if gt .Flaky 0}}<span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="text-flaky">{{.Flaky}}<span class="stat-word"> flaky</span></span></span>{{end}}{{if gt .Skipped 0}}<span class="run-stat-seg"><span class="run-dot" aria-hidden="true">·</span><span class="text-muted">{{.Skipped}}<span class="stat-word"> skipped</span></span></span>{{end}}</span>
+          {{end}}
+          {{if .PassRate}}
+          <span class="run-rate"><span class="run-dot" aria-hidden="true">|</span><span class="{{.PassRateClass}}">{{.PassRate}}%</span></span>
+          {{end}}
+          </div>
+          {{end}}
+        </div>
+        <div class="run-right">
+          <span class="run-duration tabular"{{if .DurationTitle}} title="{{.DurationTitle}}"{{end}}>
+            {{if .DurationText}}{{template "icon-clock"}}{{.DurationText}}{{end}}
+          </span>
+          <time class="run-time tabular" datetime="{{.CreatedAt}}">{{.CreatedAtRel}}</time>
+        </div>
+      </a>
+  </div>
+</div>
+{{end}}
+
+{{define "home-live-rows"}}
+{{range .}}{{template "home-run-item" .}}{{end}}
+{{end}}
+
+{{define "home-content"}}
+<section class="home-filters" aria-label="Report filters">
+  <div class="home-filters-row">
+    <select id="filter-repo" class="home-filter-select" aria-label="Filter by repository">
+      <option value=""{{if not .SelectedRepository}} selected{{end}}>All repositories</option>
+      {{range .Repositories}}
+      <option value="{{.Repository}}"{{if eq $.SelectedRepository .Repository}} selected{{end}}>{{.RepositoryName}}</option>
+      {{end}}
+    </select>
+    <select id="filter-branch" class="home-filter-select" aria-label="Filter by branch or pull request"{{if not .SelectedRepository}} disabled{{end}}>
+      {{if ne (len .BranchFilterOptions) 1}}
+      <option value=""{{if not .SelectedBranchFilter}} selected{{end}}>All branches</option>
+      {{end}}
+      {{range .BranchFilterOptions}}
+      <option value="{{.Value}}"{{if eq $.SelectedBranchFilter .Value}} selected{{end}}>{{.Label}}</option>
+      {{end}}
+    </select>
+  </div>
+</section>
+
+{{if and (not .LiveRuns) (not .StaticRuns)}}
+<div class="empty-state">
+  {{template "icon-inbox"}}
+  <p class="empty-title">No reports yet</p>
+  <p class="empty-hint">Upload test reports to see them here</p>
+</div>
+{{else}}
+
+<div class="run-list">
+{{if .LiveRuns}}
+<section class="run-card run-card-live" id="run-card-live" data-tsio-region="home-live" aria-label="In progress runs">
+  <header class="run-card-heading">
+    <span class="live-dot" aria-hidden="true"></span>
+    <span class="run-card-heading-label">In progress</span>
+    <span class="run-card-heading-count tabular" id="run-card-live-count">{{len .LiveRuns}}</span>
+  </header>
+  <div class="run-card-inner" id="run-card-live-inner">
+    {{range .LiveRuns}}{{template "home-run-item" .}}{{end}}
+  </div>
+</section>
+{{end}}
+
+{{if .StaticRuns}}
+<section class="run-card run-card-static" id="run-card-static" data-tsio-region="home-static" aria-label="Recent runs">
+  <div class="run-card-inner" id="run-card-static-inner">
+    {{range .StaticRuns}}{{template "home-run-item" .}}{{end}}
+  </div>
+</section>
+{{else if not .LiveRuns}}
+{{else}}
+<section class="run-card run-card-static" id="run-card-static" data-tsio-region="home-static" aria-label="Recent runs">
+  <div class="run-card-inner" id="run-card-static-inner">
+    <div class="empty-state empty-state-inline">
+      <p class="empty-hint">No completed runs on this page</p>
+    </div>
+  </div>
+</section>
+{{end}}
+
+{{if gt .TotalPages 1}}
+<nav class="pagination" aria-label="Report groups pagination">
+  <span class="pagination-summary">
+    Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} report groups
+  </span>
+  <span class="pagination-actions">
+    {{if gt .Page 1}}<a class="btn-page" href="{{homeQuery (sub .Page 1) .SelectedRepository .SelectedBranchFilter}}">Previous</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Previous</span>{{end}}
+    {{if lt .Page .TotalPages}}<a class="btn-page" href="{{homeQuery (add .Page 1) .SelectedRepository .SelectedBranchFilter}}">Next</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Next</span>{{end}}
+  </span>
+</nav>
+{{end}}
+</div>
+{{end}}
+{{end}}

@@ -17,10 +17,16 @@ function GithubIcon({ className }: { className?: string }) {
 }
 
 export function Footer() {
-  const { data: info } = useServerInfo();
+  const { data: info, isPending } = useServerInfo();
 
-  if (!info) {
-    return null;
+  if (isPending || !info) {
+    return (
+      <footer className="mt-auto border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
+        <div className="mx-auto max-w-7xl px-4 py-3 sm:px-6 lg:px-8">
+          <div className="h-4" aria-hidden="true" />
+        </div>
+      </footer>
+    );
   }
 
   const { server_version, environment, repo_url, commit_sha, build_time } = info;
@@ -28,7 +34,7 @@ export function Footer() {
   const shortSha = commit_sha ? commit_sha.slice(0, 7) : '';
 
   return (
-    <footer className="border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
+    <footer className="mt-auto border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
       <div className="mx-auto max-w-7xl px-4 py-3 sm:px-6 lg:px-8">
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">

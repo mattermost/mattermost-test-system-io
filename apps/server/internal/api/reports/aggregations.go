@@ -151,6 +151,7 @@ type reportDetail struct {
 
 type runEntry struct {
 	ReportID             string                `json:"report_id"`
+	Repository           string                `json:"-"`
 	Framework            string                `json:"framework"`
 	Name                 string                `json:"name"`
 	RunGroup             string                `json:"-"`
@@ -296,6 +297,7 @@ func toRunEntry(g groupDTO, s groupStats) runEntry {
 	branch := stripRefPrefix(g.Branch)
 	return runEntry{
 		ReportID:             g.ID.String(),
+		Repository:           g.Repository,
 		Framework:            g.Framework,
 		Name:                 g.Name,
 		RunGroup:             g.RunGroup,
@@ -358,7 +360,71 @@ func toIndividualSummary(g groupDTO, e reportEntryDTO, stats groupStats) individ
 
 // ---------- aggregation handlers ----------
 
-// Grouped serves GET /api/v1/reports/grouped?limit=&offset=. Paginated over
+// Distinct repositories for home filter dropdown.
+func LoadReportRepositories(ctx context.Context, pool *pgxpool.Pool) ([]RepositoryOption, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("reports: nil pool")
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT repository
+		  FROM report_groups
+		 WHERE repository IS NOT NULL AND repository <> ''
+		 GROUP BY repository
+		 ORDER BY repository
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]RepositoryOption, 0)
+	for rows.Next() {
+		var repo string
+		if err := rows.Scan(&repo); err != nil {
+			return nil, err
+		}
+		out = append(out, RepositoryOption{
+			Repository:     repo,
+			RepositoryName: repositoryDisplayName(repo),
+		})
+	}
+	return out, rows.Err()
+}
+
+// GET /api/v1/reports/repositories.
+func (h *Handlers) Repositories(w http.ResponseWriter, r *http.Request) {
+	opts, err := LoadReportRepositories(r.Context(), h.Pool)
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=30, stale-while-revalidate=60")
+	_ = json.NewEncoder(w).Encode(map[string]any{"repositories": opts})
+}
+
+// GET /api/v1/reports/branch-filters.
+func (h *Handlers) BranchFilters(w http.ResponseWriter, r *http.Request) {
+	repository := strings.TrimSpace(r.URL.Query().Get("repository"))
+	if repository == "" {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"options": []BranchFilterOption{}})
+		return
+	}
+	options, err := LoadBranchFilterOptions(r.Context(), h.Pool, repository)
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	if options == nil {
+		options = []BranchFilterOption{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=30, stale-while-revalidate=60")
+	_ = json.NewEncoder(w).Encode(map[string]any{"options": options})
+}
+
+// Grouped serves GET /api/v1/reports/grouped?limit=&offset=&repository=&branch_filter=. Paginated over
 // `report_groups` newest-first; within a page, rows are bucketed by repository
 // so the dashboard renders one card per repo. Default limit 50, cap 100 — same
 // shape as /reports/individual. The handler is wrapped by a shared in-process
@@ -368,9 +434,11 @@ func (h *Handlers) Grouped(w http.ResponseWriter, r *http.Request) {
 	h.initGroupedCache()
 	limit := parseLimit(r.URL.Query().Get("limit"), 50, 100)
 	offset := parseOffset(r.URL.Query().Get("offset"))
+	repoFilter := RepositoryFilter(r.URL.Query().Get("repository"))
+	branchFilter := BranchFilter(r.URL.Query().Get("branch_filter"))
 
-	body, err := h.groupedCache.get(r.Context(), limit, offset, func(ctx context.Context) ([]byte, error) {
-		return h.computeGrouped(ctx, limit, offset)
+	body, err := h.groupedCache.get(r.Context(), limit, offset, repoFilter.Value(), branchFilter.Value(), func(ctx context.Context) ([]byte, error) {
+		return h.computeGrouped(ctx, limit, offset, repoFilter, branchFilter)
 	})
 	if err != nil {
 		api.WriteError(w, r, err)
@@ -386,11 +454,23 @@ func (h *Handlers) Grouped(w http.ResponseWriter, r *http.Request) {
 
 // computeGrouped is the cache miss path — runs the actual DB queries and
 // serializes the response body. Returned []byte is what gets cached.
-func (h *Handlers) computeGrouped(ctx context.Context, limit, offset int) ([]byte, error) {
+func (h *Handlers) computeGrouped(ctx context.Context, limit, offset int, repoFilter RepositoryFilter, branchFilter BranchFilter) ([]byte, error) {
+	where := strings.Builder{}
+	where.WriteString("1=1")
+	countArgs := []any{}
+	repoFilter.appendSQL(&where, &countArgs, "repository")
+	branchFilter.appendSQL(&where, &countArgs)
+
 	var total int
-	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM report_groups`).Scan(&total); err != nil {
+	countSQL := "SELECT count(*) FROM report_groups WHERE " + where.String()
+	if err := h.Pool.QueryRow(ctx, countSQL, countArgs...).Scan(&total); err != nil {
 		return nil, err
 	}
+
+	listArgs := append([]any{}, countArgs...)
+	listArgs = append(listArgs, limit, offset)
+	limitPH := fmt.Sprintf("$%d", len(countArgs)+1)
+	offsetPH := fmt.Sprintf("$%d", len(countArgs)+2)
 
 	// id DESC is the stable tie-breaker: report_groups.id is a uuidv7,
 	// so within the same created_at it preserves creation order and
@@ -398,9 +478,10 @@ func (h *Handlers) computeGrouped(ctx context.Context, limit, offset int) ([]byt
 	rows, err := h.Pool.Query(ctx, `
 		SELECT `+reportGroupSelectCols+`
 		  FROM report_groups
+		 WHERE `+where.String()+`
 		 ORDER BY created_at DESC, id DESC
-		 LIMIT $1 OFFSET $2
-	`, limit, offset)
+		 LIMIT `+limitPH+` OFFSET `+offsetPH+`
+	`, listArgs...)
 	if err != nil {
 		return nil, err
 	}

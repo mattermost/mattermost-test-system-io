@@ -1,15 +1,4 @@
-/**
- * Compact inline rendering of an OrchestrationSummary, designed to appear
- * on report-index rows alongside the canonical TestStats column. Surfaces
- * the live orchestration_runs status as a colored pill and a one-line
- * counts breakdown so reviewers can spot in-flight work without leaving the
- * index page.
- *
- * The orchestration counts and canonical TestStats are independent: while
- * worker shards are uploading their reports, the canonical test_stats grow
- * lazily and may briefly disagree with the orchestration tally. Both
- * blocks render side-by-side; the dashboard never reconciles them here.
- */
+/** One-line orchestration counts for index rows. */
 
 import type { OrchestrationSummary } from '@/types';
 
@@ -17,38 +6,13 @@ interface OrchestrationInlineSummaryProps {
   orchestration: OrchestrationSummary;
 }
 
-const STATUS_LABEL: Record<OrchestrationSummary['status'], string> = {
-  in_progress: 'In progress',
-  completed: 'Completed',
-  timed_out: 'Timed out',
-};
-
-function statusPalette(status: OrchestrationSummary['status']): string {
-  switch (status) {
-    case 'in_progress':
-      return 'bg-blue-100 text-blue-800 ring-blue-200 dark:bg-blue-900/40 dark:text-blue-200 dark:ring-blue-800/60';
-    case 'completed':
-      return 'bg-green-100 text-green-800 ring-green-200 dark:bg-green-900/40 dark:text-green-200 dark:ring-green-800/60';
-    case 'timed_out':
-      return 'bg-amber-100 text-amber-800 ring-amber-200 dark:bg-amber-900/40 dark:text-amber-200 dark:ring-amber-800/60';
-  }
-}
-
 export function OrchestrationInlineSummary({ orchestration }: OrchestrationInlineSummaryProps) {
-  const { status, total_units, counts } = orchestration;
+  const { total_units, counts } = orchestration;
   return (
     <span
       className="inline-flex flex-wrap items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400"
       data-testid="orchestration-inline-summary"
     >
-      <span
-        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${statusPalette(
-          status,
-        )}`}
-        title={`Orchestration is ${STATUS_LABEL[status].toLowerCase()}`}
-      >
-        Live · {STATUS_LABEL[status]}
-      </span>
       <span className="tabular-nums">
         Total {total_units}
         {counts.pending > 0 && <> · Pending {counts.pending}</>}

@@ -1,0 +1,74 @@
+{{define "layout"}}
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{{if .Repo}}{{.Repo.Title}}{{else}}{{.Home.Title}}{{end}}</title>
+  <style>{{.CSS}}</style>
+</head>
+<body class="page">
+  <header class="site-header">
+    <div class="site-header-shell">
+      <div class="site-header-bar">
+        <h1 class="site-title"><a href="/">Mattermost Test System IO</a></h1>
+        <div class="site-header-actions">
+          <button type="button" id="connection-status" class="connection-status" title="Connecting..." aria-label="Connection status">
+            <span class="connection-ping hidden" id="connection-ping"></span>
+            <span class="connection-dot" id="connection-dot"></span>
+          </button>
+          {{if .Site.GitHubOAuthEnabled}}
+          <a href="/api/v1/auth/github/start" class="btn-signin">
+            <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" x2="3" y1="12" y2="12"/></svg>
+            <span class="btn-signin-label">Sign in</span>
+          </a>
+          {{end}}
+          <div class="theme-toggle" role="group" aria-label="Theme">
+            <button type="button" class="theme-btn" data-theme="light" aria-label="Switch to Light theme" title="Light">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+            </button>
+            <button type="button" class="theme-btn" data-theme="dark" aria-label="Switch to Dark theme" title="Dark">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+            </button>
+            <button type="button" class="theme-btn" data-theme="system" aria-label="Switch to System theme" title="System">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+  <main class="site-main" id="tsio-page-main"{{if .Repo}} data-repository="{{.Repo.RepoSlug}}"{{end}}>
+    {{if .Repo}}
+    {{template "repo-content" .Repo}}
+    {{else}}
+    {{template "home-content" .Home}}
+    {{end}}
+  </main>
+  <footer class="site-footer">
+    <div class="site-footer-inner">
+      <div class="site-footer-meta">
+        {{if .Site.ServerVersion}}<span>v{{.Site.ServerVersion}}</span>{{end}}
+        {{if .Site.CommitSHA}}
+        <span title="{{.Site.CommitSHA}}">
+          {{if .Site.RepoURL}}
+          <a href="{{.Site.RepoURL}}/commit/{{.Site.CommitSHA}}">{{shortSHA .Site.CommitSHA}}</a>
+          {{else}}{{shortSHA .Site.CommitSHA}}{{end}}
+        </span>
+        {{end}}
+        {{if .Site.Environment}}<span class="pill">{{.Site.Environment}}</span>{{end}}
+        {{if .Site.BuildTime}}<span>{{.Site.BuildTime}}</span>{{end}}
+      </div>
+      {{if .Site.RepoURL}}
+      <a href="{{.Site.RepoURL}}" class="site-footer-link" target="_blank" rel="noopener noreferrer">
+        <svg class="icon-github" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.73.5.67 5.56.67 11.83c0 5.01 3.24 9.24 7.74 10.74.57.1.78-.25.78-.55 0-.27-.01-1-.02-1.96-3.15.68-3.81-1.52-3.81-1.52-.52-1.31-1.26-1.66-1.26-1.66-1.03-.7.08-.69.08-.69 1.14.08 1.74 1.17 1.74 1.17 1.01 1.73 2.65 1.23 3.3.94.1-.73.4-1.23.72-1.51-2.52-.29-5.18-1.26-5.18-5.61 0-1.24.44-2.25 1.17-3.05-.12-.29-.51-1.44.11-3 0 0 .96-.31 3.15 1.17.91-.25 1.89-.38 2.86-.39.97.01 1.95.14 2.86.39 2.19-1.48 3.15-1.17 3.15-1.17.62 1.56.23 2.71.11 3 .73.8 1.17 1.81 1.17 3.05 0 4.36-2.66 5.32-5.2 5.6.41.35.77 1.03.77 2.08 0 1.5-.01 2.71-.01 3.08 0 .3.2.66.79.55 4.49-1.5 7.73-5.73 7.73-10.74C23.33 5.56 18.27.5 12 .5z"/></svg>
+        <span>{{githubRepo .Site.RepoURL}}</span>
+      </a>
+      {{end}}
+    </div>
+  </footer>
+  <script>{{.ThemeJS}}</script>
+  <script>{{.PageJS}}</script>
+</body>
+</html>
+{{end}}

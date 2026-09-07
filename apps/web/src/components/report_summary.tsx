@@ -68,6 +68,17 @@ export function resolveEffectiveReportStatus(
   return status;
 }
 
+/** In-progress home row. */
+export function isLiveHomeRun(entry: {
+  status: ProgressStatus | string;
+  orchestration?: { status: 'in_progress' | 'completed' | 'timed_out' } | null;
+}): boolean {
+  if (entry.orchestration) {
+    return entry.orchestration.status === 'in_progress';
+  }
+  return entry.status === 'in_progress';
+}
+
 export interface ReportSummaryProps {
   // Row 1: test result badge + optional name(s) with links
   /**
@@ -335,7 +346,7 @@ export function ReportSummary(props: ReportSummaryProps) {
         <div className="flex items-center gap-3 mt-2">
           {passRate !== null && (
             <span
-              className={`rounded px-1.5 py-0.5 text-sm font-medium ${passRateColorClass}`}
+              className={`text-sm font-medium ${passRateColorClass}`}
               title={statsTitle}
             >
               {passRate}%

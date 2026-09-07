@@ -321,6 +321,24 @@ export interface RepositoryGroup {
   runs: RunEntry[];
 }
 
+export interface RepositoryOption {
+  repository: string;
+  repository_name: string;
+}
+
+export interface ReportRepositoriesResponse {
+  repositories: RepositoryOption[];
+}
+
+export interface BranchFilterOption {
+  value: string;
+  label: string;
+}
+
+export interface BranchFiltersResponse {
+  options: BranchFilterOption[];
+}
+
 export interface GroupedReportsResponse {
   /** Total report_groups available (across all pages). */
   total: number;

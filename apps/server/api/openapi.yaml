@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Test System IO API
-  version: 0.14.0
+  version: 0.15.0
   description: |
     HTTP API for uploading and viewing Playwright, Cypress, and Detox test
     reports. This spec is hand-authored and is the source of truth for the
@@ -337,17 +337,83 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
 
+  /api/v1/reports/repositories:
+    get:
+      tags: [reports]
+      summary: Distinct repositories for the home page filter dropdown
+      security: []
+      responses:
+        '200':
+          description: Repository list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [repositories]
+                properties:
+                  repositories:
+                    type: array
+                    items:
+                      type: object
+                      required: [repository, repository_name]
+                      properties:
+                        repository: { type: string }
+                        repository_name: { type: string }
+
   /api/v1/reports/grouped:
     get:
       tags: [reports]
       summary: Reports grouped by repository for the landing page
       security: []
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+        - in: query
+          name: repository
+          schema: { type: string }
+          description: Full repository slug or trailing segment (e.g. mattermost/mattermost or mattermost). Omit for all repositories.
+        - in: query
+          name: branch_filter
+          schema: { type: string }
+          description: Branch category filter from /reports/branch-filters (branch:main-master, kind:release, kind:pr). Omit for all branches.
       responses:
         '200':
           description: Grouped reports
           content:
             application/json:
               schema: { $ref: '#/components/schemas/GroupedReportsResponse' }
+
+  /api/v1/reports/branch-filters:
+    get:
+      tags: [reports]
+      summary: Branch and PR filter options for the home page (per repository)
+      security: []
+      parameters:
+        - in: query
+          name: repository
+          schema: { type: string }
+          required: true
+      responses:
+        '200':
+          description: Branch filter options for the selected repository (main or master, release, pr when present)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [options]
+                properties:
+                  options:
+                    type: array
+                    items:
+                      type: object
+                      required: [value, label]
+                      properties:
+                        value: { type: string }
+                        label: { type: string }
 
   /api/v1/reports/individual:
     get:
@@ -1095,7 +1161,9 @@ components:
       required: [upload_timeout_ms, html_view_enabled, search_min_length, github_oauth_enabled]
       properties:
         upload_timeout_ms: { type: integer }
-        html_view_enabled: { type: boolean }
+        html_view_enabled:
+          type: boolean
+          description: When true, Go HTML report list pages are served at / and /reports (default true; override with TSIO_HTML_VIEW_ENABLED).
         search_min_length: { type: integer }
         github_oauth_enabled: { type: boolean }
 

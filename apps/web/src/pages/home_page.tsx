@@ -1,7 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import {
   useGroupedReports,
   useIndividualReports,
+  useReportRepositories,
+  useBranchFilters,
   type IndividualReportSummary,
 } from '@/services/api';
 import { RepoGroupCard } from '@/components/repo_group_card';
@@ -24,6 +26,8 @@ import {
   getPassRateColorClass,
 } from '@/components/report_card_parts';
 import { OrchestrationInlineSummary } from '@/components/orchestration_inline_summary';
+import { isLiveHomeRun } from '@/components/report_summary';
+import { matchesBranchFilterToken } from '@/lib/branch_filter';
 
 type ViewMode = 'grouped' | 'individual';
 
@@ -141,7 +145,7 @@ function IndividualReportCard({ report }: { report: IndividualReportSummary }) {
           )}
           {hasStats && stats && rate !== null && (
             <span
-              className={`rounded px-1.5 py-0.5 text-xs font-medium w-12 text-center ${rateColorClass}`}
+              className={`text-xs font-medium w-12 text-center ${rateColorClass}`}
               title={`${stats.passed} passed${stats.failed > 0 ? `, ${stats.failed} failed` : ''}${(stats.flaky ?? 0) > 0 ? `, ${stats.flaky} flaky` : ''}${(stats.skipped ?? 0) > 0 ? `, ${stats.skipped} skipped` : ''} — ${stats.total} total ${unit}`}
             >
               {rate}%
@@ -197,8 +201,29 @@ export function HomePage() {
     }
     setSearchParams(searchParams, { replace: true });
   };
-  const [repoFilter, setRepoFilter] = useState('');
-  const [branchFilter, setBranchFilter] = useState('');
+  const selectedRepository = searchParams.get('repository') || '';
+  const selectedBranchFilter = searchParams.get('branch_filter') || '';
+  const setRepository = (repository: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (repository) {
+      next.set('repository', repository);
+    } else {
+      next.delete('repository');
+    }
+    next.delete('branch_filter');
+    next.delete('page');
+    setSearchParams(next, { replace: true });
+  };
+  const setBranchFilter = (branchFilter: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (branchFilter) {
+      next.set('branch_filter', branchFilter);
+    } else {
+      next.delete('branch_filter');
+    }
+    next.delete('page');
+    setSearchParams(next, { replace: true });
+  };
   const pageParam = parseInt(searchParams.get('page') || '1', 10);
   const page = isNaN(pageParam) || pageParam < 1 ? 1 : pageParam;
   const limit = 50;
@@ -213,11 +238,34 @@ export function HomePage() {
 
   // Grouped data (paginated). Only fetches when the grouped view is
   // visible — the individual view shouldn't pay for an unused grouped fetch.
+  const { data: repositoriesData } = useReportRepositories();
+  const { data: branchFiltersData } = useBranchFilters(selectedRepository);
+  const branchOptions = branchFiltersData?.options ?? [];
+  const soleBranchOption = branchOptions.length === 1 ? branchOptions[0] : null;
+  const effectiveBranchFilter =
+    selectedBranchFilter || (soleBranchOption ? soleBranchOption.value : '');
+
+  useEffect(() => {
+    if (soleBranchOption && !selectedBranchFilter) {
+      setBranchFilter(soleBranchOption.value);
+    }
+  }, [soleBranchOption, selectedBranchFilter]);
+
   const {
     data: groupedData,
     isLoading: isGroupedLoading,
     error: groupedError,
-  } = useGroupedReports(page, limit, { enabled: viewMode === 'grouped' });
+  } = useGroupedReports(page, limit, {
+    enabled: viewMode === 'grouped',
+    repository: selectedRepository,
+    branchFilter: effectiveBranchFilter,
+  });
+
+  const { data: liveSourceData } = useGroupedReports(1, limit, {
+    enabled: viewMode === 'grouped',
+    repository: selectedRepository,
+    branchFilter: effectiveBranchFilter,
+  });
 
   // Individual data (paginated). Same `enabled` gating in the other direction.
   const {
@@ -229,52 +277,45 @@ export function HomePage() {
   const isLoading = viewMode === 'grouped' ? isGroupedLoading : isIndividualLoading;
   const error = viewMode === 'grouped' ? groupedError : individualError;
 
-  // Filter grouped data
-  const filteredGroups = useMemo(() => {
-    if (!groupedData) return [];
-    return groupedData.groups
-      .filter((group) => {
-        if (
-          repoFilter &&
-          !group.repository.toLowerCase().includes(repoFilter.toLowerCase()) &&
-          !group.repository_name.toLowerCase().includes(repoFilter.toLowerCase())
-        )
-          return false;
-        return true;
-      })
-      .map((group) => {
-        if (!branchFilter) return group;
-        const filteredRuns = group.runs.filter((run) => {
-          const branch = run.branch.replace(/^refs\/heads\//, '').replace(/^refs\/tags\//, '');
-          return branch.toLowerCase().includes(branchFilter.toLowerCase());
-        });
-        return { ...group, runs: filteredRuns };
-      })
-      .filter((group) => group.runs.length > 0);
-  }, [groupedData, repoFilter, branchFilter]);
-
-  // Filter individual data
   const filteredReports = useMemo(() => {
     if (!individualData) return [];
     return individualData.reports.filter((report) => {
-      if (repoFilter && !report.name.toLowerCase().includes(repoFilter.toLowerCase())) return false;
+      if (selectedRepository) {
+        const repo = report.repository || '';
+        const slug = selectedRepository.toLowerCase();
+        const lower = repo.toLowerCase();
+        const name = lower.split('/').pop() || lower;
+        if (lower !== slug && name !== slug && !lower.endsWith('/' + slug)) {
+          return false;
+        }
+      }
       if (
-        branchFilter &&
-        report.gh_job_name &&
-        !report.gh_job_name.toLowerCase().includes(branchFilter.toLowerCase())
-      )
+        effectiveBranchFilter &&
+        !matchesBranchFilterToken(effectiveBranchFilter, report.branch || '', null)
+      ) {
         return false;
+      }
       return true;
     });
-  }, [individualData, repoFilter, branchFilter]);
+  }, [individualData, selectedRepository, effectiveBranchFilter]);
+
+  const liveRuns = useMemo(() => {
+    if (!liveSourceData) return [];
+    return liveSourceData.groups
+      .flatMap((g) => g.runs)
+      .filter(isLiveHomeRun)
+      .sort((a, b) =>
+        a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
+      );
+  }, [liveSourceData]);
 
   return (
     <div>
-      <div className="mb-6">
+      <section className="mb-6" aria-label="Report filters">
         {showViewToggle && (
-          <div className="flex items-center justify-between">
+          <div className="mb-3 flex items-center justify-between">
             {/* Toggle */}
-            <div className="flex items-center rounded-lg border border-gray-200 dark:border-gray-700 p-0.5 ml-auto">
+            <div className="ml-auto flex items-center rounded-lg border border-gray-200 p-0.5 dark:border-gray-700">
               <button
                 onClick={() => setViewMode('grouped')}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
@@ -301,24 +342,36 @@ export function HomePage() {
           </div>
         )}
 
-        {/* Filters */}
-        <div className="flex items-center gap-3 mt-3">
-          <input
-            type="text"
-            placeholder="Filter by repository..."
-            value={repoFilter}
-            onChange={(e) => setRepoFilter(e.target.value)}
-            className="px-3 py-1.5 text-sm border border-gray-200 rounded-md bg-white dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 w-64"
-          />
-          <input
-            type="text"
-            placeholder="Filter by branch / PR..."
-            value={branchFilter}
+        <div className="flex flex-wrap items-center gap-3">
+          <select
+            aria-label="Filter by repository"
+            value={selectedRepository}
+            onChange={(e) => setRepository(e.target.value)}
+            className="w-64 max-w-full cursor-pointer px-3 py-1.5 text-sm border border-gray-200 rounded-md bg-white dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            <option value="">All repositories</option>
+            {(repositoriesData?.repositories ?? []).map((repo) => (
+              <option key={repo.repository} value={repo.repository}>
+                {repo.repository_name}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by branch or pull request"
+            value={effectiveBranchFilter}
             onChange={(e) => setBranchFilter(e.target.value)}
-            className="px-3 py-1.5 text-sm border border-gray-200 rounded-md bg-white dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 w-64"
-          />
+            disabled={!selectedRepository}
+            className="w-64 max-w-full cursor-pointer px-3 py-1.5 text-sm border border-gray-200 rounded-md bg-white disabled:cursor-not-allowed disabled:opacity-60 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {branchOptions.length !== 1 && <option value="">All branches</option>}
+            {branchOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
         </div>
-      </div>
+      </section>
 
       {/* Loading */}
       {isLoading && (
@@ -337,85 +390,92 @@ export function HomePage() {
       {/* Grouped view */}
       {viewMode === 'grouped' && !isLoading && !error && (
         <>
-          {filteredGroups.length === 0 && (
+          {(!groupedData || groupedData.groups.flatMap((g) => g.runs).length === 0) && (
             <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
               <Inbox className="h-12 w-12 mb-3" />
               <p className="text-sm">No reports yet</p>
               <p className="text-xs mt-1">Upload test reports to see them here</p>
             </div>
           )}
-          {filteredGroups.length > 0 &&
+          {groupedData && groupedData.groups.flatMap((g) => g.runs).length > 0 &&
             (() => {
-              // Server's /reports/grouped buckets runs by repository (the
-              // grouped view in commit_reports_page relies on that). The
-              // home page renders one flat list, so re-sort across repos by
-              // created_at so a fresh run from one repo isn't pushed below
-              // older runs from a repo that happened to bucket first.
-              //
-              // Pagination is server-side: `groupedData.total` is the count
-              // of report_groups across all pages; the response already
-              // contains at most `limit` rows for this page. Do NOT re-slice
-              // client-side — that double-pagination would return empty
-              // slices for any page > 1.
-              //
-              // Filters (repoFilter, branchFilter) are applied client-side
-              // to the current page only. While a filter is active the
-              // server's `total` is the unfiltered count and would be
-              // misleading, so the count text and Prev/Next disabling
-              // switch to a page-local view; users can page manually to
-              // find matches on other pages.
-              const allRuns = filteredGroups
+              const allRuns = groupedData.groups
                 .flatMap((g) => g.runs)
                 .sort((a, b) =>
                   a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
                 );
-              const hasFilter = !!repoFilter || !!branchFilter;
-              const total = groupedData?.total ?? allRuns.length;
+              const staticRuns = allRuns.filter((r) => !isLiveHomeRun(r));
+              const total = groupedData.total ?? allRuns.length;
               const totalPages = Math.max(1, Math.ceil(total / limit));
               return (
                 <div className="space-y-4">
-                  <RepoGroupCard
-                    group={{
-                      repository: '',
-                      repository_name: '',
-                      latest_run_at: '',
-                      runs: allRuns,
-                    }}
-                    startNumber={(page - 1) * limit + 1}
-                  />
-                  {hasFilter ? (
-                    <div className="border-t border-gray-200 pt-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                      Showing {allRuns.length} match{allRuns.length === 1 ? '' : 'es'} on page{' '}
-                      {page}. Filter applies to the current page only; clear the filter to page
-                      through all report groups.
-                    </div>
-                  ) : (
-                    totalPages > 1 && (
-                      <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
-                        <div className="text-sm text-gray-500 dark:text-gray-400">
-                          Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
-                          {total} report groups
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setPage(page - 1)}
-                            disabled={page === 1}
-                            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                          >
-                            Previous
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setPage(page + 1)}
-                            disabled={page >= totalPages}
-                            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                          >
-                            Next
-                          </button>
-                        </div>
+                  {liveRuns.length > 0 && (
+                    <div className="rounded-lg border border-blue-200 bg-white dark:border-blue-900/60 dark:bg-gray-800/50">
+                      <div className="flex items-center gap-2 border-b border-blue-100 px-3 py-2 dark:border-blue-900/40">
+                        <span
+                          className="h-2 w-2 flex-shrink-0 rounded-full bg-blue-500 shadow-[0_0_0_3px_rgba(59,130,246,0.2)]"
+                          aria-hidden
+                        />
+                        <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                          In progress
+                        </span>
+                        <span className="tabular-nums text-xs text-gray-400 dark:text-gray-500">
+                          {liveRuns.length}
+                        </span>
                       </div>
-                    )
+                      <RepoGroupCard
+                        group={{
+                          repository: '',
+                          repository_name: '',
+                          latest_run_at: '',
+                          runs: liveRuns,
+                        }}
+                        startNumber={1}
+                        bare
+                      />
+                    </div>
+                  )}
+                  {staticRuns.length > 0 && (
+                    <RepoGroupCard
+                      group={{
+                        repository: '',
+                        repository_name: '',
+                        latest_run_at: '',
+                        runs: staticRuns,
+                      }}
+                      startNumber={(page - 1) * limit + 1}
+                    />
+                  )}
+                  {liveRuns.length > 0 && staticRuns.length === 0 && (
+                    <div className="rounded-lg border border-gray-200 bg-white px-3 py-4 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-800/50 dark:text-gray-500">
+                      No completed runs on this page
+                    </div>
+                  )}
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
+                      <div className="text-sm text-gray-500 dark:text-gray-400">
+                        Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of{' '}
+                        {total} report groups
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setPage(page - 1)}
+                          disabled={page === 1}
+                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                        >
+                          Previous
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPage(page + 1)}
+                          disabled={page >= totalPages}
+                          className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </div>
               );
@@ -439,7 +499,7 @@ export function HomePage() {
               // count and is misleading. Switch the count text to a
               // page-local view so users aren't shown "Z of 200" when they
               // see 3 matches.
-              const hasFilter = !!repoFilter || !!branchFilter;
+              const hasClientFilter = !!selectedRepository || !!effectiveBranchFilter;
               const total = individualData?.total ?? 0;
               const totalPages = Math.ceil(total / limit);
               return (
@@ -454,11 +514,11 @@ export function HomePage() {
                     </div>
                   </div>
 
-                  {hasFilter ? (
+                  {hasClientFilter ? (
                     <div className="border-t border-gray-200 pt-4 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
                       Showing {filteredReports.length} match
-                      {filteredReports.length === 1 ? '' : 'es'} on page {page}. Filter applies to
-                      the current page only; clear the filter to page through all reports.
+                      {filteredReports.length === 1 ? '' : 'es'} on page {page}. Filters apply to
+                      the current page only; clear filters to page through all reports.
                     </div>
                   ) : (
                     totalPages > 1 && (

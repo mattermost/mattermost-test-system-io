@@ -218,6 +218,13 @@ func (h *Handlers) BeginRun(w http.ResponseWriter, r *http.Request) {
 	if created && h.Publisher != nil {
 		h.Publisher.RunStarted(r.Context(), run.Identity, run.Counts.Total, run.IdleTimeoutMs, run.LeaseTimeoutMs)
 	}
+	if created {
+		if seeded != nil && seeded.ID != uuid.Nil {
+			h.refreshReportGroupProjectionByID(r.Context(), seeded.ID)
+		} else {
+			h.refreshReportGroupProjection(r.Context(), run.Identity)
+		}
+	}
 	// Notify the reports-side WebSocket subscribers so the /reports index
 	// pages pick up the run-as-report_group as soon as begin commits. Only
 	// fire when this call's transaction actually inserted the report_groups
@@ -373,6 +380,7 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 		h.Publisher.UnitLeased(r.Context(), identity, worker.GHJobName, worker.GHJobID,
 			unitIDs, lease.Deadline, isRetest)
 	}
+	h.refreshReportGroupProjection(r.Context(), identity)
 
 	resp := map[string]any{
 		"deadline":    lease.Deadline.UTC(),
@@ -547,6 +555,7 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 			h.Publisher.RunCompleted(r.Context(), identity, terminalAt, outcome.RunCounts)
 		}
 	}
+	h.refreshReportGroupProjection(r.Context(), identity)
 
 	resp := map[string]any{
 		"accepted":            true,

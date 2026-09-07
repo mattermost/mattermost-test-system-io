@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
@@ -114,6 +116,14 @@ func run() error {
 		Store:     orchestrationStore,
 		Publisher: orchestrationPublisher,
 		Logger:    logger,
+		OnActivity: func(ctx context.Context, identity orchestration.CompositeIdentity) {
+			groupID, err := reports.GroupIDForOrchestrationIdentity(ctx, pool,
+				identity.Repository, identity.CommitSHA, identity.GHRunID, identity.Name, identity.GHRunAttempt)
+			if err != nil || groupID == uuid.Nil {
+				return
+			}
+			reports.RefreshGroupSummaryBestEffort(ctx, pool, logger, groupID)
+		},
 	}
 	if err := reaper.Start(ctx); err != nil {
 		// Log and continue: the reaper is a backstop for lease expiration;

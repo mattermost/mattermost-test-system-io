@@ -1,0 +1,79 @@
+{{define "repo-content"}}
+<header class="repo-page-header">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <span class="breadcrumb-item">
+    <a href="/reports" class="breadcrumb-link">Reports</a>
+  </span>
+  <span class="breadcrumb-item">
+    {{template "icon-chevron-right"}}
+    <span class="breadcrumb-current">{{.RepoDisplayName}}</span>
+  </span>
+</nav>
+
+<section class="home-filters" aria-label="Report filters">
+  <div class="home-filters-row">
+    <select id="filter-branch" class="home-filter-select" aria-label="Filter by branch or pull request">
+      {{if ne (len .BranchFilterOptions) 1}}
+      <option value=""{{if not .SelectedBranchFilter}} selected{{end}}>All branches</option>
+      {{end}}
+      {{range .BranchFilterOptions}}
+      <option value="{{.Value}}"{{if eq $.SelectedBranchFilter .Value}} selected{{end}}>{{.Label}}</option>
+      {{end}}
+    </select>
+  </div>
+</section>
+</header>
+
+{{if and (not .LiveRuns) (not .StaticRuns)}}
+<div class="empty-state">
+  {{template "icon-inbox"}}
+  <p class="empty-title">No matching reports</p>
+  <p class="empty-hint">No reports match the current filters. <a href="/reports">View all reports</a></p>
+</div>
+{{else}}
+
+<div class="run-list">
+{{if .LiveRuns}}
+<section class="run-card run-card-live" id="run-card-live" data-tsio-region="home-live" aria-label="In progress runs">
+  <header class="run-card-heading">
+    <span class="live-dot" aria-hidden="true"></span>
+    <span class="run-card-heading-label">In progress</span>
+    <span class="run-card-heading-count tabular" id="run-card-live-count">{{len .LiveRuns}}</span>
+  </header>
+  <div class="run-card-inner" id="run-card-live-inner">
+    {{range .LiveRuns}}{{template "home-run-item" .}}{{end}}
+  </div>
+</section>
+{{end}}
+
+{{if .StaticRuns}}
+<section class="run-card run-card-static" id="run-card-static" data-tsio-region="home-static" aria-label="Recent runs">
+  <div class="run-card-inner" id="run-card-static-inner">
+    {{range .StaticRuns}}{{template "home-run-item" .}}{{end}}
+  </div>
+</section>
+{{else if not .LiveRuns}}
+{{else}}
+<section class="run-card run-card-static" id="run-card-static" data-tsio-region="home-static" aria-label="Recent runs">
+  <div class="run-card-inner" id="run-card-static-inner">
+    <div class="empty-state empty-state-inline">
+      <p class="empty-hint">No completed runs on this page</p>
+    </div>
+  </div>
+</section>
+{{end}}
+
+{{if gt .TotalPages 1}}
+<nav class="pagination" aria-label="Report groups pagination">
+  <span class="pagination-summary">
+    Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} report groups
+  </span>
+  <span class="pagination-actions">
+    {{if gt .Page 1}}<a class="btn-page" href="{{repoQuery (sub .Page 1) .RepoSlug .SelectedBranchFilter}}">Previous</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Previous</span>{{end}}
+    {{if lt .Page .TotalPages}}<a class="btn-page" href="{{repoQuery (add .Page 1) .RepoSlug .SelectedBranchFilter}}">Next</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Next</span>{{end}}
+  </span>
+</nav>
+{{end}}
+</div>
+{{end}}
+{{end}}

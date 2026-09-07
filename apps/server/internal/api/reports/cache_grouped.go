@@ -55,9 +55,10 @@ func newGroupedCache(ttl time.Duration) *groupedCache {
 func (c *groupedCache) get(
 	ctx context.Context,
 	limit, offset int,
+	repository, branchFilter string,
 	compute func(context.Context) ([]byte, error),
 ) ([]byte, error) {
-	key := fmt.Sprintf("%d:%d", limit, offset)
+	key := fmt.Sprintf("%d:%d:%s:%s", limit, offset, repository, branchFilter)
 
 	c.mu.Lock()
 	if e, ok := c.entries[key]; ok {
@@ -79,7 +80,7 @@ func (c *groupedCache) get(
 				delete(c.entries, key)
 			}
 			c.mu.Unlock()
-			return c.get(ctx, limit, offset, compute)
+			return c.get(ctx, limit, offset, repository, branchFilter, compute)
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}

@@ -98,6 +98,7 @@ export class ProductionAppStack extends cdk.Stack {
         // Enforce GitHub Actions OIDC `aud` claim. Workflows MUST request this
         // exact audience or token validation fails.
         TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE: "mattermost-test-system-io",
+        TSIO_HTML_VIEW_ENABLED: "true",
       },
       secrets: {
         TSIO_DB_PASSWORD: ecs.Secret.fromSecretsManager(props.rdsSecret, "password"),

@@ -17,8 +17,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -393,4 +395,86 @@ func uploadDiagReport(t *testing.T, env *testenv.Env, tok string, identity map[s
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// TestDiagnoserContract_AnUnknownAPIPathIs404JSONNotTheDashboard is the bug the
+// Cursor automation hit in production on mattermost#38356:
+//
+//	"The prescribed evidence endpoint returned the Test System IO dashboard
+//	 HTML (200 text/html) instead of JSON for the uploaded report identity."
+//
+// The endpoint was not deployed on that server, and chi served the SPA for it.
+// chi's Mux.NotFound propagates the handler into every sub-router whose own
+// notFoundHandler is nil (mux.go: `if subMux.notFoundHandler == nil`), so
+// registering the web UI as the root 404 handler silently captured the whole
+// /api/v1 subtree — including paths that simply do not exist on this build.
+//
+// A client cannot tell "this route is not deployed" from "here is your answer"
+// when both are 200 with a body. The automation's step 1 says a 404 means the
+// report never landed; it has no branch for HTML, and could not have.
+//
+// Any unmatched /api/v1 path must be a JSON 404.
+func TestDiagnoserContract_AnUnknownAPIPathIs404JSONNotTheDashboard(t *testing.T) {
+	env := testenv.Start(t)
+
+	for _, path := range []string{
+		"/api/v1/tests/does-not-exist",
+		"/api/v1/triage/attribution", // a real path on a later build, absent here
+		"/api/v1/nope",
+	} {
+		resp, err := http.Get(env.ServerURL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		ct := resp.Header.Get("Content-Type")
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s: status %d, want 404 — a client cannot distinguish "+
+				"'not deployed' from an answer when both are 200", path, resp.StatusCode)
+		}
+		if !strings.HasPrefix(ct, "application/json") {
+			t.Errorf("GET %s: Content-Type %q, want application/json (body began %q)",
+				path, ct, string(body[:min(60, len(body))]))
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			t.Errorf("GET %s: body is not JSON: %v", path, err)
+			continue
+		}
+		if envelope["error"] == nil {
+			t.Errorf("GET %s: JSON carries no error code: %v", path, envelope)
+		}
+	}
+}
+
+// TestDiagnoserContract_NonAPIPathsStillServeTheDashboard guards the other
+// direction: the fix above must not break client-side routing, which depends on
+// unknown non-API paths falling through to index.html.
+func TestDiagnoserContract_NonAPIPathsStillServeTheDashboard(t *testing.T) {
+	env := testenv.Start(t)
+	resp, err := http.Get(env.ServerURL + "/reports/some/deep/link")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// Asserting 200 text/html here would only hold where the web bundle is
+	// actually built; a development checkout embeds an empty dist and the
+	// handler answers 500. The invariant that matters in both is narrower and
+	// is the one the fix could break: a non-API path must NOT be claimed by
+	// the API subtree's JSON 404, because client-side routing depends on
+	// reaching the web handler at all.
+	ct := resp.Header.Get("Content-Type")
+	body, _ := io.ReadAll(resp.Body)
+	if strings.HasPrefix(ct, "application/json") {
+		var envelope map[string]any
+		if json.Unmarshal(body, &envelope) == nil && envelope["error"] == "NOT_FOUND" {
+			t.Fatalf("a non-API deep link got the API's JSON 404 (%s) — the /api/v1 "+
+				"NotFound handler has escaped its subtree and client-side routing is broken",
+				string(body))
+		}
+	}
+	t.Logf("non-API deep link reached the web handler: status=%d content-type=%q",
+		resp.StatusCode, ct)
 }

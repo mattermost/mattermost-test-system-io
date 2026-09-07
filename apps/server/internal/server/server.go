@@ -6,6 +6,7 @@ package server
 
 import (
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -209,6 +210,35 @@ func Build(d Deps) chi.Router {
 		}
 		orchapi.RegisterPublic(r, publicOrchH)
 
+		// Unmatched /api/v1 paths are a JSON 404, never the dashboard.
+		//
+		// chi's Mux.NotFound propagates the handler set on a parent into every
+		// sub-router whose own notFoundHandler is still nil (mux.go:
+		// `if subMux.notFoundHandler == nil`). The web-UI fallback registered
+		// on the root router below therefore used to capture this entire
+		// subtree, and an /api/v1 path that did not exist on a given build was
+		// served index.html with 200 text/html.
+		//
+		// That is indistinguishable, to a client, from a successful answer. It
+		// cost the PR triage automation a run on mattermost#38356: it asked a
+		// server that did not have /tests/evidence deployed, got 200 and HTML,
+		// and reported "evidence API unavailable" — the endpoint was not
+		// unavailable, it was absent, and the server said neither. A caller
+		// cannot branch on a failure the transport refuses to signal.
+		//
+		// Registering the handler here claims the subtree before the root's
+		// propagation reaches it, because propagation only fills a nil slot.
+		r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+			apiroot.WriteError(w, r, apiroot.ErrNotFound)
+		})
+		// Same reasoning for a wrong method on a real route: chi's default 405
+		// has an empty body, which a JSON client reads as a decode failure
+		// rather than as the 405 it is.
+		r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
+			apiroot.WriteErrorCode(w, http.StatusMethodNotAllowed,
+				"METHOD_NOT_ALLOWED", "method not allowed for this path")
+		})
+
 		// --- Protected: writes + admin-ish reads ---
 		r.Group(func(r chi.Router) {
 			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
@@ -241,9 +271,10 @@ func Build(d Deps) chi.Router {
 		})
 	})
 
-	// Mount the embedded web UI last so the chi /api/v1 subtree keeps its
-	// normal 404 behavior; only requests that miss every other route fall
-	// through to the SPA handler.
+	// Mount the embedded web UI last. The /api/v1 subtree sets its own
+	// NotFound above, so chi's propagation skips it and only non-API requests
+	// that miss every route fall through to the SPA handler — which is what
+	// makes client-side deep links such as /reports/r/abc work.
 	if webH, err := webui.Handler(); err != nil {
 		if d.Logger != nil {
 			d.Logger.Warn("embedded web ui disabled", slog.String("error", err.Error()))

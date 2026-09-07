@@ -93,14 +93,28 @@ func walkPlaywrightSuite(
 	var cases []ExtractedCase
 	for _, spec := range s.Specs {
 		for _, t := range spec.Tests {
+			// One playwrightTest is one test under one project; its Results
+			// are that test's attempts in order. Collect them, then stamp the
+			// run-level rollup across the whole set.
+			var project *string
+			if t.ProjectName != "" {
+				pn := t.ProjectName
+				project = &pn
+			}
+			attempts := make([]ExtractedCase, 0, len(t.Results))
 			for _, res := range t.Results {
 				tc := ExtractedCase{
-					Title:      spec.Title,
-					FullTitle:  combine(fullPrefix, spec.Title),
-					Status:     mapPlaywrightStatus(res.Status, t.Status),
+					Title:     spec.Title,
+					FullTitle: combine(fullPrefix, spec.Title),
+					// This attempt's own status, not the test's rolled-up
+					// one. Stamping every attempt of a flaky test 'flaky'
+					// erases which attempt actually failed, and makes an
+					// attempts_failed count impossible to recover.
+					Status:     mapPlaywrightStatus(res.Status),
 					DurationMs: res.Duration,
 					RetryCount: res.Retry,
 					Sequence:   *seq,
+					Project:    project,
 				}
 				*seq++
 				if len(res.Errors) > 0 {
@@ -130,8 +144,10 @@ func walkPlaywrightSuite(
 						Sequence:    i,
 					})
 				}
-				cases = append(cases, tc)
+				attempts = append(attempts, tc)
 			}
+			stampRunRollup(attempts)
+			cases = append(cases, attempts...)
 		}
 	}
 
@@ -152,13 +168,18 @@ func walkPlaywrightSuite(
 	return out
 }
 
-// mapPlaywrightStatus normalizes Playwright's per-result status to our enum.
-// Playwright emits: passed, failed, skipped, timedOut, interrupted. A test
-// whose spec-level status is "flaky" (passed after retry) overrides.
-func mapPlaywrightStatus(resultStatus, testStatus string) string {
-	if testStatus == StatusFlaky {
-		return StatusFlaky
-	}
+// mapPlaywrightStatus normalizes one Playwright result's status to our enum.
+// Playwright emits: passed, failed, skipped, timedOut, interrupted per result,
+// and expected/unexpected in the variant of the JSON reporter that reports
+// outcomes rather than raw statuses; both vocabularies are accepted.
+//
+// The enclosing test's spec-level status is deliberately not consulted. That
+// status is "flaky" for a test that passed on retry, and applying it to each
+// result stamped the passing attempt and the failing attempt identically —
+// so nothing downstream could tell how many attempts there were or how many
+// failed. StatusFlaky is a run-level verdict; it is derived from a run's
+// attempts (see stampRunRollup and countStatuses), never stored on one.
+func mapPlaywrightStatus(resultStatus string) string {
 	switch resultStatus {
 	case "passed", "expected":
 		return StatusPassed

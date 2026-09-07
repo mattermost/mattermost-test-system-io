@@ -42,6 +42,14 @@ const (
 	ingestStack   = "at ChannelPage.joinCall (channel_page.ts:42:11)"
 	mmTitle       = "MM-T9801 channel switcher opens"
 	plainTitle    = "sidebar collapses on narrow window"
+	// The stored key, not the bare MM-T id: stable_key is prefixed by the
+	// Playwright project the test ran under, so the chrome and firefox runs
+	// of one test keep separate series. The prefix is applied to the MM-T
+	// branch too — mattermost/mattermost is the repository that both carries
+	// MM-T ids and runs multiple projects, so prefixing only the fallback
+	// branch would leave the one repository this matters most for still
+	// collapsing its browsers into one history.
+	mmKey = "chrome :: MM-T9801"
 )
 
 // A minimal Playwright JSON report with one MM-T-titled test and one plain
@@ -204,8 +212,9 @@ func TestIngestion_WritesTheIdentityHistoryIsKeyedOn(t *testing.T) {
 	if mm[0] != "MM-T9801" {
 		t.Fatalf("MM-T test: external_test_id = %q, want MM-T9801 — the ingest write is missing again", mm[0])
 	}
-	if mm[1] != "MM-T9801" {
-		t.Fatalf("MM-T test: stable_key = %q, want the MM-T id to win", mm[1])
+	if mm[1] != mmKey {
+		t.Fatalf("MM-T test: stable_key = %q, want %q — the MM-T id wins the identity, "+
+			"under the project prefix that separates the browsers", mm[1], mmKey)
 	}
 
 	plain := got[plainTitle]
@@ -231,14 +240,14 @@ func TestHistory_SpansBranchesAndPRsAndSummarisesTheStreak(t *testing.T) {
 
 	// Across branches: six entries, PR included. This is the read the PR
 	// automation makes to see whether master is already red.
-	all := history(t, env, "MM-T9801", "")
+	all := history(t, env, mmKey, "")
 	if n := len(all["entries"].([]any)); n != 6 {
 		t.Fatalf("entries across branches = %d, want 6", n)
 	}
 
 	// Master only: the summary names the streak boundaries the master
 	// automation uses as its git-log range.
-	m := history(t, env, "MM-T9801", "master")
+	m := history(t, env, mmKey, "master")
 	entries := m["entries"].([]any)
 	if len(entries) != 5 {
 		t.Fatalf("master entries = %d, want 5", len(entries))
@@ -314,10 +323,10 @@ func TestEvidence_ReturnsErrorAndStableKeyPerFailureGroupedByCause(t *testing.T)
 		}
 		keys[k] = true
 	}
-	if !keys["MM-T9801"] {
-		t.Fatalf("members = %v, want the MM-T id as one key", keys)
+	if !keys[mmKey] {
+		t.Fatalf("members = %v, want %q as one key", keys, mmKey)
 	}
-	delete(keys, "MM-T9801")
+	delete(keys, mmKey)
 	for k := range keys {
 		if !strings.Contains(k, plainTitle) {
 			t.Fatalf("plain member key = %q, want it to carry the title", k)

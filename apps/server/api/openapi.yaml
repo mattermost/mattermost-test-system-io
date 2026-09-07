@@ -2240,7 +2240,9 @@ components:
 
     TestHistoryEntry:
       type: object
-      required: [commit, gh_run_id, branch, name, outcome, shard_rows, duration_ms, created_at]
+      required:
+        [commit, gh_run_id, branch, name, outcome, shard_rows, duration_ms,
+         created_at, attempts, attempts_failed, run_failed]
       properties:
         commit: { type: string }
         gh_run_id: { type: string }
@@ -2253,9 +2255,36 @@ components:
         outcome: { $ref: '#/components/schemas/TestOutcome' }
         shard_rows:
           type: integer
-          description: How many per-shard test_case rows rolled into this outcome.
+          description: How many stored test_case rows rolled into this outcome. One row per attempt per shard.
         duration_ms: { type: integer, format: int64 }
         created_at: { type: string, format: date-time }
+        attempts:
+          type: integer
+          description: |
+            Attempts this test got in this run, summed across shards. Both CI
+            configs retry once (playwright.config.ts `retries: isCI ? 1 : 0`,
+            cypress.config.ts `retries.runMode: 1`), so a test that failed at
+            least once reports 2 in a single-shard run.
+
+            Rows ingested before the retry-semantics fix report 1 whether or
+            not a retry happened: the attempt that would have proved otherwise
+            was never stored, and cannot be reconstructed.
+        attempts_failed:
+          type: integer
+          description: |
+            How many of those attempts failed. timedOut and interrupted count;
+            skipped does not.
+        run_failed:
+          type: boolean
+          description: |
+            True only when every attempt failed. This is the one failure signal
+            that means the same thing across frameworks, and the one a rate
+            should be computed over — rates are per run, never per attempt,
+            because a retried attempt shares the leaked state or slow container
+            that failed the first one and is not an independent draw.
+
+            A run with a surviving attempt is a flake, not a failure: it reports
+            run_failed false and outcome "flaky".
 
     TestHistorySummary:
       type: object

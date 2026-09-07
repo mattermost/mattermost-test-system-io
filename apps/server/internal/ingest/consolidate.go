@@ -116,8 +116,9 @@ func Consolidate(
 			var caseID uuid.UUID
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, duration_ms,
-				                        error_message, error_stack, attachments, ordinal, external_test_id, file)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+				                        error_message, error_stack, attachments, ordinal, external_test_id, file,
+				                        project, attempts, attempts_failed, run_failed)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 				RETURNING id
 			`, suiteID, c.Title, c.FullTitle, c.Status, c.RetryCount, c.DurationMs,
 				c.ErrorMessage, c.ErrorStack, attachmentsJSON, c.Sequence,
@@ -127,10 +128,22 @@ func Consolidate(
 				// within a month of deploy — silently, for every repository.
 				testreport.ExternalTestID(c.Title, c.FullTitle),
 				// Denormalized from the suite (s.FilePath, in scope from the
-				// outer loop) so stable_key's generated expression — which
-				// cannot reach across to suites.file — can disambiguate two
-				// same-titled tests in different files.
-				s.FilePath).Scan(&caseID); err != nil {
+				// outer loop) so stable_key's expression — which cannot reach
+				// across to suites.file — can disambiguate two same-titled
+				// tests in different files.
+				s.FilePath,
+				// Playwright's projectName. The same axis one dimension over:
+				// without it, the chrome and firefox runs of one test share a
+				// stable_key and a browser-specific regression reads as a
+				// flake. NULL for frameworks with no project concept.
+				c.Project,
+				// The run-level retry rollup, repeated across every attempt
+				// row of the run so a reader gets run-level truth off any one
+				// row. stable_key itself is not passed: the BEFORE trigger
+				// added in migration 28 computes it from the columns above,
+				// which keeps one definition of a test's identity rather than
+				// one here and one in SQL that can drift apart.
+				c.Attempts, c.AttemptsFailed, c.RunFailed).Scan(&caseID); err != nil {
 				return Totals{}, fmt.Errorf("insert test_case %q: %w", c.Title, err)
 			}
 			for _, sid := range perCaseLinks {

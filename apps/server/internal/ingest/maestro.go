@@ -169,6 +169,8 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 			fullTitle = suiteTitle + " > " + tc.Name
 		}
 
+		// Maestro's JUnit XML carries one final result per test with no
+		// attempt list — same single-attempt shape as Detox.
 		c := ExtractedCase{
 			Title:        tc.Name,
 			FullTitle:    fullTitle,
@@ -180,6 +182,7 @@ func extractTestSuite(suite *junitTestSuite, seq *int, ancestorPath []string, in
 			StartTime:    suiteStart,
 		}
 		*seq++
+		stampSingleAttempt(&c)
 		pending = append(pending, junitPendingCase{
 			name: tc.Name,
 			file: strings.TrimSpace(tc.File),

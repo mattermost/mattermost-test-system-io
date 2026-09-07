@@ -47,8 +47,28 @@ const (
 	outcomeSkipped = "skipped"
 )
 
+// attemptFailureStatuses is the SQL list of per-attempt statuses that count as
+// a failed attempt, kept in one place so the rollup and the fallback agree.
+// It mirrors isAttemptFailure in internal/ingest.
+const attemptFailureStatuses = `('failed', 'timedOut', 'interrupted')`
+
 // groupRollupSQL is the shared CTE: every report group that ran the requested
-// test, with the test's per-shard rows collapsed to a single outcome.
+// test, with the test's rows collapsed to a single outcome per group.
+//
+// The rollup is two levels, and the levels mean different things:
+//
+//	per_shard  one report (one shard) within the group. A test's rows here are
+//	           its ATTEMPTS in that shard's run, and every attempt row repeats
+//	           the same run-level rollup, so max() reads that run's value
+//	           rather than summing a repeated one.
+//	rolled     the whole group. Distinct shards are distinct runs of the test,
+//	           so their attempt counts add.
+//
+// Rates downstream are computed over the groups this produces — over runs,
+// never over attempts. A retried attempt shares the leaked state or the slow
+// container that failed the first one, so a run's attempts are not independent
+// draws and counting them as such overstates both the sample size and the
+// failure rate.
 //
 // Args, in order: $1 stable_key, $2 repository, $3 branch, $4 framework,
 // $5 run_group, $6 since. The three filter args treat an empty string as "any";
@@ -56,7 +76,9 @@ const (
 const groupRollupSQL = `
 	WITH matched AS (
 		SELECT g.id, g.commit_sha, g.gh_run_id, g.gh_pr_number, g.branch,
-		       g.name, g.run_group, g.created_at, tc.status, tc.duration_ms
+		       g.name, g.run_group, g.created_at, r.id AS report_id,
+		       tc.status, tc.duration_ms,
+		       tc.attempts, tc.attempts_failed, tc.run_failed
 		FROM report_groups g
 		JOIN reports r ON r.report_group_id = g.id
 		JOIN suites s ON s.report_id = r.id
@@ -68,18 +90,46 @@ const groupRollupSQL = `
 		  AND ($5 = '' OR g.run_group = $5)
 		  AND ($6::timestamptz IS NULL OR g.created_at >= $6::timestamptz)
 	),
+	per_shard AS (
+		SELECT id, commit_sha, gh_run_id, gh_pr_number, branch, name, run_group, created_at,
+		       count(*)::int                                            AS shard_rows,
+		       sum(coalesce(duration_ms, 0))::bigint                    AS duration_ms,
+		       bool_or(status IN ('passed', 'flaky'))                   AS ever_passed,
+		       bool_or(status IN ` + attemptFailureStatuses + `)        AS ever_failed,
+		       -- Rows ingested before the retry-semantics fix stamped every
+		       -- attempt of a retried Playwright test 'flaky', the failed
+		       -- attempt included, so such a group can be flaky with no
+		       -- 'failed' row at all. Current rows carry each attempt's own
+		       -- status and reach 'flaky' through ever_passed AND ever_failed
+		       -- instead; this branch keeps the older rows reading correctly.
+		       bool_or(status = 'flaky')                                AS ever_flaky,
+		       -- Every attempt row of one run repeats the run's rollup, so
+		       -- max() reads it rather than multiplying it by the attempt
+		       -- count. coalesce covers rows written before migration 29,
+		       -- which have no stored rollup: they are treated as one attempt,
+		       -- failed iff their own status is a failure.
+		       max(coalesce(attempts, 1))::int                          AS attempts,
+		       max(coalesce(attempts_failed,
+		           CASE WHEN status IN ` + attemptFailureStatuses + `
+		                THEN 1 ELSE 0 END))::int                        AS attempts_failed,
+		       bool_and(coalesce(run_failed,
+		           status IN ` + attemptFailureStatuses + `))           AS run_failed
+		FROM matched
+		GROUP BY id, commit_sha, gh_run_id, gh_pr_number, branch, name, run_group,
+		         created_at, report_id
+	),
 	rolled AS (
 		SELECT id, commit_sha, gh_run_id, gh_pr_number, branch, name, run_group, created_at,
-		       count(*)::int                                                   AS shard_rows,
-		       sum(coalesce(duration_ms, 0))::bigint                           AS duration_ms,
-		       bool_or(status IN ('passed', 'flaky'))                          AS ever_passed,
-		       bool_or(status IN ('failed', 'timedOut', 'interrupted'))        AS ever_failed,
-		       -- Playwright stores every attempt of a retried test as 'flaky',
-		       -- the failed attempt included, so a group can be flaky with no
-		       -- 'failed' row at all. Without this a retry-survivor rolled up as
-		       -- a clean pass and history never saw the flake evidence did.
-		       bool_or(status = 'flaky')                                       AS ever_flaky
-		FROM matched
+		       sum(shard_rows)::int                  AS shard_rows,
+		       sum(duration_ms)::bigint              AS duration_ms,
+		       bool_or(ever_passed)                  AS ever_passed,
+		       bool_or(ever_failed)                  AS ever_failed,
+		       bool_or(ever_flaky)                   AS ever_flaky,
+		       sum(attempts)::int                    AS attempts,
+		       sum(attempts_failed)::int             AS attempts_failed,
+		       -- The group failed outright only if no shard's run survived.
+		       bool_and(run_failed)                  AS run_failed
+		FROM per_shard
 		GROUP BY id, commit_sha, gh_run_id, gh_pr_number, branch, name, run_group, created_at
 	),
 	outcomes AS (
@@ -106,6 +156,16 @@ type historyEntry struct {
 	ShardRows  int       `json:"shard_rows"`
 	DurationMs int64     `json:"duration_ms"`
 	CreatedAt  time.Time `json:"created_at"`
+
+	// Attempts and AttemptsFailed describe how the run reached its outcome:
+	// both CI configs retry once, so a failed-then-passed run reports
+	// (2, 1) and a run that never survived reports (2, 2). RunFailed is the
+	// single boolean that means the same thing across frameworks — every
+	// attempt failed — and is what a consumer should read rather than
+	// inferring a failure from the attempt counts.
+	Attempts       int  `json:"attempts"`
+	AttemptsFailed int  `json:"attempts_failed"`
+	RunFailed      bool `json:"run_failed"`
 }
 
 // History serves GET /api/v1/tests/history — the outcome series for one test,
@@ -228,7 +288,8 @@ func summarize(entries []historyEntry) HistorySummary {
 func loadEntries(ctx context.Context, pool *pgxpool.Pool, testID, repo, branch, framework, runGroup string, since *time.Time, limit int) ([]historyEntry, error) {
 	rows, err := pool.Query(ctx, groupRollupSQL+`
 		SELECT commit_sha, gh_run_id, gh_pr_number, branch, name, run_group,
-		       outcome, shard_rows, duration_ms, created_at
+		       outcome, shard_rows, duration_ms, created_at,
+		       attempts, attempts_failed, run_failed
 		FROM outcomes
 		ORDER BY created_at DESC
 		LIMIT $7
@@ -242,7 +303,8 @@ func loadEntries(ctx context.Context, pool *pgxpool.Pool, testID, repo, branch, 
 	for rows.Next() {
 		var e historyEntry
 		if err := rows.Scan(&e.Commit, &e.GHRunID, &e.GHPRNumber, &e.Branch, &e.Name,
-			&e.RunGroup, &e.Outcome, &e.ShardRows, &e.DurationMs, &e.CreatedAt); err != nil {
+			&e.RunGroup, &e.Outcome, &e.ShardRows, &e.DurationMs, &e.CreatedAt,
+			&e.Attempts, &e.AttemptsFailed, &e.RunFailed); err != nil {
 			return nil, fmt.Errorf("history scan: %w", err)
 		}
 		entries = append(entries, e)

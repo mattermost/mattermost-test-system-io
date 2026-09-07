@@ -42,6 +42,25 @@ type cypressTest struct {
 	Skipped   bool          `json:"skipped"`
 	Context   *string       `json:"context"`
 	Err       *cypressError `json:"err"`
+	// Attempts is mochawesome's per-attempt array, present when mocha
+	// retries are on (cypress.config.ts sets retries.runMode: 1, so a
+	// failing test in CI is always retried once). It holds every attempt
+	// including the final one, so len(Attempts) == 1 means no retry
+	// happened. Absent in reports from a run with retries disabled.
+	Attempts []cypressAttempt `json:"attempts"`
+}
+
+// cypressAttempt is one entry of mochawesome's attempts array. Mochawesome
+// clones the test object per attempt, so the outcome fields carry the same
+// names; only the ones that identify an attempt's own result are read here.
+type cypressAttempt struct {
+	Duration int64         `json:"duration"`
+	State    string        `json:"state"`
+	Pass     bool          `json:"pass"`
+	Fail     bool          `json:"fail"`
+	Pending  bool          `json:"pending"`
+	Skipped  bool          `json:"skipped"`
+	Err      *cypressError `json:"err"`
 }
 
 type cypressError struct {
@@ -76,7 +95,7 @@ func extractCypress(body []byte, seq *int) []ExtractedSuite {
 		if len(result.Tests) > 0 {
 			cases := make([]ExtractedCase, 0, len(result.Tests))
 			for _, t := range result.Tests {
-				cases = append(cases, extractCypressTest(t, seq, startTime))
+				cases = append(cases, extractCypressTest(t, seq, startTime)...)
 			}
 			var fp *string
 			if filePath != "" {
@@ -102,7 +121,7 @@ func walkCypressSuite(s cypressSuite, inheritedFile string, seq *int, startTime 
 
 	cases := make([]ExtractedCase, 0, len(s.Tests))
 	for _, t := range s.Tests {
-		cases = append(cases, extractCypressTest(t, seq, startTime))
+		cases = append(cases, extractCypressTest(t, seq, startTime)...)
 	}
 	// Mochawesome nested suites that group more tests under the same title —
 	// flatten by pulling their cases up into the current suite.
@@ -125,37 +144,108 @@ func walkCypressSuite(s cypressSuite, inheritedFile string, seq *int, startTime 
 	}}
 }
 
-func extractCypressTest(t cypressTest, seq *int, startTime *time.Time) ExtractedCase {
-	status := cypressStatus(t)
-	var errMsg, errStack *string
-	if t.Err != nil {
-		msg := firstNonEmpty(t.Err.Message, t.Err.Estack)
-		if msg != "" {
-			errMsg = &msg
-		}
-		if t.Err.Estack != "" {
-			stack := t.Err.Estack
-			errStack = &stack
-		}
-	}
+// extractCypressTest returns one ExtractedCase per attempt, in attempt order,
+// with the run-level rollup stamped across the set.
+//
+// Mochawesome reports the final state on the test object and the full attempt
+// list under "attempts". Reading only the test object — as this did before —
+// stored a single final-state row and a hardcoded retry_count of 0, so a
+// Cypress test that failed once and passed on retry was indistinguishable
+// from one that passed first try, while the same run under Playwright stored
+// two rows. Any rate computed across the two frameworks was comparing a
+// per-run number against a per-attempt one.
+//
+// When "attempts" is absent or empty the test is treated as a single attempt,
+// which is what a report from a run with retries disabled looks like.
+func extractCypressTest(t cypressTest, seq *int, startTime *time.Time) []ExtractedCase {
 	full := t.FullTitle
 	if full == "" {
 		full = t.Title
 	}
-	c := ExtractedCase{
-		Title:        t.Title,
-		FullTitle:    full,
-		Status:       status,
-		DurationMs:   t.Duration,
-		RetryCount:   0,
-		ErrorMessage: errMsg,
-		ErrorStack:   errStack,
-		Sequence:     *seq,
-		StartTime:    startTime,
-		Attachments:  parseCypressContext(t.Context),
+	// Screenshots are attached to the test, not to an attempt; hang them on
+	// the final attempt so exactly one row owns them and the linker cannot
+	// match the same file twice.
+	attachments := parseCypressContext(t.Context)
+
+	attempts := make([]ExtractedCase, 0, max(1, len(t.Attempts)))
+	if len(t.Attempts) == 0 {
+		attempts = append(attempts, ExtractedCase{
+			Title:      t.Title,
+			FullTitle:  full,
+			Status:     cypressStatus(t),
+			DurationMs: t.Duration,
+			RetryCount: 0,
+			StartTime:  startTime,
+		})
+		setCypressError(&attempts[0], t.Err)
+	} else {
+		for i, a := range t.Attempts {
+			c := ExtractedCase{
+				Title:      t.Title,
+				FullTitle:  full,
+				Status:     cypressAttemptStatus(a, t, i == len(t.Attempts)-1),
+				DurationMs: a.Duration,
+				RetryCount: i,
+				StartTime:  startTime,
+			}
+			// An attempt carries its own err; fall back to the test's for the
+			// final attempt, which is the one mochawesome copies it onto.
+			e := a.Err
+			if e == nil && i == len(t.Attempts)-1 {
+				e = t.Err
+			}
+			setCypressError(&c, e)
+			attempts = append(attempts, c)
+		}
 	}
-	*seq++
-	return c
+	attempts[len(attempts)-1].Attachments = attachments
+	stampRunRollup(attempts)
+	for i := range attempts {
+		attempts[i].Sequence = *seq
+		*seq++
+	}
+	return attempts
+}
+
+// cypressAttemptStatus maps one attempt's own outcome. Mochawesome's attempt
+// entries are clones of the test object, but older reporters emit them with
+// the outcome flags unset; for the final attempt the test object's own state
+// is authoritative, and a bare earlier attempt can only be a failure — an
+// attempt is retried precisely because it did not pass.
+func cypressAttemptStatus(a cypressAttempt, t cypressTest, isFinal bool) string {
+	switch {
+	case a.Pending || a.Skipped:
+		return StatusSkipped
+	case a.Fail:
+		return StatusFailed
+	case a.Pass:
+		return StatusPassed
+	}
+	switch a.State {
+	case StatusPassed:
+		return StatusPassed
+	case StatusFailed:
+		return StatusFailed
+	case cypressStatePending, StatusSkipped:
+		return StatusSkipped
+	}
+	if isFinal {
+		return cypressStatus(t)
+	}
+	return StatusFailed
+}
+
+func setCypressError(c *ExtractedCase, e *cypressError) {
+	if e == nil {
+		return
+	}
+	if msg := firstNonEmpty(e.Message, e.Estack); msg != "" {
+		c.ErrorMessage = &msg
+	}
+	if e.Estack != "" {
+		stack := e.Estack
+		c.ErrorStack = &stack
+	}
 }
 
 func cypressStatus(t cypressTest) string {

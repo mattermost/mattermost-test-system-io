@@ -2,7 +2,7 @@
 
 Implementation scope: TSIO decisions and durable work ownership; Mattermost callers,
 Guardian repair verification and mutually exclusive Jira defect escalation. Impact
-Gate remains owned by the other task. Historical master failures are observations,
+Gate supplies separate advisory plans and read-only execution comparisons. Historical master failures are observations,
 not proof that a PR is innocent. Automatic clearance remains disabled pending
 independently reviewed shadow measurements.
 
@@ -25,6 +25,11 @@ independently reviewed shadow measurements.
   repair queue and required for quarantine. Derive file/title/framework/
   project/commit/image/suite from a complete trusted master report; reject aliases
   spanning multiple file/title/project identities. Work responses use `{items:[]}`.
+  Evidence distinguishes the tested `commit_sha` from verified OIDC
+  `source_workflow_sha`; all shards and any used Begin receipt agree on both
+  identities. Guardian checks GitHub's source run head against the latter and
+  requires current master equal the former before publication. Legacy work with
+  no source revision fails closed.
   POST `/triage/repairs/claim` `{repository, worker}` returns `item` (null if empty)
   with `id`, `lease_token`, `lease_expires_at`, run/test evidence and `attempt`.
   POST `/triage/repairs/{id}/heartbeat` `{lease_token}` renews active ownership.

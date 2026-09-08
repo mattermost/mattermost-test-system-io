@@ -2,7 +2,8 @@
 
 This implementation adds the missing repair and defect machinery. It does not
 establish production accuracy or constitute a live autonomous-repair demo.
-Impact Gate remains an independent advisory pilot owned by the other task.
+Impact Gate supplies advisory selection plans; TSIO records actual execution and
+the companion Mattermost workflow compares them without reducing dispatch.
 
 | Capability | Implemented behavior | Remaining live acceptance |
 | --- | --- | --- |
@@ -34,7 +35,13 @@ Repair evidence has a different trust boundary:
 `TSIO_TRIAGE_SOURCE_WORKFLOW_REFS` defaults to Mattermost's
 `e2e-tests-on-merge.yml@refs/heads/master`. A PR test job running a master-hosted
 dispatcher is insufficient. Every shard needs matching verified repository,
-ref, workflow, commit, run and attempt claims, plus its registration receipt.
+ref, workflow revision, run and attempt claims, plus its registration receipt.
+The tested `commit_sha` comes from the immutable run/receipt identity;
+`source_workflow_sha` comes from unanimous verified OIDC claims. These may differ
+for a dispatched master run. Guardian independently checks the GitHub run's head
+against `source_workflow_sha` and the tested commit's master ancestry. Mixed
+workflow revisions or receipt/tested-commit mismatches remain rejected. Legacy
+queue items without the source revision cannot authorize repair.
 The expected shard count needs a verified Begin receipt or shard declaration.
 The target test's receipts supply the image and harness metadata; an earlier
 unauthenticated report-group metadata value cannot substitute for them.
@@ -110,6 +117,14 @@ records a runner-image digest too; this is not a historical runner-image record
 that did not previously exist. Candidate code runs without controller credentials,
 host PID namespace or Docker socket, with read-only source and bounded output.
 Successful repeated runs are finite evidence, not proof of zero future flakes.
+
+Publication requires master still equal the tested commit at each publication
+fence. Any advancement, including a helper-only or unrelated change, requires
+fresh master evidence and revalidation. Reused repair PRs must have that exact
+commit as their sole parent. This prevents an old failure such as the deleted
+image dependency fixed by Mattermost #38330 from authorizing a stale repair.
+Master can still advance after the last read; normal PR CI and human review
+remain necessary.
 
 The mechanical E2E policy executes trusted base-branch policy code. Human changes
 receive blocking findings for detectable deletions, skips, bare sleeps and raised

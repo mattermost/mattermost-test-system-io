@@ -8,6 +8,33 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// workflow_dispatch executes trusted workflow code at one revision while its
+// immutable report receipt records the commit passed to the test checkout.
+// Every shard must agree on that source identity; it is independently checked
+// against GitHub's run head by the repair caller before executing any test code.
+func loadSourceWorkflow(ctx context.Context, tx pgx.Tx, ev *Evidence, refs []string) (string, string, error) {
+	var trusted bool
+	var identities int
+	var workflowRef, event string
+	err := tx.QueryRow(ctx, `SELECT COALESCE(bool_and(COALESCE(
+ o.issuer='https://token.actions.githubusercontent.com' AND o.repository=$2 AND o.ref='refs/heads/master'
+ AND o.raw_claims->>'run_id'=$3 AND o.raw_claims->>'run_attempt'=$4
+ AND o.raw_claims->>'sha' ~ '^[a-f0-9]{40}$'
+ AND o.raw_claims->>'workflow_ref'=ANY($5::text[])
+ AND o.raw_claims->>'event_name' IN ('push','schedule','workflow_dispatch'),false)),false),
+ count(DISTINCT (o.raw_claims->>'sha',o.raw_claims->>'workflow_ref',o.raw_claims->>'event_name')),
+ COALESCE(min(o.raw_claims->>'sha'),''),COALESCE(min(o.raw_claims->>'workflow_ref'),''),COALESCE(min(o.raw_claims->>'event_name'),'')
+ FROM reports r LEFT JOIN oidc_claims o ON o.report_id=r.id WHERE r.report_group_id=$1`, ev.ReportGroupID, ev.Repository, ev.GHRunID, ev.GHRunAttempt, refs).
+		Scan(&trusted, &identities, &ev.SourceWorkflowSHA, &workflowRef, &event)
+	if err != nil {
+		return "", "", err
+	}
+	if !trusted || identities != 1 {
+		return "", "", conflict("all master shards must share one verified source workflow revision and run identity")
+	}
+	return workflowRef, event, nil
+}
+
 // Image and harness settings come from the immutable, principal-bound receipt
 // of the report containing this test. Group metadata is deliberately ignored.
 func loadTrustedMetadata(ctx context.Context, tx pgx.Tx, ev *Evidence) error {

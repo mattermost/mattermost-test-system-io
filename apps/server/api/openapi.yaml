@@ -2130,6 +2130,13 @@ components:
           type: string
         commit_sha:
           type: string
+          description: Immutable commit tested by the originating master run.
+        source_workflow_sha:
+          type: string
+          pattern: '^[a-f0-9]{40}$'
+          description: Verified OIDC workflow revision, separate from the tested commit. All shard
+            claims and any used Begin receipt must agree. Guardian independently matches this to
+            the GitHub run head. Legacy items without this field cannot authorize repair.
         gh_run_id:
           type: string
         gh_run_attempt:

@@ -192,6 +192,52 @@ func TestWorkPostgres(t *testing.T) {
 			t.Fatal("wrong Begin provenance accepted")
 		}
 	})
+	t.Run("master dispatch binds workflow revision separately from tested commit", func(t *testing.T) {
+		f := seed(t, pool, "org/dispatch", "dispatched master")
+		workflowSHA := strings.Repeat("b", 40)
+		sqlExec(t, pool, `UPDATE oidc_claims SET raw_claims=jsonb_set(jsonb_set(raw_claims,'{sha}',to_jsonb($2::text)),'{event_name}','"workflow_dispatch"') WHERE report_id=$1`, f.report, workflowSHA)
+		body := map[string]string{"report_group_id": f.group, "stable_key": f.key, "owner": "QA"}
+		w := call(h.Enqueue, "", "", body)
+		item := resultItem(t, w, 200)
+		var response struct {
+			Item struct {
+				SourceWorkflowSHA string `json:"source_workflow_sha"`
+			} `json:"item"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if item.CommitSHA != strings.Repeat("a", 40) || response.Item.SourceWorkflowSHA != workflowSHA {
+			t.Fatalf("tested commit and workflow revision were not preserved separately: %s", w.Body.String())
+		}
+		// Actual workers omit the expected count at Register and use Begin's count.
+		sqlExec(t, pool, `UPDATE reports SET registration_receipt=registration_receipt-'total_reports_expected' WHERE id=$1`, f.report)
+		sqlExec(t, pool, `INSERT INTO report_group_begin_receipts(report_group_id,verified_claims,receipt)
+ SELECT r.report_group_id,o.raw_claims||jsonb_build_object('iss',o.issuer,'repository',o.repository,'ref',o.ref),r.registration_receipt||'{"total_reports_expected":1}'::jsonb
+ FROM reports r JOIN oidc_claims o ON o.report_id=r.id WHERE r.id=$1`, f.report)
+		resultItem(t, call(h.Enqueue, "", "", body), 200)
+		sqlExec(t, pool, `UPDATE report_group_begin_receipts SET verified_claims=jsonb_set(verified_claims,'{sha}',to_jsonb($2::text)) WHERE report_group_id=$1`, f.group, strings.Repeat("c", 40))
+		if w = call(h.Enqueue, "", "", body); w.Code != 409 {
+			t.Fatal("Begin from a different workflow revision vouched for the dispatch")
+		}
+	})
+	t.Run("all master shards must attest the same workflow revision", func(t *testing.T) {
+		first := seed(t, pool, "org/source-sha", "shared source test")
+		second := seed(t, pool, "org/source-sha", "shared source test")
+		sqlExec(t, pool, `UPDATE report_groups SET total_reports_expected=2 WHERE id=$1`, first.group)
+		sqlExec(t, pool, `UPDATE reports SET report_group_id=$2::uuid,registration_receipt=jsonb_set(jsonb_set(registration_receipt,'{gh_run_id}',to_jsonb($2::text)),'{total_reports_expected}','2') WHERE id IN ($1,$3)`, first.report, first.group, second.report)
+		sqlExec(t, pool, `UPDATE oidc_claims SET raw_claims=jsonb_set(jsonb_set(raw_claims,'{run_id}',to_jsonb($2::text)),'{sha}',to_jsonb($3::text)) WHERE report_id=$1`, second.report, first.group, strings.Repeat("b", 40))
+		body := map[string]string{"report_group_id": first.group, "stable_key": first.key, "owner": "QA"}
+		if w := call(h.Enqueue, "", "", body); w.Code != 409 {
+			t.Fatal("different verified workflow revisions mixed into one run")
+		}
+		sqlExec(t, pool, `UPDATE oidc_claims SET raw_claims=jsonb_set(raw_claims,'{sha}',to_jsonb($2::text)) WHERE report_id=$1`, first.report, strings.Repeat("b", 40))
+		resultItem(t, call(h.Enqueue, "", "", body), 200)
+		sqlExec(t, pool, `UPDATE reports SET registration_receipt=jsonb_set(registration_receipt,'{commit}',to_jsonb($2::text)) WHERE id=$1`, second.report, strings.Repeat("c", 40))
+		if w := call(h.Enqueue, "", "", body); w.Code != 409 {
+			t.Fatal("different tested commits mixed into one run")
+		}
+	})
 	t.Run("matching test reports must agree on authenticated image and harness", func(t *testing.T) {
 		first := seed(t, pool, "org/env", "shared test")
 		second := seed(t, pool, "org/env", "shared test")

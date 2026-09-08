@@ -296,6 +296,10 @@ func loadEvidence(ctx context.Context, tx pgx.Tx, groupID, key string, sourceRef
 	if !validRepository(ev.Repository) || ev.Branch != "master" || pr != nil || status != "completed" || expected < 1 || (ev.Framework != "playwright" && ev.Framework != "cypress") || !commitPattern.MatchString(ev.CommitSHA) {
 		return nil, conflict("repair requires a complete master Playwright/Cypress report with no PR identity")
 	}
+	workflowRef, event, err := loadSourceWorkflow(ctx, tx, ev, sourceRefs)
+	if err != nil {
+		return nil, err
+	}
 	var count int
 	var trusted bool
 	err = tx.QueryRow(ctx, `SELECT count(*),COALESCE(bool_and(COALESCE(r.status='complete'
@@ -311,18 +315,18 @@ func loadEvidence(ctx context.Context, tx pgx.Tx, groupID, key string, sourceRef
  AND b.receipt->>'framework'=$7 AND b.receipt->>'name'=$8
  AND b.verified_claims->>'iss'='https://token.actions.githubusercontent.com'
  AND b.verified_claims->>'repository'=$2 AND b.verified_claims->>'ref'='refs/heads/master'
- AND b.verified_claims->>'sha'=$3 AND b.verified_claims->>'run_id'=$4 AND b.verified_claims->>'run_attempt'=$5
- AND b.verified_claims->>'workflow_ref'=ANY($9::text[])
- AND b.verified_claims->>'event_name' IN ('push','schedule','workflow_dispatch'))))
+ AND b.verified_claims->>'sha'=$10 AND b.verified_claims->>'run_id'=$4 AND b.verified_claims->>'run_attempt'=$5
+ AND b.verified_claims->>'workflow_ref'=$9
+ AND b.verified_claims->>'event_name'=$11)))
  AND r.registration_receipt->>'framework'=$7 AND r.registration_receipt->>'name'=$8
  AND r.registration_receipt->>'branch'='master' AND COALESCE(r.registration_receipt->>'gh_pr_number','')=''
  AND EXISTS(
  SELECT 1 FROM oidc_claims o WHERE o.report_id=r.id AND o.issuer='https://token.actions.githubusercontent.com'
- AND o.repository=$2 AND o.ref='refs/heads/master' AND o.raw_claims->>'sha'=$3
+ AND o.repository=$2 AND o.ref='refs/heads/master' AND o.raw_claims->>'sha'=$10
  AND o.raw_claims->>'run_id'=$4 AND o.raw_claims->>'run_attempt'=$5
- AND o.raw_claims->>'workflow_ref'=ANY($9::text[])
- AND COALESCE(o.raw_claims->>'event_name','') IN ('push','schedule','workflow_dispatch')
- ),false)),false) FROM reports r WHERE r.report_group_id=$1`, groupID, ev.Repository, ev.CommitSHA, ev.GHRunID, ev.GHRunAttempt, expected, ev.Framework, ev.Name, sourceRefs).Scan(&count, &trusted)
+ AND o.raw_claims->>'workflow_ref'=$9
+ AND o.raw_claims->>'event_name'=$11
+ ),false)),false) FROM reports r WHERE r.report_group_id=$1`, groupID, ev.Repository, ev.CommitSHA, ev.GHRunID, ev.GHRunAttempt, expected, ev.Framework, ev.Name, workflowRef, ev.SourceWorkflowSHA, event).Scan(&count, &trusted)
 	if err != nil {
 		return nil, err
 	}

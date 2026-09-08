@@ -51,6 +51,7 @@ type Evidence struct {
 	Name                string          `json:"name"`
 	Branch              string          `json:"branch"`
 	CommitSHA           string          `json:"commit_sha"`
+	SourceWorkflowSHA   string          `json:"source_workflow_sha"`
 	GHRunID             string          `json:"gh_run_id"`
 	GHRunAttempt        string          `json:"gh_run_attempt"`
 	ImageDigest         string          `json:"image_digest"`

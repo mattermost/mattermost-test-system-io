@@ -41,12 +41,23 @@ expected complete reports, test rows, and keyed identities before a candidate
 can qualify. This still cannot account for an entirely unregistered group or an
 infrastructure failure absent from test reports.
 
-A history match requires the exact repository, framework, group name and stable
-key. Master observations also require the configured branch, no PR identity,
+A history match requires the exact repository, framework, corresponding suite and
+stable key. For `mattermost/mattermost` with baseline branch `master`, the four
+full enterprise/FIPS PR names explicitly map to their `-master` counterparts,
+as in the Cursor consumer. Other
+suites require the exact same name; there is no fuzzy configuration matching.
+Master observations also require the configured branch, no PR identity,
 and complete ingestion. The policy uses only observations preceding the PR,
 within its configured lookback. Group names must distinguish smoke/full,
 enterprise/FIPS and other configurations; this query cannot recover dimensions
 that producers merged under one name.
+
+Group outcomes include every shard: an outright failure in one shard followed
+by a successful spec retest is flaky and is not counted as an observed failed PR
+run in this replay. A shard's `run_failed=true` cannot override another shard's
+successful attempt. Reused
+external IDs can still combine different tests; resolve that ambiguity before
+treating the policy replay as an evaluation of individual test identities.
 
 ## Historical coverage boundaries
 

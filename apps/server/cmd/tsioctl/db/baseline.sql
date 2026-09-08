@@ -31,8 +31,10 @@ observations AS MATERIALIZED (
              AS project_unknown_rows,
            count(*) FILTER (WHERE g.framework = 'cypress' AND tc.attempts IS NULL)
              AS cypress_legacy_rows,
+           -- run_failed describes one report's execution. A different shard
+           -- may have rerun the spec successfully; preserve the same any-pass
+           -- plus any-failure => flaky group outcome as /tests/history.
            CASE
-             WHEN bool_or(tc.run_failed) THEN 'failed'
              WHEN bool_or(tc.status = 'flaky') THEN 'flaky'
              WHEN bool_or(tc.status IN ('passed', 'flaky'))
                   AND bool_or(tc.status IN ('failed', 'timedOut', 'interrupted')) THEN 'flaky'
@@ -82,7 +84,19 @@ classified AS (
     CROSS JOIN LATERAL (
         SELECT count(*) AS runs_seen, count(*) FILTER (WHERE m.outcome IN ('failed', 'flaky')) AS nonclean
         FROM (SELECT m.outcome FROM master_retained m
-              WHERE m.stable_key = f.stable_key AND m.framework = f.framework AND m.name = f.name
+              WHERE m.stable_key = f.stable_key AND m.framework = f.framework
+                -- Mattermost names its full PR and master suites differently.
+                -- Keep the mapping explicit so enterprise/FIPS and frameworks
+                -- cannot borrow one another's baseline. Other suites retain
+                -- exact-name matching.
+                AND m.name = CASE WHEN p.repo = 'mattermost/mattermost' AND p.branch = 'master' THEN
+                    CASE f.name
+                      WHEN 'cypress-full-enterprise' THEN 'cypress-full-enterprise-master'
+                      WHEN 'cypress-full-fips' THEN 'cypress-full-fips-master'
+                      WHEN 'playwright-full-enterprise' THEN 'playwright-full-enterprise-master'
+                      WHEN 'playwright-full-fips' THEN 'playwright-full-fips-master'
+                      ELSE f.name
+                    END ELSE f.name END
                 AND m.created_at < f.created_at AND m.created_at >= f.created_at - make_interval(days => p.days)
               ORDER BY m.created_at DESC, m.group_id DESC LIMIT k.k) m
     ) h

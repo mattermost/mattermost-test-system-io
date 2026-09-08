@@ -154,6 +154,7 @@ func TestStableKeyBackfill(t *testing.T) {
 
 type observationFixture struct {
 	run, attempt, name, key, branch string
+	framework                       string
 	pr                              *int
 	age                             time.Duration
 	statuses                        []string
@@ -162,6 +163,9 @@ type observationFixture struct {
 
 func addObservation(t *testing.T, pool *pgxpool.Pool, f observationFixture) {
 	t.Helper()
+	if f.framework == "" {
+		f.framework = "playwright"
+	}
 	if f.branch == "" {
 		f.branch = "master"
 	}
@@ -177,8 +181,8 @@ func addObservation(t *testing.T, pool *pgxpool.Pool, f observationFixture) {
 	var groupID, reportID, suiteID string
 	if err := pool.QueryRow(context.Background(), `INSERT INTO report_groups(framework,name,repository,branch,commit_sha,
 	 gh_run_id,gh_run_attempt,gh_pr_number,created_at,status,total_reports_expected)
-	 VALUES('playwright',$1,'mattermost/mattermost',$2,$3,$3,$4,$5,$6,$7,$8) RETURNING id`,
-		f.name, f.branch, f.run, f.attempt, f.pr, time.Now().Add(-f.age), status, expected).Scan(&groupID); err != nil {
+	 VALUES($9,$1,'mattermost/mattermost',$2,$3,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		f.name, f.branch, f.run, f.attempt, f.pr, time.Now().Add(-f.age), status, expected, f.framework).Scan(&groupID); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.statuses) == 0 {
@@ -193,6 +197,113 @@ func addObservation(t *testing.T, pool *pgxpool.Pool, f observationFixture) {
 	for i, status := range f.statuses {
 		execSQL(t, pool, `INSERT INTO test_cases(suite_id,title,full_title,external_test_id,project,status,ordinal)
 	 VALUES($1,$2,$2,$2,'chrome',$3,$4)`, suiteID, f.key, status, i)
+	}
+}
+
+func TestBaseline_MattermostSuiteMapping(t *testing.T) {
+	pool, _ := database(t, 30)
+	pr := 123
+	for _, framework := range []string{"playwright", "cypress"} {
+		for _, edition := range []string{"enterprise", "fips"} {
+			name := framework + "-full-" + edition
+			addObservation(t, pool, observationFixture{framework: framework, run: name + "-master", name: name + "-master", key: "MM-T1", age: 24 * time.Hour, statuses: []string{"failed"}, complete: true})
+			addObservation(t, pool, observationFixture{framework: framework, run: name + "-pr", name: name, key: "MM-T1", pr: &pr, age: time.Hour, statuses: []string{"failed"}, complete: true})
+		}
+	}
+	// A FIPS failure cannot explain an enterprise failure of the same key.
+	addObservation(t, pool, observationFixture{run: "clean-enterprise", name: "playwright-full-enterprise-master", key: "MM-T2", age: 24 * time.Hour, statuses: []string{"passed"}, complete: true})
+	addObservation(t, pool, observationFixture{run: "failed-fips", name: "playwright-full-fips-master", key: "MM-T2", age: 24 * time.Hour, statuses: []string{"failed"}, complete: true})
+	addObservation(t, pool, observationFixture{run: "unexplained-enterprise", name: "playwright-full-enterprise", key: "MM-T2", pr: &pr, age: time.Hour, statuses: []string{"failed"}, complete: true})
+	raw, err := readBaseline(context.Background(), pool, "mattermost/mattermost", "master", 30, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Policy []struct {
+			Failed     int `json:"observed_failed_pr_run_attempts"`
+			Candidates int `json:"policy_candidates"`
+		} `json:"policy_replay"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Policy) != 3 {
+		t.Fatal(string(raw))
+	}
+	for _, r := range result.Policy {
+		if r.Failed != 5 || r.Candidates != 4 {
+			t.Fatalf("Mattermost suite mapping or edition isolation failed: %s", raw)
+		}
+	}
+	// --branch can select a different trusted branch. The master-specific
+	// mapping must not replace that branch's existing exact-name behavior.
+	addObservation(t, pool, observationFixture{run: "release-base", branch: "release-test", name: "playwright-full-enterprise", key: "MM-T3", age: 24 * time.Hour, statuses: []string{"failed"}, complete: true})
+	addObservation(t, pool, observationFixture{run: "release-pr", name: "playwright-full-enterprise", key: "MM-T3", pr: &pr, age: time.Hour, statuses: []string{"failed"}, complete: true})
+	raw, err = readBaseline(context.Background(), pool, "mattermost/mattermost", "release-test", 30, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range result.Policy {
+		if r.Candidates != 1 {
+			t.Fatalf("non-master baseline lost exact-name behavior: %s", raw)
+		}
+	}
+}
+
+func TestBaseline_RetestSurvivorIsNotARedRun(t *testing.T) {
+	pool, _ := database(t, 30)
+	pr := 123
+	addObservation(t, pool, observationFixture{run: "master-failed", name: "smoke", key: "MM-T1", age: 48 * time.Hour, statuses: []string{"failed"}, complete: true})
+	for _, f := range []observationFixture{
+		{run: "master-survivor", name: "smoke", key: "MM-T1", age: 24 * time.Hour, statuses: []string{"failed"}, complete: true},
+		{run: "pr-survivor", name: "smoke", key: "MM-T1", pr: &pr, age: time.Hour, statuses: []string{"failed"}, complete: true},
+	} {
+		addObservation(t, pool, f)
+		// The original shard failed outright; a second complete shard reran
+		// the same test successfully. Stored shard rollups differ, but the
+		// report-group outcome must be flaky and must not count as PR red.
+		execSQL(t, pool, `UPDATE test_cases tc SET attempts=1, attempts_failed=1, run_failed=true
+		 FROM suites s, reports r, report_groups g
+		 WHERE tc.suite_id=s.id AND s.report_id=r.id AND r.report_group_id=g.id AND g.gh_run_id=$1`, f.run)
+		execSQL(t, pool, `UPDATE report_groups SET total_reports_expected=2 WHERE gh_run_id=$1`, f.run)
+		var reportID, suiteID string
+		if err := pool.QueryRow(context.Background(), `INSERT INTO reports(report_group_id,name,status)
+		 SELECT id,'retest','complete' FROM report_groups WHERE gh_run_id=$1 RETURNING id`, f.run).Scan(&reportID); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(context.Background(), `INSERT INTO suites(report_id,title,file,ordinal)
+		 VALUES($1,'suite','spec.ts',0) RETURNING id`, reportID).Scan(&suiteID); err != nil {
+			t.Fatal(err)
+		}
+		execSQL(t, pool, `INSERT INTO test_cases(suite_id,title,full_title,external_test_id,project,status,ordinal,attempts,attempts_failed,run_failed)
+		 VALUES($1,'MM-T1','MM-T1','MM-T1','chrome','passed',0,1,0,false)`, suiteID)
+	}
+	raw, err := readBaseline(context.Background(), pool, "mattermost/mattermost", "master", 30, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Policy []struct {
+			Failed int `json:"observed_failed_pr_run_attempts"`
+		} `json:"policy_replay"`
+		Rates []struct {
+			Failed int `json:"failed"`
+			Flaky  int `json:"retry_survivors"`
+		} `json:"master_test_rates_by_suite"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Policy) != 3 || len(result.Rates) != 1 || result.Rates[0].Failed != 1 || result.Rates[0].Flaky != 1 {
+		t.Fatalf("retest survivor changed raw master rate: %s", raw)
+	}
+	for _, r := range result.Policy {
+		if r.Failed != 0 {
+			t.Fatalf("retest survivor counted as a failed PR run: %s", raw)
+		}
 	}
 }
 

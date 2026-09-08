@@ -206,6 +206,7 @@ func Build(d Deps) chi.Router {
 		assessmentH := &triageassessment.Handlers{Pool: d.Pool, Logger: d.Logger, MasterCadence: d.TriageMasterCadence}
 		workH := &triagework.Handlers{Pool: d.Pool, Logger: d.Logger, Jira: d.Jira, QuarantineCap: d.TriageQuarantineCap, LeaseTTL: d.TriageLeaseTTL, SourceWorkflowRefs: d.TriageSourceWorkflowRefs}
 		r.Get("/triage/attribution", assessmentH.Attribution)
+		r.Get("/triage/run-evidence", assessmentH.RunEvidence)
 		r.Get("/triage/verdicts/{id}", assessmentH.Verdict)
 		r.Get("/triage/repairs", workH.ListRepairs)
 		r.Get("/triage/defects", workH.ListDefects)

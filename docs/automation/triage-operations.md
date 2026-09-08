@@ -1,16 +1,33 @@
-# Triage, repair and product-defect operation
+# PR E2E triage and periodic master repair
 
-This implementation adds the missing repair and defect machinery. It does not
-establish production accuracy or constitute a live autonomous-repair demo.
-Impact Gate supplies advisory selection plans; TSIO records actual execution and
-the companion Mattermost workflow compares them without reducing dispatch.
+The delivery scope is two outcomes: waive unrelated PR E2E failures using
+reviewable evidence, and periodically propose verified master test repairs.
+Automatic clearance and a live autonomous repair are still acceptance gaps.
+Impact Gate, Test Analysis integration, Jira and quarantine are not prerequisites
+for these two workflows. The existing optional server adapters described later
+in this guide remain separate from this delivery.
 
 | Capability | Implemented behavior | Remaining live acceptance |
 | --- | --- | --- |
 | Run assessment | Complete exact-run derivation, collision checks, bounded master history and an append-only decision record | Independently adjudicated shadow measurements; no automatic clearance |
-| Master repair | Trusted-master discovery, CODEOWNERS owner, atomic fenced claim, exact server image reproduction, isolated candidate execution, repeated retry-free verification, proposed PR with human review | Configure provider and ownership; run a genuine repair; obtain human review |
-| Product defect | Product-suspect branch cannot request/apply a test patch; live Jira Cloud deduplication and durable uncertain-submission recovery | Configure Jira; exercise a genuine product-defect handoff |
-| Quarantine | Bounded ownership/ticket/expiry metadata, separate from raw test outcomes | No test-selection or nonblocking-lane rollout is enabled by this change |
+| Master repair | Daily trusted-master discovery, CODEOWNERS owner, atomic fenced claim, exact server image reproduction, isolated candidate execution, repeated retry-free verification, proposed PR with human review | Configure provider, land reviewed workflows and ownership; run a genuine repair; obtain human review |
+
+## Exact run evidence
+
+`GET /api/v1/triage/run-evidence` accepts exactly `repository`, `commit_sha`,
+`gh_run_id`, `gh_run_attempt` and `name`. It exports individual stored test rows
+with file, full title, project and nullable attempt rollups, including distinct
+tests that share an MM-T identifier. It preserves each report's original
+registration metadata. It never substitutes mutable group metadata or merges
+test rows to produce a reassuring history match.
+
+`complete`, `truncated` and `trusted_source` are independent signals. Source trust
+requires matching verified GitHub workflow claims and immutable receipts for
+every report; it does not establish complete worker coverage or PR innocence.
+Missing or non-object registration metadata is preserved but remains untrusted.
+The export contains no clearance decision. A missing exact run returns 404;
+count or byte limits explicitly mark the response truncated and unusable for
+clearance. Legacy observations without source receipts are not newly attested.
 
 ## Server configuration
 
@@ -105,9 +122,12 @@ repair PRs; using the default `github.token` is subject to repository PR-creatio
 policy and GitHub's restrictions on triggering subsequent workflows. Never
 interpret a created PR as one whose normal CI or human review has passed.
 
-Add an agreed owner to Mattermost's trusted CODEOWNERS for the relevant E2E
-files. Discovery refuses to invent one. A ticket is optional for queue entry;
-quarantine requires its own owner, tracking ticket and expiry.
+The companion PR assigns `@yasserfaraazkhan`, selected by the user, to Cypress
+and Playwright in CODEOWNERS. These rules must land on trusted master before
+activation. Discovery refuses to invent an owner. The repair job runs daily at
+03:00 UTC and also permits manual dispatch. A possible product bug is recorded
+as a terminal request for the assigned owner to investigate; it invokes neither
+Jira nor a test patch. No tracking ticket is required for test repair.
 
 The repair harness supports recorded Linux x64 on-premises Cypress/Electron and
 the implemented Playwright projects. It rejects missing digests, unsupported
@@ -132,7 +152,7 @@ literal timeouts, and review annotations for semantic uncertainty. Guardian
 proposals have stricter assertion-preservation rules. This check still needs to
 be required in branch protection if it is to block merges.
 
-## Durable work and defect lifecycle
+## Durable work and optional server adapters
 
 - `POST /triage/repairs/enqueue` takes a report group, stable key and owner. The
   server resolves the actual file, title, project and recorded environment.
@@ -202,7 +222,7 @@ Local integration verification on 2026-09-08:
   three new workflows passed actionlint. These exercise the caller contracts and
   adversarial cases, not a live Linux browser repair or a real Jira submission.
 
-A new live autonomous demo still requires a fresh provenance-bearing master
-failure, an assigned owner, the model/Jira credentials appropriate to the chosen
-path, actual verification, and human review of a real repair PR. No fixture or
+A new live autonomous repair demo still requires a fresh provenance-bearing
+master failure, the reviewed ownership rules, an authorized model credential,
+actual verification, and human review of a real repair PR. No fixture or
 historical manual waiver satisfies those live acceptance criteria.

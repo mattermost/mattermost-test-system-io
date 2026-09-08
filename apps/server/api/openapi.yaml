@@ -1235,6 +1235,34 @@ paths:
           type: string
           minLength: 1
           maxLength: 200
+  /api/v1/triage/run-evidence:
+    get:
+      tags: [triage]
+      summary: Read exact-run provenance and unmerged test-attempt evidence
+      description: |
+        Returns report membership, verified source workflow identity and raw test
+        rows without merging reused external IDs. Completeness and source trust
+        are separate. Legacy or mismatched uploads are explicitly untrusted;
+        limits produce truncated, incomplete evidence. This endpoint grants no
+        permission to change an E2E status.
+      security: []
+      parameters:
+      - {in: query, name: repository, required: true, schema: {type: string}}
+      - {in: query, name: commit_sha, required: true, schema: {type: string}}
+      - {in: query, name: gh_run_id, required: true, schema: {type: string}}
+      - {in: query, name: gh_run_attempt, required: true, schema: {type: string}}
+      - {in: query, name: name, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Exact evidence with explicit completeness and trust results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageRunEvidence'
+        '400':
+          description: Invalid, unknown or duplicate selector fields
+        '404':
+          description: Exact report group not found
   /api/v1/triage/assessments:
     post:
       tags:
@@ -1819,6 +1847,64 @@ components:
       description: Opaque server-side session for human users.
 
   schemas:
+    TriageRunEvidence:
+      type: object
+      required: [schema_version, group, complete, truncated, trusted_source, reasons, source_workflow_sha, source_workflow_ref, reports, tests]
+      properties:
+        schema_version: {type: integer, enum: [1]}
+        group:
+          type: object
+          required: [repository, commit_sha, gh_run_id, gh_run_attempt, name, id, branch, framework, created_at, status, total_reports_expected]
+          properties:
+            repository: {type: string}
+            commit_sha: {type: string}
+            gh_run_id: {type: string}
+            gh_run_attempt: {type: string}
+            name: {type: string}
+            id: {type: string, format: uuid}
+            branch: {type: string}
+            framework: {type: string}
+            created_at: {type: string, format: date-time}
+            status: {type: string}
+            total_reports_expected: {type: integer}
+        complete: {type: boolean}
+        truncated: {type: boolean}
+        trusted_source: {type: boolean}
+        reasons: {type: array, items: {type: string}}
+        source_workflow_sha: {type: string}
+        source_workflow_ref: {type: string}
+        reports:
+          type: array
+          items:
+            type: object
+            required: [id, gh_job_id, gh_job_name, status, environment_metadata]
+            properties:
+              id: {type: string, format: uuid}
+              gh_job_id: {type: string}
+              gh_job_name: {type: string}
+              status: {type: string}
+              environment_metadata:
+                description: Original immutable registration JSON; never substituted from the group. Missing or non-object metadata makes trusted_source false.
+        tests:
+          type: array
+          items:
+            type: object
+            required: [report_id, suite_id, id, stable_key, file, full_title, project, status, retry_count, run_failed, attempts, attempts_failed, error_message]
+            properties:
+              report_id: {type: string, format: uuid}
+              suite_id: {type: string, format: uuid}
+              id: {type: string, format: uuid}
+              # enum gives null its 3.1 semantics; nullable supports our current validator.
+              stable_key: {anyOf: [{type: string}, {enum: [null], nullable: true}]}
+              file: {anyOf: [{type: string}, {enum: [null], nullable: true}]}
+              full_title: {type: string}
+              project: {anyOf: [{type: string}, {enum: [null], nullable: true}]}
+              status: {type: string}
+              retry_count: {type: integer}
+              run_failed: {anyOf: [{type: boolean}, {enum: [null], nullable: true}]}
+              attempts: {anyOf: [{type: integer}, {enum: [null], nullable: true}]}
+              attempts_failed: {anyOf: [{type: integer}, {enum: [null], nullable: true}]}
+              error_message: {anyOf: [{type: string}, {enum: [null], nullable: true}]}
     TriageRunSelector:
       type: object
       additionalProperties: false

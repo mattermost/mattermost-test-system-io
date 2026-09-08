@@ -424,7 +424,7 @@ func TestDiagnoserContract_AnUnknownAPIPathIs404JSONNotTheDashboard(t *testing.T
 
 	for _, path := range []string{
 		"/api/v1/tests/does-not-exist",
-		"/api/v1/triage/attribution", // a real path on a later build, absent here
+		"/api/v1/triage/does-not-exist",
 		"/api/v1/nope",
 	} {
 		resp, err := http.Get(env.ServerURL + path)

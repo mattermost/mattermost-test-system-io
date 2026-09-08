@@ -118,9 +118,8 @@ func TestInvalidAuth(t *testing.T) {
 }
 
 // TestClaimStorage: verified OIDC claims end up persisted with the upload.
-// The full oidc_claims-table wiring is not yet enabled in the handler; the
-// minimum assertion here is that the upload succeeded with the OIDC identity
-// recorded on the report row.
+// Report-linked raw claims and immutable registration receipts are separately
+// exercised by TestVerifiedUploadReceiptsAndOwnership.
 func TestClaimStorage(t *testing.T) {
 	env := testenv.Start(t)
 	env.DefaultReportGroup(t)

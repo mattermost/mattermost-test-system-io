@@ -39,7 +39,11 @@ older head. Recheck the head before publishing the diagnosis.
 Enumerate all pages of commit statuses, selecting the latest status per context.
 Record each failing E2E context's numeric status ID and target URL. The staging
 report URL identifies the workflow run ID and attempt; verify them through
-GitHub's workflow-run API, including its tested SHA and terminal status. Wait for
+GitHub's workflow-run API and terminal status. For `workflow_dispatch`,
+`workflow_run.head_sha` identifies the workflow checkout and can differ from the
+tested input commit. Bind the tested SHA through the exact TSIO report group,
+the current PR head and the latest E2E status's run/attempt target URL; do not
+substitute the workflow checkout SHA. Wait for
 an in-progress E2E run to finish before producing a final verdict. Distinguish a
 cancelled or missing-worker run from a test failure.
 
@@ -81,6 +85,17 @@ stable key covers different tests, its history summary combines observations;
 do not attribute those passes or failures to one test. Report the ambiguity and
 use the observed spec/full-title attempts for this run. A shared ID cannot
 establish a matching baseline without evidence for the same test.
+
+When available, also read `/triage/attribution` with `repository`, `commit_sha`,
+`gh_run_id`, `gh_run_attempt` and `name` for this exact group. It is a read-only
+server assessment of every stored failure, not authority to override a status.
+Respect ambiguity, staleness and missing-provenance reasons. `observed_on_master`
+does not prove PR innocence, and shadow-v1 always returns `can_unblock=false`.
+Report a missing endpoint honestly and continue using the evidence/history
+reads above. Do not create assessment records, claim repair work or file defects;
+those mutations belong to the separate trusted repository workflows. A repair
+or filed defect exists only when its actual persisted receipt and external link
+can be verified, never because this diagnosis suggested one.
 
 Also fetch `GET /orchestration/status` with the same composite identity. Reconcile
 `total_units`, terminal counts and every unit. Call out pending, leased, abandoned,

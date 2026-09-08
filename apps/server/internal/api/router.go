@@ -31,7 +31,7 @@ func NewRouter(deps Deps) *chi.Mux {
 		r.Use(cors.Handler(cors.Options{
 			AllowedOrigins:   deps.CORSAllowedOrigins,
 			AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization", "X-API-Key", "X-Admin-Key", "X-Report-Idempotency-Key"},
+			AllowedHeaders:   []string{"Accept", "Content-Type", "Authorization", "X-API-Key", "X-Admin-Key", "X-Report-Idempotency-Key", "X-Triage-Key"},
 			AllowCredentials: true,
 			MaxAge:           300,
 		}))

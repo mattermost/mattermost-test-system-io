@@ -16,6 +16,8 @@ servers:
     description: Production
 
 tags:
+  - name: triage
+    description: Conservative shadow assessments, repair ownership and product-defect handoff.
   - name: auth
   - name: reports
   - name: report-groups
@@ -1170,8 +1172,636 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/triage/attribution:
+    get:
+      tags:
+      - triage
+      summary: Preview conservative attribution for every observed failure in one exact run
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageAssessment'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+      parameters:
+      - in: query
+        name: repository
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+      - in: query
+        name: commit_sha
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: ^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$
+      - in: query
+        name: gh_run_id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 20
+      - in: query
+        name: gh_run_attempt
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 20
+      - in: query
+        name: name
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+  /api/v1/triage/assessments:
+    post:
+      tags:
+      - triage
+      summary: Append a durable shadow assessment; it cannot authorize a status override
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageAssessment'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageAssessment'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageRunSelector'
+  /api/v1/triage/verdicts/{id}:
+    get:
+      tags:
+      - triage
+      summary: Read the immutable assessment recorded at decision time
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageAssessment'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/triage/repairs:
+    get:
+      tags:
+      - triage
+      summary: List repair work and its outcome history
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageRepair'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+      parameters:
+      - in: query
+        name: repository
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 100
+  /api/v1/triage/repairs/enqueue:
+    post:
+      tags:
+      - triage
+      summary: Enqueue an unambiguous failure from a complete verified master report
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageEnqueue'
+  /api/v1/triage/repairs/claim:
+    post:
+      tags:
+      - triage
+      summary: Atomically claim one repair with a fenced expiring lease; item is null if none
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageClaim'
+  /api/v1/triage/repairs/{id}/heartbeat:
+    post:
+      tags:
+      - triage
+      summary: Renew current repair ownership; expired or superseded tokens are refused
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageLease'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/triage/repairs/{id}/complete:
+    post:
+      tags:
+      - triage
+      summary: Record an attempt; three failures require human intervention
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageComplete'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/triage/repairs/{id}/resolve:
+    post:
+      tags:
+      - triage
+      summary: Record a trusted human resolution without granting a fourth autonomous attempt
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageResolve'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/triage/repairs/{id}/defect:
+    post:
+      tags:
+      - triage
+      summary: File or reconcile a product-suspect defect with live Jira deduplication
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageDefectRequest'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/triage/quarantine:
+    get:
+      tags:
+      - triage
+      summary: Read bounded quarantine metadata; expiry restores blocking eligibility without deleting tests
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageQuarantine'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+      parameters:
+      - in: query
+        name: repository
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 100
+    post:
+      tags:
+      - triage
+      summary: Create bounded expiring quarantine metadata; raw test rows remain unchanged
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageQuarantineRequest'
+  /api/v1/triage/defects:
+    get:
+      tags:
+      - triage
+      summary: List product-suspect defect escalation events, without mirroring Jira resolution
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageDefect'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+      parameters:
+      - in: query
+        name: repository
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 100
+
 components:
   securitySchemes:
+    triageKey:
+      type: apiKey
+      in: header
+      name: X-Triage-Key
+      description: Dedicated triage authority; ordinary upload keys and sessions are refused.
     apiKey:
       type: apiKey
       in: header
@@ -1189,6 +1819,420 @@ components:
       description: Opaque server-side session for human users.
 
   schemas:
+    TriageRunSelector:
+      type: object
+      additionalProperties: false
+      required:
+      - repository
+      - commit_sha
+      - gh_run_id
+      - gh_run_attempt
+      - name
+      properties:
+        repository:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+        commit_sha:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: ^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$
+        gh_run_id:
+          type: string
+          minLength: 1
+          maxLength: 20
+        gh_run_attempt:
+          type: string
+          minLength: 1
+          maxLength: 20
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+    TriageEnqueue:
+      type: object
+      additionalProperties: false
+      required:
+      - report_group_id
+      - stable_key
+      - owner
+      properties:
+        report_group_id:
+          type: string
+          format: uuid
+        stable_key:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        owner:
+          type: string
+          minLength: 1
+          maxLength: 200
+        ticket:
+          type: string
+          maxLength: 1000
+    TriageClaim:
+      type: object
+      additionalProperties: false
+      required:
+      - repository
+      - worker
+      properties:
+        repository:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+        worker:
+          type: string
+          minLength: 1
+          maxLength: 300
+    TriageLease:
+      type: object
+      additionalProperties: false
+      required:
+      - lease_token
+      properties:
+        lease_token:
+          type: string
+          format: uuid
+    TriageResolve:
+      type: object
+      additionalProperties: false
+      required:
+      - account
+      - evidence_url
+      - pr_url
+      properties:
+        account:
+          type: string
+          minLength: 1
+          maxLength: 16000
+        evidence_url:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        pr_url:
+          type: string
+          minLength: 1
+          maxLength: 2000
+    TriageComplete:
+      type: object
+      additionalProperties: false
+      required:
+      - lease_token
+      - outcome
+      - account
+      properties:
+        lease_token:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum:
+          - failed
+          - blocked
+          - repair_pr
+          - product_suspect
+        account:
+          type: string
+          minLength: 1
+          maxLength: 16000
+        evidence_url:
+          type: string
+          maxLength: 2000
+        pr_url:
+          type: string
+          maxLength: 2000
+    TriageDefectRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - lease_token
+      - summary
+      - description
+      properties:
+        lease_token:
+          type: string
+          format: uuid
+        summary:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          minLength: 1
+          maxLength: 16000
+    TriageQuarantineRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - repair_id
+      - owner
+      - ticket
+      - expires_at
+      properties:
+        repair_id:
+          type: string
+          format: uuid
+        owner:
+          type: string
+          minLength: 1
+          maxLength: 200
+        ticket:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        expires_at:
+          type: string
+          format: date-time
+    TriageAssessment:
+      type: object
+      required:
+      - outcome
+      - can_unblock
+      - reasons
+      - tests
+      - run
+      - policy_version
+      - baseline_policy
+      properties:
+        id:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum:
+          - no_failure
+          - pr_suspect
+          - observed_on_master
+          - unknown
+        can_unblock:
+          type: boolean
+          enum:
+          - false
+          description: Always false for shadow-v1. Historical master failure does not prove PR innocence.
+        reasons:
+          type: array
+          items:
+            type: string
+        tests:
+          type: array
+          items:
+            $ref: '#/components/schemas/TriageAssessmentTest'
+        run:
+          allOf:
+          - $ref: '#/components/schemas/TriageRunIdentity'
+        author:
+          type: string
+        recorded_at:
+          type: string
+          format: date-time
+        policy_version:
+          type: string
+        baseline_policy:
+          type: object
+          properties:
+            window_hours:
+              type: integer
+            freshness_hours:
+              type: integer
+            minimum_distinct_commits:
+              type: integer
+    TriageRunIdentity:
+      type: object
+      properties:
+        repository:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+        commit_sha:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: ^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$
+        gh_run_id:
+          type: string
+          minLength: 1
+          maxLength: 20
+        gh_run_attempt:
+          type: string
+          minLength: 1
+          maxLength: 20
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        report_group_id:
+          type: string
+          format: uuid
+    TriageAssessmentTest:
+      type: object
+      required:
+      - stable_key
+      - outcome
+      - reasons
+      - baseline_runs
+      - baseline_failures
+      properties:
+        stable_key:
+          type: string
+        file:
+          type: string
+        full_title:
+          type: string
+        project:
+          type: string
+        framework:
+          type: string
+        outcome:
+          type: string
+        reasons:
+          type: array
+          items:
+            type: string
+        baseline_runs:
+          type: integer
+        baseline_distinct_commits:
+          type: integer
+        baseline_failures:
+          type: integer
+        baseline_failed_runs:
+          type: integer
+        baseline_flaky_runs:
+          type: integer
+        baseline_latest_at:
+          type: string
+          format: date-time
+        baseline_group_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+    TriageRepair:
+      type: object
+      description: Durable queue item. Public lists omit lease_token. Recorded environment and test identity
+        belong to the originating trusted master run.
+      properties:
+        id:
+          type: string
+          format: uuid
+        repository:
+          type: string
+        framework:
+          type: string
+        name:
+          type: string
+        branch:
+          type: string
+        commit_sha:
+          type: string
+        gh_run_id:
+          type: string
+        gh_run_attempt:
+          type: string
+        image_digest:
+          type: string
+        report_group_id:
+          type: string
+        stable_key:
+          type: string
+        file:
+          type: string
+        full_title:
+          type: string
+        project:
+          type: string
+        owner:
+          type: string
+        ticket:
+          type: string
+        state:
+          type: string
+        lease_token:
+          type: string
+        attempt:
+          type: integer
+        blocking_eligible:
+          type: boolean
+        observed_distinct_prs_failed:
+          type: integer
+          description: Distinct PRs with complete matching terminal test failures in the last 30 days, not
+            a causal block count.
+        attempts:
+          type: array
+          items:
+            type: object
+        lease_expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        environment_metadata:
+          type: object
+    TriageQuarantine:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        repair_id:
+          type: string
+          format: uuid
+        repository:
+          type: string
+        owner:
+          type: string
+        ticket:
+          type: string
+        author:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+        blocking_eligible:
+          type: boolean
+    TriageDefect:
+      type: object
+      description: Product-suspect escalation event, not proof of a confirmed or escaped release defect. Jira
+        remains the source of resolution state.
+      properties:
+        id:
+          type: string
+        repair_id:
+          type: string
+          format: uuid
+        report_group_id:
+          type: string
+          format: uuid
+        submission_id:
+          type: string
+        repository:
+          type: string
+        stable_key:
+          type: string
+        state:
+          type: string
+        summary:
+          type: string
+        author:
+          type: string
+        jira_key:
+          type: string
+        jira_url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
     HealthStatus:
       type: object
       required: [status, version]

@@ -162,7 +162,7 @@ test-server: ## Run Go unit tests (race)
 
 test-server-e2e: ensure-docker ## Run every -tags=e2e package (admin_cli, oidc, contract); Docker required
 	@echo "$(CYAN)Running all -tags=e2e tests (DOCKER_HOST=$(DOCKER_HOST_AUTO))...$(RESET)"
-	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(E2E_ENV) $(GO) test -race -tags=e2e -count=1 ./tests/... ./cmd/tsioctl/db
+	@ulimit -n $(ULIMIT_N); cd $(SERVER_DIR) && $(E2E_ENV) $(GO) test -race -tags=e2e -count=1 ./tests/... ./cmd/tsioctl/db ./internal/triageassessment ./internal/triagework
 
 test-web: ## Run web tests (vitest)
 	cd $(WEB_DIR) && npm run test

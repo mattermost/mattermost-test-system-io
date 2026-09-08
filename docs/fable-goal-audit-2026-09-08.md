@@ -1,5 +1,10 @@
 # Fable goals: implementation and integration audit
 
+This is the audit of the earlier revisions named below. Subsequent repair,
+defect and shadow-assessment implementation is described in
+[the operating guide](automation/triage-operations.md); its live acceptance
+limits are separate from this historical audit and the earlier manual demo.
+
 The demonstrated Cursor diagnosis plus maintainer waiver is working. **The full
 seven-session plan and goals A, B and C are not complete.** The earlier demo GO
 did not claim automatic attribution, an autonomous master repair loop, defect

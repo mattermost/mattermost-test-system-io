@@ -33,6 +33,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
@@ -89,7 +90,8 @@ type registerBody struct {
 // to surface workflow misconfigurations rather than silently keeping the
 // first-wins value.
 func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
-	if _, err := authapi.SubjectFromContext(r.Context()); err != nil {
+	sub, err := authapi.SubjectFromContext(r.Context())
+	if err != nil {
 		api.WriteError(w, r, api.ErrUnauthorized)
 		return
 	}
@@ -110,7 +112,13 @@ func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 	runAttempt := firstNonEmptyStr(body.GHRunAttempt, "1")
 	total := body.TotalReportsExpected
 
-	groupID, created, err := upsertReportGroup(r.Context(), h.Pool,
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	groupID, created, err := upsertReportGroup(r.Context(), tx,
 		body.Repository, body.Commit, body.GHRunID, runAttempt, body.Framework,
 		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, &total, nil)
 	if err != nil {
@@ -127,6 +135,23 @@ func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, err)
 		return
 	}
+	body.GHRunAttempt = runAttempt
+	if sub.Kind == uploadKindOIDC && sub.OIDCClaims != nil {
+		receipt, marshalErr := json.Marshal(body)
+		if marshalErr != nil {
+			api.WriteError(w, r, marshalErr)
+			return
+		}
+		if _, err = tx.Exec(r.Context(), `INSERT INTO report_group_begin_receipts(report_group_id,verified_claims,receipt) VALUES($1,$2,$3)`, groupID, sub.OIDCClaims.Raw, receipt); err != nil {
+			api.WriteError(w, r, err)
+			return
+		}
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+
 	if created {
 		ref := refFromBranch(body.Branch)
 		actor := actorFromContext(r.Context())
@@ -167,7 +192,18 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	if len(body.EnvironmentMetadata) > 0 {
 		env = body.EnvironmentMetadata
 	}
-	groupID, created, err := upsertReportGroup(r.Context(), h.Pool,
+	principal, err := uploadPrincipal(sub)
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	groupID, created, err := upsertReportGroup(r.Context(), tx,
 		body.Repository, body.Commit, body.GHRunID, runAttempt, body.Framework,
 		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, body.TotalReportsExpected, env)
 	if err != nil {
@@ -184,12 +220,6 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, err)
 		return
 	}
-	if created {
-		ref := refFromBranch(body.Branch)
-		actor := actorFromContext(r.Context())
-		h.Publisher.ReportCreated(groupID, body.Framework, body.Repository, ref,
-			body.Commit, actor, body.GHRunID, body.GHPRNumber, time.Now().UTC())
-	}
 
 	// Validate declared files; reject anything that'd traverse or exceeds caps.
 	acceptedJSON, rejectedJSON := validateDeclaredFiles(body.JSONFiles, h.MaxUploadBytes)
@@ -198,10 +228,10 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	// Create (or find existing) reports row for this gh_job_id.
 	var apiKeyID *uuid.UUID
 	var oidcSub *string
-	if sub.Kind == "apikey" {
+	if sub.Kind == uploadKindAPIKey {
 		apiKeyID = &sub.APIKeyID
 	}
-	if sub.Kind == "oidc" {
+	if sub.Kind == uploadKindOIDC {
 		s := sub.OIDCSubject
 		oidcSub = &s
 	}
@@ -219,21 +249,54 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		reportID      uuid.UUID
 		reportCreated bool
 	)
-	err = h.Pool.QueryRow(r.Context(), `
-		INSERT INTO reports (report_group_id, name, status, gh_job_id, gh_job_name,
-		                     json_upload_status, screenshots_upload_status,
-		                     uploaded_by_api_key_id, uploaded_by_oidc_subject)
-		VALUES ($1,$2,'processing',$3,$4,'started',$5,$6,$7)
-		ON CONFLICT (report_group_id, gh_job_id) WHERE gh_job_id IS NOT NULL
-		  DO UPDATE SET status='processing',
-		                gh_job_name=EXCLUDED.gh_job_name,
-		                updated_at=now()
-		RETURNING id, (xmax = 0) AS created
-	`, groupID, name, jobID, jobName,
-		ssStartedIf(len(acceptedSS)), apiKeyID, oidcSub).Scan(&reportID, &reportCreated)
+	body.GHRunAttempt = runAttempt
+	receiptBody := body
+	receiptBody.JSONFiles, receiptBody.Screenshots = nil, nil
+	receipt, err := json.Marshal(receiptBody)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
+	}
+	err = tx.QueryRow(r.Context(), `
+		INSERT INTO reports (report_group_id, name, status, gh_job_id, gh_job_name,
+		                     json_upload_status, screenshots_upload_status,
+		                     uploaded_by_api_key_id, uploaded_by_oidc_subject, upload_principal, registration_receipt)
+		VALUES ($1,$2,'processing',$3,$4,'started',$5,$6,$7,$8,$9)
+		ON CONFLICT (report_group_id, gh_job_id) WHERE gh_job_id IS NOT NULL
+		  DO UPDATE SET status='processing',
+		                gh_job_name=EXCLUDED.gh_job_name,
+		                updated_at=now(),
+                  upload_principal=EXCLUDED.upload_principal
+            WHERE (reports.upload_principal=EXCLUDED.upload_principal
+             OR (reports.upload_principal IS NULL AND reports.uploaded_by_api_key_id=EXCLUDED.uploaded_by_api_key_id))
+              AND (reports.registration_receipt IS NULL OR reports.registration_receipt=EXCLUDED.registration_receipt)
+		RETURNING id, (xmax = 0) AS created
+	`, groupID, name, jobID, jobName,
+		ssStartedIf(len(acceptedSS)), apiKeyID, oidcSub, principal, receipt).Scan(&reportID, &reportCreated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		api.WriteError(w, r, fmt.Errorf("%w: registration owner or immutable receipt mismatch", api.ErrForbidden))
+		return
+	}
+	if err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	if reportCreated {
+		if err = persistReportClaims(r.Context(), tx, reportID, sub); err != nil {
+			api.WriteError(w, r, err)
+			return
+		}
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+
+	if created {
+		ref := refFromBranch(body.Branch)
+		actor := actorFromContext(r.Context())
+		h.Publisher.ReportCreated(groupID, body.Framework, body.Repository, ref,
+			body.Commit, actor, body.GHRunID, body.GHPRNumber, time.Now().UTC())
 	}
 
 	// Count existing reports in group (diagnostic; web surfaces it).
@@ -277,11 +340,15 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrBadRequest)
 		return
 	}
-	if err := requireReportInGroup(r.Context(), h.Pool, groupID, reportID); err != nil {
+	if err := requireReportOwner(r.Context(), h.Pool, groupID, reportID); err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
 
+	if _, err := h.Pool.Exec(r.Context(), `UPDATE reports SET status='processing', json_upload_status='started', updated_at=now() WHERE id=$1`, reportID); err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
 	uploaded, total, err := h.streamJSONFiles(r, reportID)
 	if err != nil {
 		_, _ = h.Pool.Exec(r.Context(),
@@ -360,11 +427,15 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrBadRequest)
 		return
 	}
-	if err := requireReportInGroup(r.Context(), h.Pool, groupID, reportID); err != nil {
+	if err := requireReportOwner(r.Context(), h.Pool, groupID, reportID); err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
 
+	if _, err := h.Pool.Exec(r.Context(), `UPDATE reports SET status='processing', screenshots_upload_status='started', updated_at=now() WHERE id=$1`, reportID); err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
 	uploaded, total, err := h.streamScreenshots(r, reportID)
 	if err != nil {
 		_, _ = h.Pool.Exec(r.Context(),
@@ -432,7 +503,9 @@ func bumpGroupLastUpload(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 // runGroup is optional. First non-empty value wins; a later conflicting
 // run_group returns errRunGroupMismatch.
 func upsertReportGroup(
-	ctx context.Context, pool *pgxpool.Pool,
+	ctx context.Context, pool interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
 	repository, commit, runID, runAttempt, framework, name, runGroup, branch string,
 	prNumber *int, totalReportsExpected *int, env json.RawMessage,
 ) (uuid.UUID, bool, error) {
@@ -601,20 +674,6 @@ func actorFromContext(ctx context.Context) string {
 		return sub.OIDCSubject
 	}
 	return ""
-}
-
-func requireReportInGroup(ctx context.Context, pool *pgxpool.Pool, groupID, reportID uuid.UUID) error {
-	var exists bool
-	err := pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM reports WHERE id=$1 AND report_group_id=$2)`,
-		reportID, groupID).Scan(&exists)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return api.ErrNotFound
-	}
-	return nil
 }
 
 // streamJSONFiles reads `files` parts from the multipart body, writes each to

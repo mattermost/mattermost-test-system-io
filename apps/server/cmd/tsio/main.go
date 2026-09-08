@@ -26,6 +26,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/server"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/telemetry"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triagework"
 )
 
 // Build-time variables, set via -ldflags.
@@ -46,6 +47,17 @@ func run() error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	jiraClient, err := triagework.NewJiraClient(triagework.Config{
+		Enabled: cfg.JiraEnabled, BaseURL: cfg.JiraBaseURL, Email: cfg.JiraEmail,
+		APIToken: cfg.JiraAPIToken, ProjectKey: cfg.JiraProjectKey, IssueType: cfg.JiraIssueType,
+	})
+	if err != nil {
+		return fmt.Errorf("configure Jira defect filing: %w", err)
+	}
+	var jira triagework.Jira
+	if jiraClient != nil {
+		jira = jiraClient
 	}
 
 	logger := telemetry.NewLogger(cfg.LogFormat, cfg.LogLevel).With(
@@ -133,34 +145,42 @@ func run() error {
 	defer reportsReaper.Stop()
 
 	handler := server.Build(server.Deps{
-		Logger:                 logger,
-		Pool:                   pool,
-		Store:                  store,
-		APIKeys:                &apikey.Repo{Pool: pool},
-		Sessions:               &session.Manager{Pool: pool, TTL: cfg.SessionTTL},
-		Refresh:                &session.RefreshManager{Pool: pool, TTL: cfg.RefreshTokenTTL},
-		Policy:                 &policy.Engine{Pool: pool},
-		OIDC:                   oidcVerifier,
-		OAuth:                  oauthFlow,
-		Hub:                    hub,
-		Publisher:              publisher,
-		OrchestrationStore:     orchestrationStore,
-		OrchestrationPublisher: orchestrationPublisher,
-		Version:                version,
-		CommitSHA:              commitSHA,
-		BuildTime:              buildTime,
-		AdminKey:               cfg.AdminKey,
-		UploadTimeoutMs:        cfg.UploadTimeoutMs,
-		HTMLViewEnabled:        cfg.HTMLViewEnabled,
-		SearchMinLength:        cfg.SearchMinLength,
-		Environment:            cfg.Environment,
-		RepoURL:                cfg.RepoURL,
-		CORSAllowedOrigins:     cfg.CORSAllowedOrigins,
-		OpenAPISpecPath:        cfg.OpenAPISpecPath,
-		PostLoginRedirect:      "/",
-		MaxUploadBytes:         cfg.MaxUploadBytes,
-		MaxArtifactBytes:       cfg.MaxArtifactBytes,
-		PresignTTL:             5 * time.Minute,
+		Logger:                   logger,
+		Pool:                     pool,
+		Store:                    store,
+		APIKeys:                  &apikey.Repo{Pool: pool},
+		Sessions:                 &session.Manager{Pool: pool, TTL: cfg.SessionTTL},
+		Refresh:                  &session.RefreshManager{Pool: pool, TTL: cfg.RefreshTokenTTL},
+		Policy:                   &policy.Engine{Pool: pool},
+		OIDC:                     oidcVerifier,
+		OAuth:                    oauthFlow,
+		Hub:                      hub,
+		Publisher:                publisher,
+		OrchestrationStore:       orchestrationStore,
+		OrchestrationPublisher:   orchestrationPublisher,
+		Version:                  version,
+		CommitSHA:                commitSHA,
+		BuildTime:                buildTime,
+		AdminKey:                 cfg.AdminKey,
+		TriageAPIKey:             cfg.TriageAPIKey,
+		TriageWorkflowRefs:       cfg.TriageWorkflowRefs,
+		TriageSourceWorkflowRefs: cfg.TriageSourceWorkflowRefs,
+		OIDCAudience:             cfg.GitHubActionsOIDCAudience,
+		TriageMasterCadence:      cfg.TriageMasterCadence,
+		TriageQuarantineCap:      cfg.TriageQuarantineCap,
+		TriageLeaseTTL:           cfg.TriageLeaseTTL,
+		Jira:                     jira,
+		UploadTimeoutMs:          cfg.UploadTimeoutMs,
+		HTMLViewEnabled:          cfg.HTMLViewEnabled,
+		SearchMinLength:          cfg.SearchMinLength,
+		Environment:              cfg.Environment,
+		RepoURL:                  cfg.RepoURL,
+		CORSAllowedOrigins:       cfg.CORSAllowedOrigins,
+		OpenAPISpecPath:          cfg.OpenAPISpecPath,
+		PostLoginRedirect:        "/",
+		MaxUploadBytes:           cfg.MaxUploadBytes,
+		MaxArtifactBytes:         cfg.MaxArtifactBytes,
+		PresignTTL:               5 * time.Minute,
 	})
 
 	srv := &http.Server{

@@ -31,6 +31,9 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triageassessment"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triageauth"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triagework"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/webui"
 )
 
@@ -60,6 +63,15 @@ type Deps struct {
 	CommitSHA string
 	BuildTime string
 	AdminKey  string
+
+	TriageAPIKey             string
+	TriageWorkflowRefs       []string
+	TriageSourceWorkflowRefs []string
+	OIDCAudience             string
+	TriageMasterCadence      time.Duration
+	TriageQuarantineCap      int
+	TriageLeaseTTL           time.Duration
+	Jira                     triagework.Jira // optional; defect filing disabled when nil
 
 	// Client-facing config surfaced via GET /api/v1/config.
 	UploadTimeoutMs int
@@ -190,6 +202,29 @@ func Build(d Deps) chi.Router {
 		// What one run's failures looked like: error, stack and screenshots,
 		// grouped by normalized error so identical causes read as one.
 		r.Get("/tests/evidence", testsH.Evidence)
+
+		assessmentH := &triageassessment.Handlers{Pool: d.Pool, Logger: d.Logger, MasterCadence: d.TriageMasterCadence}
+		workH := &triagework.Handlers{Pool: d.Pool, Logger: d.Logger, Jira: d.Jira, QuarantineCap: d.TriageQuarantineCap, LeaseTTL: d.TriageLeaseTTL, SourceWorkflowRefs: d.TriageSourceWorkflowRefs}
+		r.Get("/triage/attribution", assessmentH.Attribution)
+		r.Get("/triage/verdicts/{id}", assessmentH.Verdict)
+		r.Get("/triage/repairs", workH.ListRepairs)
+		r.Get("/triage/defects", workH.ListDefects)
+		r.Get("/triage/quarantine", workH.ListQuarantine)
+		triageConfig := triageauth.Config{APIKey: d.TriageAPIKey, WorkflowRefs: d.TriageWorkflowRefs, Audience: d.OIDCAudience}
+		if d.OIDC != nil {
+			triageConfig.Verifier = d.OIDC
+		}
+		r.Group(func(r chi.Router) {
+			r.Use(triageauth.Middleware(triageConfig))
+			r.Post("/triage/assessments", assessmentH.Record)
+			r.Post("/triage/repairs/enqueue", workH.Enqueue)
+			r.Post("/triage/repairs/claim", workH.Claim)
+			r.Post("/triage/repairs/{id}/heartbeat", workH.Heartbeat)
+			r.Post("/triage/repairs/{id}/complete", workH.Complete)
+			r.Post("/triage/repairs/{id}/defect", workH.Defect)
+			r.Post("/triage/repairs/{id}/resolve", workH.Resolve)
+			r.Post("/triage/quarantine", workH.Quarantine)
+		})
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)

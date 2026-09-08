@@ -30,6 +30,16 @@ TSIO main `aa0d692f255d98be1621b500e59387ca0debfb3d`.
    for an explicit documentation-only set. Unknown, dependency, configuration,
    asset and harness paths retain the full suite. Manual requests and empty diffs
    also retain it. Go module/checksum/workspace and FIPS build changes request FIPS.
+   Replaying complete file lists from actual main-repository PRs against the
+   captured master filter reproduced this gap: [#38201](https://github.com/mattermost/mattermost/pull/38201)
+   (channel-modal CSS), [#38339](https://github.com/mattermost/mattermost/pull/38339)
+   (bundled Zoom plugin), [#38265](https://github.com/mattermost/mattermost/pull/38265)
+   and [#38281](https://github.com/mattermost/mattermost/pull/38281) (dependency/build
+   changes), and [#38298](https://github.com/mattermost/mattermost/pull/38298)
+   (Cloud Agent toolchain). All five previously returned skip; all now retain E2E,
+   with FIPS also requested for #38265/#38281. These are policy replays, not claims
+   about those PRs' historical CI outcomes. The unknown Cloud Agent path retains
+   full execution conservatively; its product-runtime impact was not established.
 2. **The selected PR and diff could be stale or incomplete.** The resolver now
    resolves full SHAs, pages associated PRs, requires an open exact-head match and
    rejects ambiguous candidates. The workflow freezes the PR head, comparison base
@@ -48,6 +58,8 @@ TSIO main `aa0d692f255d98be1621b500e59387ca0debfb3d`.
    `source_workflow_sha`. Guardian checks the latter against GitHub's actual run
    head. Wrong run/attempt, mixed shard revisions, mismatched Begin receipts and
    old queue items without source provenance still fail closed.
+   Legacy queue records omit unavailable source provenance in API responses,
+   preserving the optional SHA field's schema instead of emitting an empty SHA.
 5. **A repair could publish against newer, unverified master.** Guardian now checks
    the entire current master revision before publication and requires the repair
    commit's sole parent to be the verified tested commit. Any intervening master
@@ -99,11 +111,17 @@ FIPS execution success, autonomous repair or Jira submission is claimed by stati
 planning or local protocol tests. Guardian/provider/Jira live prerequisites remain
 in [the operations guide](../automation/triage-operations.md).
 
-Local validation includes 507 planner tests, 37 comparison tests and the focused
+Local validation includes 507 planner tests, 40 comparison tests (144 combined
+Mattermost script tests) and the focused
 PostgreSQL/race triage and OIDC suites. Stored comparisons reproduce the complete
 historical Cypress 2/2 observed failed-spec result and the incomplete 39/40-worker
 run's unavailable recall; neither measures changed-behavior coverage. The full
 local TSIO CI attempt hit a Docker startup timeout in an unrelated orchestration
 test; its serialized retry later hit a lint timeout while the host was under
-heavy CPU load. These attempts are not recorded as successful full CI. Use the
-existing PRs' checks for final published-head validation and deployment receipts.
+heavy CPU load. These attempts are not recorded as successful full CI. All
+clean-host TSIO CI jobs subsequently passed on revision
+`28241e409a455ba66d602927ebe7ca36ab4e0179`; its
+[staging deployment](https://github.com/mattermost/mattermost-test-system-io/actions/runs/34180030081)
+passed without resetting the database. Live readiness and revision matched;
+historical evidence remained equal as JSON. Later revisions require their own
+checks and deployment receipts.

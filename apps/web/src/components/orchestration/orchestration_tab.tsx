@@ -71,7 +71,7 @@ function formatDuration(ms: number | null | undefined): string {
  * This is the canonical "if any attempt passed, the test is at-worst
  * flaky" rule the Reports tab uses for its overall stats. Failures
  * include 'failed', 'timedOut', and 'interrupted'; an explicit 'flaky'
- * status from Playwright is treated the same as passed-with-history.
+ * status from either runner carries both a failed and a passed attempt.
  */
 function aggregateTestStatus(
   entries: SnapshotTestCase[],
@@ -81,7 +81,12 @@ function aggregateTestStatus(
   let everSkipped = false;
   for (const e of entries) {
     if (e.status === 'passed' || e.status === 'flaky') everPassed = true;
-    else if (e.status === 'failed' || e.status === 'timedOut' || e.status === 'interrupted')
+    if (
+      e.status === 'failed' ||
+      e.status === 'timedOut' ||
+      e.status === 'interrupted' ||
+      e.status === 'flaky'
+    )
       everFailed = true;
     else if (e.status === 'skipped') everSkipped = true;
   }

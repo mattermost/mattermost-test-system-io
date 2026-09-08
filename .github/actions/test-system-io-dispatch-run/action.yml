@@ -49,6 +49,20 @@ inputs:
     description: OIDC audience claim that the orchestrator expects
     required: false
     default: mattermost-test-system-io
+  environment-metadata:
+    description: >
+      JSON object describing the runtime configuration this worker's
+      server actually runs under — server edition, license, enabled
+      docker/testcontainers services, feature flags, whatever the caller's
+      workflow varies between jobs. Forwarded verbatim to every
+      /reports/register call as environment_metadata and returned by
+      /api/v1/tests/evidence, so a consumer that reproduces a failure (a
+      human or an automation) configures its own server the same way
+      instead of guessing at defaults that may not match what actually
+      failed. Empty by default: a caller that never varies its
+      environment has nothing to record. Must be valid JSON when set.
+    required: false
+    default: ""
   framework:
     description: |
       Test framework this worker drives. One of `playwright`, `cypress`, `detox`, or `maestro`.

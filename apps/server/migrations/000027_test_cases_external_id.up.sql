@@ -1,0 +1,11 @@
+-- Human-assigned case identity (e.g. MM-T1234 / MM-T1234_5).
+--
+-- Catalog-only: defer both data population and index builds to
+-- `tsioctl db backfill-stable-key` after migration 28. An UPDATE or ordinary
+-- CREATE INDEX here would retain the ALTER TABLE lock for table-sized work.
+-- Catalog changes can still wait for existing transactions; they are not a
+-- promise of a fixed deployment duration.
+--
+-- Databases which already applied the earlier migration 27 keep its populated
+-- column and indexes. The resumable command supports both schema histories.
+ALTER TABLE test_cases ADD COLUMN external_test_id text;

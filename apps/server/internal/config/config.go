@@ -61,6 +61,21 @@ type Config struct {
 	// that production MUST override.
 	AdminKey string `env:"TSIO_ADMIN_KEY" envDefault:"dev-admin-key-do-not-use-in-production"`
 
+	// Triage authority is separate from report upload authority. Empty defaults
+	// leave all triage mutations disabled until explicitly configured.
+	TriageAPIKey             string        `env:"TSIO_TRIAGE_API_KEY,unset"`
+	TriageWorkflowRefs       []string      `env:"TSIO_TRIAGE_WORKFLOW_REFS" envSeparator:","`
+	TriageSourceWorkflowRefs []string      `env:"TSIO_TRIAGE_SOURCE_WORKFLOW_REFS" envSeparator:"," envDefault:"mattermost/mattermost/.github/workflows/e2e-tests-on-merge.yml@refs/heads/master"`
+	TriageMasterCadence      time.Duration `env:"TSIO_TRIAGE_MASTER_CADENCE" envDefault:"24h"`
+	TriageQuarantineCap      int           `env:"TSIO_TRIAGE_QUARANTINE_CAP" envDefault:"5"`
+	TriageLeaseTTL           time.Duration `env:"TSIO_TRIAGE_LEASE_TTL" envDefault:"15m"`
+	JiraEnabled              bool          `env:"TSIO_JIRA_ENABLED" envDefault:"false"`
+	JiraBaseURL              string        `env:"TSIO_JIRA_BASE_URL"`
+	JiraEmail                string        `env:"TSIO_JIRA_EMAIL"`
+	JiraAPIToken             string        `env:"TSIO_JIRA_API_TOKEN,unset"`
+	JiraProjectKey           string        `env:"TSIO_JIRA_PROJECT_KEY"`
+	JiraIssueType            string        `env:"TSIO_JIRA_ISSUE_TYPE" envDefault:"Bug"`
+
 	// Comma-separated `pattern=role` list applied as github_oidc_policies rows
 	// at startup (ON CONFLICT DO NOTHING on name). Typically used by ephemeral
 	// staging stacks that wipe the DB on each deploy; production seeds via the
@@ -176,6 +191,15 @@ func loadDotenv() {
 }
 
 func (c Config) validate() error {
+	if len(c.TriageWorkflowRefs) > 0 && c.GitHubActionsOIDCAudience == "" {
+		return errors.New("TSIO_TRIAGE_WORKFLOW_REFS requires TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE")
+	}
+	if c.TriageQuarantineCap < 0 || c.TriageMasterCadence < 0 || c.TriageLeaseTTL < 0 {
+		return errors.New("triage cap, cadence and lease TTL cannot be negative")
+	}
+	if c.JiraEnabled && (c.JiraBaseURL == "" || c.JiraEmail == "" || c.JiraAPIToken == "" || c.JiraProjectKey == "") {
+		return errors.New("TSIO_JIRA_ENABLED requires TSIO_JIRA_BASE_URL, TSIO_JIRA_EMAIL, TSIO_JIRA_API_TOKEN and TSIO_JIRA_PROJECT_KEY")
+	}
 	switch c.LogFormat {
 	case "json", "text":
 	default:

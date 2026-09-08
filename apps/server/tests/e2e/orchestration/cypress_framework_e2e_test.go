@@ -194,6 +194,34 @@ func TestCypressCompleteAcceptsMochawesomeTestCases(t *testing.T) {
 	if c["completed_fail"] != 1 {
 		t.Fatalf("counts.completed_fail = %d, want 1; body=%v", c["completed_fail"], statusBody)
 	}
+
+	// A native retry survivor is represented by a single "flaky" case, not
+	// separate failed/passed orchestration attempts. Both public count reads
+	// must preserve that failure history instead of adding it to clean passes.
+	assertTestCounts := func(label string, value any) {
+		t.Helper()
+		got, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("%s: missing test counts: %v", label, value)
+		}
+		for field, want := range map[string]int{"passed": 1, "failed": 1, "flaky": 1, "skipped": 1, "total": 4} {
+			if jsonNumberInt(t, got[field]) != want {
+				t.Errorf("%s: %s = %v, want %d", label, field, got[field], want)
+			}
+		}
+	}
+	assertTestCounts("orchestration status", statusBody["tests"])
+	listing := expectStatus(t, getJSON(t, env, tok, "/api/v1/reports/grouped"), http.StatusOK)
+	groups := listing["groups"].([]any)
+	if len(groups) != 1 {
+		t.Fatalf("grouped listing: got %d repository groups, want 1", len(groups))
+	}
+	runs := groups[0].(map[string]any)["runs"].([]any)
+	if len(runs) != 1 {
+		t.Fatalf("grouped listing: got %d runs, want 1", len(runs))
+	}
+	orch := runs[0].(map[string]any)["orchestration"].(map[string]any)
+	assertTestCounts("grouped listing", orch["tests"])
 }
 
 // TestCypressRetestExercisesFrameworkAgnosticPath confirms that the

@@ -115,6 +115,13 @@ export class StagingAppStack extends cdk.Stack {
         // Enforce GitHub Actions OIDC `aud` claim. Workflows MUST request this
         // exact audience or token validation fails.
         TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE: "mattermost-test-system-io",
+        // Triage writers are separate from the broad upload policy. Only
+        // these default-branch workflows may create decisions or repair work.
+        // Their repository feature flags remain off until explicitly enabled.
+        TSIO_TRIAGE_WORKFLOW_REFS: [
+          "mattermost/mattermost/.github/workflows/e2e-triage-shadow.yml@refs/heads/master",
+          "mattermost/mattermost/.github/workflows/e2e-triage-repair.yml@refs/heads/master",
+        ].join(","),
         // Re-seed the org-wide CI policy on every deploy. Staging recreates
         // its Postgres task on each deploy, so the github_oidc_policies row
         // would otherwise have to be POSTed manually after every cdk deploy.

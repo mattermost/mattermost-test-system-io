@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: ""
+      reset_database:
+        description: "Reset staging PostgreSQL and exercise the release-to-head migration path (disable to preserve existing report history)"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read     # shared default for checkout / metadata
@@ -314,6 +319,7 @@ jobs:
             -c imageTag="${IMAGE_TAG}"
 
       - name: Force new PostgreSQL deployment
+        if: inputs.reset_database
         run: |
           aws ecs update-service \
             --cluster "$CLUSTER" \
@@ -322,12 +328,14 @@ jobs:
             --no-cli-pager
 
       - name: Wait for PostgreSQL to be healthy
+        if: inputs.reset_database
         run: |
           aws ecs wait services-stable \
             --cluster "$CLUSTER" \
             --services "$PG_SERVICE"
 
       - name: Fetch latest release tag
+        if: inputs.reset_database
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -348,7 +356,7 @@ jobs:
           fi
 
       - name: Deploy latest release version first
-        if: steps.release.outputs.has_release == 'true'
+        if: inputs.reset_database && steps.release.outputs.has_release == 'true'
         id: release-task-def
         run: |
           TASK_DEF_ARN=$(aws ecs describe-services \
@@ -386,7 +394,7 @@ jobs:
             --no-cli-pager
 
       - name: Wait for release version to be stable
-        if: steps.release.outputs.has_release == 'true'
+        if: inputs.reset_database && steps.release.outputs.has_release == 'true'
         run: |
           aws ecs wait services-stable \
             --cluster "$CLUSTER" \

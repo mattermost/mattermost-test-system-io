@@ -27,9 +27,87 @@ type ExtractedCase struct {
 	DurationMs   int64
 	RetryCount   int
 	ErrorMessage *string
-	Sequence     int
-	StartTime    *time.Time
-	Attachments  []ExtractedAttachment
+	// ErrorStack is the framework's own stack trace, kept separate from
+	// ErrorMessage so evidence can show both and clustering can normalize on
+	// the shorter, more stable message. Nil where the framework's failure
+	// report carries no distinct stack (Jest's failureMessages already embed
+	// it in the message).
+	ErrorStack  *string
+	Sequence    int
+	StartTime   *time.Time
+	Attachments []ExtractedAttachment
+
+	// Project is the framework's parallel-execution dimension — Playwright's
+	// projectName (chrome, firefox, ...). Nil for frameworks that have no
+	// such concept. It is part of a test's identity: the same title run under
+	// two projects is two independent series, and folding them together lets
+	// a browser-specific regression read as a flake because the other
+	// browser keeps passing.
+	Project *string
+
+	// Attempts, AttemptsFailed and RunFailed are the run-level rollup for the
+	// one test these attempt rows belong to. Every attempt row of the same
+	// test in the same run carries the same three values, so a consumer can
+	// read run-level truth off any single row without re-grouping.
+	//
+	// They exist because Playwright and Cypress disagree about what a
+	// "failure" is: Playwright reports every attempt, Cypress reports the
+	// final state. A rate computed across both without this rollup compares
+	// different things. RunFailed is the one boolean that means the same
+	// thing in both: every attempt failed.
+	//
+	// Rates are computed over runs, not attempts. A retried attempt shares
+	// the leaked state or slow container that failed the first one, so the
+	// attempts of one run are not independent draws and counting them as
+	// such overstates both the sample size and the failure rate.
+	Attempts       int
+	AttemptsFailed int
+	RunFailed      bool
+}
+
+// stampRunRollup computes the run-level rollup over one test's attempt rows
+// and writes it onto every one of them. Call it with the attempts of a single
+// test in a single run, in framework order.
+//
+// It does not touch per-attempt Status: the whole point is that an attempt
+// keeps its own truth while the run-level verdict rides alongside it.
+func stampRunRollup(attempts []ExtractedCase) {
+	failed := 0
+	for _, a := range attempts {
+		if isAttemptFailure(a.Status) {
+			failed++
+		}
+	}
+	// A run failed only when no attempt survived. One passing attempt out of
+	// two is a flake, not a failure, and must not be counted as one.
+	runFailed := len(attempts) > 0 && failed == len(attempts)
+	for i := range attempts {
+		attempts[i].Attempts = len(attempts)
+		attempts[i].AttemptsFailed = failed
+		attempts[i].RunFailed = runFailed
+	}
+}
+
+// stampSingleAttempt is stampRunRollup for a framework whose report carries
+// one final result per test and no attempt list (Detox/Jest, Maestro/JUnit).
+// Such a row is a one-attempt run: it failed iff that attempt failed.
+func stampSingleAttempt(c *ExtractedCase) {
+	c.Attempts = 1
+	if isAttemptFailure(c.Status) {
+		c.AttemptsFailed = 1
+		c.RunFailed = true
+	}
+}
+
+// isAttemptFailure reports whether one attempt's status is a failure.
+// timedOut and interrupted count: the attempt did not produce a pass.
+// skipped does not — a skipped attempt says nothing about stability.
+func isAttemptFailure(status string) bool {
+	switch status {
+	case StatusFailed, StatusTimedOut, StatusInterrupted:
+		return true
+	}
+	return false
 }
 
 // ExtractedAttachment is a reference a framework made to a file (Cypress

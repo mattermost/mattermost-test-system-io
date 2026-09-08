@@ -1374,7 +1374,7 @@ func aggregateOrchestrationTestCounts(
 				a.dispatch_unit_id,
 				tc->>'full_title' AS full_title,
 				BOOL_OR(tc->>'status' IN ('passed', 'flaky')) AS ever_passed,
-				BOOL_OR(tc->>'status' IN ('failed', 'timedOut', 'interrupted')) AS ever_failed,
+				BOOL_OR(tc->>'status' IN ('failed', 'timedOut', 'interrupted', 'flaky')) AS ever_failed,
 				BOOL_OR(tc->>'status' = 'skipped') AS ever_skipped
 			  FROM attempts a
 			 CROSS JOIN LATERAL jsonb_array_elements(a.test_cases) AS tc

@@ -16,6 +16,8 @@ servers:
     description: Production
 
 tags:
+  - name: triage
+    description: Conservative shadow assessments, repair ownership and product-defect handoff.
   - name: auth
   - name: reports
   - name: report-groups
@@ -1064,8 +1066,770 @@ paths:
       responses:
         '204': { description: Deleted }
 
+  /api/v1/tests/history:
+    get:
+      tags: [tests]
+      summary: Outcome series for one test across commits, newest first
+      description: |
+        Records whether the test failed in earlier runs. Returns one entry per report group that ran
+        the test, plus a precomputed summary (flip count, failure rate, last
+        passing commit, and the oldest commit in the current failing streak) so
+        every caller derives those the same way. Summary counts and streaks cover
+        the full requested time window even when entries are limited. Historical
+        failures alone do not establish that a PR has no effect on a test.
+      security: []
+      parameters:
+        - in: query
+          name: test_id
+          description: The test's stable_key — its MM-T id (e.g. MM-T4783_1) or, for repositories without ids, its full title
+          schema: { type: string }
+          required: true
+        - in: query
+          name: repo
+          description: Full "owner/repo" slug or just the trailing repo segment
+          schema: { type: string }
+          required: true
+        - in: query
+          name: branch
+          description: Exact branch. master excludes pull request groups, including PRs whose head branch is named master.
+          schema: { type: string }
+        - in: query
+          name: baseline
+          description: Require a full owner/repo slug, master branch, no pull request, and completed groups with every declared report uploaded.
+          schema: { type: boolean, default: false }
+        - in: query
+          name: name
+          description: Exact report group name, for keeping different suites and editions separate.
+          schema: { type: string }
+        - in: query
+          name: before
+          description: Include only groups created at or before this timestamp.
+          schema: { type: string, format: date-time }
+        - in: query
+          name: framework
+          schema: { type: string, enum: [playwright, cypress, detox, maestro] }
+        - in: query
+          name: run_group
+          schema: { type: string }
+        - in: query
+          name: window
+          description: Lookback window from now (30d, 24h, 90m). Defaults to 30d; values above 180d are rejected.
+          schema: { type: string, pattern: '^[0-9]+[dhm]$', default: '30d' }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+      responses:
+        '200':
+          description: Test history series
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestHistoryResponse' }
+  /api/v1/tests/evidence:
+    get:
+      tags: [tests]
+      summary: One run's failures with error, stack and screenshots, grouped by cause
+      description: |
+        Everything stored about the failures of one run: error message, stack,
+        screenshots, retry count, and the `stable_key` each failure is looked
+        up by in `/tests/history`. Failures are grouped by normalized error
+        text so 300 identical "element not visible" failures read as one
+        cluster with 300 members.
+
+        Identify the run with `group_id` or with the same composite identity
+        the upload used: repository + commit_sha + gh_run_id + name
+        (+ gh_run_attempt, default "1").
+
+        No judgement is made here. Whether a failure is flaky or a regression
+        is for the consumer to decide.
+      security: []
+      parameters:
+        - in: query
+          name: group_id
+          schema: { type: string, format: uuid }
+        - in: query
+          name: repository
+          schema: { type: string }
+        - in: query
+          name: commit_sha
+          schema: { type: string }
+        - in: query
+          name: gh_run_id
+          schema: { type: string }
+        - in: query
+          name: name
+          schema: { type: string }
+        - in: query
+          name: gh_run_attempt
+          schema: { type: string, default: '1' }
+      responses:
+        '200':
+          description: Evidence pack
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestEvidence' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/triage/attribution:
+    get:
+      tags:
+      - triage
+      summary: Preview conservative attribution for every observed failure in one exact run
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageAssessment'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+      parameters:
+      - in: query
+        name: repository
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+      - in: query
+        name: commit_sha
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: ^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$
+      - in: query
+        name: gh_run_id
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 20
+      - in: query
+        name: gh_run_attempt
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 20
+      - in: query
+        name: name
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+  /api/v1/triage/run-evidence:
+    get:
+      tags: [triage]
+      summary: Read exact-run provenance and unmerged test-attempt evidence
+      description: |
+        Returns report membership, verified source workflow identity and raw test
+        rows without merging reused external IDs. Completeness and source trust
+        are separate. Legacy or mismatched uploads are explicitly untrusted;
+        limits produce truncated, incomplete evidence. This endpoint grants no
+        permission to change an E2E status.
+      security: []
+      parameters:
+      - {in: query, name: repository, required: true, schema: {type: string}}
+      - {in: query, name: commit_sha, required: true, schema: {type: string}}
+      - {in: query, name: gh_run_id, required: true, schema: {type: string}}
+      - {in: query, name: gh_run_attempt, required: true, schema: {type: string}}
+      - {in: query, name: name, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Exact evidence with explicit completeness and trust results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageRunEvidence'
+        '400':
+          description: Invalid, unknown or duplicate selector fields
+        '404':
+          description: Exact report group not found
+  /api/v1/triage/assessments:
+    post:
+      tags:
+      - triage
+      summary: Append a durable shadow assessment; it cannot authorize a status override
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageAssessment'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageAssessment'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageRunSelector'
+  /api/v1/triage/verdicts/{id}:
+    get:
+      tags:
+      - triage
+      summary: Read the immutable assessment recorded at decision time
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageAssessment'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/triage/repairs:
+    get:
+      tags:
+      - triage
+      summary: List repair work and its outcome history
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageRepair'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+      parameters:
+      - in: query
+        name: repository
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 100
+  /api/v1/triage/repairs/enqueue:
+    post:
+      tags:
+      - triage
+      summary: Enqueue an unambiguous failure from a complete verified master report
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageEnqueue'
+  /api/v1/triage/repairs/claim:
+    post:
+      tags:
+      - triage
+      summary: Atomically claim one repair with a fenced expiring lease; item is null if none
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageClaim'
+  /api/v1/triage/repairs/{id}/heartbeat:
+    post:
+      tags:
+      - triage
+      summary: Renew current repair ownership; expired or superseded tokens are refused
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageLease'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/triage/repairs/{id}/complete:
+    post:
+      tags:
+      - triage
+      summary: Record an attempt; three failures require human intervention
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageComplete'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/triage/repairs/{id}/resolve:
+    post:
+      tags:
+      - triage
+      summary: Record a trusted human resolution without granting a fourth autonomous attempt
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    allOf:
+                    - $ref: '#/components/schemas/TriageRepair'
+                    nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageResolve'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/triage/repairs/{id}/defect:
+    post:
+      tags:
+      - triage
+      summary: File or reconcile a product-suspect defect with live Jira deduplication
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageDefectRequest'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+  /api/v1/triage/quarantine:
+    get:
+      tags:
+      - triage
+      summary: Read bounded quarantine metadata; expiry restores blocking eligibility without deleting tests
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageQuarantine'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+      parameters:
+      - in: query
+        name: repository
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 100
+    post:
+      tags:
+      - triage
+      summary: Create bounded expiring quarantine metadata; raw test rows remain unchanged
+      security:
+      - triageKey: []
+      - bearer: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+        '201':
+          description: Recorded before response
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageQuarantineRequest'
+  /api/v1/triage/defects:
+    get:
+      tags:
+      - triage
+      summary: List product-suspect defect escalation events, without mirroring Jira resolution
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageDefect'
+        '400':
+          description: Invalid request
+        '401':
+          description: A dedicated triage key or allowlisted workflow is required
+        '403':
+          description: The workflow is not authorized for this repository
+        '404':
+          description: Not found
+        '409':
+          description: Lease, state, provenance or policy conflict
+        '503':
+          description: Optional external integration disabled or unavailable
+      parameters:
+      - in: query
+        name: repository
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 100
+
 components:
   securitySchemes:
+    triageKey:
+      type: apiKey
+      in: header
+      name: X-Triage-Key
+      description: Dedicated triage authority; ordinary upload keys and sessions are refused.
     apiKey:
       type: apiKey
       in: header
@@ -1083,6 +1847,485 @@ components:
       description: Opaque server-side session for human users.
 
   schemas:
+    TriageRunEvidence:
+      type: object
+      required: [schema_version, group, complete, truncated, trusted_source, reasons, source_workflow_sha, source_workflow_ref, reports, tests]
+      properties:
+        schema_version: {type: integer, enum: [1]}
+        group:
+          type: object
+          required: [repository, commit_sha, gh_run_id, gh_run_attempt, name, id, branch, framework, created_at, status, total_reports_expected]
+          properties:
+            repository: {type: string}
+            commit_sha: {type: string}
+            gh_run_id: {type: string}
+            gh_run_attempt: {type: string}
+            name: {type: string}
+            id: {type: string, format: uuid}
+            branch: {type: string}
+            framework: {type: string}
+            created_at: {type: string, format: date-time}
+            status: {type: string}
+            total_reports_expected: {type: integer}
+        complete: {type: boolean}
+        truncated: {type: boolean}
+        trusted_source: {type: boolean}
+        reasons: {type: array, items: {type: string}}
+        source_workflow_sha: {type: string}
+        source_workflow_ref: {type: string}
+        reports:
+          type: array
+          items:
+            type: object
+            required: [id, gh_job_id, gh_job_name, status, environment_metadata]
+            properties:
+              id: {type: string, format: uuid}
+              gh_job_id: {type: string}
+              gh_job_name: {type: string}
+              status: {type: string}
+              environment_metadata:
+                description: Original immutable registration JSON; never substituted from the group. Missing or non-object metadata makes trusted_source false.
+        tests:
+          type: array
+          items:
+            type: object
+            required: [report_id, suite_id, id, stable_key, file, full_title, project, status, retry_count, run_failed, attempts, attempts_failed, error_message]
+            properties:
+              report_id: {type: string, format: uuid}
+              suite_id: {type: string, format: uuid}
+              id: {type: string, format: uuid}
+              # enum gives null its 3.1 semantics; nullable supports our current validator.
+              stable_key: {anyOf: [{type: string}, {enum: [null], nullable: true}]}
+              file: {anyOf: [{type: string}, {enum: [null], nullable: true}]}
+              full_title: {type: string}
+              project: {anyOf: [{type: string}, {enum: [null], nullable: true}]}
+              status: {type: string}
+              retry_count: {type: integer}
+              run_failed: {anyOf: [{type: boolean}, {enum: [null], nullable: true}]}
+              attempts: {anyOf: [{type: integer}, {enum: [null], nullable: true}]}
+              attempts_failed: {anyOf: [{type: integer}, {enum: [null], nullable: true}]}
+              error_message: {anyOf: [{type: string}, {enum: [null], nullable: true}]}
+    TriageRunSelector:
+      type: object
+      additionalProperties: false
+      required:
+      - repository
+      - commit_sha
+      - gh_run_id
+      - gh_run_attempt
+      - name
+      properties:
+        repository:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+        commit_sha:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: ^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$
+        gh_run_id:
+          type: string
+          minLength: 1
+          maxLength: 20
+        gh_run_attempt:
+          type: string
+          minLength: 1
+          maxLength: 20
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+    TriageEnqueue:
+      type: object
+      additionalProperties: false
+      required:
+      - report_group_id
+      - stable_key
+      - owner
+      properties:
+        report_group_id:
+          type: string
+          format: uuid
+        stable_key:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        owner:
+          type: string
+          minLength: 1
+          maxLength: 200
+        ticket:
+          type: string
+          maxLength: 1000
+    TriageClaim:
+      type: object
+      additionalProperties: false
+      required:
+      - repository
+      - worker
+      properties:
+        repository:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+        worker:
+          type: string
+          minLength: 1
+          maxLength: 300
+    TriageLease:
+      type: object
+      additionalProperties: false
+      required:
+      - lease_token
+      properties:
+        lease_token:
+          type: string
+          format: uuid
+    TriageResolve:
+      type: object
+      additionalProperties: false
+      required:
+      - account
+      - evidence_url
+      - pr_url
+      properties:
+        account:
+          type: string
+          minLength: 1
+          maxLength: 16000
+        evidence_url:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        pr_url:
+          type: string
+          minLength: 1
+          maxLength: 2000
+    TriageComplete:
+      type: object
+      additionalProperties: false
+      required:
+      - lease_token
+      - outcome
+      - account
+      properties:
+        lease_token:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum:
+          - failed
+          - blocked
+          - repair_pr
+          - product_suspect
+        account:
+          type: string
+          minLength: 1
+          maxLength: 16000
+        evidence_url:
+          type: string
+          maxLength: 2000
+        pr_url:
+          type: string
+          maxLength: 2000
+    TriageDefectRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - lease_token
+      - summary
+      - description
+      properties:
+        lease_token:
+          type: string
+          format: uuid
+        summary:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          minLength: 1
+          maxLength: 16000
+    TriageQuarantineRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - repair_id
+      - owner
+      - ticket
+      - expires_at
+      properties:
+        repair_id:
+          type: string
+          format: uuid
+        owner:
+          type: string
+          minLength: 1
+          maxLength: 200
+        ticket:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        expires_at:
+          type: string
+          format: date-time
+    TriageAssessment:
+      type: object
+      required:
+      - outcome
+      - can_unblock
+      - reasons
+      - tests
+      - run
+      - policy_version
+      - baseline_policy
+      properties:
+        id:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum:
+          - no_failure
+          - pr_suspect
+          - observed_on_master
+          - unknown
+        can_unblock:
+          type: boolean
+          enum:
+          - false
+          description: Always false for shadow-v1. Historical master failure does not prove PR innocence.
+        reasons:
+          type: array
+          items:
+            type: string
+        tests:
+          type: array
+          items:
+            $ref: '#/components/schemas/TriageAssessmentTest'
+        run:
+          allOf:
+          - $ref: '#/components/schemas/TriageRunIdentity'
+        author:
+          type: string
+        recorded_at:
+          type: string
+          format: date-time
+        policy_version:
+          type: string
+        baseline_policy:
+          type: object
+          properties:
+            window_hours:
+              type: integer
+            freshness_hours:
+              type: integer
+            minimum_distinct_commits:
+              type: integer
+    TriageRunIdentity:
+      type: object
+      properties:
+        repository:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+        commit_sha:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: ^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$
+        gh_run_id:
+          type: string
+          minLength: 1
+          maxLength: 20
+        gh_run_attempt:
+          type: string
+          minLength: 1
+          maxLength: 20
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        report_group_id:
+          type: string
+          format: uuid
+    TriageAssessmentTest:
+      type: object
+      required:
+      - stable_key
+      - outcome
+      - reasons
+      - baseline_runs
+      - baseline_failures
+      properties:
+        stable_key:
+          type: string
+        file:
+          type: string
+        full_title:
+          type: string
+        project:
+          type: string
+        framework:
+          type: string
+        outcome:
+          type: string
+        reasons:
+          type: array
+          items:
+            type: string
+        baseline_runs:
+          type: integer
+        baseline_distinct_commits:
+          type: integer
+        baseline_failures:
+          type: integer
+        baseline_failed_runs:
+          type: integer
+        baseline_flaky_runs:
+          type: integer
+        baseline_latest_at:
+          type: string
+          format: date-time
+        baseline_group_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+    TriageRepair:
+      type: object
+      description: Durable queue item. Public lists omit lease_token. Recorded environment and test identity
+        belong to the originating trusted master run.
+      properties:
+        id:
+          type: string
+          format: uuid
+        repository:
+          type: string
+        framework:
+          type: string
+        name:
+          type: string
+        branch:
+          type: string
+        commit_sha:
+          type: string
+          description: Immutable commit tested by the originating master run.
+        source_workflow_sha:
+          type: string
+          pattern: '^[a-f0-9]{40}$'
+          description: Verified OIDC workflow revision, separate from the tested commit. All shard
+            claims and any used Begin receipt must agree. Guardian independently matches this to
+            the GitHub run head. Legacy items without this field cannot authorize repair.
+        gh_run_id:
+          type: string
+        gh_run_attempt:
+          type: string
+        image_digest:
+          type: string
+        report_group_id:
+          type: string
+        stable_key:
+          type: string
+        file:
+          type: string
+        full_title:
+          type: string
+        project:
+          type: string
+        owner:
+          type: string
+        ticket:
+          type: string
+        state:
+          type: string
+        lease_token:
+          type: string
+        attempt:
+          type: integer
+        blocking_eligible:
+          type: boolean
+        observed_distinct_prs_failed:
+          type: integer
+          description: Distinct PRs with complete matching terminal test failures in the last 30 days, not
+            a causal block count.
+        attempts:
+          type: array
+          items:
+            type: object
+        lease_expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        environment_metadata:
+          type: object
+    TriageQuarantine:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        repair_id:
+          type: string
+          format: uuid
+        repository:
+          type: string
+        owner:
+          type: string
+        ticket:
+          type: string
+        author:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+        blocking_eligible:
+          type: boolean
+    TriageDefect:
+      type: object
+      description: Product-suspect escalation event, not proof of a confirmed or escaped release defect. Jira
+        remains the source of resolution state.
+      properties:
+        id:
+          type: string
+        repair_id:
+          type: string
+          format: uuid
+        report_group_id:
+          type: string
+          format: uuid
+        submission_id:
+          type: string
+        repository:
+          type: string
+        stable_key:
+          type: string
+        state:
+          type: string
+        summary:
+          type: string
+        author:
+          type: string
+        jira_key:
+          type: string
+        jira_url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
     HealthStatus:
       type: object
       required: [status, version]
@@ -2135,6 +3378,208 @@ components:
         message:
           type: string
           description: Human-readable message suitable for direct display.
+
+
+    TestOutcome:
+      type: string
+      enum: [passed, failed, flaky, skipped, unknown]
+      description: |
+        One test's outcome in one report group, rolled up across that group's
+        shards. `flaky` means it failed and then passed on retry within the same
+        run — measured flakiness rather than inferred, which is why it is not
+        folded into `failed`.
+
+    TestHistoryEntry:
+      type: object
+      required:
+        [group_id, repository, framework, gh_run_attempt, commit, gh_run_id, branch, name, outcome, shard_rows, duration_ms,
+         created_at, attempts, attempts_failed, run_failed]
+      properties:
+        group_id: { type: string, format: uuid }
+        repository: { type: string }
+        framework: { type: string }
+        gh_run_attempt: { type: string }
+        environment_metadata: { type: object, additionalProperties: true }
+        commit: { type: string }
+        gh_run_id: { type: string }
+        gh_pr_number: { type: integer }
+        branch: { type: string }
+        name:
+          type: string
+          description: Report group name, e.g. mobile-pr-detox-ios
+        run_group: { type: string }
+        outcome: { $ref: '#/components/schemas/TestOutcome' }
+        shard_rows:
+          type: integer
+          description: How many stored test_case rows rolled into this outcome. One row per attempt per shard.
+        duration_ms: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        attempts:
+          type: integer
+          description: |
+            Attempts this test got in this run, summed across shards. Both CI
+            configs retry once (playwright.config.ts `retries: isCI ? 1 : 0`,
+            cypress.config.ts `retries.runMode: 1`), so a test that failed at
+            least once reports 2 in a single-shard run.
+
+            Rows ingested before the retry-semantics fix report 1 whether or
+            not a retry happened: the attempt that would have proved otherwise
+            was never stored, and cannot be reconstructed.
+        attempts_failed:
+          type: integer
+          description: |
+            How many of those attempts failed. timedOut and interrupted count;
+            skipped does not.
+        run_failed:
+          type: boolean
+          description: |
+            True only when every attempt failed. This is the one failure signal
+            that means the same thing across frameworks, and the one a rate
+            should be computed over — rates are per run, never per attempt,
+            because a retried attempt shares the leaked state or slow container
+            that failed the first one and is not an independent draw.
+
+            A run with a surviving attempt is a flake, not a failure: it reports
+            run_failed false and outcome "flaky".
+
+    TestHistorySummary:
+      type: object
+      required: [runs, passed, failed, flaky, skipped, flips, failure_rate, flake_rate, series]
+      properties:
+        runs:
+          type: integer
+          description: >-
+            Report groups in which this test actually executed. Skipped runs are
+            excluded, so runs = passed + failed + flaky, and failure_rate is the
+            share of runs that did not cleanly pass.
+        passed: { type: integer }
+        failed: { type: integer }
+        flaky: { type: integer }
+        skipped:
+          type: integer
+          description: Counted and reported, but not part of runs.
+        flips:
+          type: integer
+          description: |
+            Adjacent pass↔fail transitions over the series. Skipped runs are
+            carried over rather than counted, since a skip says nothing about
+            stability.
+        failure_rate:
+          type: number
+          description: (failed + flaky) / runs. Flaky counts as failure — a run that needed a retry did not cleanly pass.
+        flake_rate:
+          type: number
+          description: flaky / runs.
+        last_pass_commit: { type: string }
+        failing_since_commit:
+          type: string
+          description: Oldest commit in the current unbroken failing streak; absent when the newest run passed.
+        series:
+          type: array
+          description: Outcomes newest-first for the returned entries. Counts, rates, and streak boundaries use the full time window.
+          items: { $ref: '#/components/schemas/TestOutcome' }
+
+    TestHistoryResponse:
+      type: object
+      required: [test_id, repo, entries, summary, total_entries, truncated, window, baseline]
+      properties:
+        test_id: { type: string }
+        repo: { type: string }
+        total_entries:
+          type: integer
+          description: Matching report groups across the full time window, including skipped groups.
+        truncated:
+          type: boolean
+          description: True when the entries limit omits matching groups. The summary still covers the full window.
+        window: { type: string }
+        baseline: { type: boolean }
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/TestHistoryEntry' }
+        summary: { $ref: '#/components/schemas/TestHistorySummary' }
+
+    TestEvidenceFailure:
+      type: object
+      required: [stable_key, full_title, title, status, retry_count, duration_ms, screenshots]
+      properties:
+        external_test_id: { type: string }
+        stable_key:
+          type: string
+          description: The identity to pass as `test_id` to /tests/history — the MM-T id where one exists, the full title otherwise.
+        full_title: { type: string }
+        title: { type: string }
+        file: { type: string }
+        status: { type: string, enum: [failed, flaky, timedOut, interrupted] }
+        retry_count: { type: integer }
+        duration_ms: { type: integer, format: int64 }
+        error_message: { type: string }
+        error_stack: { type: string }
+        screenshots:
+          type: array
+          items:
+            type: object
+            required: [s3_key, url]
+            properties:
+              s3_key: { type: string }
+              screenshot_type: { type: string }
+              url: { type: string }
+
+    TestEvidence:
+      type: object
+      required: [group, failure_count, cluster_count, clusters, truncated, complete]
+      properties:
+        group:
+          type: object
+          required: [id, repository, branch, commit_sha, gh_run_id, gh_run_attempt, framework, name, status, created_at, total_reports_expected, reports_registered, reports_complete]
+          properties:
+            id: { type: string, format: uuid }
+            repository: { type: string }
+            branch: { type: string }
+            commit_sha: { type: string }
+            gh_run_id: { type: string }
+            gh_run_attempt: { type: string }
+            gh_pr_number: { type: integer }
+            framework: { type: string }
+            name: { type: string }
+            status: { type: string }
+            created_at: { type: string, format: date-time }
+            total_reports_expected: { type: integer, nullable: true }
+            reports_registered: { type: integer }
+            reports_complete: { type: integer }
+            environment_metadata: { type: object, additionalProperties: true }
+        failure_count:
+          type: integer
+          description: Distinct failing tests before clustering.
+        cluster_count:
+          type: integer
+          description: Distinct error signatures returned (capped at 15).
+        clusters:
+          type: array
+          items:
+            type: object
+            required: [signature, label, member_count, members, representative]
+            properties:
+              signature: { type: string }
+              label: { type: string }
+              member_count: { type: integer }
+              members:
+                type: array
+                description: Every failing test identity in this returned cluster; members are not sampled.
+                items:
+                  type: object
+                  required: [stable_key, full_title, status]
+                  properties:
+                    external_test_id: { type: string }
+                    stable_key: { type: string }
+                    full_title: { type: string }
+                    status: { type: string }
+              representative: { $ref: '#/components/schemas/TestEvidenceFailure' }
+        truncated:
+          type: boolean
+          description: True when more than 2000 failure rows or more than 15 clusters existed and the response is incomplete.
+        complete:
+          type: boolean
+          description: True only when the group is completed and every declared report is registered and complete. This describes upload coverage, independently of truncation. Consumers must also reconcile orchestration results to detect tests that produced no report.
 
   responses:
     BadRequest:

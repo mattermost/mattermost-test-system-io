@@ -24746,9 +24746,12 @@ function mapStatus(s) {
 var fs3 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
 var import_node_child_process2 = require("child_process");
+var import_node_crypto = require("crypto");
 function runUnit2(cfg, iterationSeq, specPaths) {
   const iterDir = path2.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs3.mkdirSync(iterDir, { recursive: true });
+  const attemptsDir = path2.join(iterDir, "attempts");
+  fs3.rmSync(attemptsDir, { recursive: true, force: true });
   const reportRoot = path2.join(cfg.cypressDir, "results", "mochawesome-report");
   fs3.rmSync(reportRoot, { recursive: true, force: true });
   const screenshotsRoot = path2.join(cfg.cypressDir, "tests", "screenshots");
@@ -24769,7 +24772,7 @@ function runUnit2(cfg, iterationSeq, specPaths) {
   const startedAt = Date.now();
   const child = (0, import_node_child_process2.spawnSync)("npx", args, {
     cwd: cfg.cypressDir,
-    env: { ...process.env, FORCE_COLOR: "0" },
+    env: { ...process.env, FORCE_COLOR: "0", TSIO_CYPRESS_ATTEMPTS_DIR: attemptsDir },
     stdio: "inherit"
   });
   const durationMs = Date.now() - startedAt;
@@ -24792,8 +24795,14 @@ function runUnit2(cfg, iterationSeq, specPaths) {
     let parsed;
     try {
       parsed = JSON.parse(fs3.readFileSync(jsonPath, "utf8"));
+      const specPath = sp.replace(/\\/g, "/");
+      const key = (0, import_node_crypto.createHash)("sha256").update(specPath).digest("hex");
+      const sidecar = JSON.parse(
+        fs3.readFileSync(path2.join(attemptsDir, `${key}.json`), "utf8")
+      );
+      mergeCypressAttempts(parsed, sidecar, specPath);
     } catch (e) {
-      warning(`mochawesome json parse failure for ${sp}: ${e.message}`);
+      warning(`incomplete Cypress report for ${sp}: ${e.message}`);
       results.push({
         spec_path: sp,
         status: "interrupted",
@@ -24804,7 +24813,7 @@ function runUnit2(cfg, iterationSeq, specPaths) {
     }
     results.push(aggregateSpec2(parsed, sp));
     const archived = path2.join(iterDir, `${baseName}.json`);
-    fs3.cpSync(jsonPath, archived);
+    fs3.writeFileSync(archived, JSON.stringify(parsed));
     archivedPaths.push(archived);
   }
   const screenshotsBySpec = {};
@@ -24843,6 +24852,61 @@ function walkPng(dir, out) {
     else if (ent.isFile() && /\.(png|jpe?g)$/i.test(ent.name)) out.push(full);
   }
 }
+function mergeCypressAttempts(json, sidecar, specPath) {
+  if (sidecar.schema_version !== 1 || sidecar.spec_path !== specPath || !Array.isArray(sidecar.tests)) {
+    throw new Error("missing or mismatched after:spec attempt evidence");
+  }
+  const tests = /* @__PURE__ */ new Map();
+  for (const test of sidecar.tests) {
+    if (!Array.isArray(test.title) || !test.title.every((title) => typeof title === "string")) {
+      throw new Error("invalid after:spec title path");
+    }
+    const key = JSON.stringify(test.title);
+    if (tests.has(key)) throw new Error(`ambiguous after:spec title: ${key}`);
+    tests.set(key, test);
+  }
+  const seen = /* @__PURE__ */ new Set();
+  function visit(suite, parents) {
+    const titles = suite.title ? [...parents, suite.title] : parents;
+    for (const test of suite.tests || []) {
+      const key = JSON.stringify([...titles, test.title || ""]);
+      const source = tests.get(key);
+      if (!source || seen.has(key)) throw new Error(`missing or ambiguous attempts: ${key}`);
+      seen.add(key);
+      if (source.state !== test.state || !Array.isArray(source.attempts) || source.attempts.length === 0) {
+        throw new Error(`inconsistent after:spec final state/attempts: ${key}`);
+      }
+      if (source.attempts.at(-1)?.state !== source.state) {
+        throw new Error(`inconsistent last attempt: ${key}`);
+      }
+      const context3 = test.context ? JSON.parse(test.context) : [];
+      const entries = Array.isArray(context3) ? context3 : [context3];
+      const captured = entries.filter((entry) => entry?.title === "tsio-attempts-v1");
+      if (captured.length !== 1 || !Array.isArray(captured[0].value) || captured[0].value.length !== source.attempts.length) {
+        throw new Error(`missing per-attempt browser evidence: ${key}`);
+      }
+      test.attempts = source.attempts.map((attempt, index) => {
+        const detail = captured[0].value[index];
+        if (!["passed", "failed", "pending", "skipped"].includes(attempt.state)) {
+          throw new Error(`invalid attempt state: ${key}`);
+        }
+        if (detail?.state !== attempt.state || !Number.isFinite(detail.duration) || detail.duration < 0) {
+          throw new Error(`inconsistent browser attempt evidence: ${key}`);
+        }
+        if (detail.state === "failed" && !detail.err?.message && !detail.err?.estack) {
+          throw new Error(`missing failed attempt error: ${key}`);
+        }
+        return detail;
+      });
+      test.context = JSON.stringify(entries.filter((entry) => entry?.title !== "tsio-attempts-v1"));
+    }
+    for (const child of suite.suites || []) visit(child, titles);
+  }
+  for (const suite of json.results || []) visit(suite, []);
+  if (seen.size !== tests.size || seen.size === 0)
+    throw new Error("partial or empty after:spec report");
+  json.tsio_attempts_source = "cypress-after-spec-v1";
+}
 var RANKS2 = {
   skipped: 0,
   passed: 1,
@@ -24862,7 +24926,8 @@ function aggregateSpec2(json, specPath) {
       let status;
       if (t.pending === true) status = "skipped";
       else if (t.state === "failed") status = "failed";
-      else if (t.state === "passed" && attempts > 1) status = "flaky";
+      else if (t.state === "passed" && t.attempts?.some((a) => a.state === "failed"))
+        status = "flaky";
       else if (t.state === "passed") status = "passed";
       else status = "interrupted";
       const tc = {
@@ -24870,11 +24935,12 @@ function aggregateSpec2(json, specPath) {
         full_title: t.fullTitle || t.title || "",
         status,
         retry_count: Math.max(0, attempts - 1),
-        duration_ms: typeof t.duration === "number" ? t.duration : 0,
+        duration_ms: t.attempts?.length ? t.attempts.reduce((sum, attempt) => sum + attempt.duration, 0) : typeof t.duration === "number" ? t.duration : 0,
         ordinal: ordinal++
       };
-      if (t.err?.message) tc.error_message = t.err.message;
-      const stack = t.err?.estack ?? t.err?.stack;
+      const error2 = t.attempts?.find((a) => a.state === "failed")?.err ?? t.err;
+      if (error2?.message) tc.error_message = error2.message;
+      const stack = error2?.estack ?? error2?.stack;
       if (stack) tc.error_stack = stack;
       cases.push(tc);
       totalMs += tc.duration_ms;
@@ -29396,6 +29462,9 @@ async function uploadShard(cfg, invocations) {
     json_files: jsonParts.map((p) => ({ path: p.relPath, size: p.size })),
     screenshots: screenshotParts.map((s) => ({ path: s.relPath, size: s.size }))
   };
+  if (cfg.environmentMetadata) {
+    regBody.environment_metadata = JSON.parse(cfg.environmentMetadata);
+  }
   const regRes = await postJSON(
     cfg,
     "/api/v1/reports/register",
@@ -29511,6 +29580,16 @@ var STAGING_URL = "https://staging-test-io.test.mattermost.com";
 async function run() {
   const baseURL = resolveBaseURL();
   const audience = getInput("oidc-audience") || "mattermost-test-system-io";
+  const environmentMetadataRaw = getInput("environment-metadata").trim();
+  if (environmentMetadataRaw) {
+    try {
+      JSON.parse(environmentMetadataRaw);
+    } catch (err) {
+      throw new Error(
+        `environment-metadata must be valid JSON: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
   const compositeIdentityRaw = getInput("composite-identity", { required: true });
   const repoDir = getInput("repo-dir", { required: true });
   const artifactsRoot = getInput("artifacts-root", { required: true });
@@ -29614,7 +29693,8 @@ async function run() {
       ghJobId,
       ghJobName: resolvedJobName,
       framework,
-      compositeIdentity
+      compositeIdentity,
+      environmentMetadata: environmentMetadataRaw || void 0
     };
     try {
       await uploadShard(uploadCfg, invocations);

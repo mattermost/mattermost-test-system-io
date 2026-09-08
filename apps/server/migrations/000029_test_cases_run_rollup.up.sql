@@ -1,0 +1,37 @@
+-- Run-level retry semantics, so a rate can be computed across frameworks.
+--
+-- Playwright and Cypress disagreed about what a stored "failure" was.
+-- Playwright wrote one row per attempt but stamped every one of them with the
+-- test's rolled-up status, so a retry-survivor stored two 'flaky' rows and no
+-- record of which attempt failed. Cypress wrote a single final-state row with
+-- retry_count hardcoded to 0, so the same run stored one 'passed' row and no
+-- record that a retry happened at all. Both CI configs retry once
+-- (playwright.config.ts `retries: isCI ? 1 : 0`, cypress.config.ts
+-- `retries.runMode: 1`), so that was the shape of every retried test in
+-- production, and any rate computed across both frameworks was comparing a
+-- per-run number against a per-attempt one.
+--
+-- Both parsers now emit one row per attempt carrying its own status, plus
+-- these three columns repeated identically across the attempts of one run:
+--
+--   attempts         how many attempts this test got in this run
+--   attempts_failed  how many of them failed (timedOut and interrupted count;
+--                    skipped does not)
+--   run_failed       true iff every attempt failed
+--
+-- run_failed is the boolean that means the same thing in both frameworks, and
+-- it is what rates are computed over. Rates are per RUN, never per attempt: a
+-- retried attempt shares the leaked state or the slow container that failed
+-- the first one, so the attempts of one run are not independent draws, and
+-- counting them as such overstates both the sample size and the failure rate.
+--
+-- Nullable with no default, so this is a catalog-only change: no heap pages
+-- are rewritten. Lock acquisition can still wait for other transactions. NULL means
+-- "written before this migration"; readers fall back to the per-attempt
+-- status columns for those rows (see groupRollupSQL in
+-- internal/api/testhistory). There is deliberately no backfill: the attempt
+-- counts of a pre-existing run cannot be reconstructed, because the rows that
+-- would have carried them are exactly the rows the old parsers did not write.
+ALTER TABLE test_cases ADD COLUMN attempts integer;
+ALTER TABLE test_cases ADD COLUMN attempts_failed integer;
+ALTER TABLE test_cases ADD COLUMN run_failed boolean;

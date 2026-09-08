@@ -64,6 +64,10 @@ func extractDetox(body []byte, seq *int) []ExtractedSuite {
 				msg := strings.Join(t.FailureMessages, "\n")
 				errMsg = &msg
 			}
+			// Jest's report carries one final result per test with no
+			// attempt list, so every row is a single-attempt run. Stamping
+			// it here keeps the rollup columns meaningful for Detox instead
+			// of leaving them at zero, which reads as "no attempts ran".
 			c := ExtractedCase{
 				Title:        t.Title,
 				FullTitle:    t.FullName,
@@ -74,6 +78,7 @@ func extractDetox(body []byte, seq *int) []ExtractedSuite {
 				StartTime:    fileStart,
 			}
 			*seq++
+			stampSingleAttempt(&c)
 			buckets[key] = append(buckets[key], c)
 		}
 

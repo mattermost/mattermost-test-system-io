@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/testreport"
 )
 
 // Totals summarizes what Consolidate wrote to the DB, so the caller can
@@ -114,11 +116,34 @@ func Consolidate(
 			var caseID uuid.UUID
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, duration_ms,
-				                        error_message, attachments, ordinal)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+				                        error_message, error_stack, attachments, ordinal, external_test_id, file,
+				                        project, attempts, attempts_failed, run_failed)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 				RETURNING id
 			`, suiteID, c.Title, c.FullTitle, c.Status, c.RetryCount, c.DurationMs,
-				c.ErrorMessage, attachmentsJSON, c.Sequence).Scan(&caseID); err != nil {
+				c.ErrorMessage, c.ErrorStack, attachmentsJSON, c.Sequence,
+				// The MM-T id is written at ingest, not only by migration 27's
+				// one-time backfill. Without this every row after the migration
+				// carried a NULL id and the 30-day attribution window emptied
+				// within a month of deploy — silently, for every repository.
+				testreport.ExternalTestID(c.Title, c.FullTitle),
+				// Denormalized from the suite (s.FilePath, in scope from the
+				// outer loop) so stable_key's expression — which cannot reach
+				// across to suites.file — can disambiguate two same-titled
+				// tests in different files.
+				s.FilePath,
+				// Playwright's projectName. The same axis one dimension over:
+				// without it, the chrome and firefox runs of one test share a
+				// stable_key and a browser-specific regression reads as a
+				// flake. NULL for frameworks with no project concept.
+				c.Project,
+				// The run-level retry rollup, repeated across every attempt
+				// row of the run so a reader gets run-level truth off any one
+				// row. stable_key itself is not passed: the BEFORE trigger
+				// added in migration 28 computes it from the columns above,
+				// which keeps one definition of a test's identity rather than
+				// one here and one in SQL that can drift apart.
+				c.Attempts, c.AttemptsFailed, c.RunFailed).Scan(&caseID); err != nil {
 				return Totals{}, fmt.Errorf("insert test_case %q: %w", c.Title, err)
 			}
 			for _, sid := range perCaseLinks {
@@ -215,7 +240,7 @@ func basename(p string) string {
 	return p
 }
 
-// countStatuses collapses results for the same test (by full_title) down
+// countStatuses collapses results for the same test (by project and full_title) down
 // to one "unique" case and returns the per-suite
 // passed/failed/skipped/flaky/unique counts.
 //
@@ -225,7 +250,8 @@ func basename(p string) string {
 // MULTIPLE Playwright JSON files (e.g. an orchestration retest re-runs
 // the same spec under the same gh_job_id), each file independently
 // produces retry=0 entries for the same test, and the retry filter does
-// not catch the duplicates. Grouping by full_title catches both cases.
+// not catch the duplicates. Grouping by project and full_title catches both cases
+// without merging failures in one browser into passes in another.
 //
 // The collapsed status uses the LAST entry per title (the test's terminal
 // outcome) and promotes to `flaky` when at least one earlier entry was a
@@ -236,15 +262,20 @@ func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, uniqu
 		final      ExtractedCase
 		everFailed bool
 	}
-	byTitle := make(map[string]*group, len(cases))
-	order := make([]string, 0, len(cases))
+	type identity struct{ project, title string }
+	byTitle := make(map[identity]*group, len(cases))
+	order := make([]identity, 0, len(cases))
 	for _, c := range cases {
-		isFailure := c.Status == StatusFailed || c.Status == StatusTimedOut
-		g, ok := byTitle[c.FullTitle]
+		key := identity{title: c.FullTitle}
+		if c.Project != nil {
+			key.project = *c.Project
+		}
+		isFailure := isAttemptFailure(c.Status)
+		g, ok := byTitle[key]
 		if !ok {
 			g = &group{final: c, everFailed: isFailure}
-			byTitle[c.FullTitle] = g
-			order = append(order, c.FullTitle)
+			byTitle[key] = g
+			order = append(order, key)
 			continue
 		}
 		g.final = c
@@ -260,7 +291,7 @@ func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, uniqu
 			flaky++
 		case g.final.Status == StatusPassed:
 			passed++
-		case g.final.Status == StatusFailed, g.final.Status == StatusTimedOut:
+		case isAttemptFailure(g.final.Status):
 			failed++
 		case g.final.Status == StatusSkipped:
 			skipped++

@@ -28,6 +28,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as core from "@actions/core";
 import type { InvocationRecord, SpecResult, TestCaseResult, TestStatus } from "./types";
 
@@ -54,6 +55,8 @@ export function runUnit(
 ): CypressUnitResult {
   const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs.mkdirSync(iterDir, { recursive: true });
+  const attemptsDir = path.join(iterDir, "attempts");
+  fs.rmSync(attemptsDir, { recursive: true, force: true });
 
   // Wipe the previous run's mochawesome output to avoid stale per-spec
   // files from a prior lease confusing the post-run lookup.
@@ -87,7 +90,7 @@ export function runUnit(
   const startedAt = Date.now();
   const child = spawnSync("npx", args, {
     cwd: cfg.cypressDir,
-    env: { ...process.env, FORCE_COLOR: "0" },
+    env: { ...process.env, FORCE_COLOR: "0", TSIO_CYPRESS_ATTEMPTS_DIR: attemptsDir },
     stdio: "inherit",
   });
   const durationMs = Date.now() - startedAt;
@@ -125,8 +128,14 @@ export function runUnit(
     let parsed: MochawesomeJson;
     try {
       parsed = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as MochawesomeJson;
+      const specPath = sp.replace(/\\/g, "/");
+      const key = createHash("sha256").update(specPath).digest("hex");
+      const sidecar = JSON.parse(
+        fs.readFileSync(path.join(attemptsDir, `${key}.json`), "utf8"),
+      ) as CypressAttempts;
+      mergeCypressAttempts(parsed, sidecar, specPath);
     } catch (e) {
-      core.warning(`mochawesome json parse failure for ${sp}: ${(e as Error).message}`);
+      core.warning(`incomplete Cypress report for ${sp}: ${(e as Error).message}`);
       results.push({
         spec_path: sp,
         status: "interrupted",
@@ -139,7 +148,7 @@ export function runUnit(
 
     // Persist a copy outside the soon-to-be-wiped live results tree.
     const archived = path.join(iterDir, `${baseName}.json`);
-    fs.cpSync(jsonPath, archived);
+    fs.writeFileSync(archived, JSON.stringify(parsed));
     archivedPaths.push(archived);
   }
 
@@ -197,6 +206,7 @@ function walkPng(dir: string, out: string[]): void {
 
 interface MochawesomeJson {
   results?: MochawesomeSuite[];
+  tsio_attempts_source?: string;
 }
 interface MochawesomeSuite {
   title?: string;
@@ -210,8 +220,107 @@ interface MochawesomeTest {
   state?: string;
   pending?: boolean;
   duration?: number;
-  attempts?: unknown[];
+  context?: string | null;
+  attempts?: MochawesomeAttempt[];
   err?: { message?: string; stack?: string; estack?: string };
+}
+
+interface MochawesomeAttempt {
+  state: string;
+  duration: number;
+  err?: { message?: string; estack?: string; stack?: string };
+  context?: string;
+}
+
+interface CypressAttempts {
+  schema_version: number;
+  spec_path: string;
+  tests: {
+    title: string[];
+    state: string;
+    attempts: { state: string }[];
+  }[];
+}
+
+// Only Cypress's after:spec event provides the retry history: Mochawesome
+// 7.1.4's cleanTest deliberately omits it. Join by the complete title path,
+// never by a substring or ordinal. Any missing/ambiguous test invalidates this
+// spec instead of silently uploading the final passing attempt as a clean run.
+export function mergeCypressAttempts(
+  json: MochawesomeJson,
+  sidecar: CypressAttempts,
+  specPath: string,
+): void {
+  if (
+    sidecar.schema_version !== 1 ||
+    sidecar.spec_path !== specPath ||
+    !Array.isArray(sidecar.tests)
+  ) {
+    throw new Error("missing or mismatched after:spec attempt evidence");
+  }
+  const tests = new Map<string, CypressAttempts["tests"][number]>();
+  for (const test of sidecar.tests) {
+    if (!Array.isArray(test.title) || !test.title.every((title) => typeof title === "string")) {
+      throw new Error("invalid after:spec title path");
+    }
+    const key = JSON.stringify(test.title);
+    if (tests.has(key)) throw new Error(`ambiguous after:spec title: ${key}`);
+    tests.set(key, test);
+  }
+  const seen = new Set<string>();
+  function visit(suite: MochawesomeSuite, parents: string[]): void {
+    const titles = suite.title ? [...parents, suite.title] : parents;
+    for (const test of suite.tests || []) {
+      const key = JSON.stringify([...titles, test.title || ""]);
+      const source = tests.get(key);
+      if (!source || seen.has(key)) throw new Error(`missing or ambiguous attempts: ${key}`);
+      seen.add(key);
+      if (
+        source.state !== test.state ||
+        !Array.isArray(source.attempts) ||
+        source.attempts.length === 0
+      ) {
+        throw new Error(`inconsistent after:spec final state/attempts: ${key}`);
+      }
+      if (source.attempts.at(-1)?.state !== source.state) {
+        throw new Error(`inconsistent last attempt: ${key}`);
+      }
+      const context = test.context ? JSON.parse(test.context) : [];
+      const entries = Array.isArray(context) ? context : [context];
+      const captured = entries.filter((entry) => entry?.title === "tsio-attempts-v1");
+      if (
+        captured.length !== 1 ||
+        !Array.isArray(captured[0].value) ||
+        captured[0].value.length !== source.attempts.length
+      ) {
+        throw new Error(`missing per-attempt browser evidence: ${key}`);
+      }
+      test.attempts = source.attempts.map((attempt, index) => {
+        const detail = captured[0].value[index] as MochawesomeAttempt;
+        if (!["passed", "failed", "pending", "skipped"].includes(attempt.state)) {
+          throw new Error(`invalid attempt state: ${key}`);
+        }
+        if (
+          detail?.state !== attempt.state ||
+          !Number.isFinite(detail.duration) ||
+          detail.duration < 0
+        ) {
+          throw new Error(`inconsistent browser attempt evidence: ${key}`);
+        }
+        if (detail.state === "failed" && !detail.err?.message && !detail.err?.estack) {
+          throw new Error(`missing failed attempt error: ${key}`);
+        }
+        return detail;
+      });
+      // Retain ordinary reporter context without the duplicate embedded copy.
+      test.context = JSON.stringify(entries.filter((entry) => entry?.title !== "tsio-attempts-v1"));
+    }
+    for (const child of suite.suites || []) visit(child, titles);
+  }
+  for (const suite of json.results || []) visit(suite, []);
+  if (seen.size !== tests.size || seen.size === 0)
+    throw new Error("partial or empty after:spec report");
+  json.tsio_attempts_source = "cypress-after-spec-v1";
 }
 
 const RANKS: Record<TestStatus, number> = {
@@ -235,7 +344,8 @@ export function aggregateSpec(json: MochawesomeJson, specPath: string): SpecResu
       let status: TestStatus;
       if (t.pending === true) status = "skipped";
       else if (t.state === "failed") status = "failed";
-      else if (t.state === "passed" && attempts > 1) status = "flaky";
+      else if (t.state === "passed" && t.attempts?.some((a) => a.state === "failed"))
+        status = "flaky";
       else if (t.state === "passed") status = "passed";
       else status = "interrupted";
 
@@ -244,11 +354,16 @@ export function aggregateSpec(json: MochawesomeJson, specPath: string): SpecResu
         full_title: t.fullTitle || t.title || "",
         status,
         retry_count: Math.max(0, attempts - 1),
-        duration_ms: typeof t.duration === "number" ? t.duration : 0,
+        duration_ms: t.attempts?.length
+          ? t.attempts.reduce((sum, attempt) => sum + attempt.duration, 0)
+          : typeof t.duration === "number"
+            ? t.duration
+            : 0,
         ordinal: ordinal++,
       };
-      if (t.err?.message) tc.error_message = t.err.message;
-      const stack = t.err?.estack ?? t.err?.stack;
+      const error = t.attempts?.find((a) => a.state === "failed")?.err ?? t.err;
+      if (error?.message) tc.error_message = error.message;
+      const stack = error?.estack ?? error?.stack;
       if (stack) tc.error_stack = stack;
       cases.push(tc);
       totalMs += tc.duration_ms;

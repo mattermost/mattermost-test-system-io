@@ -20,6 +20,27 @@ OIDC tokens are minted on demand and cached for 5 minutes; HTTP 401 invalidates 
 
 The calling workflow MUST grant `permissions: id-token: write`.
 
+## Cypress retry evidence
+
+Before updating a Cypress consumer to this action revision, install its
+`after:spec` capture hook (Mattermost uses `tests/plugins/tsio_attempts.js`) and
+its browser `test:after:run` hook (`tests/support/tsio_attempts.js`). The
+action sets `TSIO_CYPRESS_ATTEMPTS_DIR` to a fresh invocation directory. The hook
+writes `<sha256(spec.relative)>.json` there with
+`{schema_version: 1, spec_path: spec.relative, tests: results.tests}`. Normalize
+backslashes in `spec.relative` to `/` before hashing and writing.
+
+Mochawesome 7.1.4 reports only the final outcome, even when retries are enabled.
+The browser hook stores each attempt's error, duration and screenshot context
+in Mochawesome context under `tsio-attempts-v1`. Cypress 15's `after:spec`
+exposes only attempt states, which the action joins by full title path and
+validates against those browser details before archiving the enriched report.
+A missing, ambiguous, or incomplete
+join produces an interrupted spec. The resulting `attempts` field is a TSIO
+extension, with `tsio_attempts_source: cypress-after-spec-v1` on the report; old
+unenriched reports cannot recover retry history. The captured browser fixture
+and regeneration instructions are in `src/fixtures/cypress-retry/`.
+
 ## Inputs
 
 | name | required | default | description |

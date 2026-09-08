@@ -6,6 +6,7 @@ package server
 
 import (
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -20,6 +21,7 @@ import (
 	apimw "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/middleware"
 	orchapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	testhistoryapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/testhistory"
 	wsapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/ws"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
@@ -29,6 +31,9 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triageassessment"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triageauth"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triagework"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/webui"
 )
 
@@ -58,6 +63,15 @@ type Deps struct {
 	CommitSHA string
 	BuildTime string
 	AdminKey  string
+
+	TriageAPIKey             string
+	TriageWorkflowRefs       []string
+	TriageSourceWorkflowRefs []string
+	OIDCAudience             string
+	TriageMasterCadence      time.Duration
+	TriageQuarantineCap      int
+	TriageLeaseTTL           time.Duration
+	Jira                     triagework.Jira // optional; defect filing disabled when nil
 
 	// Client-facing config surfaced via GET /api/v1/config.
 	UploadTimeoutMs int
@@ -177,6 +191,42 @@ func Build(d Deps) chi.Router {
 		r.Get("/reports/{id}/json", reportsH.JSONFile)
 		r.Get("/reports/{id}/search", reportsH.Search)
 
+		// --- Public: per-test history and per-run evidence ---
+		//
+		// Unauthenticated on purpose. These are reads over data the report
+		// pages already serve publicly, and the automation that consults them
+		// on every failing run gains nothing from carrying a credential.
+		testsH := &testhistoryapi.Handlers{Pool: d.Pool, Logger: d.Logger}
+		// Where and when one test passed or failed, across branches and PRs.
+		r.Get("/tests/history", testsH.History)
+		// What one run's failures looked like: error, stack and screenshots,
+		// grouped by normalized error so identical causes read as one.
+		r.Get("/tests/evidence", testsH.Evidence)
+
+		assessmentH := &triageassessment.Handlers{Pool: d.Pool, Logger: d.Logger, MasterCadence: d.TriageMasterCadence}
+		workH := &triagework.Handlers{Pool: d.Pool, Logger: d.Logger, Jira: d.Jira, QuarantineCap: d.TriageQuarantineCap, LeaseTTL: d.TriageLeaseTTL, SourceWorkflowRefs: d.TriageSourceWorkflowRefs}
+		r.Get("/triage/attribution", assessmentH.Attribution)
+		r.Get("/triage/run-evidence", assessmentH.RunEvidence)
+		r.Get("/triage/verdicts/{id}", assessmentH.Verdict)
+		r.Get("/triage/repairs", workH.ListRepairs)
+		r.Get("/triage/defects", workH.ListDefects)
+		r.Get("/triage/quarantine", workH.ListQuarantine)
+		triageConfig := triageauth.Config{APIKey: d.TriageAPIKey, WorkflowRefs: d.TriageWorkflowRefs, Audience: d.OIDCAudience}
+		if d.OIDC != nil {
+			triageConfig.Verifier = d.OIDC
+		}
+		r.Group(func(r chi.Router) {
+			r.Use(triageauth.Middleware(triageConfig))
+			r.Post("/triage/assessments", assessmentH.Record)
+			r.Post("/triage/repairs/enqueue", workH.Enqueue)
+			r.Post("/triage/repairs/claim", workH.Claim)
+			r.Post("/triage/repairs/{id}/heartbeat", workH.Heartbeat)
+			r.Post("/triage/repairs/{id}/complete", workH.Complete)
+			r.Post("/triage/repairs/{id}/defect", workH.Defect)
+			r.Post("/triage/repairs/{id}/resolve", workH.Resolve)
+			r.Post("/triage/quarantine", workH.Quarantine)
+		})
+
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
 
@@ -195,6 +245,35 @@ func Build(d Deps) chi.Router {
 			MaxScreenshotBytes: 10 * 1024 * 1024,
 		}
 		orchapi.RegisterPublic(r, publicOrchH)
+
+		// Unmatched /api/v1 paths are a JSON 404, never the dashboard.
+		//
+		// chi's Mux.NotFound propagates the handler set on a parent into every
+		// sub-router whose own notFoundHandler is still nil (mux.go:
+		// `if subMux.notFoundHandler == nil`). The web-UI fallback registered
+		// on the root router below therefore used to capture this entire
+		// subtree, and an /api/v1 path that did not exist on a given build was
+		// served index.html with 200 text/html.
+		//
+		// That is indistinguishable, to a client, from a successful answer. It
+		// cost the PR triage automation a run on mattermost#38356: it asked a
+		// server that did not have /tests/evidence deployed, got 200 and HTML,
+		// and reported "evidence API unavailable" — the endpoint was not
+		// unavailable, it was absent, and the server said neither. A caller
+		// cannot branch on a failure the transport refuses to signal.
+		//
+		// Registering the handler here claims the subtree before the root's
+		// propagation reaches it, because propagation only fills a nil slot.
+		r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+			apiroot.WriteError(w, r, apiroot.ErrNotFound)
+		})
+		// Same reasoning for a wrong method on a real route: chi's default 405
+		// has an empty body, which a JSON client reads as a decode failure
+		// rather than as the 405 it is.
+		r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
+			apiroot.WriteErrorCode(w, http.StatusMethodNotAllowed,
+				"METHOD_NOT_ALLOWED", "method not allowed for this path")
+		})
 
 		// --- Protected: writes + admin-ish reads ---
 		r.Group(func(r chi.Router) {
@@ -228,9 +307,10 @@ func Build(d Deps) chi.Router {
 		})
 	})
 
-	// Mount the embedded web UI last so the chi /api/v1 subtree keeps its
-	// normal 404 behavior; only requests that miss every other route fall
-	// through to the SPA handler.
+	// Mount the embedded web UI last. The /api/v1 subtree sets its own
+	// NotFound above, so chi's propagation skips it and only non-API requests
+	// that miss every route fall through to the SPA handler — which is what
+	// makes client-side deep links such as /reports/r/abc work.
 	if webH, err := webui.Handler(); err != nil {
 		if d.Logger != nil {
 			d.Logger.Warn("embedded web ui disabled", slog.String("error", err.Error()))

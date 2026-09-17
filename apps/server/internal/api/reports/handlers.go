@@ -275,21 +275,27 @@ func spanMs(start, end *time.Time) *int64 {
 
 // ---------- View handlers ----------
 
-// List serves GET /api/v1/reports?limit=&offset=.
+// List serves GET /api/v1/reports?limit=&offset=&repository=&commit=&name=.
+// The optional filters let a CI step find the group for the run it belongs
+// to (repository + commit + name) without paging through everything.
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r.URL.Query().Get("limit"), 50, 200)
 	offset := parseOffset(r.URL.Query().Get("offset"))
+	repository := r.URL.Query().Get("repository")
+	commit := r.URL.Query().Get("commit")
+	name := r.URL.Query().Get("name")
+	where := `WHERE ($1 = '' OR repository = $1) AND ($2 = '' OR commit_sha = $2) AND ($3 = '' OR name = $3)`
 
 	var total int
-	if err := h.Pool.QueryRow(r.Context(), `SELECT count(*) FROM report_groups`).Scan(&total); err != nil {
+	if err := h.Pool.QueryRow(r.Context(), `SELECT count(*) FROM report_groups `+where, repository, commit, name).Scan(&total); err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
 
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT `+reportGroupSelectCols+`
-		FROM report_groups ORDER BY created_at DESC LIMIT $1 OFFSET $2
-	`, limit, offset)
+		FROM report_groups `+where+` ORDER BY created_at DESC LIMIT $4 OFFSET $5
+	`, repository, commit, name, limit, offset)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return

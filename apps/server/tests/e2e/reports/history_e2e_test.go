@@ -99,6 +99,23 @@ func TestReportsHistoryReturnsPastExecutionsOfNamedTests(t *testing.T) {
 		t.Fatalf("error excerpt missing on the failed observation")
 	}
 
+	// The list filters find the run's own group without paging.
+	listResp, err := http.Get(env.ServerURL + "/api/v1/reports?repository=" + repo + "&commit=ccccccc&name=playwright-full")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var list struct {
+		Total   int              `json:"total"`
+		Reports []map[string]any `json:"reports"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	listResp.Body.Close()
+	if list.Total != 1 || len(list.Reports) != 1 || list.Reports[0]["name"] != "playwright-full" {
+		t.Fatalf("filtered list = %d/%d %v, want exactly the pr-9 playwright-full group", list.Total, len(list.Reports), list.Reports)
+	}
+
 	bad, _ := json.Marshal(map[string]any{"repository": repo, "since": now.Add(-40 * 24 * time.Hour).Format(time.RFC3339), "tests": []map[string]string{{"file": file, "title": title}}})
 	resp2, err := http.Post(env.ServerURL+"/api/v1/reports/history", "application/json", bytes.NewReader(bad))
 	if err != nil {

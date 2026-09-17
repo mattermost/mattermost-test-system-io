@@ -24,6 +24,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	testidentity "github.com/mattermost/mattermost-test-system-io/apps/server/internal/identity"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 )
@@ -109,6 +110,10 @@ type beginUnitBody struct {
 }
 
 type beginRunBody struct {
+	BranchKind          string          `json:"branch_kind,omitempty"`
+	BaseRef             string          `json:"base_ref,omitempty"`
+	BaseSHA             string          `json:"base_sha,omitempty"`
+	EnvironmentMetadata json.RawMessage `json:"environment_metadata,omitempty"`
 	identityFields
 	PlaywrightProject    string          `json:"playwright_project"`
 	LeaseTimeoutMs       int64           `json:"lease_timeout_ms"`
@@ -157,6 +162,10 @@ func (h *Handlers) BeginRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !testidentity.ValidBranchKind(body.BranchKind) {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid branch_kind")
+		return
+	}
 	identity, ierr := identityFromFields(body.identityFields)
 	if ierr != nil {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", ierr.Error())
@@ -188,6 +197,7 @@ func (h *Handlers) BeginRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	options := orchestration.BeginRunOptions{
+		BranchKind: body.BranchKind, BaseRef: body.BaseRef, BaseSHA: body.BaseSHA, EnvironmentMetadata: body.EnvironmentMetadata,
 		LeaseTimeoutMs:       body.LeaseTimeoutMs,
 		IdleTimeoutMs:        body.IdleTimeoutMs,
 		RetestOnFail:         body.RetestOnFail,

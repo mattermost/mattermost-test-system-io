@@ -1,0 +1,40 @@
+# Evaluation-only workflow: runs the triage adjudicator worker over pre-built
+# evidence packs using the repository's ANTHROPIC_API_KEY, and uploads the
+# responses as an artifact. It changes nothing in the repository, posts nothing
+# to PRs, and is meant to be dispatched from a short-lived branch that carries
+# `packs.jsonl` and the two scripts. Delete the branch afterwards.
+name: Triage adjudicator eval
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Only this many packs (0 = all)"
+        default: "0"
+      concurrency:
+        description: "Parallel API calls"
+        default: "4"
+permissions:
+  contents: read
+jobs:
+  adjudicate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "anthropic>=0.116"
+      - name: Adjudicate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 triage-eval/triage_adjudicate_worker.py triage-eval/packs.jsonl responses.jsonl \
+            --concurrency "${{ inputs.concurrency }}" --limit "${{ inputs.limit }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: triage-adjudicator-responses
+          path: responses.jsonl
+          retention-days: 7

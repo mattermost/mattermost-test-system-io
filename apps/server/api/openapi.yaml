@@ -1064,6 +1064,702 @@ paths:
       responses:
         '204': { description: Deleted }
 
+  /api/v1/triage/verdicts:
+    post:
+      tags:
+      - triage
+      summary: Compute an audited verdict, or wait up to 60 seconds
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageVerdict'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '202':
+          description: Still ingesting
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                    - pending
+                  retry_after_ms:
+                    type: integer
+                required:
+                - status
+                - retry_after_ms
+        '409':
+          description: Stored INCOMPLETE verdict, or mismatched comparison metadata
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/TriageVerdict'
+                - $ref: '#/components/schemas/Error'
+      security: &id001
+      - apiKey: []
+      - bearer: []
+      - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageVerdictRequest'
+    get:
+      tags:
+      - triage
+      summary: List recent verdicts
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageVerdict'
+                required:
+                - items
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      parameters:
+      - in: query
+        name: repository
+        schema:
+          type: string
+      - in: query
+        name: gh_pr_number
+        schema:
+          type: string
+      - in: query
+        name: commit_sha
+        schema:
+          type: string
+      - in: query
+        name: context
+        schema:
+          type: string
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+  /api/v1/triage/verdicts/{id}:
+    get:
+      tags:
+      - triage
+      summary: Get an audited verdict
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageVerdict'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+  /api/v1/triage/verdicts/{id}/evidence:
+    get:
+      tags:
+      - triage
+      summary: Evidence packs for the adjudicator (one per adjudicable finding)
+      security: *id001
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  packs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageEvidencePack'
+                required: [packs]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/triage/verdicts/{id}/adjudication:
+    post:
+      tags:
+      - triage
+      summary: Record the second judge's answers and the producer's final decision
+      security: *id001
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageAdjudication'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageVerdict'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v1/triage/verdicts/{id}/override:
+    post:
+      tags:
+      - triage
+      summary: Record a workflow-confirmed human override
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageVerdict'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                actor:
+                  type: string
+                  minLength: 1
+                label:
+                  type: string
+                  minLength: 1
+                resulting_state:
+                  type: string
+                  enum:
+                  - success
+              required:
+              - actor
+              - label
+              - resulting_state
+              additionalProperties: false
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+  /api/v1/triage/health:
+    get:
+      tags:
+      - triage
+      summary: Read health with an opaque stable cursor
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageHealth'
+                  next_cursor:
+                    type: string
+                required:
+                - items
+                - next_cursor
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      parameters:
+      - in: query
+        name: repository
+        schema:
+          type: string
+      - in: query
+        name: framework
+        schema:
+          type: string
+      - in: query
+        name: lane
+        schema:
+          type: string
+      - in: query
+        name: base_ref
+        schema:
+          type: string
+      - in: query
+        name: classification
+        schema:
+          type: string
+      - in: query
+        name: q
+        schema:
+          type: string
+      - in: query
+        name: cursor
+        schema:
+          type: string
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+  /api/v1/triage/tests/{id}:
+    get:
+      tags:
+      - triage
+      summary: Read identity, all lane health, and active quarantines
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  identity:
+                    $ref: '#/components/schemas/TriageIdentity'
+                  health:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageHealth'
+                  active_quarantine:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageQuarantine'
+                required:
+                - identity
+                - health
+                - active_quarantine
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+  /api/v1/triage/tests/{id}/observations:
+    get:
+      tags:
+      - triage
+      summary: Read observation facts with stable cursor pagination
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriageObservation'
+                  next_cursor:
+                    type: string
+                required:
+                - items
+                - next_cursor
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - in: query
+        name: lane
+        schema:
+          type: string
+      - in: query
+        name: branch_kind
+        schema:
+          type: string
+          enum:
+          - trunk
+          - pr
+          - release
+          - other
+      - in: query
+        name: since
+        schema:
+          type: string
+          format: date-time
+      - in: query
+        name: limit
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+      - in: query
+        name: cursor
+        schema:
+          type: string
+  /api/v1/triage/health/refresh:
+    post:
+      tags:
+      - triage
+      summary: 'Admin: rebuild health for a repository and trunk branch'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  changed_identities:
+                    type: integer
+                required:
+                - changed_identities
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                repository:
+                  type: string
+                  minLength: 1
+                base_ref:
+                  type: string
+                  minLength: 1
+                lane:
+                  type: string
+              required:
+              - repository
+              - base_ref
+              additionalProperties: false
+  /api/v1/triage/quarantine:
+    get:
+      tags:
+      - triage
+      summary: Get active quarantines or an opt-in runner feed
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TriageQuarantineFeedEntry'
+            text/plain:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      parameters:
+      - in: query
+        name: repository
+        schema:
+          type: string
+      - in: query
+        name: framework
+        schema:
+          type: string
+      - in: query
+        name: lane
+        schema:
+          type: string
+      - in: query
+        name: base_ref
+        schema:
+          type: string
+      - in: query
+        name: format
+        schema:
+          type: string
+          enum:
+          - json
+          - playwright-grep-invert
+          - jest-name-list
+          - spec-files
+    post:
+      tags:
+      - triage
+      summary: 'Admin: open or renew a manual quarantine'
+      responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageQuarantine'
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageQuarantineRequest'
+  /api/v1/triage/quarantine/{id}:
+    delete:
+      tags:
+      - triage
+      summary: 'Admin: release a quarantine with audit attribution'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageQuarantine'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      security: *id001
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+  /api/v1/triage/policies:
+    get:
+      tags:
+      - triage
+      summary: Read policies and shadow-mode defaults
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TriagePolicy'
+                  default_mode:
+                    type: string
+                    enum:
+                    - shadow
+                  default_thresholds:
+                    $ref: '#/components/schemas/TriageThresholds'
+                required:
+                - items
+                - default_mode
+                - default_thresholds
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      parameters:
+      - in: query
+        name: repository
+        schema:
+          type: string
+  /api/v1/triage/policies/{repository}/{context}:
+    put:
+      tags:
+      - triage
+      summary: 'Admin: set context policy; percent-encode slashes in path values'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriagePolicy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum:
+                  - 'off'
+                  - shadow
+                  - enforce
+                thresholds:
+                  $ref: '#/components/schemas/TriageThresholds'
+              required:
+              - mode
+              additionalProperties: false
+      parameters:
+      - in: path
+        name: repository
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: context
+        required: true
+        schema:
+          type: string
+  /api/v1/reports/begin:
+    post:
+      tags:
+      - triage
+      summary: Begin report group
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  report_id:
+                    type: string
+                    format: uuid
+                  upload_id:
+                    type: string
+                    format: uuid
+                  report_group_id:
+                    type: string
+                    format: uuid
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportBeginRequest'
+  /api/v1/reports/register:
+    post:
+      tags:
+      - triage
+      summary: Register report upload
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  report_id:
+                    type: string
+                    format: uuid
+                  upload_id:
+                    type: string
+                    format: uuid
+                  report_group_id:
+                    type: string
+                    format: uuid
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportRegisterRequest'
+
 components:
   securitySchemes:
     apiKey:
@@ -1567,6 +2263,25 @@ components:
       type: object
       required: [repository, commit_sha, gh_run_id, name]
       properties:
+        branch_kind:
+          type: string
+          enum:
+          - trunk
+          - pr
+          - release
+          - other
+        base_ref:
+          type: string
+          maxLength: 256
+        base_sha:
+          type: string
+          maxLength: 64
+        environment_metadata:
+          type: object
+          properties:
+            lane:
+              type: string
+              maxLength: 128
         repository:
           type: string
           minLength: 1
@@ -2135,6 +2850,899 @@ components:
         message:
           type: string
           description: Human-readable message suitable for direct display.
+
+    TriageThresholds:
+      type: object
+      properties:
+        window_days:
+          type: integer
+          minimum: 1
+        max_trunk_runs:
+          type: integer
+          minimum: 1
+        min_trunk_runs:
+          type: integer
+          minimum: 1
+        broken_streak:
+          type: integer
+          minimum: 1
+        cluster_min:
+          type: integer
+          minimum: 1
+        stale_trunk_hours:
+          type: integer
+          minimum: 1
+        auto_quarantine_after_runs:
+          type: integer
+          minimum: 1
+        release_after_passes:
+          type: integer
+          minimum: 1
+        retire_days:
+          type: integer
+          minimum: 1
+        cross_pr_min_prs:
+          type: integer
+          minimum: 0
+          description: Distinct other PRs a test must have failed on (while passing somewhere) to be flaky when trunk is clean; 0 disables.
+        area_slack:
+          type: integer
+          minimum: 0
+        skip_after_days:
+          type: integer
+          minimum: 0
+        flaky_min_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+        p_min:
+          type: number
+          minimum: 0
+          maximum: 1
+        confidence_floor:
+          type: number
+          minimum: 0
+          maximum: 1
+        max_exonerated_ratio:
+          type: number
+          minimum: 0
+          maximum: 1
+        insufficient_data_policy:
+          type: string
+          enum:
+          - block
+          - neutral
+      additionalProperties: false
+    TriagePolicy:
+      type: object
+      properties:
+        repository:
+          type: string
+        context:
+          type: string
+        mode: &id001
+          type: string
+          enum:
+          - 'off'
+          - shadow
+          - enforce
+        thresholds:
+          $ref: '#/components/schemas/TriageThresholds'
+        updated_by:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - repository
+      - context
+      - mode
+      - thresholds
+    TriageVerdictRequest:
+      type: object
+      properties:
+        composite_identity:
+          type: object
+          properties:
+            repository:
+              type: string
+              minLength: 1
+            commit_sha:
+              type: string
+              minLength: 1
+            gh_run_id:
+              type: string
+              minLength: 1
+            gh_run_attempt:
+              type: string
+              minLength: 1
+            name:
+              type: string
+              minLength: 1
+          required:
+          - repository
+          - commit_sha
+          - gh_run_id
+          - name
+          additionalProperties: false
+        context:
+          type: string
+          minLength: 1
+          maxLength: 256
+        base_ref:
+          type: string
+          maxLength: 256
+        base_sha:
+          type: string
+          maxLength: 64
+        lane:
+          type: string
+          maxLength: 128
+        changed_files:
+          type: array
+          items:
+            type: string
+            maxLength: 2048
+        as_of:
+          type: string
+          format: date-time
+          description: |
+            Admin-only replay. Evaluates the verdict using only evidence that
+            existed at this instant (trunk observations, quarantine, freshness).
+            The result is returned with the nil UUID as `id` and is never persisted.
+            Cannot be combined with `wait_for_completion_ms`.
+        wait_for_completion_ms:
+          type: integer
+          minimum: 0
+          maximum: 60000
+          default: 0
+      required:
+      - composite_identity
+      - context
+      additionalProperties: false
+    TriageFinding:
+      type: object
+      properties:
+        identity_id:
+          type: string
+        mm_t_id:
+          type: string
+        file:
+          type: string
+        full_title:
+          type: string
+        lane:
+          type: string
+        class:
+          type: string
+          enum:
+          - BROKEN_ON_TRUNK
+          - FLAKY_CONFIRMED
+          - QUARANTINED
+          - REGRESSION
+          - REGRESSION_CLUSTER
+          - REGRESSION_AREA
+          - DIVERGENT
+          - NEW_TEST
+          - OWNED_BY_PR
+          - FLAKY_SUSPICIOUS
+          - INSUFFICIENT_DATA
+          - INFRA
+        blocking:
+          type: boolean
+        reason:
+          type: string
+        trunk:
+          type: object
+          properties:
+            runs:
+              type: integer
+              minimum: 0
+            passes:
+              type: integer
+              minimum: 0
+            fails:
+              type: integer
+              minimum: 0
+            flaky:
+              type: integer
+              minimum: 0
+            consecutive_fails:
+              type: integer
+              minimum: 0
+            consecutive_passes:
+              type: integer
+              minimum: 0
+            instability_rate:
+              type: number
+              minimum: 0
+              maximum: 1
+            last_pass_at:
+              type: string
+              format: date-time
+              nullable: true
+            last_fail_at:
+              type: string
+              format: date-time
+              nullable: true
+            last_pass_sha:
+              type: string
+            last_fail_sha:
+              type: string
+            dominant_signature:
+              type: string
+            dominant_excerpt:
+              type: string
+            dominant_locus:
+              type: string
+            recent_pass:
+              type: boolean
+            latest_at:
+              type: string
+              format: date-time
+        pr:
+          type: object
+          properties:
+            fail_count:
+              type: integer
+            error_excerpt:
+              type: string
+            failure_locus:
+              type: string
+            signature_match:
+              type: boolean
+        links:
+          type: object
+          properties:
+            tsio_case_url:
+              type: string
+            tsio_history_url:
+              type: string
+            quarantine_id:
+              type: string
+            issue_url:
+              type: string
+      required:
+      - identity_id
+      - file
+      - full_title
+      - lane
+      - class
+      - blocking
+      - reason
+      - trunk
+      - pr
+      - links
+    TriageEvidencePack:
+      type: object
+      description: Everything TSIO knows about one finding; the producer adds PR title, changed files and diff hunks.
+      properties:
+        index: { type: integer }
+        test:
+          type: object
+          properties:
+            title: { type: string }
+            file: { type: string }
+            lane: { type: string }
+          required: [title, file, lane]
+        error: { type: string }
+        engine:
+          type: object
+          properties:
+            class: { type: string }
+            reason: { type: string }
+            signature_matches_trunk_dominant_failure: { type: boolean }
+          required: [class, reason, signature_matches_trunk_dominant_failure]
+        trunk_history_14d:
+          type: object
+          properties:
+            runs: { type: integer }
+            fails: { type: integer }
+            flaky: { type: integer }
+            consecutive_fails_at_head: { type: integer }
+          required: [runs, fails, flaky, consecutive_fails_at_head]
+        cross_pr_failures_14d:
+          type: object
+          properties:
+            id: { type: string }
+            other_prs_where_this_test_failed:
+              type: array
+              items: { type: string }
+            other_pr_runs_where_it_passed: { type: integer }
+          required: [id, other_prs_where_this_test_failed, other_pr_runs_where_it_passed]
+        pr:
+          type: object
+          properties:
+            number: { type: integer, nullable: true }
+            repository: { type: string }
+          required: [repository]
+        other_failures_in_same_run:
+          type: array
+          items:
+            type: object
+            properties:
+              class: { type: string }
+              title: { type: string }
+            required: [class, title]
+      required: [index, test, error, engine, trunk_history_14d, cross_pr_failures_14d, pr, other_failures_in_same_run]
+    TriageAdjudicatedFinding:
+      type: object
+      properties:
+        index: { type: integer, minimum: 0 }
+        class: { type: string }
+        cause:
+          type: string
+          enum: [caused_by_pr, flaky_environment, bug_on_master, test_bug, ""]
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        cited_evidence:
+          type: array
+          items: { type: string }
+        explanation: { type: string }
+        decision:
+          type: string
+          enum: [engine, adjudicator_unblock, adjudicator_veto, unavailable]
+        blocking: { type: boolean }
+      required: [index, class, confidence, cited_evidence, explanation, decision, blocking]
+    TriageAdjudication:
+      type: object
+      properties:
+        model: { type: string, minLength: 1 }
+        min_confidence: { type: number, minimum: 0, maximum: 1 }
+        final_verdict:
+          type: string
+          enum: [SUCCESS, FAILURE, ACTION_REQUIRED, NEUTRAL, INCOMPLETE]
+        blocking: { type: integer, minimum: 0 }
+        exonerated: { type: integer, minimum: 0 }
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/TriageAdjudicatedFinding'
+        recorded_by: { type: string }
+        recorded_at: { type: string, format: date-time }
+      required: [model, min_confidence, final_verdict, blocking, exonerated, findings]
+    TriageOverride:
+      type: object
+      properties:
+        actor:
+          type: string
+        label:
+          type: string
+        at:
+          type: string
+          format: date-time
+        resulting_state:
+          type: string
+          enum:
+          - success
+        recorded_by:
+          type: string
+      required:
+      - actor
+      - label
+      - at
+      - resulting_state
+    TriageVerdict:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        report_group_id:
+          type: string
+          format: uuid
+        mode: *id001
+        verdict:
+          type: string
+          enum:
+          - SUCCESS
+          - FAILURE
+          - ACTION_REQUIRED
+          - NEUTRAL
+          - INCOMPLETE
+        reason:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        computed_at:
+          type: string
+          format: date-time
+        engine_version:
+          type: string
+        counts:
+          type: object
+          properties:
+            passed:
+              type: integer
+              minimum: 0
+            failed:
+              type: integer
+              minimum: 0
+            flaky:
+              type: integer
+              minimum: 0
+            skipped:
+              type: integer
+              minimum: 0
+            exonerated:
+              type: integer
+              minimum: 0
+            blocking:
+              type: integer
+              minimum: 0
+            infra:
+              type: integer
+              minimum: 0
+          required:
+          - passed
+          - failed
+          - flaky
+          - skipped
+          - exonerated
+          - blocking
+          - infra
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/TriageFinding'
+        thresholds_used:
+          $ref: '#/components/schemas/TriageThresholds'
+        markdown:
+          type: object
+          properties:
+            check_summary:
+              type: string
+            pr_comment:
+              type: string
+            status_description:
+              type: string
+              maxLength: 140
+          required:
+          - check_summary
+          - pr_comment
+          - status_description
+        human_override:
+          $ref: '#/components/schemas/TriageOverride'
+        adjudication:
+          $ref: '#/components/schemas/TriageAdjudication'
+      required:
+      - id
+      - report_group_id
+      - mode
+      - verdict
+      - confidence
+      - computed_at
+      - engine_version
+      - counts
+      - findings
+      - thresholds_used
+      - markdown
+    TriageIdentity:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        repository:
+          type: string
+        framework: &id002
+          type: string
+          enum:
+          - playwright
+          - cypress
+          - detox
+          - maestro
+        stable_key:
+          type: string
+        file:
+          type: string
+        full_title:
+          type: string
+        mm_t_id:
+          type: string
+          nullable: true
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+      required:
+      - id
+      - repository
+      - framework
+      - file
+      - full_title
+    TriageHealth:
+      type: object
+      properties:
+        window_runs:
+          type: integer
+        pass_count:
+          type: integer
+        fail_count:
+          type: integer
+        flaky_count:
+          type: integer
+        consecutive_fails:
+          type: integer
+        consecutive_refreshes:
+          type: integer
+        identity_id:
+          type: string
+          format: uuid
+        lane:
+          type: string
+        base_ref:
+          type: string
+        instability_rate:
+          type: number
+        last_pass_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_fail_at:
+          type: string
+          format: date-time
+          nullable: true
+        dominant_signature:
+          type: string
+          nullable: true
+        dominant_locus:
+          type: string
+          nullable: true
+        classification:
+          type: string
+          enum:
+          - healthy
+          - flaky
+          - broken
+          - unstable
+          - unknown
+          - retired
+        classification_since:
+          type: string
+          format: date-time
+        computed_at:
+          type: string
+          format: date-time
+        engine_version:
+          type: string
+        repository:
+          type: string
+        framework: *id002
+        file:
+          type: string
+        full_title:
+          type: string
+        mm_t_id:
+          type: string
+        history:
+          type: array
+          items: &id003
+            type: string
+            enum:
+            - passed
+            - failed
+            - skipped
+            - flaky
+            - timedOut
+            - interrupted
+      required:
+      - identity_id
+      - lane
+      - base_ref
+      - classification
+      - window_runs
+      - instability_rate
+    TriageObservation:
+      type: object
+      properties:
+        id:
+          type: string
+        identity_id:
+          type: string
+        report_group_id:
+          type: string
+        test_case_id:
+          type: string
+        attempt_id:
+          type: string
+        repository:
+          type: string
+        framework:
+          type: string
+        file:
+          type: string
+        full_title:
+          type: string
+        mm_t_id:
+          type: string
+        stable_key:
+          type: string
+        branch_kind:
+          type: string
+        branch:
+          type: string
+        base_ref:
+          type: string
+        base_sha:
+          type: string
+        commit_sha:
+          type: string
+        lane:
+          type: string
+        error_signature:
+          type: string
+        error_excerpt:
+          type: string
+        failure_locus:
+          type: string
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        observed_at:
+          type: string
+          format: date-time
+        group_created_at:
+          type: string
+          format: date-time
+        attempt_index:
+          type: integer
+        retry_count:
+          type: integer
+        duration_ms:
+          type: integer
+        status: *id003
+        is_infra_stub:
+          type: boolean
+      required:
+      - id
+      - identity_id
+      - report_group_id
+      - status
+      - lane
+      - observed_at
+    TriageQuarantine:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        identity_id:
+          type: string
+          format: uuid
+        lane:
+          type: string
+          nullable: true
+        base_ref:
+          type: string
+        source:
+          type: string
+          enum:
+          - auto
+          - manual
+        reason:
+          type: string
+          enum:
+          - flaky
+          - broken
+          - manual
+        status:
+          type: string
+          enum:
+          - active
+          - released
+          - expired
+        evidence: {}
+        issue_url:
+          type: string
+          nullable: true
+        created_by:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        released_at:
+          type: string
+          format: date-time
+          nullable: true
+        released_by:
+          type: string
+          nullable: true
+      required:
+      - id
+      - identity_id
+      - base_ref
+      - source
+      - reason
+      - status
+      - created_at
+    TriageQuarantineRequest:
+      type: object
+      properties:
+        identity_id:
+          type: string
+          format: uuid
+        repository:
+          type: string
+        framework: *id002
+        file:
+          type: string
+        full_title:
+          type: string
+        lane:
+          type: string
+          maxLength: 128
+          nullable: true
+        base_ref:
+          type: string
+          minLength: 1
+        reason:
+          type: string
+          enum:
+          - manual
+        issue_url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
+      required:
+      - base_ref
+      - reason
+      additionalProperties: false
+      oneOf:
+      - required:
+        - identity_id
+      - required:
+        - repository
+        - framework
+        - file
+        - full_title
+    TriageQuarantineFeedEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        identity_id:
+          type: string
+        stable_key:
+          type: string
+        mm_t_id:
+          type: string
+        file:
+          type: string
+        full_title:
+          type: string
+        reason:
+          type: string
+        since:
+          type: string
+        issue_url:
+          type: string
+    ReportBeginRequest:
+      type: object
+      properties:
+        repository: &id004
+          type: string
+          minLength: 1
+        commit: &id005
+          type: string
+          minLength: 1
+        gh_run_id: &id006
+          type: string
+          minLength: 1
+        name: &id007
+          type: string
+          minLength: 1
+        branch: &id008
+          type: string
+          minLength: 1
+        gh_run_attempt: &id009
+          type: string
+        framework: *id002
+        run_group: &id010
+          type: string
+        gh_pr_number: &id011
+          type: integer
+          minimum: 1
+        total_reports_expected: &id012
+          type: integer
+          minimum: 1
+        branch_kind: &id013
+          type: string
+          enum:
+          - trunk
+          - pr
+          - release
+          - other
+        base_ref: &id014
+          type: string
+          maxLength: 256
+        base_sha: &id015
+          type: string
+          maxLength: 64
+        environment_metadata: &id016
+          type: object
+          properties:
+            lane:
+              type: string
+              maxLength: 128
+      required:
+      - repository
+      - commit
+      - gh_run_id
+      - framework
+      - name
+      - branch
+      - total_reports_expected
+    ReportRegisterRequest:
+      type: object
+      properties:
+        repository: *id004
+        commit: *id005
+        gh_run_id: *id006
+        name: *id007
+        branch: *id008
+        gh_run_attempt: *id009
+        framework: *id002
+        run_group: *id010
+        gh_pr_number: *id011
+        total_reports_expected: *id012
+        branch_kind: *id013
+        base_ref: *id014
+        base_sha: *id015
+        environment_metadata: *id016
+        gh_job_id:
+          type: string
+          minLength: 1
+        gh_job_name:
+          type: string
+          minLength: 1
+        json_files:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              size:
+                type: integer
+            required:
+            - path
+            - size
+        screenshots:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              size:
+                type: integer
+            required:
+            - path
+            - size
+      required:
+      - repository
+      - commit
+      - gh_run_id
+      - framework
+      - name
+      - branch
+      - gh_job_id
+      - gh_job_name
+      - json_files
 
   responses:
     BadRequest:

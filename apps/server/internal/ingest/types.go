@@ -27,6 +27,7 @@ type ExtractedCase struct {
 	DurationMs   int64
 	RetryCount   int
 	ErrorMessage *string
+	ErrorStack   *string
 	Sequence     int
 	StartTime    *time.Time
 	Attachments  []ExtractedAttachment

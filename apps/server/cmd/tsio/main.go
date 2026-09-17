@@ -26,6 +26,8 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/server"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/telemetry"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triage"
+	triagehealth "github.com/mattermost/mattermost-test-system-io/apps/server/internal/triage/health"
 )
 
 // Build-time variables, set via -ldflags.
@@ -107,6 +109,9 @@ func run() error {
 
 	hub := events.NewHub()
 	publisher := &events.Publisher{Hub: hub}
+	triageWorker := &triagehealth.Worker{Refresher: &triagehealth.Refresher{Store: &triage.Store{Pool: pool, Defaults: cfg.Triage}, Hub: hub}, Logger: logger}
+	triageWorker.Start(ctx)
+	defer triageWorker.Stop()
 
 	orchestrationStore := &orchestration.Store{Pool: pool, Logger: logger}
 	orchestrationPublisher := &orchestration.Publisher{Hub: hub, Logger: logger}
@@ -133,6 +138,7 @@ func run() error {
 	defer reportsReaper.Stop()
 
 	handler := server.Build(server.Deps{
+		TriageThresholds:       cfg.Triage,
 		Logger:                 logger,
 		Pool:                   pool,
 		Store:                  store,

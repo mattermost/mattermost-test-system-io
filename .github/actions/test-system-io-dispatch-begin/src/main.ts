@@ -27,6 +27,10 @@ interface CompositeIdentity {
   gh_run_attempt: string;
   name: string;
   branch?: string;
+  branch_kind?: string;
+  base_ref?: string;
+  base_sha?: string;
+  environment_metadata?: Record<string, unknown>;
   gh_pr_number?: number | string;
 }
 
@@ -265,6 +269,10 @@ function identityForReports(
     framework,
     name: c.name,
     branch: c.branch,
+    branch_kind: c.branch_kind,
+    base_ref: c.base_ref,
+    base_sha: c.base_sha,
+    environment_metadata: c.environment_metadata,
     total_reports_expected: totalReportsExpected,
   };
   if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;

@@ -1,4 +1,7 @@
-import { BrowserRouter, Routes, Route, useParams } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useParams, Link } from 'react-router-dom';
+import { TriageHealthPage } from '@/pages/triage_health_page';
+import { TriageTestPage } from '@/pages/triage_test_page';
+import { TriageVerdictPage } from '@/pages/triage_verdict_page';
 import { HomePage } from '@/pages/home_page';
 import { ReportPathRouter } from '@/pages/report_path_router';
 import { FilteredReportsPage } from '@/pages/filtered_reports_page';
@@ -39,6 +42,12 @@ export function App() {
                   </a>
                 </h1>
                 <div className="flex items-center gap-3">
+                  <Link
+                    to="/triage/health"
+                    className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
+                  >
+                    Triage
+                  </Link>
                   <ConnectionStatus />
                   <LoginButton />
                   <ThemeToggle />
@@ -48,6 +57,9 @@ export function App() {
           </header>
           <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
             <Routes>
+              <Route path="/triage/health" element={<TriageHealthPage />} />
+              <Route path="/triage/tests/:identityId" element={<TriageTestPage />} />
+              <Route path="/triage/verdicts/:id" element={<TriageVerdictPage />} />
               <Route path="/" element={<HomePage />} />
               <Route path="/reports" element={<HomePage />} />
               {/* Explicit prefixed routes */}

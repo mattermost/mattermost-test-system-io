@@ -185,6 +185,7 @@ func Start(t *testing.T, opts ...Option) *Env {
 		OrchestrationStore:     orchStore,
 		OrchestrationPublisher: orchPublisher,
 		Version:                "test",
+		AdminKey:               "test-admin-key",
 		// Client-facing /config + /info defaults — match the production env
 		// defaults (see internal/config).
 		UploadTimeoutMs: 3_600_000, // 1h

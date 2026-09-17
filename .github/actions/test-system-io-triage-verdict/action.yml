@@ -1,0 +1,99 @@
+name: Test System IO — triage verdict
+description: Classify failures and publish policy-controlled GitHub results using GitHub OIDC
+author: Mattermost
+inputs:
+  use-staging:
+    description: "Use staging TSIO deployment"
+    required: false
+    default: "false"
+  oidc-audience:
+    description: "GitHub OIDC audience"
+    required: false
+    default: "mattermost-test-system-io"
+  composite-identity:
+    description: "JSON repository/commit_sha/gh_run_id/gh_run_attempt/name with optional gh_pr_number"
+    required: true
+  context:
+    description: "Required commit status context"
+    required: true
+  base-ref:
+    description: "Base branch name"
+    required: false
+    default: ""
+  base-sha:
+    description: "Merge base commit SHA"
+    required: false
+    default: ""
+  lane:
+    description: "Execution lane"
+    required: false
+    default: ""
+  changed-files:
+    description: "Newline-separated changed paths"
+    required: false
+    default: ""
+  github-token:
+    description: "GitHub token; never forwarded to TSIO"
+    required: true
+  post-commit-status:
+    description: "auto or true posts only in enforce; false never posts"
+    required: false
+    default: "auto"
+  post-check-run:
+    description: "Post diagnostic check run"
+    required: false
+    default: "true"
+  post-pr-comment:
+    description: "Upsert sticky PR comment"
+    required: false
+    default: "true"
+  wait-for-completion-ms:
+    description: "Total wait budget; requests long-poll for at most 60000 ms"
+    required: false
+    default: "600000"
+  override-label:
+    description: "Additional live blanket-bypass label (like E2E/Override). Never pass a per-SHA verification label such as E2E/Verified; those persist across pushes and would waive later commits."
+    required: false
+    default: ""
+  anthropic-api-key:
+    description: "Anthropic API key for the AI second judge. Optional; without it the deterministic engine verdict stands. Never forwarded to TSIO or GitHub."
+    required: false
+    default: ""
+  adjudicator-model:
+    description: "Model for the second judge (backtested default: claude-haiku-4-5)"
+    required: false
+    default: "claude-haiku-4-5"
+  adjudicate-min-confidence:
+    description: "Minimum model confidence (0.5-1) to unblock a borderline finding; vetoes of engine exonerations always need 0.9 plus a cited diff hunk"
+    required: false
+    default: "0.85"
+  adjudicate:
+    description: "auto adjudicates whenever a key is present; false disables the second judge"
+    required: false
+    default: "auto"
+outputs:
+  verdict:
+    description: final verdict (after the second judge, when it ran)
+  engine-verdict:
+    description: deterministic engine verdict before adjudication
+  adjudicated:
+    description: "true when the second judge ran and its result was applied"
+  mode:
+    description: mode
+  confidence:
+    description: confidence
+  verdict-url:
+    description: verdict-url
+  status-state:
+    description: status-state
+  status-description:
+    description: status-description
+  blocking-count:
+    description: blocking-count
+  exonerated-count:
+    description: exonerated-count
+  human-override:
+    description: human-override
+runs:
+  using: node24
+  main: dist/index.js

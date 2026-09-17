@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	testidentity "github.com/mattermost/mattermost-test-system-io/apps/server/internal/identity"
 )
 
 // CompleteOutcome summarizes the side-effects of a successful RecordCompletion
@@ -119,6 +120,10 @@ func (s *Store) RecordCompletion(
 		// Update the per-spec attempts rows.
 		if err := updateAttemptsForCompletionTx(ctx, tx, lease.ID, results, lateReport, now); err != nil {
 			return err
+		}
+
+		if err := testidentity.EnrichLease(ctx, tx, lease.ID); err != nil {
+			return fmt.Errorf("enrich attempt identities: %w", err)
 		}
 
 		// Group results by dispatch_unit so we can compute per-unit outcomes.

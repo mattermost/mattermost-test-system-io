@@ -1,0 +1,30 @@
+{
+  "name": "test-system-io-triage-verdict",
+  "private": true,
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsup",
+    "tsc": "tsc -b",
+    "test": "vitest run",
+    "lint": "oxlint src",
+    "format": "oxfmt src --write",
+    "format:check": "oxfmt src --check"
+  },
+  "dependencies": {
+    "@actions/core": "3.0.1",
+    "@actions/github": "9.1.1",
+    "@anthropic-ai/sdk": "0.126.0"
+  },
+  "devDependencies": {
+    "@types/node": "25.6.0",
+    "oxfmt": "0.46.0",
+    "oxlint": "1.61.0",
+    "tsup": "8.5.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
+  }
+}

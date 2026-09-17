@@ -37,22 +37,27 @@ import (
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/identity"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/ingest"
 )
 
 // ---------- request/response bodies ----------
 
 type beginBody struct {
-	Repository           string `json:"repository"`
-	Commit               string `json:"commit"`
-	GHRunID              string `json:"gh_run_id"`
-	GHRunAttempt         string `json:"gh_run_attempt"`
-	Framework            string `json:"framework"`
-	Name                 string `json:"name"`
-	RunGroup             string `json:"run_group,omitempty"`
-	Branch               string `json:"branch"`
-	GHPRNumber           *int   `json:"gh_pr_number,omitempty"`
-	TotalReportsExpected int    `json:"total_reports_expected"`
+	EnvironmentMetadata  json.RawMessage `json:"environment_metadata,omitempty"`
+	BranchKind           string          `json:"branch_kind,omitempty"`
+	BaseRef              string          `json:"base_ref,omitempty"`
+	BaseSHA              string          `json:"base_sha,omitempty"`
+	Repository           string          `json:"repository"`
+	Commit               string          `json:"commit"`
+	GHRunID              string          `json:"gh_run_id"`
+	GHRunAttempt         string          `json:"gh_run_attempt"`
+	Framework            string          `json:"framework"`
+	Name                 string          `json:"name"`
+	RunGroup             string          `json:"run_group,omitempty"`
+	Branch               string          `json:"branch"`
+	GHPRNumber           *int            `json:"gh_pr_number,omitempty"`
+	TotalReportsExpected int             `json:"total_reports_expected"`
 }
 
 type declaredFile struct {
@@ -61,6 +66,9 @@ type declaredFile struct {
 }
 
 type registerBody struct {
+	BranchKind           string          `json:"branch_kind,omitempty"`
+	BaseRef              string          `json:"base_ref,omitempty"`
+	BaseSHA              string          `json:"base_sha,omitempty"`
 	Repository           string          `json:"repository"`
 	Commit               string          `json:"commit"`
 	GHRunID              string          `json:"gh_run_id"`
@@ -98,6 +106,10 @@ func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
 		return
 	}
+	if !identity.ValidBranchKind(body.BranchKind) {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid branch_kind")
+		return
+	}
 	if err := validateGroupKey(body.Repository, body.Commit, body.GHRunID, body.Framework, body.Name, body.Branch); err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -112,7 +124,7 @@ func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 
 	groupID, created, err := upsertReportGroup(r.Context(), h.Pool,
 		body.Repository, body.Commit, body.GHRunID, runAttempt, body.Framework,
-		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, &total, nil)
+		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, &total, body.EnvironmentMetadata, triageMetadata{body.BranchKind, body.BaseRef, body.BaseSHA})
 	if err != nil {
 		if errors.Is(err, errExpectedReportsMismatch) {
 			api.WriteErrorCode(w, http.StatusConflict, "EXPECTED_REPORTS_MISMATCH",
@@ -152,6 +164,10 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
 		return
 	}
+	if !identity.ValidBranchKind(body.BranchKind) {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid branch_kind")
+		return
+	}
 	if err := validateGroupKey(body.Repository, body.Commit, body.GHRunID, body.Framework, body.Name, body.Branch); err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -169,7 +185,7 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	groupID, created, err := upsertReportGroup(r.Context(), h.Pool,
 		body.Repository, body.Commit, body.GHRunID, runAttempt, body.Framework,
-		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, body.TotalReportsExpected, env)
+		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, body.TotalReportsExpected, env, triageMetadata{body.BranchKind, body.BaseRef, body.BaseSHA})
 	if err != nil {
 		if errors.Is(err, errExpectedReportsMismatch) {
 			api.WriteErrorCode(w, http.StatusConflict, "EXPECTED_REPORTS_MISMATCH",
@@ -431,27 +447,37 @@ func bumpGroupLastUpload(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 //
 // runGroup is optional. First non-empty value wins; a later conflicting
 // run_group returns errRunGroupMismatch.
+type triageMetadata struct{ BranchKind, BaseRef, BaseSHA string }
+
 func upsertReportGroup(
 	ctx context.Context, pool *pgxpool.Pool,
 	repository, commit, runID, runAttempt, framework, name, runGroup, branch string,
-	prNumber *int, totalReportsExpected *int, env json.RawMessage,
+	prNumber *int, totalReportsExpected *int, env json.RawMessage, metadata ...triageMetadata,
 ) (uuid.UUID, bool, error) {
+	m := triageMetadata{}
+	if len(metadata) > 0 {
+		m = metadata[0]
+	}
+	if m.BranchKind == "" {
+		m.BranchKind = identity.InferBranchKind(branch, runGroup+" "+name, prNumber)
+	}
 	var id uuid.UUID
 	var created bool
 	var storedTotal *int
 	var storedRunGroup *string
 	runGroupArg := strings.TrimSpace(runGroup)
 	err := pool.QueryRow(ctx, `
-		INSERT INTO report_groups (framework, name, run_group, repository, branch, commit_sha, gh_run_id, gh_run_attempt, gh_pr_number, total_reports_expected, environment_metadata)
-		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,$10, NULLIF($11::text,'')::jsonb)
+		INSERT INTO report_groups (framework, name, run_group, repository, branch, commit_sha, gh_run_id, gh_run_attempt, gh_pr_number, total_reports_expected, environment_metadata,branch_kind,base_ref,base_sha)
+		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,$10, NULLIF($11::text,'')::jsonb,$12,NULLIF($13,''),NULLIF($14,''))
 		ON CONFLICT (repository, commit_sha, gh_run_id, name, gh_run_attempt)
 		  DO UPDATE SET updated_at = now(),
 		                branch = CASE WHEN report_groups.branch = '' THEN EXCLUDED.branch ELSE report_groups.branch END,
 		                gh_pr_number = COALESCE(report_groups.gh_pr_number, EXCLUDED.gh_pr_number),
 		                environment_metadata = COALESCE(report_groups.environment_metadata, EXCLUDED.environment_metadata),
-		                run_group = COALESCE(report_groups.run_group, EXCLUDED.run_group)
+		                run_group = COALESCE(report_groups.run_group, EXCLUDED.run_group),
+ branch_kind=COALESCE(report_groups.branch_kind,EXCLUDED.branch_kind),base_ref=COALESCE(report_groups.base_ref,EXCLUDED.base_ref),base_sha=COALESCE(report_groups.base_sha,EXCLUDED.base_sha)
 		RETURNING id, (xmax = 0) AS created, total_reports_expected, run_group
-	`, framework, name, runGroupArg, repository, branch, commit, runID, runAttempt, prNumber, totalReportsExpected, string(env)).Scan(&id, &created, &storedTotal, &storedRunGroup)
+	`, framework, name, runGroupArg, repository, branch, commit, runID, runAttempt, prNumber, totalReportsExpected, string(env), m.BranchKind, m.BaseRef, m.BaseSHA).Scan(&id, &created, &storedTotal, &storedRunGroup)
 	if err != nil {
 		return uuid.Nil, false, fmt.Errorf("upsert report_group: %w", err)
 	}
@@ -843,10 +869,14 @@ func (h *Handlers) tryAutoFinalize(ctx context.Context, groupID, reportID uuid.U
 		return false
 	}
 	h.Publisher.ReportEntryUpdated(groupID, reportID, "complete", time.Now().UTC())
-	if _, err := tryAutoCompleteGroup(ctx, h.Pool, groupID); err != nil && h.Logger != nil {
+	groupCompleted, err := tryAutoCompleteGroup(ctx, h.Pool, groupID)
+	if err != nil && h.Logger != nil {
 		h.Logger.Warn("auto-complete group failed",
 			slog.String("group_id", groupID.String()),
 			slog.String("error", err.Error()))
+	}
+	if groupCompleted {
+		h.Publisher.ReportUpdated(groupID, "completed", 0, nil, time.Now().UTC())
 	}
 	return true
 }

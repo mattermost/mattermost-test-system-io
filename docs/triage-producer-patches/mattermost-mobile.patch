@@ -1,0 +1,695 @@
+diff --git a/.github/workflows/compatibility-matrix-testing.yml b/.github/workflows/compatibility-matrix-testing.yml
+index 27bf8290fa..69f75c5eb1 100644
+--- a/.github/workflows/compatibility-matrix-testing.yml
++++ b/.github/workflows/compatibility-matrix-testing.yml
+@@ -332,13 +332,12 @@ jobs:
+     name: mobile-cmt-ios${{ matrix.server.latest && '-full' || '-smoke' }}-${{ matrix.server.version }}
+     permissions:
+       contents: read
+-      # nested template mints an OIDC token for the TSIO upload.
+       id-token: write
+       actions: read
+       statuses: write
+-      # Nested template finalize reads PR labels to honour E2E/Override; a
+-      # reusable workflow cannot escalate past the caller, so grant it here too.
+       issues: read
++      checks: write
++      pull-requests: write
+     uses: ./.github/workflows/e2e-ios-template.yml
+     needs:
+       - build-ios-simulator
+@@ -379,9 +378,9 @@ jobs:
+       id-token: write
+       actions: read
+       statuses: write
+-      # Nested template finalize reads PR labels to honour E2E/Override; a
+-      # reusable workflow cannot escalate past the caller, so grant it here too.
+       issues: read
++      checks: write
++      pull-requests: write
+     uses: ./.github/workflows/e2e-ios-template.yml
+     needs:
+       - build-ios-simulator
+@@ -465,9 +464,9 @@ jobs:
+       id-token: write
+       actions: read
+       statuses: write
+-      # Nested template finalize reads PR labels to honour E2E/Override; a
+-      # reusable workflow cannot escalate past the caller, so grant it here too.
+       issues: read
++      checks: write
++      pull-requests: write
+     uses: ./.github/workflows/e2e-android-template.yml
+     needs:
+       - build-android-apk
+diff --git a/.github/workflows/e2e-android-template.yml b/.github/workflows/e2e-android-template.yml
+index 2cdc78c7b9..089c4a1e4b 100644
+--- a/.github/workflows/e2e-android-template.yml
++++ b/.github/workflows/e2e-android-template.yml
+@@ -25,6 +25,9 @@ on:
+         required: false
+       MM_MOBILE_DETOX_AWS_SECRET_ACCESS_KEY:
+         required: false
++      ANTHROPIC_API_KEY:
++        description: "Optional; enables the AI second judge in the triage action"
++        required: false
+       # Webhook sidecar. Unset means mm_blocks specs fall back to trycloudflare.
+       MM_MOBILE_E2E_WEBHOOK_PUBLIC_BASE_URL:
+         required: false
+@@ -499,15 +502,12 @@ jobs:
+       - e2e-android
+     permissions:
+       contents: read
+-      # test-system-io-report-upload authenticates via the workflow's OIDC
+-      # token and resolves gh_job_id via the GitHub API.
+       id-token: write
+       actions: read
+-      # Per-job TSIO finalize posts detox-android (or CMT <shard>).
+       statuses: write
+-      # Finalize re-reads the PR labels so a result landing after E2E/Override was
+-      # applied reports success instead of re-blocking the merge.
+       issues: read
++      pull-requests: write
++      checks: write
+     outputs:
+       TARGET_URL: ${{ steps.set-url.outputs.TARGET_URL }}
+       STATUS: ${{ steps.determine-status.outputs.STATUS }}
+@@ -522,6 +522,7 @@ jobs:
+         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+         with:
+           ref: ${{ inputs.MOBILE_VERSION }}
++          fetch-depth: 0
+ 
+       - name: ci/prepare-node-deps
+         uses: ./.github/actions/prepare-node-deps
+@@ -617,11 +618,36 @@ jobs:
+             --job-name "$TSIO_SHARD_NAME" \
+             --reason "Detox job failed or was cancelled before jest-results.json was written"
+ 
++      - name: Compute triage base and changed files
++        id: triage-metadata
++        if: always() && inputs.tsio-config != '' && vars.TSIO_UPLOAD_ENABLED != 'false'
++        env:
++          GH_TOKEN: ${{ github.token }}
++          TSIO_CONFIG: ${{ inputs.tsio-config }}
++          MOBILE_VERSION: ${{ inputs.MOBILE_VERSION }}
++          RUN_TYPE: ${{ inputs.run-type }}
++        run: |
++          set -euo pipefail
++          git fetch origin main
++          BASE_SHA=$(git merge-base origin/main "${MOBILE_VERSION:-HEAD}")
++          echo "base-sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
++          PR_NUMBER=$(jq -r '.composite_identity.gh_pr_number // empty' <<< "$TSIO_CONFIG")
++          DELIMITER="triage_$(openssl rand -hex 16)"
++          {
++            echo "changed-files<<$DELIMITER"
++            if [ "$RUN_TYPE" = PR ] && [ -n "$PR_NUMBER" ]; then
++              gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only
++            fi
++            echo "$DELIMITER"
++          } >> "$GITHUB_OUTPUT"
++
+       - name: Resolve per-job TSIO config
+         if: always() && inputs.tsio-config != '' && vars.TSIO_UPLOAD_ENABLED != 'false'
+         id: tsio-cfg
+         env:
+           TSIO_CONFIG: ${{ inputs.tsio-config }}
++          TSIO_BASE_REF: main
++          TSIO_BASE_SHA: ${{ steps.triage-metadata.outputs.base-sha }}
+           TSIO_SHARD_NAME: ${{ inputs.tsio-shard-name }}
+         run: |
+           CFG=$(bash detox/utils/resolve-tsio-job-config.sh)
+@@ -634,7 +660,7 @@ jobs:
+ 
+       - name: Upload report to Test System IO
+         if: always() && inputs.tsio-config != '' && vars.TSIO_UPLOAD_ENABLED != 'false' && hashFiles('detox/artifacts/jest-results-merged.json') != '' && steps.tsio-cfg.outputs.config != ''
+-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-report-upload@0661accd8cc9ab9dde6ec93f6f5ad40d06deb0d3 # release-0.14.0 / main@0661acc (#93 unique release tags per run)
++        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-report-upload@TSIO_TRIAGE_RELEASE_SHA # replace with the TSIO release SHA that ships the triage action (see docs/triage-producer-patches/README.md)
+         with:
+           composite-identity: ${{ toJSON(fromJSON(steps.tsio-cfg.outputs.config).composite_identity) }}
+           total-reports-expected: ${{ fromJSON(steps.tsio-cfg.outputs.config).total_reports_expected }}
+@@ -644,6 +670,24 @@ jobs:
+           json-path: detox/artifacts/jest-results-merged.json
+           screenshots-dir: detox/artifacts/
+ 
++      - name: Triage per-job TSIO failures
++        id: triage
++        continue-on-error: true
++        if: always() && inputs.tsio-config != '' && vars.TSIO_UPLOAD_ENABLED != 'false' && hashFiles('detox/artifacts/jest-results-merged.json') != '' && steps.tsio-cfg.outputs.config != ''
++        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-triage-verdict@TSIO_TRIAGE_RELEASE_SHA # replace with the TSIO release SHA that ships the triage action (see docs/triage-producer-patches/README.md)
++        with:
++          composite-identity: ${{ toJSON(fromJSON(steps.tsio-cfg.outputs.config).composite_identity) }}
++          context: ${{ fromJSON(steps.tsio-cfg.outputs.config).status_context }}
++          base-ref: main
++          base-sha: ${{ steps.triage-metadata.outputs.base-sha }}
++          lane: ${{ fromJSON(steps.tsio-cfg.outputs.config).composite_identity.environment_metadata.lane }}
++          changed-files: ${{ steps.triage-metadata.outputs.changed-files }}
++          github-token: ${{ github.token }}
++          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
++          override-label: E2E/Override
++          # tsio-report-status owns the required status, using these outputs.
++          post-commit-status: "false"
++
+       # Resolved here rather than inside tsio-report-status.js so the GitHub API
+       # call stays in the Actions layer and the reporter acts on its inputs.
+       - name: Check E2E/Override on the PR
+@@ -658,7 +702,11 @@ jobs:
+         env:
+           GITHUB_TOKEN: ${{ github.token }}
+           TSIO_CONFIG: ${{ steps.tsio-cfg.outputs.config }}
+-          E2E_OVERRIDE: ${{ steps.e2e-override.outputs.override }}
++          E2E_OVERRIDE: ${{ steps.e2e-override.outputs.override == 'true' || steps.triage.outputs.human-override == 'true' }}
++          TRIAGE_MODE: ${{ steps.triage.outputs.mode || 'unavailable' }}
++          TRIAGE_STATE: ${{ steps.triage.outputs.status-state }}
++          TRIAGE_DESCRIPTION: ${{ steps.triage.outputs.status-description }}
++          TRIAGE_URL: ${{ steps.triage.outputs.verdict-url }}
+           SPECS_RESULT: ${{ needs.generate-specs.result }}
+           E2E_RESULT: ${{ needs.e2e-android.result }}
+           JOB_STATUS: ${{ job.status }}
+@@ -685,6 +733,10 @@ jobs:
+             --context="$CONTEXT" \
+             --upstream-succeeded="$UPSTREAM" \
+             --e2e-override="$E2E_OVERRIDE" \
++            --triage-mode="$TRIAGE_MODE" \
++            --triage-state="$TRIAGE_STATE" \
++            --triage-description="$TRIAGE_DESCRIPTION" \
++            --triage-url="$TRIAGE_URL" \
+             --poll-attempts=24
+           RC=$?
+           echo "tsio-report-status exit=$RC upstream_succeeded=$UPSTREAM context=$CONTEXT"
+@@ -703,6 +755,11 @@ jobs:
+           npm ci
+           npm run e2e:save-report
+         env:
++          TRIAGE_VERDICT: ${{ steps.triage.outputs.verdict }}
++          TRIAGE_EXONERATED: ${{ steps.triage.outputs.exonerated-count }}
++          TRIAGE_BLOCKING: ${{ steps.triage.outputs.blocking-count }}
++          TRIAGE_CONFIDENCE: ${{ steps.triage.outputs.confidence }}
++          TRIAGE_URL: ${{ steps.triage.outputs.verdict-url }}
+           DETOX_AWS_ACCESS_KEY_ID: ${{ secrets.MM_MOBILE_DETOX_AWS_ACCESS_KEY_ID }}
+           DETOX_AWS_SECRET_ACCESS_KEY: ${{ secrets.MM_MOBILE_DETOX_AWS_SECRET_ACCESS_KEY }}
+           BUILD_ID: ${{ needs.generate-specs.outputs.build_id }}
+diff --git a/.github/workflows/e2e-detox-pr.yml b/.github/workflows/e2e-detox-pr.yml
+index 9e0bea795b..fe1b53762d 100644
+--- a/.github/workflows/e2e-detox-pr.yml
++++ b/.github/workflows/e2e-detox-pr.yml
+@@ -746,9 +746,9 @@ jobs:
+       statuses: write
+       actions: read
+       id-token: write
+-      # Finalize re-reads the PR labels for E2E/Override; a reusable workflow
+-      # cannot escalate past the caller, so grant it here too.
+       issues: read
++      checks: write
++      pull-requests: write
+     if: |
+       !cancelled() &&
+       needs.resolve-e2e-policy.outputs.e2e_override != 'true' &&
+@@ -782,9 +782,9 @@ jobs:
+       statuses: write
+       actions: read
+       id-token: write
+-      # Finalize re-reads the PR labels for E2E/Override; a reusable workflow
+-      # cannot escalate past the caller, so grant it here too.
+       issues: read
++      checks: write
++      pull-requests: write
+     if: |
+       !cancelled() &&
+       needs.resolve-e2e-policy.outputs.e2e_override != 'true' &&
+diff --git a/.github/workflows/e2e-detox.yml b/.github/workflows/e2e-detox.yml
+index 043428e31f..38e93a4be5 100644
+--- a/.github/workflows/e2e-detox.yml
++++ b/.github/workflows/e2e-detox.yml
+@@ -55,6 +55,14 @@ env:
+ 
+ jobs:
+   run-ios-tests:
++    permissions:
++      contents: read
++      id-token: write
++      actions: read
++      statuses: write
++      issues: read
++      checks: write
++      pull-requests: write
+     if: inputs.PLATFORM == 'ios' || inputs.PLATFORM == 'both'
+     name: iOS
+     uses: ./.github/workflows/e2e-ios-template.yml
+@@ -80,10 +88,19 @@ jobs:
+       MM_E2E_RELEASE_WEBHOOK_URL: ${{ secrets.MM_E2E_RELEASE_WEBHOOK_URL }}
+       MM_MOBILE_DETOX_AWS_ACCESS_KEY_ID: ${{ secrets.MM_MOBILE_DETOX_AWS_ACCESS_KEY_ID }}
+       MM_MOBILE_DETOX_AWS_SECRET_ACCESS_KEY: ${{ secrets.MM_MOBILE_DETOX_AWS_SECRET_ACCESS_KEY }}
++      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+       MM_MOBILE_E2E_WEBHOOK_PUBLIC_BASE_URL: ${{ secrets.MM_MOBILE_E2E_WEBHOOK_PUBLIC_BASE_URL }}
+       MM_MOBILE_E2E_CLOUDFLARED_TUNNEL_TOKEN: ${{ secrets.MM_MOBILE_E2E_CLOUDFLARED_TUNNEL_TOKEN }}
+ 
+   run-android-tests:
++    permissions:
++      contents: read
++      id-token: write
++      actions: read
++      statuses: write
++      issues: read
++      checks: write
++      pull-requests: write
+     if: inputs.PLATFORM == 'android' || inputs.PLATFORM == 'both'
+     name: Android
+     uses: ./.github/workflows/e2e-android-template.yml
+@@ -110,10 +127,19 @@ jobs:
+       MM_E2E_RELEASE_WEBHOOK_URL: ${{ secrets.MM_E2E_RELEASE_WEBHOOK_URL }}
+       MM_MOBILE_DETOX_AWS_ACCESS_KEY_ID: ${{ secrets.MM_MOBILE_DETOX_AWS_ACCESS_KEY_ID }}
+       MM_MOBILE_DETOX_AWS_SECRET_ACCESS_KEY: ${{ secrets.MM_MOBILE_DETOX_AWS_SECRET_ACCESS_KEY }}
++      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+       MM_MOBILE_E2E_WEBHOOK_PUBLIC_BASE_URL: ${{ secrets.MM_MOBILE_E2E_WEBHOOK_PUBLIC_BASE_URL }}
+       MM_MOBILE_E2E_CLOUDFLARED_TUNNEL_TOKEN: ${{ secrets.MM_MOBILE_E2E_CLOUDFLARED_TUNNEL_TOKEN }}
+ 
+   run-ios-ipad-tests:
++    permissions:
++      contents: read
++      id-token: write
++      actions: read
++      statuses: write
++      issues: read
++      checks: write
++      pull-requests: write
+     if: inputs.PLATFORM == 'ios' || inputs.PLATFORM == 'both'
+     name: iOS iPad
+     uses: ./.github/workflows/e2e-ios-template.yml
+@@ -143,5 +169,6 @@ jobs:
+       MM_E2E_RELEASE_WEBHOOK_URL: ${{ secrets.MM_E2E_RELEASE_WEBHOOK_URL }}
+       MM_MOBILE_DETOX_AWS_ACCESS_KEY_ID: ${{ secrets.MM_MOBILE_DETOX_AWS_ACCESS_KEY_ID }}
+       MM_MOBILE_DETOX_AWS_SECRET_ACCESS_KEY: ${{ secrets.MM_MOBILE_DETOX_AWS_SECRET_ACCESS_KEY }}
++      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+       MM_MOBILE_E2E_WEBHOOK_PUBLIC_BASE_URL: ${{ secrets.MM_MOBILE_E2E_WEBHOOK_PUBLIC_BASE_URL }}
+       MM_MOBILE_E2E_CLOUDFLARED_TUNNEL_TOKEN: ${{ secrets.MM_MOBILE_E2E_CLOUDFLARED_TUNNEL_TOKEN }}
+diff --git a/.github/workflows/e2e-ios-template.yml b/.github/workflows/e2e-ios-template.yml
+index 8e8c51b50b..7be930adf4 100644
+--- a/.github/workflows/e2e-ios-template.yml
++++ b/.github/workflows/e2e-ios-template.yml
+@@ -25,6 +25,9 @@ on:
+         required: false
+       MM_MOBILE_DETOX_AWS_SECRET_ACCESS_KEY:
+         required: false
++      ANTHROPIC_API_KEY:
++        description: "Optional; enables the AI second judge in the triage action"
++        required: false
+       # Webhook sidecar. Unset means mm_blocks specs fall back to trycloudflare.
+       MM_MOBILE_E2E_WEBHOOK_PUBLIC_BASE_URL:
+         required: false
+@@ -821,15 +824,12 @@ jobs:
+       - e2e-ios
+     permissions:
+       contents: read
+-      # test-system-io-report-upload authenticates via the workflow's OIDC
+-      # token and resolves gh_job_id via the GitHub API.
+       id-token: write
+       actions: read
+-      # Per-job TSIO finalize posts detox-ios|ipad (or CMT <shard>).
+       statuses: write
+-      # Finalize re-reads the PR labels so a result landing after E2E/Override was
+-      # applied reports success instead of re-blocking the merge.
+       issues: read
++      pull-requests: write
++      checks: write
+     outputs:
+       TARGET_URL: ${{ steps.set-url.outputs.TARGET_URL }}
+       STATUS: ${{ steps.determine-status.outputs.STATUS }}
+@@ -844,6 +844,7 @@ jobs:
+         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+         with:
+           ref: ${{ inputs.MOBILE_VERSION }}
++          fetch-depth: 0
+ 
+       - name: ci/prepare-node-deps
+         uses: ./.github/actions/prepare-node-deps
+@@ -948,11 +949,36 @@ jobs:
+             --job-name "$TSIO_SHARD_NAME" \
+             --reason "Detox job failed or was cancelled before jest-results.json was written"
+ 
++      - name: Compute triage base and changed files
++        id: triage-metadata
++        if: always() && inputs.tsio-config != '' && vars.TSIO_UPLOAD_ENABLED != 'false'
++        env:
++          GH_TOKEN: ${{ github.token }}
++          TSIO_CONFIG: ${{ inputs.tsio-config }}
++          MOBILE_VERSION: ${{ inputs.MOBILE_VERSION }}
++          RUN_TYPE: ${{ inputs.run-type }}
++        run: |
++          set -euo pipefail
++          git fetch origin main
++          BASE_SHA=$(git merge-base origin/main "${MOBILE_VERSION:-HEAD}")
++          echo "base-sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
++          PR_NUMBER=$(jq -r '.composite_identity.gh_pr_number // empty' <<< "$TSIO_CONFIG")
++          DELIMITER="triage_$(openssl rand -hex 16)"
++          {
++            echo "changed-files<<$DELIMITER"
++            if [ "$RUN_TYPE" = PR ] && [ -n "$PR_NUMBER" ]; then
++              gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only
++            fi
++            echo "$DELIMITER"
++          } >> "$GITHUB_OUTPUT"
++
+       - name: Resolve per-job TSIO config
+         if: always() && inputs.tsio-config != '' && vars.TSIO_UPLOAD_ENABLED != 'false'
+         id: tsio-cfg
+         env:
+           TSIO_CONFIG: ${{ inputs.tsio-config }}
++          TSIO_BASE_REF: main
++          TSIO_BASE_SHA: ${{ steps.triage-metadata.outputs.base-sha }}
+           TSIO_SHARD_NAME: ${{ inputs.tsio-shard-name }}
+         run: |
+           CFG=$(bash detox/utils/resolve-tsio-job-config.sh)
+@@ -965,7 +991,7 @@ jobs:
+ 
+       - name: Upload report to Test System IO
+         if: always() && inputs.tsio-config != '' && vars.TSIO_UPLOAD_ENABLED != 'false' && hashFiles('detox/artifacts/jest-results-merged.json') != '' && steps.tsio-cfg.outputs.config != ''
+-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-report-upload@0661accd8cc9ab9dde6ec93f6f5ad40d06deb0d3 # release-0.14.0 / main@0661acc (#93 unique release tags per run)
++        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-report-upload@TSIO_TRIAGE_RELEASE_SHA # replace with the TSIO release SHA that ships the triage action (see docs/triage-producer-patches/README.md)
+         with:
+           composite-identity: ${{ toJSON(fromJSON(steps.tsio-cfg.outputs.config).composite_identity) }}
+           total-reports-expected: ${{ fromJSON(steps.tsio-cfg.outputs.config).total_reports_expected }}
+@@ -975,6 +1001,24 @@ jobs:
+           json-path: detox/artifacts/jest-results-merged.json
+           screenshots-dir: detox/artifacts/
+ 
++      - name: Triage per-job TSIO failures
++        id: triage
++        continue-on-error: true
++        if: always() && inputs.tsio-config != '' && vars.TSIO_UPLOAD_ENABLED != 'false' && hashFiles('detox/artifacts/jest-results-merged.json') != '' && steps.tsio-cfg.outputs.config != ''
++        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-triage-verdict@TSIO_TRIAGE_RELEASE_SHA # replace with the TSIO release SHA that ships the triage action (see docs/triage-producer-patches/README.md)
++        with:
++          composite-identity: ${{ toJSON(fromJSON(steps.tsio-cfg.outputs.config).composite_identity) }}
++          context: ${{ fromJSON(steps.tsio-cfg.outputs.config).status_context }}
++          base-ref: main
++          base-sha: ${{ steps.triage-metadata.outputs.base-sha }}
++          lane: ${{ fromJSON(steps.tsio-cfg.outputs.config).composite_identity.environment_metadata.lane }}
++          changed-files: ${{ steps.triage-metadata.outputs.changed-files }}
++          github-token: ${{ github.token }}
++          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
++          override-label: E2E/Override
++          # tsio-report-status owns the required status, using these outputs.
++          post-commit-status: "false"
++
+       # Resolved here rather than inside tsio-report-status.js so the GitHub API
+       # call stays in the Actions layer and the reporter acts on its inputs.
+       - name: Check E2E/Override on the PR
+@@ -989,7 +1033,11 @@ jobs:
+         env:
+           GITHUB_TOKEN: ${{ github.token }}
+           TSIO_CONFIG: ${{ steps.tsio-cfg.outputs.config }}
+-          E2E_OVERRIDE: ${{ steps.e2e-override.outputs.override }}
++          E2E_OVERRIDE: ${{ steps.e2e-override.outputs.override == 'true' || steps.triage.outputs.human-override == 'true' }}
++          TRIAGE_MODE: ${{ steps.triage.outputs.mode || 'unavailable' }}
++          TRIAGE_STATE: ${{ steps.triage.outputs.status-state }}
++          TRIAGE_DESCRIPTION: ${{ steps.triage.outputs.status-description }}
++          TRIAGE_URL: ${{ steps.triage.outputs.verdict-url }}
+           SPECS_RESULT: ${{ needs.generate-specs.result }}
+           E2E_RESULT: ${{ needs.e2e-ios.result }}
+           JOB_STATUS: ${{ job.status }}
+@@ -1016,6 +1064,10 @@ jobs:
+             --context="$CONTEXT" \
+             --upstream-succeeded="$UPSTREAM" \
+             --e2e-override="$E2E_OVERRIDE" \
++            --triage-mode="$TRIAGE_MODE" \
++            --triage-state="$TRIAGE_STATE" \
++            --triage-description="$TRIAGE_DESCRIPTION" \
++            --triage-url="$TRIAGE_URL" \
+             --poll-attempts=24
+           RC=$?
+           echo "tsio-report-status exit=$RC upstream_succeeded=$UPSTREAM context=$CONTEXT"
+@@ -1034,6 +1086,11 @@ jobs:
+           npm ci
+           npm run e2e:save-report
+         env:
++          TRIAGE_VERDICT: ${{ steps.triage.outputs.verdict }}
++          TRIAGE_EXONERATED: ${{ steps.triage.outputs.exonerated-count }}
++          TRIAGE_BLOCKING: ${{ steps.triage.outputs.blocking-count }}
++          TRIAGE_CONFIDENCE: ${{ steps.triage.outputs.confidence }}
++          TRIAGE_URL: ${{ steps.triage.outputs.verdict-url }}
+           DETOX_AWS_ACCESS_KEY_ID: ${{ secrets.MM_MOBILE_DETOX_AWS_ACCESS_KEY_ID }}
+           DETOX_AWS_SECRET_ACCESS_KEY: ${{ secrets.MM_MOBILE_DETOX_AWS_SECRET_ACCESS_KEY }}
+           BUILD_ID: ${{ needs.generate-specs.outputs.build_id }}
+diff --git a/detox/save_report.js b/detox/save_report.js
+index 178ad41369..34925bd54a 100644
+--- a/detox/save_report.js
++++ b/detox/save_report.js
+@@ -194,6 +194,14 @@ const saveReport = async () => {
+     if (TYPE && TYPE !== 'NONE' && WEBHOOK_URL) {
+         const environment = readJsonFromFile(`${ARTIFACTS_DIR}/environment.json`);
+         const data = generateTestReport(summary, result && result.success, result && result.reportLink, environment, testCycle.key);
++        if (process.env.TRIAGE_VERDICT) {
++            const triage = {
++                title: 'TSIO triage',
++                title_link: process.env.TRIAGE_URL,
++                text: `Verdict: ${process.env.TRIAGE_VERDICT}; exonerated: ${process.env.TRIAGE_EXONERATED}; blocking: ${process.env.TRIAGE_BLOCKING}; confidence: ${process.env.TRIAGE_CONFIDENCE}`,
++            };
++            data.attachments = [...(data.attachments || []), triage];
++        }
+         await sendReport('summary report to Community channel', WEBHOOK_URL, data);
+     }
+ 
+diff --git a/detox/utils/build-tsio-job-config.js b/detox/utils/build-tsio-job-config.js
+index 0dde4d036e..0cfc8fa601 100644
+--- a/detox/utils/build-tsio-job-config.js
++++ b/detox/utils/build-tsio-job-config.js
+@@ -78,12 +78,26 @@ function buildTsioJobConfig(baseIdentity, jobKey, overrides = {}) {
+             name: reportName,
+             run_group: reportName,
+             framework,
++            ...triageMetadata(baseIdentity, jobKey),
+         },
+         total_reports_expected: 1,
+         status_context: statusContextFor(statusName),
+     };
+ }
+ 
++/** Triage metadata is additive; each platform still owns exactly one report. */
++function triageMetadata(identity, jobKey) {
++    const lane = jobKey.includes('ipad') ? 'ipad' : jobKey.includes('android') ? 'android' : 'ios';
++    return {
++        branch_kind: identity.branch_kind || (identity.gh_pr_number ? 'pr' :
++            /^(main|master)$/.test(identity.branch || '') || (identity.run_group || '').includes('-main') ? 'trunk' :
++                (identity.branch || '').startsWith('release-') ? 'release' : 'other'),
++        base_ref: process.env.TSIO_BASE_REF || identity.base_ref || 'main',
++        base_sha: process.env.TSIO_BASE_SHA || identity.base_sha || '',
++        environment_metadata: {...identity.environment_metadata, lane},
++    };
++}
++
+ /**
+  * @param {object} baseIdentity
+  * @param {string[]} jobKeys
+@@ -167,6 +181,7 @@ function webhookBucketForReportName(reportName) {
+ }
+ 
+ module.exports = {
++    triageMetadata,
+     PR_MAIN_JOBS,
+     E2E_STATUS_CONTEXTS,
+     frameworkFromJobKey,
+diff --git a/detox/utils/resolve-tsio-job-config.sh b/detox/utils/resolve-tsio-job-config.sh
+index ca295c717e..69d4f22f49 100755
+--- a/detox/utils/resolve-tsio-job-config.sh
++++ b/detox/utils/resolve-tsio-job-config.sh
+@@ -14,7 +14,7 @@ export SCRIPT_DIR
+ 
+ node <<'NODE'
+ const path = require('path');
+-const {buildTsioJobConfig, webhookBucketForReportName} = require(path.join(process.env.SCRIPT_DIR, 'build-tsio-job-config.js'));
++const {buildTsioJobConfig, webhookBucketForReportName, triageMetadata} = require(path.join(process.env.SCRIPT_DIR, 'build-tsio-job-config.js'));
+ 
+ const raw = process.env.TSIO_CONFIG;
+ const shard = process.env.TSIO_SHARD_NAME || '';
+@@ -27,6 +27,9 @@ try {
+ }
+ 
+ if (cfg.status_context && cfg.composite_identity?.name) {
++  const identity = cfg.composite_identity;
++  const jobKey = identity.name;
++  cfg.composite_identity = {...identity, ...triageMetadata(identity, jobKey)};
+   process.stdout.write(JSON.stringify(cfg));
+   process.exit(0);
+ }
+diff --git a/detox/utils/tsio-report-status.js b/detox/utils/tsio-report-status.js
+index 35a14ce0d8..dd90f77f4f 100644
+--- a/detox/utils/tsio-report-status.js
++++ b/detox/utils/tsio-report-status.js
+@@ -129,6 +129,10 @@ async function beginGroup(baseUrl, idToken, identity, totalReportsExpected) {
+         framework: identity.framework || 'detox',
+         name: identity.name,
+         branch: identity.branch,
++        branch_kind: identity.branch_kind,
++        base_ref: identity.base_ref,
++        base_sha: identity.base_sha,
++        environment_metadata: identity.environment_metadata,
+         total_reports_expected: totalReportsExpected,
+         ...(identity.run_group ? {run_group: identity.run_group} : {}),
+         ...(identity.gh_pr_number != null ? {gh_pr_number: parseInt(identity.gh_pr_number, 10)} : {}),
+@@ -202,6 +206,10 @@ async function reportTsioStatus(options) {
+         upstreamJobsSucceeded = true,
+         githubToken,
+         e2eOverride = false,
++        triageMode = 'shadow',
++        triageState,
++        triageDescription,
++        triageUrl,
+         failOnTestFailures = true,
+         pollAttempts = DEFAULT_POLL_ATTEMPTS,
+         useStaging = false,
+@@ -232,6 +240,9 @@ async function reportTsioStatus(options) {
+     const token = githubToken || process.env.GITHUB_TOKEN;
+     if (!token) throw new Error('githubToken (or GITHUB_TOKEN env) is required');
+ 
++    // Shadow/off: this is the pre-triage path, byte-for-byte. The E2E/Override
++    // flag comes from .github/actions/e2e-override-label exactly as before, and
++    // no additional GitHub reads happen before the required-status write.
+     const postStatus = async ({state, description, targetUrl}) => {
+         let final = {state, description};
+         if (e2eOverride && state === 'failure') {
+@@ -249,6 +260,54 @@ async function reportTsioStatus(options) {
+         return final.state;
+     };
+ 
++    // Enforce (or an unknown policy): the triage verdict owns the required
++    // status and raw pass/fail counts are never used as a fallback. Only here do
++    // we re-read GitHub before writing: a newer run attempt must not be
++    // overwritten, and E2E/Override is re-checked live. E2E/Verified is
++    // deliberately NOT read here — it is a per-SHA waiver applied by
++    // .github/actions/e2e-verified-status and it persists on the PR after later
++    // pushes, so honoring it live would waive every subsequent commit.
++    if (triageMode === 'enforce' || !['off', 'shadow'].includes(triageMode)) {
++        const headers = {Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json'};
++        const api = 'https://api.github.com/repos';
++        const workflowRepo = process.env.GITHUB_REPOSITORY || compositeIdentity.repository;
++        const latestRun = await fetchWithTimeout(`${api}/${workflowRepo}/actions/runs/${compositeIdentity.gh_run_id}`, {headers});
++        if (!latestRun.ok) throw new Error(`Cannot verify current run attempt: ${latestRun.status}`);
++        if ((await latestRun.json()).run_attempt > Number(compositeIdentity.gh_run_attempt)) {
++            result.stale_attempt = true;
++            result.state = 'success';
++            return result;
++        }
++        let liveOverride = e2eOverride;
++        if (compositeIdentity.gh_pr_number) {
++            // GET pull includes all labels without silently dropping labels after page one.
++            const pr = await fetchWithTimeout(`${api}/${compositeIdentity.repository}/pulls/${compositeIdentity.gh_pr_number}`, {headers});
++            if (!pr.ok) throw new Error(`Cannot verify human override: ${pr.status}`);
++            liveOverride = (await pr.json()).labels.some((label) => label.name === OVERRIDE_LABEL);
++        }
++        let final = triageMode === 'enforce' ?
++            {state: triageState === 'success' ? 'success' : 'failure', description: (triageDescription || 'TSIO triage verdict unavailable; refusing raw-result fallback').slice(0, 140)} :
++            {state: 'failure', description: 'Triage policy unavailable; refusing raw-result fallback'};
++        if (liveOverride && final.state === 'failure') {
++            final = overrideCommitStatus(final.state, final.description);
++            result.override_applied = true;
++            console.log(`${OVERRIDE_LABEL} set on PR #${compositeIdentity.gh_pr_number} — posting success for ${commitStatusContext}`);
++        }
++        result.state = final.state;
++        await createCommitStatus(token, compositeIdentity.repository, compositeIdentity.commit_sha, {
++            state: final.state,
++            context: commitStatusContext,
++            description: final.description,
++            target_url: triageUrl || runUrl,
++        });
++        if (failOnTestFailures && result.state !== 'success') {
++            const err = new Error('TSIO triage blocked the run');
++            err.exitCode = 1;
++            throw err;
++        }
++        return result;
++    }
++
+     let idToken;
+     try {
+         idToken = await mintOidcToken(audience);
+@@ -372,7 +431,7 @@ async function reportTsioStatus(options) {
+ 
+     // Under override the commit status is green; failing the step too would only
+     // turn the run red again for a result the maintainer chose to waive.
+-    if (failOnTestFailures && !result.override_applied && bothTerminal && (result.test_stats.failed || 0) > 0) {
++    if (failOnTestFailures && !result.stale_attempt && !result.override_applied && bothTerminal && (result.test_stats.failed || 0) > 0) {
+         const err = new Error('TSIO reported test failures');
+         err.exitCode = 1;
+         throw err;
+@@ -502,6 +561,10 @@ async function main() {
+             upstreamJobsSucceeded: upstreamSucceeded,
+             githubToken: args['github-token'] || process.env.GITHUB_TOKEN,
+             e2eOverride: args['e2e-override'] === 'true',
++            triageMode: args['triage-mode'] || 'shadow',
++            triageState: args['triage-state'],
++            triageDescription: args['triage-description'],
++            triageUrl: args['triage-url'],
+             failOnTestFailures,
+             pollAttempts,
+             useStaging: args['use-staging'] === 'true',
+diff --git a/detox/utils/tsio-triage-status.test.js b/detox/utils/tsio-triage-status.test.js
+new file mode 100644
+index 0000000000..5d865e32f6
+--- /dev/null
++++ b/detox/utils/tsio-triage-status.test.js
+@@ -0,0 +1,65 @@
++// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
++// See LICENSE.txt for license information.
++const {test} = require('node:test');
++const assert = require('node:assert/strict');
++const {reportTsioStatus} = require('./tsio-report-status');
++const {buildTsioJobConfig} = require('./build-tsio-job-config');
++const identity = {repository: 'mattermost/mattermost-mobile', commit_sha: 'abc', gh_run_id: '1', gh_run_attempt: '1', gh_pr_number: 3, name: 'mobile-pr-detox-ios'};
++
++for (const [name, options, expected, fails] of [
++    ['enforce blocks', {triageMode: 'enforce', triageState: 'failure'}, 'failure', true],
++    ['enforce exonerates', {triageMode: 'enforce', triageState: 'success'}, 'success', false],
++    ['override precedes enforce', {e2eOverride: true, triageMode: 'enforce', triageState: 'failure'}, 'success', false],
++    ['unknown policy blocks raw fallback', {triageMode: 'unavailable'}, 'failure', true],
++    ['verified label from an earlier commit does not waive', {triageMode: 'enforce', triageState: 'failure', verified: true}, 'failure', true],
++    ['shadow keeps the raw path with override conversion', {triageMode: 'shadow', e2eOverride: true, raw: true}, 'success', false],
++    ['removed override revokes earlier action output', {e2eOverride: true, removed: true, triageMode: 'enforce', triageState: 'failure'}, 'failure', true],
++    ['old attempt never posts', {triageMode: 'enforce', triageState: 'failure', stale: true}, undefined, false],
++]) {
++    test(name, async () => {
++        const original = global.fetch;
++        const statuses = [];
++        global.fetch = async (url, init) => {
++            if (options.raw) {
++                // Shadow must not touch GitHub before the write; only the status POST is allowed.
++                if (url.includes('/statuses/')) {statuses.push(JSON.parse(init.body)); return Response.json({});}
++                throw new Error(`Shadow made an unexpected GitHub read: ${url}`);
++            }
++            if (url.includes('/actions/runs/')) return Response.json({run_attempt: options.stale ? 2 : 1});
++            if (url.includes('/pulls/')) return Response.json({labels: options.verified ? [{name: 'E2E/Verified'}] : options.e2eOverride && !options.removed ? [{name: 'E2E/Override'}] : []});
++            if (url.includes('/statuses/')) {statuses.push(JSON.parse(init.body)); return Response.json({});}
++            throw new Error(`Unexpected API request: ${url}`);
++        };
++        try {
++            const {verified, raw, removed, stale, ...passthrough} = options;
++            const promise = reportTsioStatus({compositeIdentity: identity, githubToken: 'test-only', commitStatusContext: 'e2e-test/detox-ios', pollAttempts: 1, ...passthrough});
++            if (fails) await assert.rejects(promise, /triage blocked|TSIO/);
++            else await promise;
++            assert.equal(statuses[0]?.state, expected);
++            if (verified) assert.doesNotMatch(statuses[0].description, /verified/);
++            if (options.e2eOverride && !removed) assert.match(statuses[0].description, /^E2E\/Override — /);
++            void stale;
++        } finally {global.fetch = original;}
++    });
++}
++test('metadata keeps one report and platform lanes', () => {
++    for (const [job, lane] of [['detox-ios', 'ios'], ['detox-ipad', 'ipad'], ['detox-android', 'android']]) {
++        const config = buildTsioJobConfig({...identity, name: 'mobile-pr', base_ref: 'main', base_sha: 'def'}, job);
++        assert.equal(config.total_reports_expected, 1);
++        assert.equal(config.composite_identity.environment_metadata.lane, lane);
++        assert.equal(config.composite_identity.branch_kind, 'pr');
++        assert.equal(config.composite_identity.base_sha, 'def');
++    }
++});
++
++test('resolver enriches pre-expanded platform identity with fresh merge base', () => {
++    const {execFileSync} = require('node:child_process');
++    const config = {status_context: 'e2e-test/detox-ios', composite_identity: {...identity, base_sha: ''}};
++    const output = execFileSync('bash', [require('node:path').join(__dirname, 'resolve-tsio-job-config.sh')], {
++        env: {...process.env, TSIO_CONFIG: JSON.stringify(config), TSIO_BASE_REF: 'main', TSIO_BASE_SHA: 'resolved-base'}, encoding: 'utf8',
++    });
++    const resolved = JSON.parse(output);
++    assert.equal(resolved.composite_identity.base_sha, 'resolved-base');
++    assert.equal(resolved.composite_identity.environment_metadata.lane, 'ios');
++    assert.equal(resolved.status_context, config.status_context);
++});

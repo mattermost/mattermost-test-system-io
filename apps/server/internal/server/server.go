@@ -20,6 +20,7 @@ import (
 	apimw "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/middleware"
 	orchapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	triageapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/triage"
 	wsapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/ws"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
@@ -29,12 +30,17 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triage"
+	triagehealth "github.com/mattermost/mattermost-test-system-io/apps/server/internal/triage/health"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triage/verdict"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/webui"
 )
 
 // Deps carries the injected dependencies. All pointer-type fields are required
 // unless explicitly marked optional.
 type Deps struct {
+	TriageThresholds triage.Thresholds
+
 	Logger   *slog.Logger
 	Pool     *pgxpool.Pool
 	Store    storage.ObjectStore
@@ -103,6 +109,9 @@ func Build(d Deps) chi.Router {
 		r.Get("/api/v1/openapi.yaml", rawSpecH)
 	}
 
+	triageStore := &triage.Store{Pool: d.Pool, Defaults: d.TriageThresholds}
+	triageH := &triageapi.Handlers{Store: triageStore, Verdicts: &verdict.Store{Evidence: triageStore}, Health: &triagehealth.Refresher{Store: triageStore, Hub: d.Hub}, Hub: d.Hub, AdminKey: d.AdminKey, Logger: d.Logger}
+
 	reportsH := &reports.Handlers{
 		Pool:             d.Pool,
 		Store:            d.Store,
@@ -149,6 +158,8 @@ func Build(d Deps) chi.Router {
 		if validator != nil {
 			r.Use(validator.Middleware)
 		}
+
+		triageapi.RegisterPublic(r, triageH)
 
 		// --- Public: client config + build info ---
 		r.Get("/config", cfgH.Config)
@@ -199,6 +210,7 @@ func Build(d Deps) chi.Router {
 		// --- Protected: writes + admin-ish reads ---
 		r.Group(func(r chi.Router) {
 			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
+			triageapi.RegisterProtected(r, triageH)
 
 			// Stateless upload lifecycle: each shard authenticates and registers
 			// itself independently; no controller-side coordination is required.

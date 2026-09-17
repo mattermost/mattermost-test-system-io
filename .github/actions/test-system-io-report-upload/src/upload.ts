@@ -230,6 +230,10 @@ function identityForReports(
     framework,
     name: c.name,
     branch: c.branch,
+    branch_kind: c.branch_kind,
+    base_ref: c.base_ref,
+    base_sha: c.base_sha,
+    environment_metadata: c.environment_metadata,
     total_reports_expected: totalReportsExpected,
   };
   if (c.run_group) body.run_group = c.run_group;

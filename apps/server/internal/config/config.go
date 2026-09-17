@@ -11,10 +11,13 @@ import (
 
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/triage"
 )
 
 // Config is the fully-resolved runtime configuration.
 type Config struct {
+	Triage triage.Thresholds
+
 	HTTPListenAddr string `env:"TSIO_HTTP_LISTEN_ADDR" envDefault:":8080"`
 
 	// Database connection. Supply either TSIO_DATABASE_URL directly, or the
@@ -100,6 +103,9 @@ func Load() (Config, error) {
 	if err := env.Parse(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse env: %w", err)
 	}
+	if err := cfg.Triage.Validate(); err != nil {
+		return Config{}, fmt.Errorf("triage configuration: %w", err)
+	}
 	if cfg.DatabaseURL == "" {
 		assembled, err := assembleDatabaseURL(cfg)
 		if err != nil {
@@ -176,6 +182,11 @@ func loadDotenv() {
 }
 
 func (c Config) validate() error {
+	if c.Triage.WindowDays > 0 {
+		if err := c.Triage.Validate(); err != nil {
+			return err
+		}
+	}
 	switch c.LogFormat {
 	case "json", "text":
 	default:

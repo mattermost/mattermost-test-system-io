@@ -104,6 +104,9 @@ func walkPlaywrightSuite(
 				}
 				*seq++
 				if len(res.Errors) > 0 {
+					if stack := res.Errors[0].Stack; stack != "" {
+						tc.ErrorStack = &stack
+					}
 					msg := res.Errors[0].Message
 					if msg == "" {
 						msg = res.Errors[0].Stack

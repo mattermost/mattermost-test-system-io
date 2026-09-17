@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/identity"
 )
 
 // Totals summarizes what Consolidate wrote to the DB, so the caller can
@@ -114,11 +115,11 @@ func Consolidate(
 			var caseID uuid.UUID
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, duration_ms,
-				                        error_message, attachments, ordinal)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+				                        error_message, attachments, ordinal, error_stack)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 				RETURNING id
 			`, suiteID, c.Title, c.FullTitle, c.Status, c.RetryCount, c.DurationMs,
-				c.ErrorMessage, attachmentsJSON, c.Sequence).Scan(&caseID); err != nil {
+				c.ErrorMessage, attachmentsJSON, c.Sequence, c.ErrorStack).Scan(&caseID); err != nil {
 				return Totals{}, fmt.Errorf("insert test_case %q: %w", c.Title, err)
 			}
 			for _, sid := range perCaseLinks {
@@ -171,6 +172,10 @@ func Consolidate(
 			caseID, screenshotID); err != nil {
 			return Totals{}, fmt.Errorf("link screenshot %s: %w", screenshotID, err)
 		}
+	}
+
+	if err := identity.EnrichReport(ctx, tx, reportID); err != nil {
+		return Totals{}, fmt.Errorf("enrich identities: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

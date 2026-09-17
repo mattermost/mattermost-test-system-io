@@ -3,6 +3,7 @@ package orchestration
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,13 +11,19 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	testidentity "github.com/mattermost/mattermost-test-system-io/apps/server/internal/identity"
 )
 
 // BeginRunOptions captures the configurable knobs supplied (or defaulted) by
 // the caller at begin run. Counterparts to the corresponding columns on
 // orchestration_runs.
 type BeginRunOptions struct {
-	LeaseTimeoutMs int64
+	BranchKind          string
+	BaseRef             string
+	BaseSHA             string
+	EnvironmentMetadata json.RawMessage
+	LeaseTimeoutMs      int64
 	// IdleTimeoutMs is the inactivity window for the whole run. A run with
 	// no checkout/complete activity for this many milliseconds is reaped.
 	// Defaults to 600_000 (10 minutes) when unset.
@@ -68,6 +75,9 @@ func (s *Store) BeginRun(
 	if err := identity.Validate(); err != nil {
 		return nil, false, nil, fmt.Errorf("orchestration begin: %w", err)
 	}
+	if !testidentity.ValidBranchKind(options.BranchKind) {
+		return nil, false, nil, errors.New("invalid branch_kind")
+	}
 	if len(specPaths) == 0 {
 		return nil, false, nil, errors.New("orchestration begin: dispatch_units must not be empty")
 	}
@@ -110,7 +120,7 @@ func (s *Store) BeginRun(
 		existing = newRun
 		created = true
 
-		seedID, seedCreated, seedErr := seedReportGroupTx(ctx, tx, newRun.Identity, options.TotalReportsExpected)
+		seedID, seedCreated, seedErr := seedReportGroupTx(ctx, tx, newRun.Identity, options.TotalReportsExpected, options)
 		if seedErr != nil {
 			return seedErr
 		}
@@ -151,12 +161,19 @@ func (s *Store) BeginRun(
 // totalReportsExpected is the controller's declared shard count, frozen on
 // insert. A subsequent /reports/begin call with a different value will
 // surface 409 EXPECTED_REPORTS_MISMATCH; matching values are no-ops.
-func seedReportGroupTx(ctx context.Context, tx pgx.Tx, identity CompositeIdentity, totalReportsExpected int) (uuid.UUID, bool, error) {
+func seedReportGroupTx(ctx context.Context, tx pgx.Tx, identity CompositeIdentity, totalReportsExpected int, opts ...BeginRunOptions) (uuid.UUID, bool, error) {
+	options := BeginRunOptions{}
+	if len(opts) > 0 {
+		options = opts[0]
+	}
+	if options.BranchKind == "" {
+		options.BranchKind = testidentity.InferBranchKind(identity.Branch, identity.Name, identity.GHPRNumber)
+	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO report_groups (
 			repository, branch, commit_sha, gh_run_id, gh_run_attempt,
-			framework, name, gh_pr_number, total_reports_expected, status
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'in_progress')
+			framework, name, gh_pr_number, total_reports_expected, status,branch_kind,base_ref,base_sha,environment_metadata
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'in_progress',$10,NULLIF($11,''),NULLIF($12,''),NULLIF($13::text,'')::jsonb)
 		ON CONFLICT (repository, commit_sha, gh_run_id, name, gh_run_attempt)
 		DO UPDATE SET updated_at = now()
 		RETURNING id, (xmax = 0) AS created
@@ -164,7 +181,7 @@ func seedReportGroupTx(ctx context.Context, tx pgx.Tx, identity CompositeIdentit
 		identity.Repository, identity.Branch, identity.CommitSHA,
 		identity.GHRunID, identity.GHRunAttempt,
 		identity.Framework, identity.Name, identity.GHPRNumber,
-		totalReportsExpected,
+		totalReportsExpected, options.BranchKind, options.BaseRef, options.BaseSHA, string(options.EnvironmentMetadata),
 	)
 	var id uuid.UUID
 	var created bool

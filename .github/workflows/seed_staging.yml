@@ -7,6 +7,10 @@
 name: Seed staging from production
 
 on:
+  # workflow_dispatch only resolves workflows on the default branch; a push to
+  # this branch runs the mobile default so the seed can be exercised before merge.
+  push:
+    branches: [seed-staging]
   workflow_dispatch:
     inputs:
       repository:
@@ -51,11 +55,11 @@ jobs:
           node-version: "24"
       - name: Replay production history into staging
         env:
-          REPOSITORY: ${{ inputs.repository }}
-          DAYS: ${{ inputs.days }}
-          MAX_GROUPS: ${{ inputs.max_groups }}
-          NAME_PREFIX: ${{ inputs.name_prefix }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          REPOSITORY: ${{ inputs.repository || 'mattermost/mattermost-mobile' }}
+          DAYS: ${{ inputs.days || '14' }}
+          MAX_GROUPS: ${{ inputs.max_groups || '0' }}
+          NAME_PREFIX: ${{ inputs.name_prefix || '' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
         run: |
           extra=()
           if [ "$DRY_RUN" = "true" ]; then extra+=(--dry-run); fi

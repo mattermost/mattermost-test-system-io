@@ -441,7 +441,7 @@ export function renderAdjudication(
             ? "still blocking"
             : "agreed";
     lines.push(
-      `- **${escapeMd(titles[f.index] ?? `#${f.index}`)}** — ${f.cause.replace("_", " ")} (${Math.round(f.confidence * 100)}%, ${mark}): ${escapeMd(f.explanation)}`,
+      `- **${escapeMd(titles[f.index] ?? `#${f.index}`)}** — ${f.cause.replace(/_/g, " ")} (${Math.round(f.confidence * 100)}%, ${mark}): ${escapeMd(f.explanation)}`,
     );
   }
   return lines.join("\n");

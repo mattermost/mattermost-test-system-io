@@ -169,6 +169,7 @@ describe("adjudicate", () => {
     expect(v.findings.every((f) => !f.blocking)).toBe(true);
     expect(v.markdown.pr_comment).toContain("Second judge (m)");
     expect(v.markdown.pr_comment).toContain("unblocked");
+    expect(v.markdown.pr_comment).toContain("flaky environment (90%");
     expect(v.markdown.status_description).toBe(
       "SUCCESS: 0 blocking, 2 exonerated; AI second judge changed 2",
     );

@@ -1,8 +1,8 @@
 import { Link, useParams } from 'react-router-dom';
-import { AlertTriangle, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Scale, ShieldCheck } from 'lucide-react';
 import { useTriageVerdict } from '@/services/triage';
 import { panel, TriageStatus } from '@/pages/triage_health_page';
-import type { TriageFinding } from '@/types/triage';
+import type { TriageAdjudication, TriageFinding } from '@/types/triage';
 
 function Findings({ title, findings }: { title: string; findings: TriageFinding[] }) {
   if (!findings.length) return null;
@@ -41,6 +41,63 @@ function Findings({ title, findings }: { title: string; findings: TriageFinding[
                 {finding.pr.error_excerpt}
                 {finding.pr.failure_locus ? `\n${finding.pr.failure_locus}` : ''}
               </pre>
+            )}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+const CAUSE_LABEL: Record<string, string> = {
+  caused_by_pr: 'Caused by this PR',
+  flaky_environment: 'Flaky / environment',
+  bug_on_master: 'Bug on trunk',
+  test_bug: 'Test bug',
+};
+const DECISION_LABEL: Record<string, string> = {
+  adjudicator_unblock: 'unblocked',
+  adjudicator_veto: 'vetoed',
+  engine: 'engine decision kept',
+  unavailable: 'model unavailable',
+};
+function SecondJudge({
+  adjudication,
+  findings,
+  engineVerdict,
+}: {
+  adjudication: TriageAdjudication;
+  findings: TriageFinding[];
+  engineVerdict: string;
+}) {
+  const answered = adjudication.findings.filter((f) => f.cause);
+  return (
+    <section className={panel}>
+      <h3 className="mb-1 flex items-center gap-2 text-lg font-semibold">
+        <Scale size={18} />
+        Second judge ({adjudication.model})
+      </h3>
+      <p className="mb-3 text-sm text-gray-500">
+        Engine <strong>{engineVerdict}</strong> → final{' '}
+        <strong>{adjudication.final_verdict}</strong> · {adjudication.blocking} blocking ·{' '}
+        {adjudication.exonerated} exonerated · unblock needs ≥{' '}
+        {Math.round(adjudication.min_confidence * 100)}% with cited evidence
+      </p>
+      <div className="space-y-4">
+        {answered.map((f) => (
+          <article key={f.index} className="border-t pt-3 dark:border-gray-700">
+            <div className="flex flex-wrap items-center gap-2">
+              <TriageStatus value={f.blocking ? 'FAILURE' : 'SUCCESS'} />
+              <span className="font-medium">
+                {findings[f.index]?.full_title ?? `finding ${f.index}`}
+              </span>
+            </div>
+            <p className="mt-2 text-sm">
+              <strong>{CAUSE_LABEL[f.cause] ?? f.cause}</strong> · {Math.round(f.confidence * 100)}%
+              confidence · {DECISION_LABEL[f.decision] ?? f.decision}
+            </p>
+            <p className="mt-1 text-sm">{f.explanation}</p>
+            {f.cited_evidence.length > 0 && (
+              <p className="mt-1 text-xs text-gray-500">Cites: {f.cited_evidence.join(', ')}</p>
             )}
           </article>
         ))}
@@ -117,6 +174,13 @@ export function TriageVerdictPage() {
           </Link>
         </p>
       </section>
+      {v.adjudication && (
+        <SecondJudge
+          adjudication={v.adjudication}
+          findings={v.findings}
+          engineVerdict={v.verdict}
+        />
+      )}
       <Findings title="Blocking findings" findings={blocking} />
       <Findings title="Exonerated and neutral findings" findings={exonerated} />
       <section className={panel}>

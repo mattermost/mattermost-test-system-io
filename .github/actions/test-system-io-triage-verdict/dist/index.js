@@ -25612,7 +25612,7 @@ function renderAdjudication(a, engineVerdict, titles) {
     if (!f.cause) continue;
     const mark = f.decision === "adjudicator_unblock" ? "unblocked" : f.decision === "adjudicator_veto" ? "vetoed" : f.blocking ? "still blocking" : "agreed";
     lines.push(
-      `- **${escapeMd(titles[f.index] ?? `#${f.index}`)}** \u2014 ${f.cause.replace("_", " ")} (${Math.round(f.confidence * 100)}%, ${mark}): ${escapeMd(f.explanation)}`
+      `- **${escapeMd(titles[f.index] ?? `#${f.index}`)}** \u2014 ${f.cause.replace(/_/g, " ")} (${Math.round(f.confidence * 100)}%, ${mark}): ${escapeMd(f.explanation)}`
     );
   }
   return lines.join("\n");

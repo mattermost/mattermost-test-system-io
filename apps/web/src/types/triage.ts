@@ -108,6 +108,27 @@ export interface TriageVerdict {
   findings: TriageFinding[];
   thresholds_used: Record<string, number | string>;
   human_override?: { actor: string; label: string; at: string; resulting_state: string };
+  adjudication?: TriageAdjudication;
+}
+export interface TriageAdjudicatedFinding {
+  index: number;
+  class: string;
+  cause: 'caused_by_pr' | 'flaky_environment' | 'bug_on_master' | 'test_bug' | '';
+  confidence: number;
+  cited_evidence: string[];
+  explanation: string;
+  decision: 'engine' | 'adjudicator_unblock' | 'adjudicator_veto' | 'unavailable';
+  blocking: boolean;
+}
+export interface TriageAdjudication {
+  model: string;
+  min_confidence: number;
+  final_verdict: string;
+  blocking: number;
+  exonerated: number;
+  findings: TriageAdjudicatedFinding[];
+  recorded_by?: string;
+  recorded_at?: string;
 }
 export interface CursorPage<T> {
   items: T[];

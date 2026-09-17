@@ -1,0 +1,64 @@
+---
+# Seed staging with recent production history through the public read API and
+# the ordinary upload API, authenticated with this workflow's OIDC token (the
+# staging bootstrap policy grants uploader to mattermost/*). No secrets, no AWS.
+# Staging's database is recreated on every deploy, so run this after a deploy
+# when a demo needs history.
+name: Seed staging from production
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Repository whose history to replay (owner/name)"
+        required: true
+        default: "mattermost/mattermost-mobile"
+      days:
+        description: "How many days back"
+        required: false
+        default: "14"
+      max_groups:
+        description: "Only the newest N groups (0 = all)"
+        required: false
+        default: "0"
+      name_prefix:
+        description: "Only groups whose name starts with this"
+        required: false
+        default: ""
+      dry_run:
+        description: "List what would be replayed without uploading"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: seed-staging
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+      - name: Replay production history into staging
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          DAYS: ${{ inputs.days }}
+          MAX_GROUPS: ${{ inputs.max_groups }}
+          NAME_PREFIX: ${{ inputs.name_prefix }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          extra=()
+          if [ "$DRY_RUN" = "true" ]; then extra+=(--dry-run); fi
+          node scripts/seed-staging-from-production.mjs \
+            --repository "$REPOSITORY" --days "$DAYS" --max-groups "$MAX_GROUPS" \
+            --name-prefix "$NAME_PREFIX" "${extra[@]}"

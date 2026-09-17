@@ -1,8 +1,6 @@
-import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Activity, ArrowDownUp, ChevronRight } from 'lucide-react';
+import { Activity, ChevronRight } from 'lucide-react';
 import { useTriageHealth } from '@/services/triage';
-import type { TriageHealth } from '@/types/triage';
 
 export const panel =
   'rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800';
@@ -54,17 +52,8 @@ export function RunSparkline({ statuses }: { statuses: string[] }) {
 }
 export function TriageHealthPage() {
   const [params, setParams] = useSearchParams();
-  const [sort, setSort] = useState<'full_title' | 'instability_rate'>('instability_rate');
   const query = useTriageHealth(params);
-  const rows = useMemo(
-    () =>
-      [...(query.data?.items ?? [])].sort((a: TriageHealth, b: TriageHealth) =>
-        sort === 'full_title'
-          ? a.full_title.localeCompare(b.full_title)
-          : b.instability_rate - a.instability_rate,
-      ),
-    [query.data, sort],
-  );
+  const rows = query.data?.items ?? [];
   const filter = (key: string, value: string) => {
     const next = new URLSearchParams(params);
     next.delete('cursor');
@@ -139,21 +128,10 @@ export function TriageHealthPage() {
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b dark:border-gray-700">
-                <th className="pb-3">
-                  <button onClick={() => setSort('full_title')} className="flex items-center gap-1">
-                    Test <ArrowDownUp size={14} />
-                  </button>
-                </th>
+                <th className="pb-3">Test</th>
                 <th>Lane / branch</th>
                 <th>Health</th>
-                <th>
-                  <button
-                    onClick={() => setSort('instability_rate')}
-                    className="flex items-center gap-1"
-                  >
-                    Instability <ArrowDownUp size={14} />
-                  </button>
-                </th>
+                <th>Instability</th>
                 <th>Last 30 trunk runs</th>
               </tr>
             </thead>

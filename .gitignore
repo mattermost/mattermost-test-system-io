@@ -82,3 +82,6 @@ docker/data/
 .agents/
 .cursor/
 .gemini/
+
+# Triage backtest harness caches (large, local only)
+.triage-*cache*.json

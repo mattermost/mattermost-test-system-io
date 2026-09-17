@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -93,7 +94,7 @@ func (r *Refresher) Refresh(ctx context.Context, repository, baseRef, lane, cont
 				emitted = append(emitted, event("triage.quarantine.opened", map[string]string{"quarantine_id": qid}))
 			}
 		}
-		if class == "healthy" && s.ConsecutivePasses >= p.Thresholds.ReleaseAfterPasses {
+		if class == classificationHealthy && s.ConsecutivePasses >= p.Thresholds.ReleaseAfterPasses {
 			ids, err := releaseAuto(ctx, tx, id, lane, baseRef, now)
 			if err != nil {
 				return 0, err
@@ -168,10 +169,16 @@ func (r *Refresher) RefreshAll(ctx context.Context, since time.Time) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	// One failing scope must not starve the others; errors are collected and
+	// returned together, except cancellation, which stops the sweep.
+	var errs []error
 	for _, s := range scopes {
 		if _, err := r.Refresh(ctx, s.repo, s.branch, s.lane, ContextName(s.name, s.lane)); err != nil {
-			return fmt.Errorf("refresh %s/%s/%s: %w", s.repo, s.branch, s.lane, err)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			errs = append(errs, fmt.Errorf("refresh %s/%s/%s: %w", s.repo, s.branch, s.lane, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

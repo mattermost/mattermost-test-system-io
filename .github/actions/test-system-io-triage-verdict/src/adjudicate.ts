@@ -1,4 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { createHash } from "node:crypto";
+import type { AnthropicClient, MessageRequest, MessageResponse } from "./anthropic";
 import type { Verdict } from "./decision";
 
 export const ADJUDICABLE = new Set([
@@ -127,6 +128,12 @@ export const BORDERLINE = new Set([
   "FLAKY_SUSPICIOUS",
 ]);
 export const VETO_MIN = 0.9;
+/**
+ * At most this many findings per run are put to the model, in finding order.
+ * A run with more distinct borderline failures is not a flake question, and
+ * the backtest was scored with this bound.
+ */
+export const MAX_ADJUDICATED_FINDINGS = 8;
 
 // Prompt and schema are byte-identical to scripts/triage_adjudicate.py, which is
 // what the backtest measured. Change them there first and re-score.
@@ -254,35 +261,78 @@ export function decide(
   return { blocking: true, decision: "engine" };
 }
 
-export async function askModel(client: Anthropic, model: string, pack: Pack): Promise<Answer> {
-  const user =
+export function userMessage(pack: Pack): string {
+  return (
     "Evidence pack (JSON). Valid evidence ids to cite: " +
     evidenceIds(pack).join(", ") +
     "\n\n" +
-    JSON.stringify(pack, null, 1);
-  const response = await client.messages.create({
+    JSON.stringify(pack, null, 1)
+  );
+}
+
+/** The exact request the second judge sends; the offline harness sends the same one. */
+export function adjudicationRequest(model: string, pack: Pack): MessageRequest {
+  return {
     model,
     max_tokens: 2000,
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: user }],
+    messages: [{ role: "user", content: userMessage(pack) }],
     output_config: {
       format: { type: "json_schema", schema: SCHEMA },
       // Haiku 4.5 has no effort control; current Opus/Sonnet models do.
       ...(model.startsWith("claude-haiku") ? {} : { effort: "medium" }),
     },
-  });
+  };
+}
+
+export function parseAnswer(response: MessageResponse): Answer {
   if (response.stop_reason !== "end_turn" && response.stop_reason !== "stop_sequence")
     throw new Error(`adjudicator stop_reason=${response.stop_reason}`);
-  const text = response.content.find((b) => b.type === "text");
-  if (!text || text.type !== "text") throw new Error("adjudicator returned no text block");
+  const text = response.content.find((b) => b.type === "text" && typeof b.text === "string");
+  if (!text?.text) throw new Error("adjudicator returned no text block");
   const parsed = JSON.parse(text.text) as Answer;
   if (
     !["caused_by_pr", "flaky_environment", "bug_on_master", "test_bug"].includes(parsed.cause) ||
     typeof parsed.confidence !== "number" ||
-    !Array.isArray(parsed.cited_evidence)
+    !Array.isArray(parsed.cited_evidence) ||
+    typeof parsed.explanation !== "string"
   )
     throw new Error("adjudicator answer failed validation");
-  return parsed;
+  return {
+    cause: parsed.cause,
+    confidence: parsed.confidence,
+    cited_evidence: parsed.cited_evidence.map(String),
+    explanation: parsed.explanation,
+  };
+}
+
+export async function askModel(
+  client: AnthropicClient,
+  model: string,
+  pack: Pack,
+): Promise<Answer> {
+  return parseAnswer(await client.createMessage(adjudicationRequest(model, pack)));
+}
+
+/** Content hash of a pack (model-scoped, position-independent) used by the offline response cache. */
+export function cacheKey(model: string, pack: Pack): string {
+  const { index: _index, ...evidence } = pack;
+  return createHash("sha256")
+    .update(`${model}\n${canonical(evidence)}`)
+    .digest("hex");
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    const o = value as Record<string, unknown>;
+    return `{${Object.keys(o)
+      .sort()
+      .filter((k) => o[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
 }
 
 /** Final verdict after the matrix: the engine keeps INCOMPLETE and infra-driven ACTION_REQUIRED. */
@@ -322,14 +372,23 @@ export async function adjudicate(o: AdjudicateOptions): Promise<Adjudication> {
   const queue = o.verdict.findings
     .map((f, index) => ({ f, index, pack: byIndex.get(index) }))
     // Ownership of the failing spec itself is the engine's call, never the model's.
-    .filter((x) => x.pack && !(x.f.class === "OWNED_BY_PR" && x.pack.pr.spec_file_changed_by_pr));
+    .filter(
+      (x) =>
+        x.pack &&
+        ADJUDICABLE.has(x.f.class) &&
+        !(x.f.class === "OWNED_BY_PR" && x.pack.pr.spec_file_changed_by_pr),
+    )
+    .slice(0, MAX_ADJUDICATED_FINDINGS);
   const workers = Array.from({ length: Math.max(1, o.concurrency ?? 4) }, async () => {
     for (;;) {
       const item = queue.shift();
       if (!item) return;
       const target = findings[item.index];
       try {
-        const answer = await o.ask(item.pack!);
+        const raw = await o.ask(item.pack!);
+        // Only citations that name evidence actually in the pack can unblock or veto.
+        const known = new Set(evidenceIds(item.pack!));
+        const answer = { ...raw, cited_evidence: raw.cited_evidence.filter((c) => known.has(c)) };
         const d = decide(item.f.class, answer, o.minConfidence);
         Object.assign(target, {
           cause: answer.cause,

@@ -24,6 +24,10 @@ export function TriageTestPage() {
     );
   if (!query.data) return null;
   const { identity, health, active_quarantine: quarantine } = query.data;
+  // The quarantine scope must be unambiguous: the base branch comes from the
+  // one health row matching the entered lane, otherwise it must be typed.
+  const laneMatches = health.filter((h) => h.lane === lane);
+  const inferredBaseRef = laneMatches.length === 1 ? (laneMatches[0]?.base_ref ?? '') : '';
   return (
     <div className="space-y-5 text-gray-900 dark:text-gray-100">
       <Link to="/triage/health" className="text-sm text-blue-600 dark:text-blue-400">
@@ -104,7 +108,7 @@ export function TriageTestPage() {
             mutation.mutate({
               identity_id: identityId,
               lane: lane || null,
-              base_ref: baseRef || health[0]?.base_ref || '',
+              base_ref: baseRef || inferredBaseRef,
               reason: 'manual',
               ...(issue ? { issue_url: issue } : {}),
             });
@@ -122,10 +126,10 @@ export function TriageTestPage() {
             <input
               className={inputStyle}
               aria-label="Base branch"
-              placeholder={health[0]?.base_ref || 'Base branch'}
+              placeholder={inferredBaseRef || 'Base branch (required)'}
               value={baseRef}
               onChange={(e) => setBaseRef(e.target.value)}
-              required={!health[0]?.base_ref}
+              required={!inferredBaseRef}
             />
             <input
               className={inputStyle}

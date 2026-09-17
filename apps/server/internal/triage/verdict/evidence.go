@@ -57,8 +57,13 @@ type EvidencePack struct {
 	} `json:"other_failures_in_same_run"`
 }
 
-// EvidencePacks builds one pack per adjudicable finding of a persisted verdict,
-// using only evidence that existed at the verdict's computed_at.
+// maxEvidencePacks bounds the per-finding queries for a run where almost every
+// test failed; the action consults the model for at most a handful of findings.
+const maxEvidencePacks = 32
+
+// EvidencePacks builds one pack per adjudicable finding of a persisted verdict
+// (first maxEvidencePacks in finding order), using only evidence that existed
+// at the verdict's computed_at.
 func (s *Store) EvidencePacks(ctx context.Context, id string) ([]EvidencePack, error) {
 	v, err := s.Get(ctx, id)
 	if err != nil {
@@ -88,6 +93,9 @@ func (s *Store) EvidencePacks(ctx context.Context, id string) ([]EvidencePack, e
 	for i, f := range v.Findings {
 		if !adjudicable[f.Class] || f.IdentityID == "" {
 			continue
+		}
+		if len(packs) >= maxEvidencePacks {
+			break
 		}
 		var p EvidencePack
 		p.Index = i

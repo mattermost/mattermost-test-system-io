@@ -2,7 +2,8 @@
 # evidence packs using the repository's ANTHROPIC_API_KEY, and uploads the
 # responses as an artifact. It changes nothing in the repository, posts nothing
 # to PRs, and is meant to be dispatched from a short-lived branch that carries
-# `packs.jsonl` and the two scripts. Delete the branch afterwards.
+# `triage-eval/packs.jsonl`. Delete the branch afterwards. The worker comes from
+# the TSIO triage action package at `tsio_ref`.
 name: Triage adjudicator eval
 on:
   workflow_dispatch:
@@ -13,6 +14,9 @@ on:
       concurrency:
         description: "Parallel API calls"
         default: "4"
+      tsio_ref:
+        description: "mattermost-test-system-io ref that carries the harness"
+        default: "main"
 permissions:
   contents: read
 jobs:
@@ -23,16 +27,25 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          python-version: "3.12"
-      - run: pip install "anthropic>=0.116"
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.tsio_ref }}
+          path: tsio
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci --prefix tsio/.github/actions/test-system-io-triage-verdict
       - name: Adjudicate
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+          LIMIT: ${{ inputs.limit }}
         run: |
-          python3 triage-eval/triage_adjudicate_worker.py triage-eval/packs.jsonl responses.jsonl \
-            --concurrency "${{ inputs.concurrency }}" --limit "${{ inputs.limit }}"
+          npm run --prefix tsio/.github/actions/test-system-io-triage-verdict adjudicate-worker -- \
+            "$GITHUB_WORKSPACE/triage-eval/packs.jsonl" "$GITHUB_WORKSPACE/responses.jsonl" \
+            --concurrency "$CONCURRENCY" --limit "$LIMIT"
       - uses: actions/upload-artifact@v4
         with:
           name: triage-adjudicator-responses

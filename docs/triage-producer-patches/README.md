@@ -18,7 +18,8 @@ release SHA before opening the producer PRs:
 ```sh
 SHA=<tsio release sha>
 git apply /path/to/mattermost-mobile.patch
-grep -rl TSIO_TRIAGE_RELEASE_SHA .github/workflows | xargs sed -i '' "s/@TSIO_TRIAGE_RELEASE_SHA # replace with the TSIO release SHA that ships the triage action (see docs\/triage-producer-patches\/README.md)/@$SHA # tsio triage/"
+# perl -pi behaves the same on GNU/Linux and macOS (BSD sed would need -i '').
+grep -rl TSIO_TRIAGE_RELEASE_SHA .github/workflows | xargs perl -pi -e "s{\@TSIO_TRIAGE_RELEASE_SHA # replace with the TSIO release SHA that ships the triage action \(see docs/triage-producer-patches/README.md\)}{\@$SHA # tsio triage}"
 ```
 
 Mobile: adds merge-base and PR changed-file capture; preserves one report per

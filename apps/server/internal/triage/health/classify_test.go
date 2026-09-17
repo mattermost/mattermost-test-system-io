@@ -33,3 +33,18 @@ func TestClassification(t *testing.T) {
 		})
 	}
 }
+
+func TestClassificationHonorsLoweredFlakyMinRate(t *testing.T) {
+	now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
+	strict := triage.DefaultThresholds()
+	strict.FlakyMinRate = .01
+	// 3 flakes in 200 runs: raw rate 1.5% is under the 2% healthy cutoff, but
+	// the policy says 1% is already flaky, so the policy wins.
+	s := triage.Stats{Runs: 200, Flaky: 3, InstabilityRate: 4.0 / 202, RecentPass: true}
+	if got := Classify(s, now, now, strict); got != triage.StatusFlaky {
+		t.Fatalf("got %s want %s", got, triage.StatusFlaky)
+	}
+	if got := Classify(s, now, now, triage.DefaultThresholds()); got != classificationHealthy {
+		t.Fatalf("default policy: got %s want healthy", got)
+	}
+}

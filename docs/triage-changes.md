@@ -28,7 +28,7 @@ Applied after the independent review of this delivery:
 
 ## Backtest-driven engine changes (2026-09-17, engine `triage-4`)
 
-Findings from replaying 30 days of production PR runs (`scripts/triage_backtest.py`):
+Findings from replaying 30 days of production PR runs (`npm run backtest` in the triage action):
 
 - Quarantine entries are now filtered by `created_at <= as_of` so replays cannot see entries opened later (they leaked into historical verdicts).
 - The area rule compares against the whole evidence window instead of the last ten trunk runs; the old form contradicted `FLAKY_CONFIRMED` for tests that flaked earlier in the window.
@@ -41,7 +41,7 @@ Findings from replaying 30 days of production PR runs (`scripts/triage_backtest.
 
 - `POST /triage/verdicts` gains admin-only `as_of` replay (never persisted, nil UUID id, rejects `wait_for_completion_ms`). Covered by `TestAsOfReplayUsesOnlyEvidenceThatExisted`.
 - `tsioctl db import-remote`: seeds a database from another TSIO's public API through the real `ingest.Consolidate` path (so identities/observations are derived exactly as for live uploads).
-- `scripts/triage_backtest.py`: GitHub ground truth via `gh` + `as_of` replays → agreement report.
+- Backtest harness (`.github/actions/test-system-io-triage-verdict/src/backtest/`): GitHub ground truth via `gh` + `as_of` replays → agreement report; truth refinement; offline adjudicator scoring and a CI worker. TypeScript, sharing the action's code.
 
 ## Blast radius of every modified existing file
 
@@ -127,5 +127,5 @@ The final CI transcript and full file-content artifact are linked in the deliver
 - Migration `000034_pr_verdicts_adjudication`: `pr_verdicts.adjudication jsonb` (reversible).
 - `internal/triage/verdict/evidence.go`: `EvidencePacks` builds one pack per adjudicable finding (full error from `test_cases`, trunk window stats, cross-PR failures within the verdict's window, other failures in the run); `Adjudication.Validate` and `RecordAdjudication`.
 - API: `GET /triage/verdicts/{id}/evidence` and `POST /triage/verdicts/{id}/adjudication` (OIDC repository-bound or admin; validated against OpenAPI; emits `triage.verdict.adjudicated`). `TriageVerdict.adjudication` is returned on reads. The engine verdict is never rewritten.
-- Action: `src/adjudicate.ts` carries the prompt, JSON schema and decision matrix byte-for-byte from `scripts/triage_adjudicate.py`; `main.ts` runs the second judge for PR runs when `anthropic-api-key` is set, merges GitHub diff hunks, records the adjudication and publishes the final verdict. New inputs `anthropic-api-key`, `adjudicator-model` (`claude-haiku-4-5`), `adjudicate-min-confidence` (0.85), `adjudicate`; new outputs `engine-verdict`, `adjudicated`. Dependency `@anthropic-ai/sdk` bundled into `dist/index.js`.
+- Action: `src/adjudicate.ts` carries the prompt, JSON schema and decision matrix that the offline harness scores (the harness imports it); `src/anthropic.ts` is a 90-line fetch client for the Messages API (structured output, prompt caching, retries) so the committed bundle stays the size of the other actions; `main.ts` runs the second judge for PR runs when `anthropic-api-key` is set, merges GitHub diff hunks, records the adjudication and publishes the final verdict. New inputs `anthropic-api-key`, `adjudicator-model` (`claude-haiku-4-5`), `adjudicate-min-confidence` (0.85), `adjudicate`; new outputs `engine-verdict`, `adjudicated`. No new runtime dependency.
 - Producer patches: `ANTHROPIC_API_KEY` is declared as an optional `workflow_call` secret and threaded through the PR chains only (`e2e-tests-ci.yml → e2e-tests-playwright.yml → e2e-tests-playwright-template.yml`; `e2e-detox-pr.yml (inherit) → e2e-detox.yml → e2e-ios/android-template.yml`). Merge/release/matrix callers do not pass it, and the action skips adjudication without a PR number anyway.

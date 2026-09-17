@@ -113,7 +113,7 @@ triage packages were re-run: `internal/triage`, `internal/triage/health`,
 # Verification round 2 (backtest tooling + engine changes, 2026-09-17)
 
 Changes since round 1: `as_of` replay, `tsioctl db import-remote`,
-`scripts/triage_backtest.py`, batched identity enrichment, quarantine
+the backtest harness, batched identity enrichment, quarantine
 `created_at` filter, area-rule window, `FLAKY_CROSS_PR` rule (engine `triage-4`).
 
 ```sh
@@ -211,3 +211,61 @@ changed relative to round 2. `git apply --check` clean on both;
 `actionlint -shellcheck= -pyflakes=` clean on every touched workflow;
 `tsio-report-status.js --self-test` OK, `tsio-triage-status.test.js` 10 pass,
 `tsio-assert-results.test.sh` 9 cases passed.
+
+# Verification round 4 (TypeScript harness, fetch client, review fixes, 2026-09-17)
+
+## Harness port equivalence
+
+The Python harness was replaced by `src/backtest/` in the triage action, which
+imports the action's `adjudicate.ts`. To prove the port scores what the Python
+harness scored, the TypeScript harness rebuilt every evidence pack for the 343
+labeled mobile runs from the same backtest database, the cached model
+responses were mapped onto the new packs by content, and the matrix was
+re-applied:
+
+- 649 of the 758 packs the TypeScript harness built matched a Python pack;
+  618 byte-for-byte, 31 with evidence drift only (extra trunk/cross-PR
+  observations imported after the Python run, one fewer file in a refreshed
+  compare cache). The 109 packs without a Python counterpart are findings the
+  Python harness never asked about (its 8-finding window counted engine-certain
+  findings as slots); they fall back to the engine decision, exactly as before.
+- Cited-evidence validation (citations must name an id in the pack) changed no
+  outcome.
+
+| Ground truth (refined) | runs | engine alone | Haiku 4.5 recorded → TypeScript | Sonnet 5 recorded → TypeScript |
+|---|---|---|---|---|
+| LIKELY_REGRESSION | 143 | 3 | 3 → 3 | 3 → 3 |
+| RECURRING_ELSEWHERE | 157 | 49 | 67 → 67 | 69 → 69 |
+| WAIVED | 32 | 12 | 19 → 19 | 18 → 18 |
+| RERUN_PASSED | 11 | 2 | 2 → 2 | 2 → 2 |
+
+Scoring 343 runs from cached responses takes under four minutes (one psql
+process per finding, per-run lookups shared).
+
+## Checks
+
+```sh
+make vet fmt-check lint-server test-server test-server-e2e   # 0 issues; all e2e packages ok (contract validates the corrected begin/register schemas)
+# triage action: lint 0, tsc, 62 tests, dist 25,971 lines (was 42,778 with the SDK)
+# web: lint, format, typecheck, 56 tests, build
+# actionlint on docs/triage-producer-patches/eval/triage-adjudicate-eval.yml
+```
+
+## Review findings (CodeRabbit on PR #115)
+
+Fixed: citations validated against the pack before the matrix; only adjudicable
+classes are queued; compare `per_page` 100; `reports/begin` and
+`reports/register` response schemas match the handlers (tag `reports`);
+`healthy` respects a lowered `flaky_min_rate` (new unit test); `RefreshAll`
+continues past a failing scope and returns the joined errors; health page
+drops its page-only sort; the quarantine form infers `base_ref` only from a
+unique lane match; eval workflow passes inputs through `env`; README uses a
+portable in-place edit; harness never caches failed GitHub lookups and leaves
+failed verdict requests unscored.
+
+Not applied: "use shadcn/ui components" (the web app has no such button/input/
+card primitives; `components/ui` holds dialog, tabs, pagination and a gallery);
+"adjudicate every finding" (the 8-per-run bound is deliberate, backtested and
+now shared by production, see `docs/triage.md`); three findings on the deleted
+Python scripts, whose substance (citation validation, retry handling, GitHub
+failure handling) is covered by the TypeScript harness.

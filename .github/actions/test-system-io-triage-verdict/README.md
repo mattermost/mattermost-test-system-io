@@ -96,6 +96,22 @@ an invalid answer leaves the engine verdict in place (`adjudicated=false`).
 Secret boundaries: the Anthropic key is sent only to `api.anthropic.com`; the
 GitHub token is used only against GitHub; TSIO sees only the OIDC token. The
 evidence sent to the model includes test error text and diff hunks of the PR.
+The Messages API call goes through `src/anthropic.ts`, a small fetch client
+(structured output, prompt caching, retries on 429/5xx), not the SDK, so the
+committed bundle stays small.
+
+## Backtest harness (`src/backtest/`)
+
+TypeScript scripts run with `tsx`; they import the same `adjudicate.ts` the
+action ships, so what the backtest scores is what runs in CI. See
+`docs/triage.md` ("Backtesting" and "Second judge").
+
+```sh
+npm run backtest -- --repository mattermost/mattermost-mobile --since 2026-08-01T00:00:00Z --out backtest.md
+npm run refine-truth -- backtest.json backtest.refined.json
+npm run adjudicate-offline -- --backtest backtest.refined.json --gh-cache .triage-backtest-cache.json --out adjudicated.json
+npm run adjudicate-worker -- packs.jsonl responses.jsonl   # where ANTHROPIC_API_KEY lives
+```
 
 ```sh
 npm ci

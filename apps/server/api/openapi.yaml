@@ -1688,23 +1688,18 @@ paths:
   /api/v1/reports/begin:
     post:
       tags:
-      - triage
+      - reports
       summary: Begin report group
       responses:
         '200':
-          description: Success
+          description: Report group id (existing or newly created)
           content:
             application/json:
               schema:
                 type: object
+                required: [report_id]
                 properties:
                   report_id:
-                    type: string
-                    format: uuid
-                  upload_id:
-                    type: string
-                    format: uuid
-                  report_group_id:
                     type: string
                     format: uuid
         '400':
@@ -1725,15 +1720,16 @@ paths:
   /api/v1/reports/register:
     post:
       tags:
-      - triage
+      - reports
       summary: Register report upload
       responses:
         '200':
-          description: Success
+          description: Upload registered; declared files are split into accepted and rejected
           content:
             application/json:
               schema:
                 type: object
+                required: [report_id, upload_id, reports_in_group, accepted_json_files, rejected_json_files, accepted_screenshots, rejected_screenshots]
                 properties:
                   report_id:
                     type: string
@@ -1741,9 +1737,20 @@ paths:
                   upload_id:
                     type: string
                     format: uuid
-                  report_group_id:
-                    type: string
-                    format: uuid
+                  reports_in_group:
+                    type: integer
+                  accepted_json_files:
+                    type: array
+                    items: { type: string }
+                  rejected_json_files:
+                    type: array
+                    items: { $ref: '#/components/schemas/RejectedDeclaredFile' }
+                  accepted_screenshots:
+                    type: array
+                    items: { type: string }
+                  rejected_screenshots:
+                    type: array
+                    items: { $ref: '#/components/schemas/RejectedDeclaredFile' }
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -3686,6 +3693,14 @@ components:
       - name
       - branch
       - total_reports_expected
+    RejectedDeclaredFile:
+      type: object
+      required: [path, reason]
+      properties:
+        path: { type: string }
+        reason:
+          type: string
+          enum: [UNSAFE_PATH, TOO_LARGE]
     ReportRegisterRequest:
       type: object
       properties:

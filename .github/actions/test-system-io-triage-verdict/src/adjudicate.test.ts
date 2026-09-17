@@ -192,6 +192,53 @@ describe("adjudicate", () => {
     expect(calls).toBe(0);
     expect(result.findings[0]).toMatchObject({ decision: "engine", blocking: true, cause: "" });
   });
+  it("ignores citations that name evidence not in the pack", async () => {
+    const v = verdict("FAILURE", [
+      ["REGRESSION", true],
+      ["FLAKY_CONFIRMED", false],
+    ]);
+    const packs = [0, 1].map((i) => buildPack(tsioPack(i, v.findings[i].class), [], ""));
+    const result = await adjudicate({
+      verdict: v,
+      packs,
+      model: "m",
+      minConfidence: 0.85,
+      ask: async (pack) =>
+        pack.index === 0
+          ? answer("flaky_environment", 0.99, ["hunk_7"])
+          : answer("caused_by_pr", 0.99, ["hunk_0"]),
+    });
+    expect(result.findings[0]).toMatchObject({
+      decision: "engine",
+      blocking: true,
+      cited_evidence: [],
+    });
+    expect(result.findings[1]).toMatchObject({
+      decision: "engine",
+      blocking: false,
+      cited_evidence: [],
+    });
+  });
+  it("asks about at most MAX_ADJUDICATED_FINDINGS findings per run", async () => {
+    const classes = Array.from({ length: 12 }, () => ["REGRESSION", true] as [string, boolean]);
+    const v = verdict("FAILURE", classes);
+    const packs = classes.map((_, i) => buildPack(tsioPack(i, "REGRESSION"), [], ""));
+    let calls = 0;
+    const result = await adjudicate({
+      verdict: v,
+      packs,
+      model: "m",
+      minConfidence: 0.85,
+      ask: async () => {
+        calls++;
+        return answer("flaky_environment", 0.95, ["cross_pr"]);
+      },
+    });
+    expect(calls).toBe(8);
+    expect(result.findings.filter((f) => f.decision === "adjudicator_unblock")).toHaveLength(8);
+    expect(result.findings.slice(8).every((f) => f.decision === "engine" && f.blocking)).toBe(true);
+    expect(result.final_verdict).toBe("FAILURE");
+  });
   it("keeps the engine decision when the model errors", async () => {
     const v = verdict("FAILURE", [["REGRESSION", true]]);
     const warnings: string[] = [];
@@ -225,5 +272,57 @@ describe("finalVerdict / worthAdjudicating", () => {
     expect(worthAdjudicating(verdict("FAILURE", [["REGRESSION", true]]))).toBe(true);
     expect(worthAdjudicating(verdict("SUCCESS", [["FLAKY_CONFIRMED", false]]))).toBe(true);
     expect(worthAdjudicating(verdict("INCOMPLETE", [["REGRESSION", true]]))).toBe(false);
+  });
+});
+
+describe("cacheKey / request", () => {
+  it("is position-independent, model-scoped and key-order-insensitive", async () => {
+    const { cacheKey, adjudicationRequest, parseAnswer } = await import("./adjudicate");
+    const a = buildPack(tsioPack(0, "REGRESSION"), [], "t");
+    const b = buildPack(tsioPack(3, "REGRESSION"), [], "t");
+    expect(cacheKey("m", a)).toBe(cacheKey("m", b));
+    expect(cacheKey("m", a)).not.toBe(cacheKey("other", a));
+    const reordered = JSON.parse(
+      JSON.stringify({ ...a, test: { lane: a.test.lane, file: a.test.file, title: a.test.title } }),
+    ) as Pack;
+    expect(cacheKey("m", reordered)).toBe(cacheKey("m", a));
+    const withHunk = buildPack(
+      tsioPack(0, "REGRESSION"),
+      [{ filename: "app/login.ts", patch: "@@ -1 +1 @@" }],
+      "t",
+    );
+    const req = adjudicationRequest("claude-haiku-4-5", withHunk);
+    expect(req.output_config).toEqual({
+      format: { type: "json_schema", schema: expect.any(Object) },
+    });
+    expect(adjudicationRequest("claude-sonnet-5", a).output_config?.effort).toBe("medium");
+    expect(req.messages[0].content).toContain("hunk_0");
+    expect(req.system[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(() =>
+      parseAnswer({
+        id: "x",
+        stop_reason: "max_tokens",
+        content: [],
+        usage: { input_tokens: 0, output_tokens: 0 },
+      }),
+    ).toThrow(/stop_reason/);
+    expect(() =>
+      parseAnswer({
+        id: "x",
+        stop_reason: "end_turn",
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              cause: "nope",
+              confidence: 1,
+              cited_evidence: [],
+              explanation: "",
+            }),
+          },
+        ],
+        usage: { input_tokens: 0, output_tokens: 0 },
+      }),
+    ).toThrow(/validation/);
   });
 });

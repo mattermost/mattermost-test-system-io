@@ -16,11 +16,12 @@ func Classify(s triage.Stats, last, now time.Time, p triage.Thresholds) string {
 		return "unknown"
 	case s.ConsecutiveFails >= p.BrokenStreak:
 		return classificationBroken
-	case rawRate(s) < .02:
+	case rawRate(s) < .02 && s.InstabilityRate < p.FlakyMinRate:
 		// Raw rate: the Laplace-smoothed rate is >= 1/(runs+2) and can never
 		// reach 0.02 at the default 30-run cap, which would make auto-release
-		// unattainable.
-		return "healthy"
+		// unattainable. A policy that lowers flaky_min_rate below that still
+		// wins: a test at or above its configured flaky rate is never healthy.
+		return classificationHealthy
 	case s.InstabilityRate >= p.FlakyMinRate && s.InstabilityRate < .5 && s.RecentPass:
 		return triage.StatusFlaky
 	case s.InstabilityRate >= .5:
@@ -61,6 +62,7 @@ type Projection struct {
 }
 
 const (
+	classificationHealthy = "healthy"
 	classificationBroken  = "broken"
 	classificationRetired = "retired"
 )

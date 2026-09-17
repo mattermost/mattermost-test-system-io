@@ -10,7 +10,7 @@ import {
   upsertComment,
   type Verdict,
 } from "./decision";
-import Anthropic from "@anthropic-ai/sdk";
+import { AnthropicClient } from "./anthropic";
 import {
   adjudicate,
   applyAdjudication,
@@ -120,13 +120,13 @@ export async function run(): Promise<void> {
           owner,
           repo,
           basehead: `${base}...${identity.commit_sha}`,
-          per_page: 250,
+          per_page: 100,
         });
         files = (compare.data.files ?? []).map((f) => ({ filename: f.filename, patch: f.patch }));
         const pull = Number(identity.gh_pr_number || 0);
         if (pull) title = (await api.rest.pulls.get({ owner, repo, pull_number: pull })).data.title;
       }
-      const client = new Anthropic({ apiKey, maxRetries: 2, timeout: 60000 });
+      const client = new AnthropicClient({ apiKey, maxRetries: 2, timeoutMs: 60000 });
       const result = await adjudicate({
         verdict: v,
         packs: packs.map((p) => buildPack(p, files, title)),

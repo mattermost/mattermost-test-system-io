@@ -9,12 +9,15 @@
     "test": "vitest run",
     "lint": "oxlint src",
     "format": "oxfmt src --write",
-    "format:check": "oxfmt src --check"
+    "format:check": "oxfmt src --check",
+    "backtest": "tsx src/backtest/backtest.ts",
+    "refine-truth": "tsx src/backtest/refine-truth.ts",
+    "adjudicate-offline": "tsx src/backtest/adjudicate-offline.ts",
+    "adjudicate-worker": "tsx src/backtest/worker.ts"
   },
   "dependencies": {
     "@actions/core": "3.0.1",
-    "@actions/github": "9.1.1",
-    "@anthropic-ai/sdk": "0.126.0"
+    "@actions/github": "9.1.1"
   },
   "devDependencies": {
     "@types/node": "25.6.0",
@@ -22,7 +25,8 @@
     "oxlint": "1.61.0",
     "tsup": "8.5.1",
     "typescript": "6.0.3",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "tsx": "4.23.13"
   },
   "overrides": {
     "esbuild": "0.28.1"

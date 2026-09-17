@@ -157,7 +157,9 @@ they were at that instant; the result is returned (with the nil UUID as `id`)
 and never persisted, so backtests cannot pollute the audit trail. `as_of`
 cannot be combined with `wait_for_completion_ms`.
 
-Two tools use it:
+Two tools use it. The replay harness lives with the triage action
+(`.github/actions/test-system-io-triage-verdict/src/backtest/`, run through
+`npm run <script>` in that directory) so it shares the action's code:
 
 ```sh
 # 1. Seed a database from another deployment's public read API (no DB/S3 access
@@ -169,9 +171,14 @@ tsioctl db import-remote --base-url https://test-io.test.mattermost.com/api/v1 \
 # 2. Replay every PR run through the engine and compare with GitHub ground truth
 #    (verified/override label events, later runs of the same PR, merge base and
 #    changed files via `gh`).
-TSIO_API_KEY=... TSIO_ADMIN_KEY=... scripts/triage_backtest.py \
+TSIO_API_KEY=... TSIO_ADMIN_KEY=... npm run backtest -- \
   --base-url http://localhost:8080/api/v1 --repository mattermost/mattermost-mobile \
   --since 2026-07-18T00:00:00Z --out backtest-mobile.md
+
+# 3. Optional: split FIXED_BY_AUTHOR into LIKELY_REGRESSION (a failing test was
+#    unique to the PR) and RECURRING_ELSEWHERE (every failing test also failed
+#    on other PRs within ±7 days), from raw observations in the backtest DB.
+npm run refine-truth -- backtest-mobile.json backtest-mobile.refined.json
 ```
 
 The report buckets each failing PR run as WAIVED (a maintainer applied the
@@ -311,13 +318,20 @@ Decision matrix:
 | borderline | `flaky_environment` / `bug_on_master` / `test_bug` ≥ 0.85 citing cross-PR recurrence or a hunk | unblock, else block |
 
 The adjudicator can never unblock an infrastructure failure or a spec the PR
-edited, and an unavailable model leaves the engine's decision in place. It is
+edited, and an unavailable model leaves the engine's decision in place. At most
+eight findings per run are put to the model (in finding order; the rest keep
+the engine's decision): a run with more distinct borderline failures is not a
+flake question, and the model bill stays bounded for a PR that breaks
+everything. It is
 scored offline against the backtest ground truth before it gets any authority:
-`scripts/triage_adjudicate.py --dry-run` builds the packs and estimates tokens,
-the real run caches every response by evidence hash and prints the
-engine-vs-adjudicated agreement table. Any change to the prompt, schema or
-thresholds is made in `scripts/triage_adjudicate.py` first, re-scored
-(`docs/backtests/2026-09-17-adjudicator-mobile.md` is the baseline: Haiku 4.5
-unblocked 67 of 157 recurring-elsewhere runs and 19 of 32 waived runs with 0 of
-143 likely regressions unblocked), then copied verbatim into
-`src/adjudicate.ts`.
+`npm run adjudicate-offline -- --dry-run` builds the packs and estimates
+tokens; the real run caches every response by evidence hash and prints the
+engine-vs-adjudicated agreement table. Without a local key, `--dump-packs`
+writes the packs and `npm run adjudicate-worker` (or the eval workflow in
+`docs/triage-producer-patches/eval/`) answers them where the key lives;
+`--import-responses` scores the answers. The harness imports the action's
+`adjudicate.ts`, so the prompt, schema, pack merge and matrix that were scored
+are the ones that run in CI; there is nothing to copy. Baseline:
+`docs/backtests/2026-09-17-adjudicator-mobile.md` (Haiku 4.5 unblocked 67 of
+157 recurring-elsewhere runs and 19 of 32 waived runs with 0 of 143 likely
+regressions unblocked). Re-score before changing a threshold or the prompt.

@@ -105,7 +105,7 @@ export function psqlMany(sqls: string[]): string[] {
 /** Dollar-quote a literal for psql with a tag that does not occur in the value. */
 export function q(s: string): string {
   let tag = "$q$";
-  while (s.includes(tag)) tag = `$q${tag.length}$`;
+  for (let n = 1; s.includes(tag); n++) tag = `$q${n}$`;
   return tag + s + tag;
 }
 

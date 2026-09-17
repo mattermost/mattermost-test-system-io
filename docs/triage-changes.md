@@ -4,7 +4,7 @@ All changes remain local on `codex/flaky-test-quarantine`. No commits, pushes, d
 
 ## Deliverables
 
-1. Seven reversible migrations; shared identity normalization/enrichment; ingest and completion transaction hooks; idempotent backfill CLI; normalization/concurrency/PostgreSQL tests.
+1. Eight reversible migrations (`000027`–`000034`); shared identity normalization/enrichment; ingest and completion transaction hooks; idempotent backfill CLI; normalization/concurrency/PostgreSQL tests.
 2. Rolling health worker, completion subscription, recovery/nightly refresh, audited auto-quarantine lifecycle and context-specific lane alarm.
 3. Pure versioned verdict engine, ordered rules, probability/chronology/cluster/area/infra guards, confidence, deterministic audit hashing and markdown.
 4. Authenticated/admin triage API, public reads, full OpenAPI contracts, long polling, four quarantine feeds and event publishing.

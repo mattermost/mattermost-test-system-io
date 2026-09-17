@@ -5,6 +5,7 @@ describe("backtest lib", () => {
   it("dollar-quotes without altering the value, even when it contains the tag", () => {
     expect(q("plain")).toBe("$q$plain$q$");
     expect(q("costs $5")).toBe("$q$costs $5$q$");
+    expect(q("$q$ and $q1$ and $q2$")).toBe("$q3$$q$ and $q1$ and $q2$$q3$");
     const tricky = "has $q$ inside";
     const quoted = q(tricky);
     expect(quoted.startsWith("$q")).toBe(true);

@@ -295,6 +295,26 @@ jobs:
         working-directory: infra
         run: npm ci
 
+      # Staging Postgres is ephemeral and must be recreated BEFORE any app task
+      # definition change. When CDK refreshes the app task definition it rolls
+      # the new image out immediately; if that image's migrations do not line
+      # up with the schema left by the previous deploy (for example a PR built
+      # from another branch), auto-migrate fails, the task crash-loops, and
+      # CloudFormation waits on the service for hours before rolling back.
+      - name: Force new PostgreSQL deployment
+        run: |
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$PG_SERVICE" \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Wait for PostgreSQL to be healthy
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$PG_SERVICE"
+
       # Must precede the image-swap steps below. The image swaps are
       # field-level patches — they copy the existing task definition and
       # replace only `image`, so any new env var, secret binding, or IAM
@@ -312,20 +332,6 @@ jobs:
           npx cdk deploy StagingAppStack \
             --require-approval never \
             -c imageTag="${IMAGE_TAG}"
-
-      - name: Force new PostgreSQL deployment
-        run: |
-          aws ecs update-service \
-            --cluster "$CLUSTER" \
-            --service "$PG_SERVICE" \
-            --force-new-deployment \
-            --no-cli-pager
-
-      - name: Wait for PostgreSQL to be healthy
-        run: |
-          aws ecs wait services-stable \
-            --cluster "$CLUSTER" \
-            --services "$PG_SERVICE"
 
       - name: Fetch latest release tag
         id: release

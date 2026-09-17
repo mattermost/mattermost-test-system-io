@@ -322,24 +322,6 @@ jobs:
           echo "::error::PostgreSQL service did not stabilize within 30 minutes"
           exit 1
 
-      # Must precede the image-swap steps below. The image swaps are
-      # field-level patches — they copy the existing task definition and
-      # replace only `image`, so any new env var, secret binding, or IAM
-      # grant added to StagingAppStack only reaches staging when CDK has
-      # refreshed the task definition first.
-      - name: Deploy StagingAppStack
-        if: steps.infra-changed.outputs.should_deploy == 'true'
-        working-directory: infra
-        # Required by infra/lib/config.ts; synth fails fast if unset.
-        # Locally these come from infra/.env (gitignored).
-        env:
-          ROUTE53_ZONE_ID: ${{ secrets.ROUTE53_ZONE_ID }}
-          CERTIFICATE_ARN: ${{ secrets.CERTIFICATE_ARN }}
-        run: |
-          npx cdk deploy StagingAppStack \
-            --require-approval never \
-            -c imageTag="${IMAGE_TAG}"
-
       - name: Fetch latest release tag
         id: release
         env:
@@ -359,6 +341,37 @@ jobs:
             echo "has_release=true" >> "$GITHUB_OUTPUT"
             echo "Latest release: ${LATEST_RELEASE}"
           fi
+
+      # Must precede the image-swap steps below. The image swaps are
+      # field-level patches — they copy the existing task definition and
+      # replace only `image`, so any new env var, secret binding, or IAM
+      # grant added to StagingAppStack only reaches staging when CDK has
+      # refreshed the task definition first.
+      #
+      # CDK deploys the *release* image, not the build under test: the fresh
+      # database must be migrated by the release first and by the new build
+      # second (the beta swap below), never the other way round. A release
+      # binary cannot start on a database already carrying a newer build's
+      # migrations (golang-migrate refuses an unknown current version).
+      - name: Deploy StagingAppStack
+        if: steps.infra-changed.outputs.should_deploy == 'true'
+        working-directory: infra
+        # Required by infra/lib/config.ts; synth fails fast if unset.
+        # Locally these come from infra/.env (gitignored).
+        env:
+          ROUTE53_ZONE_ID: ${{ secrets.ROUTE53_ZONE_ID }}
+          CERTIFICATE_ARN: ${{ secrets.CERTIFICATE_ARN }}
+          HAS_RELEASE: ${{ steps.release.outputs.has_release }}
+          LATEST_RELEASE: ${{ steps.release.outputs.latest_release }}
+        run: |
+          CDK_IMAGE_TAG="${IMAGE_TAG}"
+          if [ "$HAS_RELEASE" = "true" ]; then
+            CDK_IMAGE_TAG="${LATEST_RELEASE#release-}"
+          fi
+          echo "CDK task definition image tag: ${CDK_IMAGE_TAG}"
+          npx cdk deploy StagingAppStack \
+            --require-approval never \
+            -c imageTag="${CDK_IMAGE_TAG}"
 
       - name: Deploy latest release version first
         if: steps.release.outputs.has_release == 'true'

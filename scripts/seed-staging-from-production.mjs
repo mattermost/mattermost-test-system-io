@@ -57,16 +57,35 @@ async function getJSON(url) {
   if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
   return res.json();
 }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** POST to the target; 429/5xx and network errors are retried with backoff. */
 async function post(path, body) {
-  const res = await fetch(`${TARGET}/api/v1${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: await authHeader() },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60000),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`POST ${path} -> ${res.status} ${text.slice(0, 200)}`);
-  return JSON.parse(text);
+  let last;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt) await sleep(2000 * 2 ** (attempt - 1));
+    try {
+      const res = await fetch(`${TARGET}/api/v1${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: await authHeader() },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(60000),
+      });
+      const text = await res.text();
+      if (res.ok) return JSON.parse(text);
+      last = new Error(`POST ${path} -> ${res.status} ${text.slice(0, 200)}`);
+      if (res.status !== 429 && res.status < 500) throw last;
+    } catch (e) {
+      last = e;
+      if (String(e).includes("-> 4")) throw e;
+    }
+  }
+  throw last;
+}
+/** True when the target already holds a completed group for this run (re-runs fill gaps only). */
+async function alreadySeeded(g) {
+  const q = new URLSearchParams({ repository: g.repository, commit: g.commit, name: g.name, limit: "20" });
+  const page = await getJSON(`${TARGET}/api/v1/reports?${q}`);
+  return (page.reports ?? []).some((t) => String(t.gh_run_id) === String(g.gh_run_id) && String(t.gh_run_attempt || "1") === String(g.gh_run_attempt || "1") && t.status === "completed");
 }
 
 // 1. Production groups in the window, oldest first.
@@ -90,6 +109,10 @@ const stats = { replayed: 0, skipped: 0, failed: 0, tests: 0 };
 for (const [i, g] of selected.entries()) {
   const tag = `[${i + 1}/${selected.length}] ${g.name} ${g.commit.slice(0, 7)}${g.gh_pr_number ? ` PR ${g.gh_pr_number}` : ""}`;
   try {
+    if (!DRY && (await alreadySeeded(g))) {
+      stats.skipped++;
+      continue;
+    }
     const detail = await getJSON(`${SOURCE}/api/v1/reports/${g.id}`);
     const reports = detail.reports ?? [];
     if (reports.length !== 1) {
@@ -123,6 +146,8 @@ for (const [i, g] of selected.entries()) {
     form.append("files", new Blob([body], { type: "application/json" }), "results.json");
     const up = await fetch(`${TARGET}/api/v1/reports/upload/${reg.report_id}/${reg.upload_id}/json`, { method: "POST", headers: { authorization: await authHeader() }, body: form, signal: AbortSignal.timeout(300000) });
     if (!up.ok) throw new Error(`upload ${up.status} ${(await up.text()).slice(0, 200)}`);
+    // Give the target's extraction a moment so ordering by created_at stays strict.
+    await sleep(150);
     stats.replayed++;
     stats.tests += g.test_stats?.total ?? 0;
     log(`${tag}: uploaded ${body.length} bytes (${g.test_stats?.failed ?? "?"} failed of ${g.test_stats?.total ?? "?"})`);

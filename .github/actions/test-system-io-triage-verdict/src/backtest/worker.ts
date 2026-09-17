@@ -75,6 +75,10 @@ async function main(): Promise<void> {
   });
   await Promise.all(workers);
   log(JSON.stringify(stats));
+  if (stats.errors > 0) {
+    log(`${stats.errors} packs unresolved; re-run to retry them (resumable)`);
+    process.exit(1);
+  }
 }
 
 main().catch((error) => {

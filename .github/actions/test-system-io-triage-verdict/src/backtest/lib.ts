@@ -102,8 +102,12 @@ export function psqlMany(sqls: string[]): string[] {
   const parts = out.split(separator + "\n");
   return sqls.map((_, i) => (parts[i] ?? "").trim());
 }
-/** Dollar-quote a literal for psql. */
-export const q = (s: string) => "$q$" + s.replace(/\$/g, "") + "$q$";
+/** Dollar-quote a literal for psql with a tag that does not occur in the value. */
+export function q(s: string): string {
+  let tag = "$q$";
+  while (s.includes(tag)) tag = `$q${tag.length}$`;
+  return tag + s + tag;
+}
 
 export async function tsio<T>(
   base: string,

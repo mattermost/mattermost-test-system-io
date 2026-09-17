@@ -15,8 +15,8 @@ on:
         description: "Parallel API calls"
         default: "4"
       tsio_ref:
-        description: "mattermost-test-system-io ref that carries the harness"
-        default: "main"
+        description: "Full 40-hex commit SHA of mattermost-test-system-io that carries the reviewed harness (branch names are rejected: this job holds ANTHROPIC_API_KEY)"
+        required: true
 permissions:
   contents: read
 jobs:
@@ -27,6 +27,14 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - name: Require a pinned harness revision
+        env:
+          TSIO_REF: ${{ inputs.tsio_ref }}
+        run: |
+          if ! [[ "$TSIO_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "tsio_ref must be a full commit SHA, got '$TSIO_REF'" >&2
+            exit 1
+          fi
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: mattermost/mattermost-test-system-io

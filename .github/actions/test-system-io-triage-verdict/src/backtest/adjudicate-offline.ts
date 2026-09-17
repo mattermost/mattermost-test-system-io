@@ -78,13 +78,18 @@ function findingEvidence(
       and left(i.normalized_title,${titlePrefix.length})=${q(titlePrefix)} and o.observed_at between '${fmt(asOf - 14 * 86400000)}' and '${fmt(asOf)}' and not o.is_infra_stub
       order by o.observed_at desc`;
   const [error, rows] = psqlMany([errorSQL, crossSQL]);
+  // One entry per other PR (its newest failure; rows are newest-first), so a
+  // single noisy PR cannot fill the list and hide distinct recurrence.
   const fails: string[] = [];
+  const seenPRs = new Set<string>();
   let passes = 0;
   for (const line of rows.split("\n").filter(Boolean)) {
     const [pr, status, sha, day] = line.split("|");
-    if (["failed", "timedOut", "interrupted"].includes(status))
+    if (["failed", "timedOut", "interrupted"].includes(status)) {
+      if (seenPRs.has(pr)) continue;
+      seenPRs.add(pr);
       fails.push(`PR ${pr} (${sha}, ${day})`);
-    else if (status === "passed") passes++;
+    } else if (status === "passed") passes++;
   }
   return { error: error.slice(0, 2500), fails, passes };
 }

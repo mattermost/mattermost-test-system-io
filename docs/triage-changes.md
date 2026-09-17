@@ -18,7 +18,7 @@ All changes remain local on `codex/flaky-test-quarantine`. No commits, pushes, d
 Applied after the independent review of this delivery:
 
 - `internal/config/config_test.go`: `TestLoad_rejectsZeroTriageWindow` sets the required `TSIO_*` env vars, so `make test-server` passes in a clean shell and in CI.
-- `internal/triage/verdict/classify.go`: flake confidence is evidence sufficiency `runs/(runs+1)` instead of `1 − r̂^m`; the 48-hour freshness decay is removed (the stale guard alone enforces freshness); a non-infrastructure blocking finding yields `FAILURE` even alongside infra stubs; PR ownership matches full paths, not basenames. `EngineVersion` is `triage-3`.
+- `internal/triage/verdict/classify.go`: flake confidence is evidence sufficiency `runs/(runs+1)` instead of `1 − r̂^m`; the 48-hour freshness decay is removed (the stale guard alone enforces freshness); a non-infrastructure blocking finding yields `FAILURE` even alongside infra stubs; PR ownership matches full paths, not basenames. `EngineVersion` became `triage-3` (now `triage-4`, see the backtest section below).
 - `internal/triage/verdict/guards.go`: findings whose failure already fuzzy-matches trunk's dominant failure are never relabeled `REGRESSION_CLUSTER`.
 - `internal/triage/health/classify.go`: `healthy` uses the raw rate, making auto-release attainable at the 30-run cap.
 - `internal/triage/verdict/store.go`, `api/triage/handlers.go`: verdict listing is one query.

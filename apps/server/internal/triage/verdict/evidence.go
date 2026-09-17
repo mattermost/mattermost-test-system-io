@@ -113,6 +113,9 @@ func (s *Store) EvidencePacks(ctx context.Context, id string) ([]EvidencePack, e
 		p.TrunkHistory.Runs, p.TrunkHistory.Fails, p.TrunkHistory.Flaky, p.TrunkHistory.ConsecutiveFailsAtHead = f.Trunk.Runs, f.Trunk.Fails, f.Trunk.Flaky, f.Trunk.ConsecutiveFails
 		p.CrossPR.ID = "cross_pr"
 		p.CrossPR.OtherPRsWhereThisTestFailed = []string{}
+		// One entry per other PR (its newest failure; rows are newest-first), so a
+		// single noisy PR cannot fill the list and hide distinct recurrence.
+		seenPRs := map[int]bool{}
 		rows, err := s.Evidence.Pool.Query(ctx, `SELECT o.gh_pr_number, o.status, left(o.commit_sha,7), to_char(o.observed_at,'MM-DD') FROM test_observations o
  WHERE o.identity_id=$1 AND o.lane=$2 AND o.branch_kind='pr' AND NOT o.is_infra_stub AND o.gh_pr_number IS NOT NULL AND o.gh_pr_number IS DISTINCT FROM $3
  AND o.observed_at>=$4 AND o.observed_at<=$5 ORDER BY o.observed_at DESC`, f.IdentityID, lane, pr, since, until)
@@ -127,7 +130,8 @@ func (s *Store) EvidencePacks(ctx context.Context, id string) ([]EvidencePack, e
 				return nil, err
 			}
 			switch {
-			case triage.IsFailure(status) && len(p.CrossPR.OtherPRsWhereThisTestFailed) < 12:
+			case triage.IsFailure(status) && !seenPRs[n] && len(p.CrossPR.OtherPRsWhereThisTestFailed) < 12:
+				seenPRs[n] = true
 				p.CrossPR.OtherPRsWhereThisTestFailed = append(p.CrossPR.OtherPRsWhereThisTestFailed, fmt.Sprintf("PR %d (%s, %s)", n, sha, day))
 			case status == triage.StatusPassed:
 				p.CrossPR.OtherPRRunsWhereItPassed++

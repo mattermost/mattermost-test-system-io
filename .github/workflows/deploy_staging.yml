@@ -310,10 +310,17 @@ jobs:
             --no-cli-pager
 
       - name: Wait for PostgreSQL to be healthy
+        # The AWS waiter gives up after a fixed 10 minutes; a fresh task with
+        # ephemeral storage can take longer while another deploy settles.
         run: |
-          aws ecs wait services-stable \
-            --cluster "$CLUSTER" \
-            --services "$PG_SERVICE"
+          for attempt in 1 2 3; do
+            if aws ecs wait services-stable --cluster "$CLUSTER" --services "$PG_SERVICE"; then
+              exit 0
+            fi
+            echo "PostgreSQL not stable after attempt $attempt of 3 (10 min each); retrying"
+          done
+          echo "::error::PostgreSQL service did not stabilize within 30 minutes"
+          exit 1
 
       # Must precede the image-swap steps below. The image swaps are
       # field-level patches — they copy the existing task definition and

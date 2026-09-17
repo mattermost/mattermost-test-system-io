@@ -86,11 +86,18 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	}
 	files := make([]string, 0, len(req.Tests))
 	titles := make([]string, 0, len(req.Tests))
+	seen := make(map[[2]string]bool, len(req.Tests))
 	for _, t := range req.Tests {
 		if t.File == "" || t.Title == "" {
 			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "each test needs file and title")
 			return
 		}
+		// A repeated pair would join every matching row twice.
+		if seen[[2]string{t.File, t.Title}] {
+			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "duplicate test: "+t.File+" / "+t.Title)
+			return
+		}
+		seen[[2]string{t.File, t.Title}] = true
 		files = append(files, t.File)
 		titles = append(titles, t.Title)
 	}
@@ -105,7 +112,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		WHERE g.repository = $1 AND g.status = 'completed' AND g.created_at >= $2 AND g.created_at < $3
 		ORDER BY g.created_at DESC, g.id, s.ordinal, c.ordinal
 		LIMIT $7
-	`, req.Repository, since, until, files, titles, historyErrorChars, historyMaxRows)
+	`, req.Repository, since, until, files, titles, historyErrorChars, historyMaxRows+1)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -124,10 +131,15 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, err)
 		return
 	}
+	// One row past the cap was requested only to know whether the cap cut anything.
+	truncated := len(out) > historyMaxRows
+	if truncated {
+		out = out[:historyMaxRows]
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"since":        since,
 		"until":        until,
-		"truncated":    len(out) == historyMaxRows,
+		"truncated":    truncated,
 		"observations": out,
 	})
 }

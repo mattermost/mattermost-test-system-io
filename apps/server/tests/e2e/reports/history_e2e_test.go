@@ -116,6 +116,16 @@ func TestReportsHistoryReturnsPastExecutionsOfNamedTests(t *testing.T) {
 		t.Fatalf("filtered list = %d/%d %v, want exactly the pr-9 playwright-full group", list.Total, len(list.Reports), list.Reports)
 	}
 
+	dup, _ := json.Marshal(map[string]any{"repository": repo, "tests": []map[string]string{{"file": file, "title": title}, {"file": file, "title": title}}})
+	respDup, err := http.Post(env.ServerURL+"/api/v1/reports/history", "application/json", bytes.NewReader(dup))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	respDup.Body.Close()
+	if respDup.StatusCode != http.StatusBadRequest {
+		t.Fatalf("duplicate test pair: status = %d, want 400", respDup.StatusCode)
+	}
+
 	bad, _ := json.Marshal(map[string]any{"repository": repo, "since": now.Add(-40 * 24 * time.Hour).Format(time.RFC3339), "tests": []map[string]string{{"file": file, "title": title}}})
 	resp2, err := http.Post(env.ServerURL+"/api/v1/reports/history", "application/json", bytes.NewReader(bad))
 	if err != nil {

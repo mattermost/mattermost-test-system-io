@@ -21,7 +21,7 @@
  *   node scripts/seed-staging-from-production.mjs \
  *     --repository mattermost/mattermost-mobile --days 14 \
  *     [--source https://test-io.test.mattermost.com] [--target https://staging-test-io.test.mattermost.com] \
- *     [--max-groups N] [--name-prefix mobile-] [--dry-run]
+ *     [--max-groups N] [--name-prefix mobile-] [--max-failed 100] [--dry-run]
  */
 const args = process.argv.slice(2);
 const opt = (name, dflt) => {
@@ -35,9 +35,13 @@ const DAYS = Number(opt("days", "14"));
 const MAX = Number(opt("max-groups", "0"));
 const PREFIX = opt("name-prefix", "");
 const DRY = args.includes("--dry-run");
+// Runs where almost everything failed are infrastructure storms: no use for a
+// history demo, and their reports are the heaviest to extract on a small target.
+const MAX_FAILED = Number(opt("max-failed", "100"));
 if (!REPOSITORY) throw new Error("--repository is required");
 if (SOURCE === TARGET) throw new Error("source and target must differ");
 const AUDIENCE = process.env.TSIO_OIDC_AUDIENCE || "mattermost-test-system-io";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (m) => process.stderr.write(m + "\n");
 
 let auth = { header: "", at: 0 };
@@ -53,11 +57,31 @@ async function authHeader() {
   return auth.header;
 }
 async function getJSON(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(60000) });
-  if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
-  return res.json();
+  let last;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt) await sleep(2000 * 2 ** (attempt - 1));
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(60000) });
+      if (res.ok) return res.json();
+      last = new Error(`GET ${url} -> ${res.status}`);
+      if (res.status !== 429 && res.status < 500) throw last;
+    } catch (e) {
+      last = e;
+      if (String(e).includes("-> 4")) throw e;
+    }
+  }
+  throw last;
 }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** After a target failure, wait until the target answers its health check again (up to 5 minutes). */
+async function waitForTarget() {
+  for (let i = 0; i < 30; i++) {
+    try {
+      const res = await fetch(`${TARGET}/healthz`, { signal: AbortSignal.timeout(10000) });
+      if (res.ok) return;
+    } catch {}
+    await sleep(10000);
+  }
+}
 /** POST to the target; 429/5xx and network errors are retried with backoff. */
 async function post(path, body) {
   let last;
@@ -113,6 +137,11 @@ for (const [i, g] of selected.entries()) {
       stats.skipped++;
       continue;
     }
+    if ((g.test_stats?.failed ?? 0) >= MAX_FAILED) {
+      stats.skipped++;
+      log(`${tag}: skipped (${g.test_stats.failed} failures: infrastructure storm)`);
+      continue;
+    }
     const detail = await getJSON(`${SOURCE}/api/v1/reports/${g.id}`);
     const reports = detail.reports ?? [];
     if (reports.length !== 1) {
@@ -154,6 +183,7 @@ for (const [i, g] of selected.entries()) {
   } catch (e) {
     stats.failed++;
     log(`${tag}: FAILED ${String(e).slice(0, 200)}`);
+    if (/-> 5\d\d|upload 5\d\d/.test(String(e))) await waitForTarget();
   }
 }
 log(JSON.stringify(stats));

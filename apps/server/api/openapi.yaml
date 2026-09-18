@@ -511,35 +511,44 @@ paths:
     post:
       tags: [reports]
       security: []
-      summary: Past executions of named tests in one repository (read; POST carries the test list)
+      summary: Past executions of tests in named spec files (read; POST carries the file list)
       description: |
-        Every execution of the listed tests in completed report groups of the
-        repository inside [since, until), newest first. Defaults to the 14 days
-        before `until` (default now); the window is capped at 30 days, the list
-        at 50 tests and the response at 20,000 rows (`truncated` says so).
+        Every execution recorded against the listed spec files, in completed
+        report groups of the repository inside [since, until), newest first and
+        paged. Defaults to the 14 days before `until` (default now); the window
+        is capped at 30 days and the list at 50 files.
+
+        Keyed on the spec file rather than on individual test titles: a title is
+        edited far more often than the file it lives in, so a caller keyed on
+        the title would lose a test's history the moment somebody reworded it.
+        The response carries each row's `title`, and the caller decides which
+        rows describe the same test.
+
         This is the read CI triage uses to distinguish "fails on trunk or on
-        other PRs" from "fails only on this PR".
+        other PRs too" from "fails only on this PR". It returns rows rather than
+        verdicts, so the policy for reading them lives in the caller.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [repository, tests]
+              required: [repository, files]
               properties:
                 repository: { type: string }
-                since: { type: string, format: date-time }
-                until: { type: string, format: date-time }
-                tests:
+                files:
                   type: array
                   minItems: 1
                   maxItems: 50
-                  items:
-                    type: object
-                    required: [file, title]
-                    properties:
-                      file: { type: string }
-                      title: { type: string }
+                  items: { type: string }
+                  description: Spec file paths as recorded on the suite. Repeats are folded away.
+                branch:
+                  type: string
+                  description: Optional; when set, only groups built from this branch.
+                since: { type: string, format: date-time }
+                until: { type: string, format: date-time }
+                page: { type: integer, minimum: 1, default: 1 }
+                per_page: { type: integer, minimum: 1, maximum: 2000, default: 50 }
       responses:
         '200':
           description: Observations, newest first
@@ -547,11 +556,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [since, until, truncated, observations]
+                required: [since, until, page, per_page, has_more, observations]
                 properties:
                   since: { type: string, format: date-time }
                   until: { type: string, format: date-time }
-                  truncated: { type: boolean }
+                  page: { type: integer }
+                  per_page: { type: integer }
+                  has_more:
+                    type: boolean
+                    description: Another page follows. No total is returned; counting would double the cost of the join.
                   observations:
                     type: array
                     items: { $ref: '#/components/schemas/TestHistoryObservation' }

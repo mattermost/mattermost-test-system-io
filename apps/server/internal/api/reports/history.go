@@ -2,6 +2,7 @@ package reports
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -11,21 +12,31 @@ import (
 )
 
 const (
-	historyMaxTests   = 50
-	historyMaxWindow  = 30 * 24 * time.Hour
-	historyMaxRows    = 20000
-	historyErrorChars = 400
+	historyMaxFiles       = 50
+	historyMaxWindow      = 30 * 24 * time.Hour
+	historyDefaultPerPage = 50
+	historyMaxPerPage     = 2000
+	historyErrorChars     = 400
 )
 
-// historyRequest names the tests whose past executions the caller wants.
+// historyRequest names the spec files whose past executions the caller wants.
+//
+// It is keyed on the file rather than on individual test titles on purpose. A
+// title is edited far more often than the file it lives in — a reworded test is
+// still the same test — and a caller keyed on the title would silently lose all
+// of a test's history the moment somebody fixed a typo in it. The server
+// therefore returns every execution recorded against the named files and leaves
+// the caller to decide which rows describe the same test, on whatever rule it
+// considers correct. That keeps this endpoint a plain read over the report
+// tables, with no opinion about how the data will be interpreted.
 type historyRequest struct {
-	Repository string `json:"repository"`
-	Since      string `json:"since"`
-	Until      string `json:"until"`
-	Tests      []struct {
-		File  string `json:"file"`
-		Title string `json:"title"`
-	} `json:"tests"`
+	Repository string   `json:"repository"`
+	Files      []string `json:"files"`
+	Branch     string   `json:"branch"`
+	Since      string   `json:"since"`
+	Until      string   `json:"until"`
+	Page       int      `json:"page"`
+	PerPage    int      `json:"per_page"`
 }
 
 // historyObservation is one execution of one test in one completed report group.
@@ -43,23 +54,60 @@ type historyObservation struct {
 	ErrorExcerpt string    `json:"error_excerpt"`
 }
 
-// History serves POST /api/v1/reports/history: every execution of the named
-// tests in completed report groups of one repository inside a time window,
-// newest first. It is the read that CI triage needs to tell "this test fails
-// on trunk / on other PRs" from "this test fails only here", and it reads the
-// ordinary report tables, so it needs no extra bookkeeping at ingest.
+// History serves POST /api/v1/reports/history: every execution recorded against
+// the named spec files, in completed report groups of one repository inside a
+// time window, newest first and paged.
+//
+// It is the read that CI triage needs to tell "this test fails on trunk / on
+// other PRs too" from "this test fails only here". It reads the ordinary report
+// tables, so it needs no extra bookkeeping at ingest, and it returns rows rather
+// than verdicts, so the policy for reading them can change without a server
+// deploy.
 func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	var req historyRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024)).Decode(&req); err != nil {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
 		return
 	}
-	if req.Repository == "" || len(req.Tests) == 0 {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "repository and at least one test are required")
+	if req.Repository == "" || len(req.Files) == 0 {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "repository and at least one file are required")
 		return
 	}
-	if len(req.Tests) > historyMaxTests {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "at most 50 tests per request")
+	// The filter below is a set membership test, so a repeated file costs
+	// nothing and cannot duplicate rows. Fold repeats away instead of making
+	// the caller deduplicate a list it may have built from several failures in
+	// the same spec.
+	files := make([]string, 0, len(req.Files))
+	seen := make(map[string]bool, len(req.Files))
+	for _, f := range req.Files {
+		if f == "" {
+			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "files must not contain an empty path")
+			return
+		}
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
+		files = append(files, f)
+	}
+	if len(files) > historyMaxFiles {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("at most %d files per request", historyMaxFiles))
+		return
+	}
+	page := req.Page
+	if page == 0 {
+		page = 1
+	}
+	if page < 1 {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "page must be 1 or greater")
+		return
+	}
+	perPage := req.PerPage
+	if perPage == 0 {
+		perPage = historyDefaultPerPage
+	}
+	if perPage < 1 || perPage > historyMaxPerPage {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("per_page must be between 1 and %d", historyMaxPerPage))
 		return
 	}
 	until := time.Now().UTC()
@@ -84,35 +132,26 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "window must be positive and at most 30 days")
 		return
 	}
-	files := make([]string, 0, len(req.Tests))
-	titles := make([]string, 0, len(req.Tests))
-	seen := make(map[[2]string]bool, len(req.Tests))
-	for _, t := range req.Tests {
-		if t.File == "" || t.Title == "" {
-			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "each test needs file and title")
-			return
-		}
-		// A repeated pair would join every matching row twice.
-		if seen[[2]string{t.File, t.Title}] {
-			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "duplicate test: "+t.File+" / "+t.Title)
-			return
-		}
-		seen[[2]string{t.File, t.Title}] = true
-		files = append(files, t.File)
-		titles = append(titles, t.Title)
-	}
+	// The ORDER BY is a total order — group id, suite id and case id break every
+	// tie — so a row cannot shift between pages while the caller walks them.
+	// One row past the page is requested only to answer has_more without a
+	// second count query over the same four-table join.
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT s.file, c.title, c.status, c.retry_count, g.id, g.name, g.branch, g.gh_pr_number, g.commit_sha, g.created_at,
-		       left(COALESCE(c.error_message, ''), $6)
+		       left(COALESCE(c.error_message, ''), $4)
 		FROM report_groups g
 		JOIN reports r ON r.report_group_id = g.id
 		JOIN suites s ON s.report_id = r.id
 		JOIN test_cases c ON c.suite_id = s.id
-		JOIN unnest($4::text[], $5::text[]) AS t(file, title) ON t.file = s.file AND t.title = c.title
-		WHERE g.repository = $1 AND g.status = 'completed' AND g.created_at >= $2 AND g.created_at < $3
-		ORDER BY g.created_at DESC, g.id, s.ordinal, c.ordinal
-		LIMIT $7
-	`, req.Repository, since, until, files, titles, historyErrorChars, historyMaxRows+1)
+		WHERE g.repository = $1
+		  AND g.status = 'completed'
+		  AND g.created_at >= $2
+		  AND g.created_at < $3
+		  AND s.file = ANY($5::text[])
+		  AND ($6 = '' OR g.branch = $6)
+		ORDER BY g.created_at DESC, g.id, s.id, c.ordinal, c.id
+		LIMIT $7 OFFSET $8
+	`, req.Repository, since, until, historyErrorChars, files, req.Branch, perPage+1, (page-1)*perPage)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -131,15 +170,16 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, err)
 		return
 	}
-	// One row past the cap was requested only to know whether the cap cut anything.
-	truncated := len(out) > historyMaxRows
-	if truncated {
-		out = out[:historyMaxRows]
+	hasMore := len(out) > perPage
+	if hasMore {
+		out = out[:perPage]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"since":        since,
 		"until":        until,
-		"truncated":    truncated,
+		"page":         page,
+		"per_page":     perPage,
+		"has_more":     hasMore,
 		"observations": out,
 	})
 }

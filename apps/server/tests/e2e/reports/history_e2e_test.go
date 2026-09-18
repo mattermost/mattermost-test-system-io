@@ -88,7 +88,7 @@ func TestReportsHistoryReturnsPastExecutionsInNamedSpecFiles(t *testing.T) {
 	// Same spec file, a test the caller never named: file-keyed requests return
 	// it, which is the whole point of keying on the file.
 	seedGroup(t, env, repo, "pr-9", &pr9, "ddddddd", "playwright-full", file, "MM-T2 reworded later", "failed", 0, now.Add(-12*time.Hour))
-	seedGroup(t, env, repo, "master", nil, "eeeeeee", "playwright-full-master", other, title, "failed", 0, now.Add(-6*time.Hour))   // another file
+	seedGroup(t, env, repo, "master", nil, "eeeeeee", "playwright-full-master", other, title, "failed", 0, now.Add(-6*time.Hour))  // another file
 	seedGroup(t, env, repo, "master", nil, "fffffff", "playwright-full-master", file, title, "failed", 0, now.Add(-480*time.Hour)) // outside the window
 	seedGroup(t, env, "mattermost/elsewhere", "master", nil, "9999999", "playwright-full-master", file, title, "failed", 0, now)   // other repo
 

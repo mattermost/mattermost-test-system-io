@@ -77,6 +77,12 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	// nothing and cannot duplicate rows. Fold repeats away instead of making
 	// the caller deduplicate a list it may have built from several failures in
 	// the same spec.
+	// Bound the array the caller actually sent, which is what the schema's
+	// maxItems describes; deduplicating first would silently accept a longer one.
+	if len(req.Files) > historyMaxFiles {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("at most %d files per request", historyMaxFiles))
+		return
+	}
 	files := make([]string, 0, len(req.Files))
 	seen := make(map[string]bool, len(req.Files))
 	for _, f := range req.Files {
@@ -89,10 +95,6 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[f] = true
 		files = append(files, f)
-	}
-	if len(files) > historyMaxFiles {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("at most %d files per request", historyMaxFiles))
-		return
 	}
 	page := req.Page
 	if page == 0 {
@@ -127,6 +129,15 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		since = t
+	}
+	// OFFSET needs the same result set on every page. Defaulting `until` to now
+	// would move the window between requests, so a group completing mid-walk
+	// could shift rows across a page boundary and the caller would see a row
+	// twice or not at all. Later pages must therefore name the window the first
+	// page reported.
+	if page > 1 && req.Until == "" {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "until is required when page > 1: pass the value the first page returned so every page sees the same window")
+		return
 	}
 	if !since.Before(until) || until.Sub(since) > historyMaxWindow {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "window must be positive and at most 30 days")

@@ -546,8 +546,19 @@ paths:
                   type: string
                   description: Optional; when set, only groups built from this branch.
                 since: { type: string, format: date-time }
-                until: { type: string, format: date-time }
-                page: { type: integer, minimum: 1, default: 1 }
+                until:
+                  type: string
+                  format: date-time
+                  description: Window end, exclusive. Defaults to now, and is required when paging past the first page.
+                page:
+                  type: integer
+                  minimum: 1
+                  default: 1
+                  description: >
+                    Pages share one window, so `until` is required whenever this is
+                    above 1: pass back the `until` the first page returned. Without
+                    it the window would move between requests and a group completing
+                    mid-walk could shift rows across a page boundary.
                 per_page: { type: integer, minimum: 1, maximum: 2000, default: 50 }
       responses:
         '200':

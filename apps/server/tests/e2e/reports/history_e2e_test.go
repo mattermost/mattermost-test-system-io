@@ -40,6 +40,16 @@ func seedGroup(t *testing.T, env *testenv.Env, repo, branch string, pr *int, sha
 	}
 }
 
+// repeated builds an over-long request from one path, so the length check has to
+// reject the array the caller sent rather than what is left after deduplication.
+func repeated(file string, n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = file
+	}
+	return out
+}
+
 type historyResponse struct {
 	Page         int  `json:"page"`
 	PerPage      int  `json:"per_page"`
@@ -131,7 +141,12 @@ func TestReportsHistoryReturnsPastExecutionsInNamedSpecFiles(t *testing.T) {
 	if p2.HasMore || len(p2.Observations) != 2 || p2.Observations[0].CommitSHA != "bbbbbbb" || p2.Observations[1].CommitSHA != "aaaaaaa" {
 		t.Fatalf("page 2 = %d observations, has_more %v: %+v", len(p2.Observations), p2.HasMore, p2.Observations)
 	}
-	_, p3 := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "per_page": 2, "page": 3})
+	// The status matters here: postHistory yields a zero value for any non-200,
+	// which would otherwise look exactly like a correct empty page.
+	p3status, p3 := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "per_page": 2, "page": 3})
+	if p3status != http.StatusOK {
+		t.Fatalf("page past the end: status = %d, want 200", p3status)
+	}
 	if p3.HasMore || len(p3.Observations) != 0 {
 		t.Fatalf("page past the end = %d observations, has_more %v", len(p3.Observations), p3.HasMore)
 	}
@@ -173,6 +188,8 @@ func TestReportsHistoryReturnsPastExecutionsInNamedSpecFiles(t *testing.T) {
 		{"empty path", map[string]any{"repository": repo, "files": []string{""}}},
 		{"per_page over the cap", map[string]any{"repository": repo, "files": []string{file}, "per_page": 2001}},
 		{"negative page", map[string]any{"repository": repo, "files": []string{file}, "page": -1}},
+		{"page past the first without a window", map[string]any{"repository": repo, "files": []string{file}, "page": 2}},
+		{"more files than the schema allows, before deduplication", map[string]any{"repository": repo, "files": repeated(file, 51)}},
 		{"40-day window", map[string]any{"repository": repo, "files": []string{file}, "since": now.Add(-960 * time.Hour).Format(time.RFC3339)}},
 	} {
 		if status, _ := postHistory(t, env, bad.body); status != http.StatusBadRequest {

@@ -176,6 +176,7 @@ func Build(d Deps) chi.Router {
 		r.Get("/reports/{id}/cases", reportsH.Cases)
 		r.Get("/reports/{id}/json", reportsH.JSONFile)
 		r.Get("/reports/{id}/search", reportsH.Search)
+		r.Post("/reports/history", reportsH.History)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)

@@ -83,6 +83,12 @@ func WithReaperDisabled() Option {
 func Start(t *testing.T, opts ...Option) *Env {
 	t.Helper()
 
+	// Disable the /orchestration/status response cache so tests observe
+	// read-after-write immediately (production keeps the short-TTL cache that
+	// collapses concurrent dashboard polls). Value mirrors the orchestration
+	// api package's TSIO_ORCH_STATUS_CACHE_TTL_MS knob.
+	t.Setenv("TSIO_ORCH_STATUS_CACHE_TTL_MS", "0")
+
 	cfg := &startConfig{}
 	for _, o := range opts {
 		o(cfg)

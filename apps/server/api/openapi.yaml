@@ -830,6 +830,16 @@ paths:
           name: gh_run_attempt
           required: false
           schema: { type: string, default: "1" }
+        - in: query
+          name: view
+          required: false
+          description: |
+            `full` (default) returns the complete snapshot including the
+            per-unit `units` array. `summary` omits `units` (and its per-attempt
+            detail) and returns only status, counts, tests, and durations — a
+            much smaller payload for high-frequency dashboard polling and for
+            CI consumers that only need progress.
+          schema: { type: string, enum: [full, summary], default: full }
       security: []
       responses:
         '200':

@@ -1,5 +1,21 @@
 -- POST /reports/history selects suites by spec file across a time window. The
 -- file is the request's primary selector, and suites had no index on it, so
--- every call scanned each suite belonging to a group in the window — tens of
--- thousands of rows on a busy repository.
+-- every call scanned each suite belonging to a group in the window.
+--
+-- Index build strategy: plain CREATE INDEX, following 000021. golang-migrate's
+-- pgx5 driver wraps every migration in a transaction with no per-file opt-out,
+-- and CONCURRENTLY cannot run inside one.
+--
+-- 000021 judged that lock window acceptable at ~77 report_groups and left a note
+-- to revisit as the tables grew. Production now holds ~19,800 report_groups and
+-- ingests roughly 7,400 report uploads a day, so suites is several orders of
+-- magnitude larger than when that call was made, and CREATE INDEX holds a SHARE
+-- lock that blocks writes for its duration.
+--
+-- Before this ships, confirm the row count and decide between:
+--   a) keeping this as-is, if the build is seconds and upload 5xx retries absorb
+--      it, as they were designed to in 000021; or
+--   b) dropping this migration and creating the index by hand with CONCURRENTLY
+--      as a deploy-runbook step, leaving the endpoint to sequential-scan until
+--      then. It is correct either way, only slower.
 CREATE INDEX IF NOT EXISTS suites_file_idx ON suites (file);

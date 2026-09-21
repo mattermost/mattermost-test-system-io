@@ -181,6 +181,30 @@ curl https://staging-test-io.test.mattermost.com/ready
 #    Creates: 0.1.0.<run_id> (release)
 ```
 
+## Manual index builds
+
+golang-migrate's pgx5 driver wraps every migration in a transaction, and `CREATE
+INDEX CONCURRENTLY` cannot run inside one, so a migration can only build an index
+the blocking way. On a large table that holds a SHARE lock for the whole build
+and stalls uploads until it finishes, so indexes on the big report tables
+(`suites`, `test_cases`) are created by hand instead.
+
+Run them against production outside a deployment. They are safe while traffic is
+live, and `IF NOT EXISTS` makes a re-run a no-op:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS <name> ON <table> (<column>);
+```
+
+A `CONCURRENTLY` build that fails leaves an invalid index behind. It is not used,
+and must be dropped before retrying:
+
+```sql
+SELECT indexrelid::regclass AS index, indisvalid FROM pg_index
+WHERE indexrelid = '<name>'::regclass;
+-- indisvalid false -> DROP INDEX CONCURRENTLY <name>; then retry
+```
+
 ## Rollback
 
 ### Production (automatic)

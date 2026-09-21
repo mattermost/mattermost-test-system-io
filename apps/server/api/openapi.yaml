@@ -242,6 +242,18 @@ paths:
           schema: { type: string }
           description: Filter by report group slug
         - in: query
+          name: repository
+          schema: { type: string }
+          description: Only groups of this repository (owner/name)
+        - in: query
+          name: commit
+          schema: { type: string }
+          description: Only groups for this full commit SHA
+        - in: query
+          name: name
+          schema: { type: string }
+          description: Only groups with this run name
+        - in: query
           name: limit
           schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
         - in: query
@@ -494,6 +506,80 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/TestCase' }
+
+  /api/v1/reports/history:
+    post:
+      tags: [reports]
+      security: []
+      summary: Past executions of tests in named spec files (read; POST carries the file list)
+      description: |
+        Every execution recorded against the listed spec files, in completed
+        report groups of the repository inside [since, until), newest first and
+        paged. Defaults to the 14 days before `until` (default now); the window
+        is capped at 30 days and the list at 50 files.
+
+        Keyed on the spec file rather than on individual test titles: a title is
+        edited far more often than the file it lives in, so a caller keyed on
+        the title would lose a test's history the moment somebody reworded it.
+        The response carries each row's `title`, and the caller decides which
+        rows describe the same test.
+
+        This is the read CI triage uses to distinguish "fails on trunk or on
+        other PRs too" from "fails only on this PR". It returns rows rather than
+        verdicts, so the policy for reading them lives in the caller.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repository, files]
+              properties:
+                repository: { type: string }
+                files:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items: { type: string }
+                  description: Spec file paths as recorded on the suite. Repeats are folded away.
+                branch:
+                  type: string
+                  description: Optional; when set, only groups built from this branch.
+                since: { type: string, format: date-time }
+                until:
+                  type: string
+                  format: date-time
+                  description: Window end, exclusive. Defaults to now, and is required when paging past the first page.
+                page:
+                  type: integer
+                  minimum: 1
+                  default: 1
+                  description: >
+                    Pages share one window, so `until` is required whenever this is
+                    above 1: pass back the `until` the first page returned. Without
+                    it the window would move between requests and a group completing
+                    mid-walk could shift rows across a page boundary.
+                per_page: { type: integer, minimum: 1, maximum: 2000, default: 50 }
+      responses:
+        '200':
+          description: Observations, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [since, until, page, per_page, has_more, observations]
+                properties:
+                  since: { type: string, format: date-time }
+                  until: { type: string, format: date-time }
+                  page: { type: integer }
+                  per_page: { type: integer }
+                  has_more:
+                    type: boolean
+                    description: Another page follows. No total is returned; counting would double the cost of the join.
+                  observations:
+                    type: array
+                    items: { $ref: '#/components/schemas/TestHistoryObservation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
 
   /api/v1/reports/{id}/search:
     parameters:
@@ -1417,6 +1503,21 @@ components:
         duration_ms: { type: integer, nullable: true }
         ordinal: { type: integer }
 
+    TestHistoryObservation:
+      type: object
+      required: [file, title, status, retry_count, group_id, name, branch, gh_pr_number, commit_sha, created_at, error_excerpt]
+      properties:
+        file: { type: string }
+        title: { type: string }
+        status: { type: string }
+        retry_count: { type: integer }
+        group_id: { type: string, format: uuid }
+        name: { type: string }
+        branch: { type: string }
+        gh_pr_number: { type: integer, nullable: true }
+        commit_sha: { type: string }
+        created_at: { type: string, format: date-time }
+        error_excerpt: { type: string }
     TestCase:
       type: object
       required: [id, suite_id, title, status, retry_count, ordinal]

@@ -181,6 +181,46 @@ curl https://staging-test-io.test.mattermost.com/ready
 #    Creates: 0.1.0.<run_id> (release)
 ```
 
+## Manual index builds
+
+Some indexes are deliberately **not** shipped as migrations. golang-migrate's
+pgx5 driver wraps every migration in a transaction and `CREATE INDEX
+CONCURRENTLY` cannot run inside one, so a migration can only build an index the
+blocking way. On a large table that holds a SHARE lock for the whole build and
+stalls every upload until it finishes.
+
+Measured on Postgres 18.3 against a 5.2M-row copy of `suites`, which is roughly
+production scale (~19,800 report groups, mean 265 suites each):
+
+| | Plain `CREATE INDEX` | `CONCURRENTLY` |
+| --- | --- | --- |
+| Insert arriving 3s into the build | waited 11.1s | 0.02s |
+| Build time | 21.7s | comparable |
+| Resulting index | 37 MB | 37 MB |
+
+Run these by hand against production, outside a deployment, after the release
+that needs them. They are safe to run while traffic is live and safe to re-run;
+`IF NOT EXISTS` makes a second run a no-op.
+
+### Pending
+
+`suites (file)` — wanted by `POST /api/v1/reports/history`, which selects suites
+by spec file. Without it the endpoint sequential-scans: correct, just slower.
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS suites_file_idx ON suites (file);
+```
+
+Verify it built cleanly. A `CONCURRENTLY` build that fails leaves an invalid
+index behind, which is not used and must be dropped before retrying:
+
+```sql
+SELECT indexrelid::regclass AS index, indisvalid
+FROM pg_index
+WHERE indexrelid = 'suites_file_idx'::regclass;
+-- indisvalid false -> DROP INDEX CONCURRENTLY suites_file_idx; then retry
+```
+
 ## Rollback
 
 ### Production (automatic)

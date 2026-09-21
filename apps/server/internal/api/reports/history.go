@@ -143,12 +143,13 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "window must be positive and at most 30 days")
 		return
 	}
-	// suites(file) is the selector here and is indexed by hand rather than by a
-	// migration: golang-migrate runs every migration in a transaction, CREATE
-	// INDEX CONCURRENTLY cannot, and the blocking form stalls uploads for the
-	// length of the build (measured at 11s on a production-sized table). See
-	// "Manual index builds" in .github/DEPLOYMENT.md. Without it this query
-	// sequential-scans, which is correct but slower.
+	// This selects suites by file, which wants an index that is created by hand
+	// rather than in a migration; see "Manual index builds" in
+	// .github/DEPLOYMENT.md for why and how:
+	//
+	//   CREATE INDEX CONCURRENTLY IF NOT EXISTS suites_file_idx ON suites (file);
+	//
+	// Without it the query sequential-scans, which is correct but slower.
 	//
 	// The ORDER BY is a total order — group id, suite id and case id break every
 	// tie — so a row cannot shift between pages while the caller walks them.

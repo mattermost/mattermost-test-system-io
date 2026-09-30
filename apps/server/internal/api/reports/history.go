@@ -75,6 +75,7 @@ type historyObservation struct {
 	Name         string    `json:"name"`
 	ReportName   string    `json:"report_name"`
 	SuiteTitle   string    `json:"suite_title"`
+	FullTitle    string    `json:"full_title"`
 	Branch       string    `json:"branch"`
 	GHPRNumber   *int      `json:"gh_pr_number"`
 	CommitSHA    string    `json:"commit_sha"`
@@ -292,7 +293,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 			ORDER BY created_at DESC, id
 			LIMIT $6
 		)
-		SELECT s.file, COALESCE(s.title, ''), COALESCE(r.name, ''), c.title, c.status, c.retry_count,
+		SELECT s.file, COALESCE(s.title, ''), COALESCE(r.name, ''), c.title, COALESCE(c.full_title, ''), c.status, c.retry_count,
 		       g.id, g.name, g.branch, g.gh_pr_number, g.commit_sha, g.created_at,
 		       left(COALESCE(c.error_message, ''), $7)
 		FROM sel g
@@ -312,7 +313,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	out := make([]historyObservation, 0)
 	for rows.Next() {
 		var o historyObservation
-		if err := rows.Scan(&o.File, &o.SuiteTitle, &o.ReportName, &o.Title, &o.Status, &o.RetryCount, &o.GroupID, &o.Name, &o.Branch, &o.GHPRNumber, &o.CommitSHA, &o.CreatedAt, &o.ErrorExcerpt); err != nil {
+		if err := rows.Scan(&o.File, &o.SuiteTitle, &o.ReportName, &o.Title, &o.FullTitle, &o.Status, &o.RetryCount, &o.GroupID, &o.Name, &o.Branch, &o.GHPRNumber, &o.CommitSHA, &o.CreatedAt, &o.ErrorExcerpt); err != nil {
 			api.WriteError(w, r, err)
 			return
 		}

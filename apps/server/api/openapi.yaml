@@ -1552,7 +1552,7 @@ components:
 
     TestHistoryObservation:
       type: object
-      required: [file, suite_title, title, status, retry_count, group_id, name, report_name, branch, gh_pr_number, commit_sha, created_at, error_excerpt]
+      required: [file, suite_title, title, full_title, status, retry_count, group_id, name, report_name, branch, gh_pr_number, commit_sha, created_at, error_excerpt]
       properties:
         file: { type: string }
         suite_title:
@@ -1561,6 +1561,12 @@ components:
             The suite the test belongs to. Two suites in one file can share a leaf
             title, so a caller matching on file and title alone merges distinct tests.
         title: { type: string }
+        full_title:
+          type: string
+          description: >
+            The ancestor-prefixed path, e.g. "Suite A > logs in". It is what
+            distinguishes two suites in one file that share a leaf title; a caller
+            keyed on file and leaf title alone treats them as a single test.
         status: { type: string }
         retry_count: { type: integer }
         group_id: { type: string, format: uuid }

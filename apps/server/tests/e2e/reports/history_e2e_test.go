@@ -60,6 +60,7 @@ type historyResponse struct {
 		File       string `json:"file"`
 		SuiteTitle string `json:"suite_title"`
 		ReportName string `json:"report_name"`
+		FullTitle  string `json:"full_title"`
 		Title      string `json:"title"`
 		Status     string `json:"status"`
 		Branch     string `json:"branch"`
@@ -186,6 +187,17 @@ func TestReportsHistoryReturnsPastExecutionsInNamedSpecFiles(t *testing.T) {
 	// file that share a leaf title apart.
 	if out.Observations[0].ReportName == "" {
 		t.Fatalf("report_name missing from observations: %+v", out.Observations[0])
+	}
+	if out.Observations[0].FullTitle == "" {
+		t.Fatalf("full_title missing; two suites in one file cannot be told apart without it: %+v", out.Observations[0])
+	}
+	// The prefix is matched literally: a name is not a pattern, so % and _ in it
+	// must not widen the match.
+	for _, pattern := range []string{"%", "_hard-1", "shard%", "shard_"} {
+		_, wild := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "report": pattern})
+		if len(wild.Observations) != 0 {
+			t.Fatalf("report prefix %q behaved as a pattern and matched %d row(s)", pattern, len(wild.Observations))
+		}
 	}
 
 	// `runs` reads the newest N runs with no lower time bound, so the 20-day-old

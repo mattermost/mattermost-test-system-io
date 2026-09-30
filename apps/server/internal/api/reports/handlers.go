@@ -501,7 +501,7 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 		sf = &statusFilter
 	}
 	rows, err := h.Pool.Query(r.Context(), `
-		SELECT tc.id, tc.suite_id, tc.title, tc.status, tc.retry_count, tc.duration_ms,
+		SELECT tc.id, tc.suite_id, tc.title, tc.full_title, tc.status, tc.retry_count, tc.duration_ms,
 		       tc.error_message, tc.error_stack, tc.annotations, tc.ordinal
 		FROM test_cases tc
 		JOIN suites s ON s.id = tc.suite_id
@@ -518,21 +518,24 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0)
 	for rows.Next() {
 		var cid, sid uuid.UUID
-		var title, status string
+		var title, fullTitle, status string
 		var retry, ordinal int
 		var dur *int64
 		var em, es *string
 		var annotations []byte
-		if err := rows.Scan(&cid, &sid, &title, &status, &retry, &dur, &em, &es, &annotations, &ordinal); err != nil {
+		if err := rows.Scan(&cid, &sid, &title, &fullTitle, &status, &retry, &dur, &em, &es, &annotations, &ordinal); err != nil {
 			api.WriteError(w, r, err)
 			return
 		}
 		var ann any
 		_ = json.Unmarshal(annotations, &ann)
 		out = append(out, map[string]any{
-			"id":            cid,
-			"suite_id":      sid,
-			"title":         title,
+			"id":       cid,
+			"suite_id": sid,
+			"title":    title,
+			// The ancestor-prefixed path. Two suites in one file can carry the same
+			// leaf title, and a caller keyed on the leaf alone treats them as one test.
+			"full_title":    fullTitle,
 			"status":        status,
 			"retry_count":   retry,
 			"duration_ms":   dur,

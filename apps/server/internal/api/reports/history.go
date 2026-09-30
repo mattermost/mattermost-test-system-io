@@ -47,6 +47,12 @@ const (
 //
 // The two are mutually exclusive, because a request carrying both would have to
 // silently drop one of them.
+//
+// `report` narrows to one report inside each group, by prefix on the report
+// name. A run that uploads one report per platform records them all under a
+// single group, so without it a caller cannot tell a failure on one platform
+// from the same test failing on another, and history from an unrelated platform
+// answers a question it has no business answering.
 type historyRequest struct {
 	Repository string   `json:"repository"`
 	Files      []string `json:"files"`
@@ -54,6 +60,7 @@ type historyRequest struct {
 	Since      string   `json:"since"`
 	Until      string   `json:"until"`
 	Runs       int      `json:"runs"`
+	Report     string   `json:"report"`
 	Page       int      `json:"page"`
 	PerPage    int      `json:"per_page"`
 }
@@ -66,6 +73,8 @@ type historyObservation struct {
 	RetryCount   int       `json:"retry_count"`
 	GroupID      uuid.UUID `json:"group_id"`
 	Name         string    `json:"name"`
+	ReportName   string    `json:"report_name"`
+	SuiteTitle   string    `json:"suite_title"`
 	Branch       string    `json:"branch"`
 	GHPRNumber   *int      `json:"gh_pr_number"`
 	CommitSHA    string    `json:"commit_sha"`
@@ -91,6 +100,7 @@ type historyQuery struct {
 	repository string
 	files      []string
 	branch     string
+	report     string
 	until      time.Time
 	since      *time.Time
 	groupLimit *int
@@ -173,6 +183,7 @@ func (req historyRequest) validate() (historyQuery, string) {
 		repository: req.Repository,
 		files:      files,
 		branch:     req.Branch,
+		report:     req.Report,
 		until:      until,
 		runs:       req.Runs,
 		page:       page,
@@ -276,20 +287,23 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 				  JOIN suites s ON s.report_id = r.id
 				  WHERE r.report_group_id = report_groups.id
 				    AND s.file = ANY($5::text[])
+				    AND ($10 = '' OR starts_with(r.name, $10))
 			  )
 			ORDER BY created_at DESC, id
 			LIMIT $6
 		)
-		SELECT s.file, c.title, c.status, c.retry_count, g.id, g.name, g.branch, g.gh_pr_number, g.commit_sha, g.created_at,
+		SELECT s.file, COALESCE(s.title, ''), COALESCE(r.name, ''), c.title, c.status, c.retry_count,
+		       g.id, g.name, g.branch, g.gh_pr_number, g.commit_sha, g.created_at,
 		       left(COALESCE(c.error_message, ''), $7)
 		FROM sel g
 		JOIN reports r ON r.report_group_id = g.id
 		JOIN suites s ON s.report_id = r.id
 		JOIN test_cases c ON c.suite_id = s.id
 		WHERE s.file = ANY($5::text[])
+		  AND ($10 = '' OR starts_with(r.name, $10))
 		ORDER BY g.created_at DESC, g.id, s.id, c.ordinal, c.id
 		LIMIT $8 OFFSET $9
-	`, q.repository, q.until, q.since, q.branch, q.files, q.groupLimit, historyErrorChars, q.perPage+1, (q.page-1)*q.perPage)
+	`, q.repository, q.until, q.since, q.branch, q.files, q.groupLimit, historyErrorChars, q.perPage+1, (q.page-1)*q.perPage, q.report)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -298,7 +312,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	out := make([]historyObservation, 0)
 	for rows.Next() {
 		var o historyObservation
-		if err := rows.Scan(&o.File, &o.Title, &o.Status, &o.RetryCount, &o.GroupID, &o.Name, &o.Branch, &o.GHPRNumber, &o.CommitSHA, &o.CreatedAt, &o.ErrorExcerpt); err != nil {
+		if err := rows.Scan(&o.File, &o.SuiteTitle, &o.ReportName, &o.Title, &o.Status, &o.RetryCount, &o.GroupID, &o.Name, &o.Branch, &o.GHPRNumber, &o.CommitSHA, &o.CreatedAt, &o.ErrorExcerpt); err != nil {
 			api.WriteError(w, r, err)
 			return
 		}
@@ -321,6 +335,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		"since":        q.since,
 		"until":        q.until,
 		"runs":         q.runs,
+		"report":       q.report,
 		"page":         q.page,
 		"per_page":     q.perPage,
 		"has_more":     hasMore,

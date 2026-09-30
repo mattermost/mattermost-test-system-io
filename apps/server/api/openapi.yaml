@@ -570,6 +570,13 @@ paths:
                     Newest run to consider, exclusive. Defaults to now, and is required
                     when paging past the first page. In window mode it ends the window;
                     in `runs` mode it pins which runs count as the newest N.
+                report:
+                  type: string
+                  description: >
+                    Narrow to one report inside each group, by prefix on the report name.
+                    A run that uploads one report per platform records them all under one
+                    group; without this a caller cannot tell a failure on one platform
+                    from the same test failing on another.
                 runs:
                   type: integer
                   minimum: 1
@@ -594,7 +601,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [since, until, runs, page, per_page, has_more, observations]
+                required: [since, until, runs, report, page, per_page, has_more, observations]
                 properties:
                   since:
                     type: string
@@ -608,6 +615,9 @@ paths:
                   runs:
                     type: integer
                     description: The run count that was applied, or 0 in window mode.
+                  report:
+                    type: string
+                    description: The report-name prefix that was applied, or empty.
                   page: { type: integer }
                   per_page: { type: integer }
                   has_more:
@@ -1542,14 +1552,26 @@ components:
 
     TestHistoryObservation:
       type: object
-      required: [file, title, status, retry_count, group_id, name, branch, gh_pr_number, commit_sha, created_at, error_excerpt]
+      required: [file, suite_title, title, status, retry_count, group_id, name, report_name, branch, gh_pr_number, commit_sha, created_at, error_excerpt]
       properties:
         file: { type: string }
+        suite_title:
+          type: string
+          description: >
+            The suite the test belongs to. Two suites in one file can share a leaf
+            title, so a caller matching on file and title alone merges distinct tests.
         title: { type: string }
         status: { type: string }
         retry_count: { type: integer }
         group_id: { type: string, format: uuid }
-        name: { type: string }
+        name:
+          type: string
+          description: The report group's name, which covers every report uploaded into it.
+        report_name:
+          type: string
+          description: >
+            The individual report this execution came from. A run that uploads one
+            report per platform distinguishes them only here.
         branch: { type: string }
         gh_pr_number: { type: integer, nullable: true }
         commit_sha: { type: string }

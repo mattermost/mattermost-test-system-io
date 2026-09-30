@@ -11,6 +11,7 @@
 package contract
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -146,5 +147,107 @@ func TestListReportsContract_empty(t *testing.T) {
 	}
 	if parsed.Reports == nil {
 		t.Error("reports should be non-nil array")
+	}
+}
+
+// postRecordedResponse is the POST counterpart of mustRecordedResponse: the
+// history endpoint carries its file list in a body, so it cannot be exercised by
+// the GET-only helper above.
+func postRecordedResponse(t *testing.T, env *testenv.Env, path string, payload any) (int, http.Header, []byte) {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := http.Post(env.ServerURL+path, "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header, body
+}
+
+// validatePostResponse mirrors validateResponse for a request that has a body.
+// The request has to carry one: the route declares it required, so validating
+// the response means validating a request the router accepts first.
+func validatePostResponse(t *testing.T, doc *openapi3.T, opts *openapi3filter.Options,
+	path string, payload any, status int, header http.Header, body []byte,
+) {
+	t.Helper()
+	router, err := gorillamux.NewRouter(doc)
+	if err != nil {
+		t.Fatalf("build router: %v", err)
+	}
+	var serverURL string
+	if len(doc.Servers) > 0 {
+		serverURL = doc.Servers[0].URL
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, serverURL+path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	route, params, err := router.FindRoute(req)
+	if err != nil {
+		t.Fatalf("find route POST %s: %v", path, err)
+	}
+	reqIn := &openapi3filter.RequestValidationInput{
+		Request:    req,
+		PathParams: params,
+		Route:      route,
+		Options:    opts,
+	}
+	// The request is validated too: a body the spec rejects would make the
+	// response validation below meaningless.
+	if err := openapi3filter.ValidateRequest(t.Context(), reqIn); err != nil {
+		t.Fatalf("request does not conform to openapi.yaml for POST %s: %v", path, err)
+	}
+	respIn := &openapi3filter.ResponseValidationInput{
+		RequestValidationInput: reqIn,
+		Status:                 status,
+		Header:                 header,
+		Options:                opts,
+	}
+	if len(body) > 0 {
+		respIn.SetBodyBytes(body)
+	}
+	if err := openapi3filter.ValidateResponse(t.Context(), respIn); err != nil {
+		t.Errorf("response does not conform to openapi.yaml for POST %s (status=%d): %v\nbody=%s",
+			path, status, err, string(body))
+	}
+}
+
+// TestReportsHistoryContract covers both ways of naming the set of runs. The
+// count mode matters most here: it answers with a null `since`, and this is what
+// pins that the schema actually permits it.
+//
+// The spec declares openapi 3.1.0, but kin-openapi — which both serves and
+// validates it — implements 3.0 semantics: a 3.1 type array (`type: [string,
+// "null"]`) fails the document's own self-validation with "unsupported 'type'
+// value null", so nullability has to be spelled `nullable: true`, as it is in
+// every other nullable field here. This test is what keeps that from being a
+// guess in either direction.
+func TestReportsHistoryContract(t *testing.T) {
+	env := testenv.Start(t)
+	doc, opts := loadSpec(t)
+	const path = "/api/v1/reports/history"
+
+	for _, tc := range []struct {
+		name    string
+		payload map[string]any
+	}{
+		{"window mode", map[string]any{"repository": "mattermost/contract", "files": []string{"a.spec.ts"}}},
+		{"count mode", map[string]any{"repository": "mattermost/contract", "files": []string{"a.spec.ts"}, "runs": 5}},
+		{"count mode, branch scoped", map[string]any{"repository": "mattermost/contract", "files": []string{"a.spec.ts"}, "branch": "master", "runs": 200}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, hdr, body := postRecordedResponse(t, env, path, tc.payload)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", status, body)
+			}
+			validatePostResponse(t, doc, opts, path, tc.payload, status, hdr, body)
+		})
 	}
 }

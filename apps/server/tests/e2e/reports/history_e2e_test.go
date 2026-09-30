@@ -51,9 +51,11 @@ func repeated(file string, n int) []string {
 }
 
 type historyResponse struct {
-	Page         int  `json:"page"`
-	PerPage      int  `json:"per_page"`
-	HasMore      bool `json:"has_more"`
+	Since        *string `json:"since"`
+	Runs         int     `json:"runs"`
+	Page         int     `json:"page"`
+	PerPage      int     `json:"per_page"`
+	HasMore      bool    `json:"has_more"`
 	Observations []struct {
 		File       string `json:"file"`
 		Title      string `json:"title"`
@@ -163,6 +165,51 @@ func TestReportsHistoryReturnsPastExecutionsInNamedSpecFiles(t *testing.T) {
 		t.Fatalf("two-file request = %d observations: %+v", len(both.Observations), both.Observations)
 	}
 
+	// `runs` reads the newest N runs with no lower time bound, so the 20-day-old
+	// group the window excludes comes back. This is the release/ESR case: the
+	// branch ran, just not recently, and no window short enough to be cheap
+	// contains it.
+	_, byCount := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "runs": 10})
+	wantByCount := []string{"ddddddd", "ccccccc", "bbbbbbb", "aaaaaaa", "fffffff"}
+	if len(byCount.Observations) != len(wantByCount) {
+		t.Fatalf("runs mode = %d observations, want %d: %+v", len(byCount.Observations), len(wantByCount), byCount.Observations)
+	}
+	for i, o := range byCount.Observations {
+		if o.CommitSHA != wantByCount[i] {
+			t.Fatalf("runs mode observation %d = %s, want %s", i, o.CommitSHA, wantByCount[i])
+		}
+	}
+	// No lower bound to report, and the count that was applied is echoed back.
+	if byCount.Since != nil || byCount.Runs != 10 {
+		t.Fatalf("runs mode reported since %v runs %d; want null/10", byCount.Since, byCount.Runs)
+	}
+	// The count is a number of runs, not of rows: the two newest groups carry one
+	// row each here, and a third group must not be read to fill a row quota.
+	_, twoRuns := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "runs": 2})
+	if len(twoRuns.Observations) != 2 || twoRuns.Observations[0].CommitSHA != "ddddddd" || twoRuns.Observations[1].CommitSHA != "ccccccc" {
+		t.Fatalf("runs=2 = %+v, want the two newest groups", twoRuns.Observations)
+	}
+	// Scoped to a branch, which is how a caller asks one lane's own history:
+	// both master runs of the file, the older one months outside any window.
+	_, masterRuns := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "branch": "master", "runs": 5})
+	if len(masterRuns.Observations) != 2 || masterRuns.Observations[0].CommitSHA != "aaaaaaa" || masterRuns.Observations[1].CommitSHA != "fffffff" {
+		t.Fatalf("branch-scoped runs mode = %+v, want both master runs of the file", masterRuns.Observations)
+	}
+	// Window mode still reports the window it applied and no count.
+	_, windowed := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}})
+	if windowed.Since == nil || windowed.Runs != 0 {
+		t.Fatalf("window mode reported since %v runs %d; want a window and 0", windowed.Since, windowed.Runs)
+	}
+	// Paging walks the run set, not a window, and stays stable across pages.
+	_, cp1 := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "runs": 10, "per_page": 3})
+	_, cp2 := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "runs": 10, "per_page": 3, "page": 2})
+	if !cp1.HasMore || len(cp1.Observations) != 3 || cp1.Observations[0].CommitSHA != "ddddddd" {
+		t.Fatalf("runs mode page 1 = %d observations, has_more %v: %+v", len(cp1.Observations), cp1.HasMore, cp1.Observations)
+	}
+	if cp2.HasMore || len(cp2.Observations) != 2 || cp2.Observations[0].CommitSHA != "aaaaaaa" || cp2.Observations[1].CommitSHA != "fffffff" {
+		t.Fatalf("runs mode page 2 = %d observations, has_more %v: %+v", len(cp2.Observations), cp2.HasMore, cp2.Observations)
+	}
+
 	// The list filters find the run's own group without paging.
 	listResp, err := http.Get(env.ServerURL + "/api/v1/reports?repository=" + repo + "&commit=ccccccc&name=playwright-full")
 	if err != nil {
@@ -191,6 +238,9 @@ func TestReportsHistoryReturnsPastExecutionsInNamedSpecFiles(t *testing.T) {
 		{"page past the first without a window", map[string]any{"repository": repo, "files": []string{file}, "page": 2}},
 		{"more files than the schema allows, before deduplication", map[string]any{"repository": repo, "files": repeated(file, 51)}},
 		{"40-day window", map[string]any{"repository": repo, "files": []string{file}, "since": now.Add(-960 * time.Hour).Format(time.RFC3339)}},
+		{"a window and a run count together", map[string]any{"repository": repo, "files": []string{file}, "runs": 5, "since": now.Add(-24 * time.Hour).Format(time.RFC3339)}},
+		{"more runs than the cap", map[string]any{"repository": repo, "files": []string{file}, "runs": 201}},
+		{"negative runs", map[string]any{"repository": repo, "files": []string{file}, "runs": -1}},
 	} {
 		if status, _ := postHistory(t, env, bad.body); status != http.StatusBadRequest {
 			t.Fatalf("%s: status = %d, want 400", bad.name, status)

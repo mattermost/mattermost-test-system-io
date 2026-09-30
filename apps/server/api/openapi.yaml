@@ -514,9 +514,23 @@ paths:
       summary: Past executions of tests in named spec files (read; POST carries the file list)
       description: |
         Every execution recorded against the listed spec files, in completed
-        report groups of the repository inside [since, until), newest first and
-        paged. Defaults to the 14 days before `until` (default now); the window
-        is capped at 30 days and the list at 50 files.
+        report groups of the repository, newest first and paged. At most 50
+        files per request.
+
+        The runs to read from are named one of two ways, and they are mutually
+        exclusive:
+
+        - `since`/`until` — every run in that window. Defaults to the 14 days
+          before `until` (default now), capped at 30 days. Right when the
+          window is the point, such as "did this test fail on three other PRs
+          in the last fortnight".
+        - `runs` — the newest N runs of these files, however long ago they ran,
+          with no lower time bound. Right for one branch's own history, such as
+          "did the last five runs of this lane on trunk pass". A window cannot
+          express that: a branch that runs rarely — a release or ESR branch
+          between cherry-picks — has no runs inside any window short enough to
+          be cheap, so a windowed caller sees an empty history and can conclude
+          nothing.
 
         Keyed on the spec file rather than on individual test titles: a title is
         edited far more often than the file it lives in, so a caller keyed on
@@ -545,20 +559,33 @@ paths:
                 branch:
                   type: string
                   description: Optional; when set, only groups built from this branch.
-                since: { type: string, format: date-time }
+                since:
+                  type: string
+                  format: date-time
+                  description: Window start, inclusive. Mutually exclusive with `runs`.
                 until:
                   type: string
                   format: date-time
-                  description: Window end, exclusive. Defaults to now, and is required when paging past the first page.
+                  description: >
+                    Newest run to consider, exclusive. Defaults to now, and is required
+                    when paging past the first page. In window mode it ends the window;
+                    in `runs` mode it pins which runs count as the newest N.
+                runs:
+                  type: integer
+                  minimum: 1
+                  maximum: 200
+                  description: >
+                    Read the newest N runs of these files instead of a window, with no
+                    lower time bound. Mutually exclusive with `since`.
                 page:
                   type: integer
                   minimum: 1
                   default: 1
                   description: >
-                    Pages share one window, so `until` is required whenever this is
-                    above 1: pass back the `until` the first page returned. Without
-                    it the window would move between requests and a group completing
-                    mid-walk could shift rows across a page boundary.
+                    Pages share one set of runs, so `until` is required whenever this is
+                    above 1: pass back the `until` the first page returned. Without it the
+                    set would move between requests and a group completing mid-walk could
+                    shift rows across a page boundary.
                 per_page: { type: integer, minimum: 1, maximum: 2000, default: 50 }
       responses:
         '200':
@@ -567,10 +594,20 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [since, until, page, per_page, has_more, observations]
+                required: [since, until, runs, page, per_page, has_more, observations]
                 properties:
-                  since: { type: string, format: date-time }
+                  since:
+                    type: string
+                    format: date-time
+                    nullable: true
+                    description: >
+                      The window start that was applied, or null in `runs` mode, where the
+                      set has no lower time bound. It is not backfilled from the rows on
+                      the page: the oldest row of page 2 is not the floor of the set.
                   until: { type: string, format: date-time }
+                  runs:
+                    type: integer
+                    description: The run count that was applied, or 0 in window mode.
                   page: { type: integer }
                   per_page: { type: integer }
                   has_more:

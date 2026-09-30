@@ -83,32 +83,46 @@ type historyObservation struct {
 // tables, so it needs no extra bookkeeping at ingest, and it returns rows rather
 // than verdicts, so the policy for reading them can change without a server
 // deploy.
-func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
-	var req historyRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024)).Decode(&req); err != nil {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
-		return
-	}
+// historyQuery is a validated history request: the filters, plus exactly one of
+// the two ways to name the set of runs — `since` for a window, `groupLimit` for
+// a count. Only validate produces one, so a query in hand has already had every
+// check below applied to it.
+type historyQuery struct {
+	repository string
+	files      []string
+	branch     string
+	until      time.Time
+	since      *time.Time
+	groupLimit *int
+	runs       int
+	page       int
+	perPage    int
+}
+
+// validate checks a decoded request and resolves the defaults. A non-empty
+// second return is the BAD_REQUEST message for the caller, and the query is
+// unusable. Writing the response is left to the handler, which keeps this a
+// pure function of the request and the handler itself off gocyclo's threshold —
+// per-step error checking on a request with this many optional fields does not
+// fit in one function alongside the query and the rendering.
+func (req historyRequest) validate() (historyQuery, string) {
 	if req.Repository == "" || len(req.Files) == 0 {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "repository and at least one file are required")
-		return
+		return historyQuery{}, "repository and at least one file are required"
 	}
-	// The filter below is a set membership test, so a repeated file costs
+	// The filter in the query is a set membership test, so a repeated file costs
 	// nothing and cannot duplicate rows. Fold repeats away instead of making
 	// the caller deduplicate a list it may have built from several failures in
 	// the same spec.
 	// Bound the array the caller actually sent, which is what the schema's
 	// maxItems describes; deduplicating first would silently accept a longer one.
 	if len(req.Files) > historyMaxFiles {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("at most %d files per request", historyMaxFiles))
-		return
+		return historyQuery{}, fmt.Sprintf("at most %d files per request", historyMaxFiles)
 	}
 	files := make([]string, 0, len(req.Files))
 	seen := make(map[string]bool, len(req.Files))
 	for _, f := range req.Files {
 		if f == "" {
-			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "files must not contain an empty path")
-			return
+			return historyQuery{}, "files must not contain an empty path"
 		}
 		if seen[f] {
 			continue
@@ -121,23 +135,20 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		page = 1
 	}
 	if page < 1 {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "page must be 1 or greater")
-		return
+		return historyQuery{}, "page must be 1 or greater"
 	}
 	perPage := req.PerPage
 	if perPage == 0 {
 		perPage = historyDefaultPerPage
 	}
 	if perPage < 1 || perPage > historyMaxPerPage {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("per_page must be between 1 and %d", historyMaxPerPage))
-		return
+		return historyQuery{}, fmt.Sprintf("per_page must be between 1 and %d", historyMaxPerPage)
 	}
 	until := time.Now().UTC()
 	if req.Until != "" {
 		t, err := time.Parse(time.RFC3339, req.Until)
 		if err != nil {
-			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "until must be RFC3339")
-			return
+			return historyQuery{}, "until must be RFC3339"
 		}
 		until = t
 	}
@@ -148,41 +159,70 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	// pins which runs are the newest N in the other. Later pages must therefore
 	// name the `until` the first page reported.
 	if page > 1 && req.Until == "" {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "until is required when page > 1: pass the value the first page returned so every page sees the same set of runs")
-		return
+		return historyQuery{}, "until is required when page > 1: pass the value the first page returned so every page sees the same set of runs"
 	}
 	if req.Runs < 0 || req.Runs > historyMaxRuns {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("runs must be between 1 and %d", historyMaxRuns))
-		return
+		return historyQuery{}, fmt.Sprintf("runs must be between 1 and %d", historyMaxRuns)
 	}
 	// One of the two ways to name the runs, never both. Checked after the range
 	// so an out-of-range count reports that, rather than blaming the window.
 	if req.Runs != 0 && req.Since != "" {
-		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "since and runs are mutually exclusive: a window and a run count name the set of runs two different ways")
-		return
+		return historyQuery{}, "since and runs are mutually exclusive: a window and a run count name the set of runs two different ways"
+	}
+	q := historyQuery{
+		repository: req.Repository,
+		files:      files,
+		branch:     req.Branch,
+		until:      until,
+		runs:       req.Runs,
+		page:       page,
+		perPage:    perPage,
 	}
 	// Exactly one of these two reaches the query as a non-NULL parameter, and
 	// that is what selects the mode. `groupLimit` set means the newest N runs
 	// with no lower time bound; `since` set means every run in [since, until).
-	var since *time.Time
-	var groupLimit *int
 	if req.Runs > 0 {
-		groupLimit = &req.Runs
-	} else {
-		from := until.Add(-14 * 24 * time.Hour)
-		if req.Since != "" {
-			t, err := time.Parse(time.RFC3339, req.Since)
-			if err != nil {
-				api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "since must be RFC3339")
-				return
-			}
-			from = t
+		// A local, not &q.runs: q is returned by value, so a pointer into it
+		// would alias this frame's copy rather than the caller's.
+		runs := req.Runs
+		q.groupLimit = &runs
+		return q, ""
+	}
+	from := until.Add(-14 * 24 * time.Hour)
+	if req.Since != "" {
+		t, err := time.Parse(time.RFC3339, req.Since)
+		if err != nil {
+			return historyQuery{}, "since must be RFC3339"
 		}
-		if !from.Before(until) || until.Sub(from) > historyMaxWindow {
-			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "window must be positive and at most 30 days")
-			return
-		}
-		since = &from
+		from = t
+	}
+	if !from.Before(until) || until.Sub(from) > historyMaxWindow {
+		return historyQuery{}, "window must be positive and at most 30 days"
+	}
+	q.since = &from
+	return q, ""
+}
+
+// History serves POST /api/v1/reports/history: every execution recorded against
+// the named spec files, in completed report groups of one repository, newest
+// first and paged. The runs to read are named either as a time window
+// (`since`/`until`) or as a count (`runs`); see historyRequest.
+//
+// It is the read that CI triage needs to tell "this test fails on trunk / on
+// other PRs too" from "this test fails only here". It reads the ordinary report
+// tables, so it needs no extra bookkeeping at ingest, and it returns rows rather
+// than verdicts, so the policy for reading them can change without a server
+// deploy.
+func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
+	var req historyRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024)).Decode(&req); err != nil {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
+		return
+	}
+	q, badRequest := req.validate()
+	if badRequest != "" {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", badRequest)
+		return
 	}
 	// The groups to read are chosen first, in their own CTE, and the case rows
 	// are then collected from those groups. In count mode that is what bounds
@@ -249,7 +289,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		WHERE s.file = ANY($5::text[])
 		ORDER BY g.created_at DESC, g.id, s.id, c.ordinal, c.id
 		LIMIT $8 OFFSET $9
-	`, req.Repository, until, since, req.Branch, files, groupLimit, historyErrorChars, perPage+1, (page-1)*perPage)
+	`, q.repository, q.until, q.since, q.branch, q.files, q.groupLimit, historyErrorChars, q.perPage+1, (q.page-1)*q.perPage)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -268,9 +308,9 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, err)
 		return
 	}
-	hasMore := len(out) > perPage
+	hasMore := len(out) > q.perPage
 	if hasMore {
-		out = out[:perPage]
+		out = out[:q.perPage]
 	}
 	// `since` is null in count mode rather than backfilled from the rows on this
 	// page: the oldest row of page 2 is not the floor of the set, so any value
@@ -278,11 +318,11 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	// says what is true — the set has no lower time bound — and `runs` echoes
 	// what bounded it instead.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"since":        since,
-		"until":        until,
-		"runs":         req.Runs,
-		"page":         page,
-		"per_page":     perPage,
+		"since":        q.since,
+		"until":        q.until,
+		"runs":         q.runs,
+		"page":         q.page,
+		"per_page":     q.perPage,
 		"has_more":     hasMore,
 		"observations": out,
 	})

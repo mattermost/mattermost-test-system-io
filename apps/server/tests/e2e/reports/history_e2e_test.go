@@ -58,6 +58,9 @@ type historyResponse struct {
 	HasMore      bool    `json:"has_more"`
 	Observations []struct {
 		File       string `json:"file"`
+		SuiteTitle string `json:"suite_title"`
+		ReportName string `json:"report_name"`
+		FullTitle  string `json:"full_title"`
 		Title      string `json:"title"`
 		Status     string `json:"status"`
 		Branch     string `json:"branch"`
@@ -163,6 +166,38 @@ func TestReportsHistoryReturnsPastExecutionsInNamedSpecFiles(t *testing.T) {
 	_, both := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file, other}})
 	if len(both.Observations) != 5 || both.Observations[0].File != other {
 		t.Fatalf("two-file request = %d observations: %+v", len(both.Observations), both.Observations)
+	}
+
+	// One group can hold several reports -- one per platform for a desktop run --
+	// and without narrowing, one platform's history answers for another.
+	_, scoped := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "report": "shard-1"})
+	if len(scoped.Observations) == 0 {
+		t.Fatalf("report filter returned nothing; the seeded reports are all named shard-1")
+	}
+	for _, o := range scoped.Observations {
+		if o.ReportName != "shard-1" {
+			t.Fatalf("report filter leaked %q", o.ReportName)
+		}
+	}
+	_, missing := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "report": "no-such-report"})
+	if len(missing.Observations) != 0 {
+		t.Fatalf("a prefix matching no report must return nothing, got %d", len(missing.Observations))
+	}
+	// Suite identity travels with the row so a caller can tell two suites in one
+	// file that share a leaf title apart.
+	if out.Observations[0].ReportName == "" {
+		t.Fatalf("report_name missing from observations: %+v", out.Observations[0])
+	}
+	if out.Observations[0].FullTitle == "" {
+		t.Fatalf("full_title missing; two suites in one file cannot be told apart without it: %+v", out.Observations[0])
+	}
+	// The prefix is matched literally: a name is not a pattern, so % and _ in it
+	// must not widen the match.
+	for _, pattern := range []string{"%", "_hard-1", "shard%", "shard_"} {
+		_, wild := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}, "report": pattern})
+		if len(wild.Observations) != 0 {
+			t.Fatalf("report prefix %q behaved as a pattern and matched %d row(s)", pattern, len(wild.Observations))
+		}
 	}
 
 	// `runs` reads the newest N runs with no lower time bound, so the 20-day-old

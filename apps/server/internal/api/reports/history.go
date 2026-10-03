@@ -65,7 +65,7 @@ type historyRequest struct {
 	PerPage    int      `json:"per_page"`
 }
 
-// historyObservation is one execution of one test in one completed report group.
+// historyObservation is one execution of one test in one finished report group.
 type historyObservation struct {
 	File         string    `json:"file"`
 	Title        string    `json:"title"`
@@ -84,7 +84,7 @@ type historyObservation struct {
 }
 
 // History serves POST /api/v1/reports/history: every execution recorded against
-// the named spec files, in completed report groups of one repository, newest
+// the named spec files, in finished report groups of one repository, newest
 // first and paged. The runs to read are named either as a time window
 // (`since`/`until`) or as a count (`runs`); see historyRequest.
 //
@@ -216,7 +216,7 @@ func (req historyRequest) validate() (historyQuery, string) {
 }
 
 // History serves POST /api/v1/reports/history: every execution recorded against
-// the named spec files, in completed report groups of one repository, newest
+// the named spec files, in finished report groups of one repository, newest
 // first and paged. The runs to read are named either as a time window
 // (`since`/`until`) or as a count (`runs`); see historyRequest.
 //
@@ -278,7 +278,12 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 			SELECT id, name, branch, gh_pr_number, commit_sha, created_at
 			FROM report_groups
 			WHERE repository = $1
-			  AND status = 'completed'
+			  -- Finished groups. 'incomplete' is a group the reaper closed after
+			  -- its uploads stopped (a worker died or was canceled): what it did
+			  -- upload is final, and a trunk run that broke a test is often one of
+			  -- these. Leaving them out hid exactly those breakages from triage.
+			  -- 'in_progress' groups are still uploading and stay out.
+			  AND status IN ('completed', 'incomplete')
 			  AND created_at < $2
 			  AND ($3::timestamptz IS NULL OR created_at >= $3)
 			  AND ($4 = '' OR branch = $4)

@@ -513,9 +513,11 @@ paths:
       security: []
       summary: Past executions of tests in named spec files (read; POST carries the file list)
       description: |
-        Every execution recorded against the listed spec files, in completed
+        Every execution recorded against the listed spec files, in finished
         report groups of the repository, newest first and paged. At most 50
-        files per request.
+        files per request. Finished means `completed`, or `incomplete`: a group
+        closed after its uploads stopped, whose uploaded results are final.
+        Groups still `in_progress` are not read.
 
         The runs to read from are named one of two ways, and they are mutually
         exclusive:

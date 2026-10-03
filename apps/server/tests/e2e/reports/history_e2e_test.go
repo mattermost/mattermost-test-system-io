@@ -18,12 +18,18 @@ import (
 // history endpoint must see it through the same joins the dashboard uses.
 func seedGroup(t *testing.T, env *testenv.Env, repo, branch string, pr *int, sha, name, file, title, status string, retry int, createdAt time.Time) {
 	t.Helper()
+	seedGroupWithStatus(t, env, "completed", repo, branch, pr, sha, name, file, title, status, retry, createdAt)
+}
+
+// seedGroupWithStatus is seedGroup for a group in another lifecycle state.
+func seedGroupWithStatus(t *testing.T, env *testenv.Env, groupStatus, repo, branch string, pr *int, sha, name, file, title, status string, retry int, createdAt time.Time) {
+	t.Helper()
 	ctx := context.Background()
 	var gid string
 	if err := env.Pool.QueryRow(ctx, `
 		INSERT INTO report_groups (framework, name, repository, branch, commit_sha, gh_run_id, gh_run_attempt, gh_pr_number, status, created_at)
-		VALUES ('playwright', $1, $2, $3, $4, $5, '1', $6, 'completed', $7) RETURNING id`,
-		name, repo, branch, sha, "run-"+sha+"-"+name, pr, createdAt).Scan(&gid); err != nil {
+		VALUES ('playwright', $1, $2, $3, $4, $5, '1', $6, $8, $7) RETURNING id`,
+		name, repo, branch, sha, "run-"+sha+"-"+name, pr, createdAt, groupStatus).Scan(&gid); err != nil {
 		t.Fatalf("insert group: %v", err)
 	}
 	var rid string
@@ -85,6 +91,40 @@ func postHistory(t *testing.T, env *testenv.Env, body map[string]any) (int, hist
 		}
 	}
 	return resp.StatusCode, out
+}
+
+// A trunk run that lost a worker is reaped to 'incomplete', and a run that
+// broke a test is often exactly that kind of run. What it did upload is final,
+// so it is history; a group still uploading is not.
+func TestReportsHistoryReadsIncompleteGroupsButNotRunningOnes(t *testing.T) {
+	env := testenv.Start(t)
+	const repo = "mattermost/history-incomplete-e2e"
+	const file = "functional/channels/channel_banner.spec.ts"
+	const title = "Should show channel banner when configured"
+	now := time.Now().UTC().Truncate(time.Second)
+	until := now.Add(time.Hour).Format(time.RFC3339)
+
+	seedGroup(t, env, repo, "master", nil, "aaaaaaa", "playwright-full-master", file, title, "passed", 0, now.Add(-6*time.Hour))
+	seedGroupWithStatus(t, env, "incomplete", repo, "master", nil, "bbbbbbb", "playwright-full-master", file, title, "failed", 0, now.Add(-3*time.Hour))
+	seedGroupWithStatus(t, env, "in_progress", repo, "master", nil, "ccccccc", "playwright-full-master", file, title, "failed", 0, now.Add(-1*time.Hour))
+
+	for _, body := range []map[string]any{
+		{"repository": repo, "until": until, "files": []string{file}},
+		{"repository": repo, "until": until, "files": []string{file}, "branch": "master", "runs": 5},
+	} {
+		status, out := postHistory(t, env, body)
+		if status != http.StatusOK {
+			t.Fatalf("%v: status = %d", body, status)
+		}
+		var got []string
+		for _, o := range out.Observations {
+			got = append(got, o.CommitSHA+":"+o.Status)
+		}
+		want := []string{"bbbbbbb:failed", "aaaaaaa:passed"}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("%v: observations = %v, want %v (the incomplete run, newest first; not the one still uploading)", body, got, want)
+		}
+	}
 }
 
 func TestReportsHistoryReturnsPastExecutionsInNamedSpecFiles(t *testing.T) {

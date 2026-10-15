@@ -5,7 +5,7 @@
 # (apps/server/migrations) are embedded into the Go binary. Image target: < 60 MB.
 
 # ----- Stage 1: web bundle -----
-FROM node:24-alpine AS web-builder
+FROM node:26-alpine AS web-builder
 
 WORKDIR /src/apps/web
 
@@ -24,7 +24,7 @@ RUN npm run build
 # Output now lives at /src/apps/server/internal/webui/dist/
 
 # ----- Stage 2: go builder -----
-FROM golang:1.26-alpine AS go-builder
+FROM golang:1.27-alpine AS go-builder
 
 ARG VERSION=dev
 ARG COMMIT_SHA=unknown

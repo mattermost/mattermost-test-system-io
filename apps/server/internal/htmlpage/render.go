@@ -18,6 +18,9 @@ var homeHTML string
 //go:embed templates/repo.html
 var repoHTML string
 
+//go:embed templates/run.html
+var runHTML string
+
 //go:embed assets/style.css
 var styleCSS string
 
@@ -29,6 +32,9 @@ var homeJS string
 
 //go:embed assets/repo.js
 var repoJS string
+
+//go:embed assets/run.js
+var runJS string
 
 var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
 	"shortSHA":   shortSHA,
@@ -66,12 +72,30 @@ var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
 		}
 		return template.URL("?" + q)
 	},
-}).Parse(layoutHTML + homeHTML + repoHTML))
+	"runQuery": func(page int, ghRunID, ghRunAttempt string) template.URL {
+		v := url.Values{}
+		if ghRunID != "" {
+			v.Set("gh_run_id", ghRunID)
+		}
+		if ghRunAttempt != "" && ghRunAttempt != "1" {
+			v.Set("gh_run_attempt", ghRunAttempt)
+		}
+		if page > 1 {
+			v.Set("page", strconv.Itoa(page))
+		}
+		q := v.Encode()
+		if q == "" {
+			return template.URL("?")
+		}
+		return template.URL("?" + q)
+	},
+}).Parse(layoutHTML + homeHTML + repoHTML + runHTML))
 
 type layoutData struct {
 	Site    SiteInfo
 	Home    *HomePage
 	Repo    *RepoPage
+	Run     *RunPage
 	CSS     template.CSS
 	ThemeJS template.JS
 	PageJS  template.JS
@@ -81,6 +105,15 @@ type layoutData struct {
 func RenderHomeLiveRows(runs []HomeRunRow) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := pageTmpl.ExecuteTemplate(&buf, "home-live-rows", runs); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// RenderRunDispatchLive renders header chips + unit rows for the live fragment.
+func RenderRunDispatchLive(live RunDispatchLive) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := pageTmpl.ExecuteTemplate(&buf, "run-dispatch-body", live); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -110,6 +143,22 @@ func RenderRepo(page RepoPage) ([]byte, error) {
 		CSS:     template.CSS(styleCSS),
 		ThemeJS: template.JS(themeJS),
 		PageJS:  template.JS(repoJS),
+	}
+	var buf bytes.Buffer
+	if err := pageTmpl.ExecuteTemplate(&buf, "layout", data); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// RenderRun renders the consolidated run page.
+func RenderRun(page RunPage) ([]byte, error) {
+	data := layoutData{
+		Site:    page.Site,
+		Run:     &page,
+		CSS:     template.CSS(styleCSS),
+		ThemeJS: template.JS(themeJS),
+		PageJS:  template.JS(runJS),
 	}
 	var buf bytes.Buffer
 	if err := pageTmpl.ExecuteTemplate(&buf, "layout", data); err != nil {

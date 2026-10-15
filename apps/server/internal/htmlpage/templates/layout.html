@@ -4,10 +4,10 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>{{if .Repo}}{{.Repo.Title}}{{else}}{{.Home.Title}}{{end}}</title>
+  <title>{{if .Run}}{{.Run.Title}}{{else if .Repo}}{{.Repo.Title}}{{else}}{{.Home.Title}}{{end}}</title>
   <style>{{.CSS}}</style>
 </head>
-<body class="page">
+<body class="page{{if .Run}} page-run{{end}}">
   <header class="site-header">
     <div class="site-header-shell">
       <div class="site-header-bar">
@@ -38,8 +38,10 @@
       </div>
     </div>
   </header>
-  <main class="site-main" id="tsio-page-main"{{if .Repo}} data-repository="{{.Repo.RepoSlug}}"{{end}}>
-    {{if .Repo}}
+  <main class="site-main" id="tsio-page-main"{{if .Repo}} data-repository="{{.Repo.RepoSlug}}"{{else if .Run}} data-orch-repository="{{.Run.Identity.Repository}}" data-orch-commit="{{.Run.Identity.CommitSHA}}" data-orch-gh-run-id="{{.Run.Identity.GHRunID}}" data-orch-name="{{.Run.Identity.Name}}" data-orch-gh-run-attempt="{{.Run.Identity.GHRunAttempt}}" data-orch-live="{{if .Run.IsLive}}1{{else}}0{{end}}" data-orch-page="{{.Run.UnitPage}}"{{end}}>
+    {{if .Run}}
+    {{template "run-content" .Run}}
+    {{else if .Repo}}
     {{template "repo-content" .Repo}}
     {{else}}
     {{template "home-content" .Home}}

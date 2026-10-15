@@ -51,6 +51,10 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
   const branch = props.branch ?? params.branch;
   const commit = props.commit ?? params.commit;
   const isRepoScoped = !!repoName && !branch && !commit;
+  // Repo or branch list pages use server-side filters + live/static split + paging.
+  // Commit lists still client-filter (no commit query on /reports/grouped yet).
+  const isBranchScoped = !!repoName && !!branch && !commit;
+  const isPagedList = isRepoScoped || isBranchScoped;
 
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedBranchFilter = searchParams.get('branch_filter') || '';
@@ -93,9 +97,14 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
     }
   }, [isRepoScoped, soleBranchOption, selectedBranchFilter]);
 
+  const pathBranchFilter = branch ? `branch:${short_branch(branch)}` : '';
   const groupedOptions = {
-    repository: isRepoScoped ? repoName : undefined,
-    branchFilter: isRepoScoped ? effectiveBranchFilter : undefined,
+    repository: isPagedList ? repoName : undefined,
+    branchFilter: isRepoScoped
+      ? effectiveBranchFilter
+      : isBranchScoped
+        ? pathBranchFilter
+        : undefined,
   };
 
   const {
@@ -105,25 +114,25 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
   } = useGroupedReports(page, limit, groupedOptions);
 
   const { data: liveSourceData } = useGroupedReports(1, limit, {
-    enabled: isRepoScoped,
+    enabled: isPagedList,
     ...groupedOptions,
   });
 
   const filteredGroups = useMemo(() => {
     if (!groupedData) return [];
-    if (isRepoScoped) return groupedData.groups;
+    if (isPagedList) return groupedData.groups;
     return filterGroups(groupedData.groups, repoName, branch, commit);
-  }, [groupedData, isRepoScoped, repoName, branch, commit]);
+  }, [groupedData, isPagedList, repoName, branch, commit]);
 
   const liveRuns = useMemo(() => {
-    if (!isRepoScoped || !liveSourceData) return [];
+    if (!isPagedList || !liveSourceData) return [];
     return liveSourceData.groups
       .flatMap((g) => g.runs)
       .filter(isLiveHomeRun)
       .sort((a, b) =>
         a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
       );
-  }, [isRepoScoped, liveSourceData]);
+  }, [isPagedList, liveSourceData]);
 
   const breadcrumbItems: { label: string; to?: string }[] = [{ label: 'Reports', to: '/reports' }];
   if (repoName) {
@@ -148,19 +157,19 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
   }
 
   const repoRuns = filteredGroups.flatMap((g) => g.runs);
-  const staticRuns = isRepoScoped
+  const staticRuns = isPagedList
     ? repoRuns
         .filter((r) => !isLiveHomeRun(r))
         .sort((a, b) =>
           a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
         )
     : [];
-  const total = isRepoScoped ? (groupedData?.total ?? repoRuns.length) : 0;
-  const totalPages = isRepoScoped ? Math.max(1, Math.ceil(total / limit)) : 0;
+  const total = isPagedList ? (groupedData?.total ?? repoRuns.length) : 0;
+  const totalPages = isPagedList ? Math.max(1, Math.ceil(total / limit)) : 0;
 
   return (
     <div>
-      <div className={isRepoScoped ? undefined : 'mb-6'}>
+      <div className={isPagedList ? undefined : 'mb-6'}>
         <Breadcrumb items={breadcrumbItems} />
       </div>
 
@@ -196,7 +205,7 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
         </div>
       )}
 
-      {isRepoScoped && !isLoading && !error && liveRuns.length === 0 && staticRuns.length === 0 && (
+      {isPagedList && !isLoading && !error && liveRuns.length === 0 && staticRuns.length === 0 && (
         <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
           <Inbox className="h-12 w-12 mb-3" />
           <p className="text-sm">No matching reports</p>
@@ -209,8 +218,8 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
         </div>
       )}
 
-      {isRepoScoped && !isLoading && !error && (liveRuns.length > 0 || staticRuns.length > 0) && (
-        <div className="space-y-4">
+      {isPagedList && !isLoading && !error && (liveRuns.length > 0 || staticRuns.length > 0) && (
+        <div className={`space-y-4 ${isBranchScoped ? 'mt-6' : ''}`}>
           {liveRuns.length > 0 && (
             <div className="rounded-lg border border-blue-200 bg-white dark:border-blue-900/60 dark:bg-gray-800/50">
               <div className="flex items-center gap-2 border-b border-blue-100 px-3 py-2 dark:border-blue-900/40">
@@ -282,7 +291,7 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
         </div>
       )}
 
-      {!isRepoScoped && groupedData && filteredGroups.length === 0 && !isLoading && (
+      {!isPagedList && groupedData && filteredGroups.length === 0 && !isLoading && (
         <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
           <Inbox className="h-12 w-12 mb-3" />
           <p className="text-sm">No matching reports</p>
@@ -295,7 +304,7 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
         </div>
       )}
 
-      {!isRepoScoped && filteredGroups.length > 0 && (
+      {!isPagedList && filteredGroups.length > 0 && (
         <div className="space-y-4">
           {filteredGroups.map((group) => (
             <RepoGroupCard key={group.repository_name} group={group} />

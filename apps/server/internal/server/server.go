@@ -244,6 +244,7 @@ func Build(d Deps) chi.Router {
 	if d.HTMLViewEnabled && d.Pool != nil {
 		htmlH := &htmlpage.Handler{
 			Pool: d.Pool,
+			Orch: d.OrchestrationStore,
 			Site: htmlpage.SiteInfo{
 				ServerVersion:      d.Version,
 				CommitSHA:          d.CommitSHA,
@@ -257,6 +258,8 @@ func Build(d Deps) chi.Router {
 		r.Get("/", htmlH.ServeHome)
 		r.Get("/reports", htmlH.ServeHome)
 		r.Get("/reports/fragment/home-live", htmlH.ServeHomeLiveFragment)
+		r.Get("/reports/fragment/run-dispatch-live", htmlH.ServeRunDispatchLiveFragment)
+		r.Get("/reports/{repo}/{branch}/{sha}/{name}", htmlH.ServeRun)
 		r.Get("/reports/{repo}", func(w http.ResponseWriter, r *http.Request) {
 			repo := chi.URLParam(r, "repo")
 			if htmlpage.IsRepoPageSegment(repo) {

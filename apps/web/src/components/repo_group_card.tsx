@@ -170,14 +170,14 @@ function run_entry_row({
     <Link
       key={entry.report_id}
       to={entry.url_path}
-      className="flex cursor-pointer items-center px-3 py-2 text-sm max-lg:grid max-lg:items-center max-lg:gap-x-2 max-lg:gap-y-1.5 max-sm:grid-cols-[1.5rem_3.25rem_minmax(0,1fr)] max-sm:grid-rows-[repeat(5,auto)] sm:max-lg:grid-cols-[1.5rem_3.25rem_minmax(0,1fr)_auto] sm:max-lg:grid-rows-[repeat(3,auto)]"
+      className="flex cursor-pointer items-center gap-x-2 px-3 py-2 text-sm max-lg:grid max-lg:items-center max-lg:gap-y-1.5 max-sm:grid-cols-[1.5rem_3.25rem_minmax(0,1fr)] max-sm:grid-rows-[repeat(5,auto)] sm:max-lg:grid-cols-[1.5rem_3.25rem_minmax(0,1fr)_auto] sm:max-lg:grid-rows-[repeat(3,auto)]"
     >
       {rowNumber != null && (
         <span className="inline-flex w-6 flex-shrink-0 items-center justify-end self-stretch text-right text-xs leading-none text-gray-400 max-lg:col-start-1 max-lg:row-span-full dark:text-gray-500">
           {rowNumber}
         </span>
       )}
-      <span className="inline-flex min-w-[3rem] flex-shrink-0 items-center justify-center self-stretch max-lg:col-start-2 max-lg:row-span-full">
+      <span className="inline-flex min-w-[3.25rem] flex-shrink-0 items-center justify-center self-stretch max-lg:col-start-2 max-lg:row-span-full">
         {status_icon(entry)}
       </span>
       <div className="flex min-w-0 shrink flex-col gap-0.5 max-lg:contents">

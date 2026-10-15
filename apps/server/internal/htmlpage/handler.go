@@ -11,11 +11,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 )
 
 // HTML page handlers.
 type Handler struct {
 	Pool   *pgxpool.Pool
+	Orch   *orchestration.Store
 	Site   SiteInfo
 	Logger *slog.Logger
 }
@@ -181,5 +183,117 @@ func (h *Handler) ServeHomeLiveFragment(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(homeLiveFragmentResponse{
 		HTML:  string(html),
 		Count: len(rows),
+	})
+}
+
+// GET /reports/{repo}/{branch}/{sha}/{name}.
+func (h *Handler) ServeRun(w http.ResponseWriter, r *http.Request) {
+	if h.Pool == nil {
+		http.Error(w, "html pages unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	repo := strings.TrimSpace(chi.URLParam(r, "repo"))
+	branch := strings.TrimSpace(chi.URLParam(r, "branch"))
+	sha := strings.TrimSpace(chi.URLParam(r, "sha"))
+	name := strings.TrimSpace(chi.URLParam(r, "name"))
+	if !IsRepoPageSegment(repo) || repo == "" || branch == "" || sha == "" || name == "" {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	pageNum := 1
+	if p := r.URL.Query().Get("page"); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 {
+			http.Error(w, "invalid page", http.StatusBadRequest)
+			return
+		}
+		pageNum = n
+	}
+	opts := RunPageOpts{
+		GHRunID:      strings.TrimSpace(r.URL.Query().Get("gh_run_id")),
+		GHRunAttempt: strings.TrimSpace(r.URL.Query().Get("gh_run_attempt")),
+		Page:         pageNum,
+	}
+	page, redirectQ, err := BuildRunPage(r.Context(), h.Pool, h.Orch, h.Site, repo, branch, sha, name, opts)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage run build failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to render page", http.StatusInternalServerError)
+		return
+	}
+	if redirectQ != nil {
+		http.Redirect(w, r, r.URL.Path+"?"+redirectQ.Encode(), http.StatusSeeOther)
+		return
+	}
+	html, err := RenderRun(page)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage run render failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to render page", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(html)
+}
+
+type runDispatchLiveFragmentResponse struct {
+	HTML     string `json:"html"`
+	Count    int    `json:"count"`
+	Total    int    `json:"total"`
+	Terminal bool   `json:"terminal"`
+}
+
+// GET /reports/fragment/run-dispatch-live.
+func (h *Handler) ServeRunDispatchLiveFragment(w http.ResponseWriter, r *http.Request) {
+	if h.Orch == nil {
+		http.Error(w, "html pages unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	repo := strings.TrimSpace(q.Get("repository"))
+	commit := strings.TrimSpace(q.Get("commit_sha"))
+	ghRunID := strings.TrimSpace(q.Get("gh_run_id"))
+	name := strings.TrimSpace(q.Get("name"))
+	attempt := strings.TrimSpace(q.Get("gh_run_attempt"))
+	pageNum := 1
+	if p := q.Get("page"); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 {
+			http.Error(w, "invalid page", http.StatusBadRequest)
+			return
+		}
+		pageNum = n
+	}
+	if repo == "" || commit == "" || ghRunID == "" || name == "" {
+		http.Error(w, "missing identity", http.StatusBadRequest)
+		return
+	}
+	body, total, live, err := BuildRunDispatchLive(r.Context(), h.Orch, repo, commit, ghRunID, name, attempt, pageNum)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage run live fragment failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to load units", http.StatusInternalServerError)
+		return
+	}
+	html, err := RenderRunDispatchLive(body)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage run live render failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to render units", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	_ = json.NewEncoder(w).Encode(runDispatchLiveFragmentResponse{
+		HTML:     string(html),
+		Count:    len(body.Units),
+		Total:    total,
+		Terminal: !live,
 	})
 }

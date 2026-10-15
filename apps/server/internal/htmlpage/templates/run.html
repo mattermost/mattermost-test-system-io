@@ -1,0 +1,208 @@
+{{define "run-unit-status-icon"}}
+{{if eq . "pass"}}{{template "icon-circle-check"}}
+{{else if eq . "fail"}}{{template "icon-circle-x"}}
+{{else if eq . "flaky"}}{{template "icon-alert-triangle"}}
+{{else if eq . "leased"}}{{template "icon-spinner"}}
+{{else if eq . "retest"}}{{template "icon-spinner"}}
+{{else if eq . "pending"}}{{template "icon-clock"}}
+{{else if eq . "skipped"}}{{template "icon-minus"}}
+{{else if eq . "abandoned"}}{{template "icon-alert-triangle"}}
+{{else}}{{template "icon-clock"}}{{end}}
+{{end}}
+
+{{define "run-screenshots"}}
+{{if .}}
+<div class="run-shots">
+  {{range $i, $s := .}}
+  <button type="button" class="run-shot-thumb" data-shot-key="{{$s.Key}}" data-shot-index="{{$i}}" title="{{$s.Path}}">
+    <img src="/files/{{$s.Key}}" alt="Screenshot {{add $i 1}}" loading="lazy"/>
+    <span class="run-shot-zoom" aria-hidden="true">{{template "icon-zoom"}}</span>
+  </button>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+
+{{define "run-test-attempt"}}
+<div class="run-attempt">
+  <div class="run-attempt-head">
+    <span class="run-unit-icon {{.StatusClass}}">{{template "run-unit-status-icon" .StatusIcon}}</span>
+    <span class="run-attempt-label">{{.Label}}</span>
+    {{if .JobName}}<span class="run-attempt-job">({{.JobName}})</span>{{end}}
+    {{if .IsRetest}}<span class="run-retest-pill" title="Orchestration-level retest">retest</span>{{end}}
+    {{if .DurationText}}<span class="run-attempt-dur">{{template "icon-clock"}}{{.DurationText}}</span>{{end}}
+  </div>
+  {{if .ErrorText}}
+  <div class="run-error"><pre>{{.ErrorText}}</pre></div>
+  {{end}}
+  {{template "run-screenshots" .Screenshots}}
+</div>
+{{end}}
+
+{{define "run-test-row"}}
+<div class="run-test" data-can-expand="{{if .CanExpand}}1{{else}}0{{end}}">
+  <div class="run-test-head{{if .CanExpand}} is-expandable{{end}}" role="{{if .CanExpand}}button{{end}}" tabindex="{{if .CanExpand}}0{{end}}">
+    {{if .CanExpand}}<span class="run-chevron" aria-hidden="true">{{template "icon-chevron-right"}}</span>{{else}}<span class="run-chevron-spacer"></span>{{end}}
+    <span class="run-test-num tabular">{{.DisplayNum}}</span>
+    <span class="run-unit-icon {{.StatusClass}}">{{template "run-unit-status-icon" .StatusIcon}}</span>
+    <span class="run-test-title">{{.Title}}</span>
+    {{if gt .AttemptCount 1}}
+    <span class="run-test-retries">{{template "icon-rotate"}}{{.AttemptCount}} attempts</span>
+    {{else if .DurationText}}
+    <span class="run-attempt-dur">{{template "icon-clock"}}{{.DurationText}}</span>
+    {{end}}
+  </div>
+  {{if .CanExpand}}
+  <div class="run-test-body hidden">
+    {{range .Attempts}}{{template "run-test-attempt" .}}{{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+{{define "run-unit-rows"}}
+{{range .}}
+<div class="run-unit" data-filter="{{.FilterAttrs}}" data-search="{{.SearchText}}" data-status="{{.Status}}" data-can-expand="{{if .CanExpand}}1{{else}}0{{end}}">
+  <div class="run-unit-row{{if .CanExpand}} is-expandable{{end}}" role="{{if .CanExpand}}button{{end}}" tabindex="{{if .CanExpand}}0{{end}}">
+    <div class="run-unit-main">
+      <span class="run-unit-num tabular">{{.RowNum}}</span>
+      {{if .CanExpand}}<span class="run-chevron" aria-hidden="true">{{template "icon-chevron-right"}}</span>{{else}}<span class="run-chevron-spacer"></span>{{end}}
+      <span class="run-unit-icon {{.StatusClass}}" aria-hidden="true">{{template "run-unit-status-icon" .StatusIcon}}</span>
+      <div class="run-unit-identity">
+        <p class="run-unit-path-line">
+          {{template "icon-file-code"}}
+          <span class="run-unit-path" title="{{.SpecPath}}">{{.SpecPath}}</span>
+          {{if .WorkerSlots}}
+          <span class="run-unit-slots">
+            {{range .WorkerSlots}}
+            <span class="run-slot {{.Class}}" title="{{.Title}}">{{.Label}}</span>
+            {{end}}
+          </span>
+          {{end}}
+        </p>
+        {{if .SuiteTitle}}<p class="run-unit-suite">{{.SuiteTitle}}</p>{{end}}
+      </div>
+    </div>
+    <div class="run-unit-meta">
+      {{if .LeaseElapsedText}}
+      <span class="run-unit-duration duration-live tabular" title="Time elapsed since lease">{{template "icon-clock"}}{{.LeaseElapsedText}}</span>
+      {{else if or .DurationText .RetestDurationText}}
+      <span class="run-unit-duration {{.DurationClass}} tabular">{{template "icon-clock"}}{{if .DurationText}}{{.DurationText}}{{else}}—{{end}}{{if .RetestDurationText}}<span class="duration-retest"> + {{.RetestDurationText}}</span>{{end}}</span>
+      {{end}}
+      {{if gt .TestTotal 0}}
+      <span class="run-unit-tests text-muted">{{.TestTotal}} {{if eq .TestTotal 1}}test{{else}}tests{{end}}</span>
+      {{if gt .TestPassed 0}}<span class="run-unit-chip text-pass">{{template "icon-circle-check"}}{{.TestPassed}}</span>{{end}}
+      {{if gt .TestFlaky 0}}<span class="run-unit-chip text-flaky" title="Flaky">{{template "icon-alert-triangle"}}{{.TestFlaky}}</span>{{end}}
+      {{if gt .TestFailed 0}}<span class="run-unit-chip text-fail">{{template "icon-circle-x"}}{{.TestFailed}}</span>{{end}}
+      {{if gt .TestSkipped 0}}<span class="run-unit-chip text-muted">{{template "icon-minus"}}{{.TestSkipped}}</span>{{end}}
+      {{end}}
+    </div>
+  </div>
+  {{if .CanExpand}}
+  <div class="run-unit-detail hidden">
+    {{range .Tests}}
+    {{template "run-test-row" .}}
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+
+{{define "run-dispatch-body"}}
+<div class="run-spec-header">
+  <h3 class="run-spec-header-left">
+    <button type="button" class="run-filter-btn is-active" data-filter="all" title="Show all suites">{{.UnitTotalAll}} {{if eq .UnitTotalAll 1}}spec{{else}}specs{{end}}</button>
+    {{if gt .UnitPass 0}}<button type="button" class="run-filter-btn text-pass" data-filter="spec_passed" title="Filter passed suites">{{template "icon-circle-check"}}{{.UnitPass}}</button>{{end}}
+    {{if gt .UnitFail 0}}<button type="button" class="run-filter-btn text-fail" data-filter="spec_failed" title="Filter failed suites">{{template "icon-circle-x"}}{{.UnitFail}}</button>{{end}}
+    {{if gt .SpecInProgress 0}}<button type="button" class="run-filter-btn text-live" data-filter="spec_in_progress" title="Filter running suites">{{template "icon-spinner"}}{{.SpecInProgress}}</button>{{end}}
+    {{if gt .SpecRetestInProgress 0}}<button type="button" class="run-filter-btn text-retest" data-filter="spec_retest_in_progress" title="Filter retests in flight">{{template "icon-spinner"}}{{.SpecRetestInProgress}}</button>{{end}}
+    {{if gt .UnitSkipped 0}}<button type="button" class="run-filter-btn text-muted" data-filter="spec_skipped" title="Filter skipped suites">{{template "icon-minus"}}{{.UnitSkipped}}</button>{{end}}
+  </h3>
+  {{if .HasTests}}
+  <div class="run-spec-header-right">
+    <button type="button" class="run-filter-btn" data-filter="all" title="Show all tests">{{.TestTotal}} {{if eq .TestTotal 1}}test{{else}}tests{{end}}</button>
+    <button type="button" class="run-filter-btn text-pass" data-filter="test_passed" title="Filter suites with passed tests">{{template "icon-circle-check"}}{{.TestPassed}}</button>
+    {{if gt .TestFailed 0}}<button type="button" class="run-filter-btn text-fail" data-filter="test_failed" title="Filter suites with failed tests">{{template "icon-circle-x"}}{{.TestFailed}}</button>{{end}}
+    {{if gt .TestFlaky 0}}<button type="button" class="run-filter-btn text-flaky" data-filter="test_flaky" title="Filter suites with flaky tests">{{template "icon-alert-triangle"}}{{.TestFlaky}}</button>{{end}}
+    {{if gt .TestSkipped 0}}<button type="button" class="run-filter-btn text-muted" data-filter="test_skipped" title="Filter suites with skipped tests">{{template "icon-minus"}}{{.TestSkipped}}</button>{{end}}
+  </div>
+  {{end}}
+</div>
+<div class="run-search-wrap">
+  <span class="run-search-icon" aria-hidden="true">{{template "icon-search"}}</span>
+  <input type="search" id="run-spec-search" class="run-search-input" placeholder="Search tests..." autocomplete="off" spellcheck="false"/>
+  <button type="button" id="run-spec-search-clear" class="run-search-clear hidden" aria-label="Clear search">{{template "icon-close"}}</button>
+</div>
+<div class="run-client-pager hidden" id="run-pager-top"></div>
+<div class="run-unit-list" id="run-unit-list">
+  {{if .Units}}
+  {{template "run-unit-rows" .Units}}
+  {{else}}
+  <div class="empty-state empty-state-inline">
+    <p class="empty-hint">No spec files dispatched</p>
+  </div>
+  {{end}}
+  <div class="run-filter-empty hidden" id="run-filter-empty">No matching dispatch units</div>
+</div>
+<div class="run-client-pager hidden" id="run-pager-bottom"></div>
+{{end}}
+
+{{define "run-content"}}
+<header class="run-page-header">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  {{range $i, $c := .Breadcrumbs}}
+  <span class="breadcrumb-item">
+    {{if $i}}{{template "icon-chevron-right"}}{{end}}
+    {{if $c.Href}}
+    <a href="{{$c.Href}}" class="breadcrumb-link">{{$c.Label}}</a>
+    {{else}}
+    <span class="breadcrumb-current">{{$c.Label}}</span>
+    {{end}}
+  </span>
+  {{end}}
+</nav>
+</header>
+
+{{if eq .Mode "empty"}}
+<div class="empty-state">
+  {{template "icon-inbox"}}
+  <p class="empty-title">Nothing to combine yet</p>
+  <p class="empty-hint">{{if .ReportsHint}}{{.ReportsHint}}{{else}}Awaiting orchestration or report uploads for this run.{{end}}</p>
+</div>
+{{else}}
+
+<section class="run-summary" aria-label="Run summary">
+  <div class="run-summary-top">{{if .HasTestStatus}}<span class="test-status-badge {{.TestStatusClass}}">{{if eq .TestStatus "passed"}}{{template "icon-circle-check"}} Passed{{else if eq .TestStatus "failed"}}{{template "icon-circle-x"}} Failed{{else}}{{template "icon-circle-alert"}} Timed Out{{end}}</span>{{end}}<span class="run-summary-name">{{.Identity.Name}}</span></div>
+  {{if .HasTests}}
+  <div class="run-summary-stats">{{if .PassRate}}<span class="run-pass-rate {{.PassRateClass}}">{{.PassRate}}%</span>{{end}}<span class="run-stats-text"><span class="font-medium">{{.TestPassed}}</span> passed{{if gt .TestFailed 0}} / <span class="stat-fail">{{.TestFailed}} failed</span>{{end}}{{if gt .TestFlaky 0}} / <span class="stat-flaky">{{.TestFlaky}} flaky</span>{{end}}{{if gt .TestSkipped 0}} / <span class="font-medium">{{.TestSkipped}}</span> skipped{{end}} / <span class="font-medium">{{.TestTotal}}</span> total</span>{{if or .DurationText .SetupDurationText .RetestDurationText}}<span class="run-summary-duration">{{template "icon-clock"}}{{if .SetupDurationText}}<span class="duration-setup">({{.SetupDurationText}} setup) + </span>{{end}}{{if .DurationText}}{{.DurationText}}{{end}}{{if .RetestDurationText}}<span class="duration-retest"> + {{.RetestDurationText}}</span>{{end}}</span>{{end}}</div>
+  {{end}}
+  {{if .HasTimeline}}
+  <div class="run-timeline">{{template "icon-calendar"}}{{if .TimelineHeadline}}<span class="run-timeline-headline">{{.TimelineHeadline}}</span>{{end}}{{range $i, $s := .TimelineSegs}}<span class="run-timeline-seg">{{if or $.TimelineHeadline (gt $i 0)}}<span class="run-timeline-arrow" aria-hidden="true">→</span>{{end}}<span class="run-timeline-label">{{$s.Label}}</span> <span class="run-timeline-text">{{$s.Text}}</span></span>{{end}}</div>
+  {{end}}
+  <div class="run-summary-meta">{{if .CreatedAtText}}<span class="run-meta-item">{{template "icon-calendar"}}{{.CreatedAtText}}</span>{{end}}{{if .Identity.Framework}}<span class="run-meta-item">{{template "icon-flask"}}{{.Identity.Framework}}</span>{{end}}{{if gt .TotalSpecs 0}}<span class="run-meta-item{{if .SpecsMismatch}}{{if .IsLive}} text-live{{else}} text-warn{{end}}{{end}}">{{if .SpecsMismatch}}{{template "icon-alert"}}{{else}}{{template "icon-check-circle"}}{{end}}{{if .SpecsMismatch}}{{.SpecsDone}}/{{.TotalSpecs}}{{else}}{{.TotalSpecs}}{{end}} {{if eq .TotalSpecs 1}}spec{{else}}specs{{end}}</span>{{end}}{{if .ProgressStatus}}<span class="progress-badge {{.ProgressClass}}">{{if eq .ProgressStatus "in_progress"}}{{template "icon-spinner"}}{{else if eq .ProgressStatus "timed_out"}}{{template "icon-alert"}}{{else}}{{template "icon-check-circle"}}{{end}}{{.ProgressLabel}}</span>{{end}}</div>
+  {{if .Identity.Repository}}
+  <div class="run-git-chips"><a class="git-chip git-chip-repo" href="https://github.com/{{.Identity.Repository}}" target="_blank" rel="noopener noreferrer">{{template "icon-folder"}}{{.Identity.Repository}}</a>{{if and .Identity.Branch (not .Identity.GHPRNumber)}}<span class="git-chip git-chip-branch">{{template "icon-branch"}}{{.Identity.Branch}}</span>{{end}}{{if .Identity.GHPRNumber}}<a class="git-chip git-chip-pr" href="https://github.com/{{.Identity.Repository}}/pull/{{.Identity.GHPRNumber}}" target="_blank" rel="noopener noreferrer">{{template "icon-pr"}}#{{.Identity.GHPRNumber}}</a>{{end}}{{if .Identity.CommitSHA}}<a class="git-chip git-chip-commit mono" href="https://github.com/{{.Identity.Repository}}/commit/{{.Identity.CommitSHA}}" target="_blank" rel="noopener noreferrer">{{template "icon-commit"}}{{.Identity.ShortSHA}}</a>{{end}}{{if .Identity.GHRunID}}<a class="git-chip git-chip-run" href="https://github.com/{{.Identity.Repository}}/actions/runs/{{.Identity.GHRunID}}" target="_blank" rel="noopener noreferrer">{{template "icon-play"}}Run {{.Identity.GHRunID}}</a>{{end}}</div>
+  {{end}}
+</section>
+
+{{if eq .Mode "dispatch"}}
+<section class="run-dispatch" id="run-dispatch" data-tsio-region="run-dispatch" data-tsio-mode="{{if .IsLive}}live{{else}}static{{end}}" data-page-size="100" aria-label="Dispatch units">
+  <div id="run-dispatch-inner">
+    {{template "run-dispatch-body" .}}
+  </div>
+</section>
+<div id="run-lightbox" class="run-lightbox hidden" hidden>
+  <button type="button" class="run-lightbox-close" aria-label="Close">{{template "icon-close"}}</button>
+  <button type="button" class="run-lightbox-prev" aria-label="Previous">{{template "icon-chevron-left"}}</button>
+  <button type="button" class="run-lightbox-next" aria-label="Next">{{template "icon-chevron-right"}}</button>
+  <div class="run-lightbox-stage">
+    <img id="run-lightbox-img" alt="Screenshot"/>
+    <div class="run-lightbox-bar"><span id="run-lightbox-count"></span></div>
+  </div>
+  <p class="run-lightbox-hint">Use ← → to navigate • Esc to close</p>
+</div>
+{{end}}
+
+{{end}}
+{{end}}

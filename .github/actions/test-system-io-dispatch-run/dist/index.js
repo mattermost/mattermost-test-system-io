@@ -29352,6 +29352,24 @@ function imageContentType(filePath) {
   return null;
 }
 
+// src/no_work.ts
+function ranNoWork(leasesHeld, drainErr) {
+  return leasesHeld === 0 && drainErr === void 0;
+}
+async function recordNoWork(post, body) {
+  const res = await post("/api/v1/orchestration/no-work", body);
+  const recorded = res.body?.recorded === true;
+  if (res.status === 200 && recorded) {
+    info(
+      "no unit leased; recorded no-work exit so the report group does not wait for this worker"
+    );
+    return;
+  }
+  warning(
+    `no-work record failed: ${res.status} ${JSON.stringify(res.body)}; the report group will stay short of total_reports_expected and read as missing reports`
+  );
+}
+
 // src/upload.ts
 var fs6 = __toESM(require("fs"));
 var path6 = __toESM(require("path"));
@@ -29575,8 +29593,9 @@ async function run() {
   const invocations = [];
   let iterationSeq = 0;
   let drainErr;
+  let leasesHeld = 0;
   try {
-    await drain({
+    leasesHeld = await drain({
       baseURL,
       audience,
       compositeIdentity,
@@ -29623,6 +29642,12 @@ async function run() {
       error(`uploadShard failed: ${e.message}`);
       if (!drainErr) drainErr = e;
     }
+  } else if (ranNoWork(leasesHeld, drainErr)) {
+    await recordNoWork((urlPath, body) => postJSON2({ baseURL, audience }, urlPath, body), {
+      ...compositeIdentity,
+      gh_job_name: resolvedJobName,
+      gh_job_id: ghJobId
+    });
   }
   if (drainErr) throw drainErr;
 }
@@ -29793,6 +29818,7 @@ async function drain(cfg) {
       await sleep2(cfg.postFailureDelayMs);
     }
   }
+  return leasesHeld;
 }
 var RETEST_ELIGIBLE_STATUSES = /* @__PURE__ */ new Set([
   "failed",

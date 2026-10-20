@@ -29357,7 +29357,16 @@ function ranNoWork(leasesHeld, drainErr) {
   return leasesHeld === 0 && drainErr === void 0;
 }
 async function recordNoWork(post, body) {
-  const res = await post("/api/v1/orchestration/no-work", body);
+  const warn = (why) => warning(
+    `no-work record failed: ${why}; the report group will stay short of total_reports_expected and read as missing reports`
+  );
+  let res;
+  try {
+    res = await post("/api/v1/orchestration/no-work", body);
+  } catch (err) {
+    warn(err instanceof Error ? err.message : String(err));
+    return;
+  }
   const recorded = res.body?.recorded === true;
   if (res.status === 200 && recorded) {
     info(
@@ -29365,9 +29374,7 @@ async function recordNoWork(post, body) {
     );
     return;
   }
-  warning(
-    `no-work record failed: ${res.status} ${JSON.stringify(res.body)}; the report group will stay short of total_reports_expected and read as missing reports`
-  );
+  warn(`${res.status} ${JSON.stringify(res.body)}`);
 }
 
 // src/upload.ts

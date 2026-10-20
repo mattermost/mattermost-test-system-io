@@ -52,3 +52,27 @@ test("recordNoWork: a 200 without recorded=true (older server's web UI fallback)
     `expected a no-work warning, got ${JSON.stringify(warnings)}`,
   );
 });
+
+test("recordNoWork: a request that throws (network, OIDC) warns instead of failing the job", async () => {
+  const out: string[] = [];
+  const write = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    out.push(String(chunk));
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await assert.doesNotReject(
+      recordNoWork(async () => {
+        throw new Error("OIDC mint returned empty value");
+      }, {}),
+    );
+  } finally {
+    process.stdout.write = write;
+  }
+  assert.ok(
+    out.some((w) =>
+      w.startsWith("::warning::no-work record failed: OIDC mint returned empty value"),
+    ),
+    `expected a no-work warning, got ${JSON.stringify(out)}`,
+  );
+});

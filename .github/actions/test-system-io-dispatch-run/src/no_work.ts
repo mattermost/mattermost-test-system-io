@@ -32,7 +32,20 @@ export function ranNoWork(leasesHeld: number, drainErr: Error | undefined): bool
  * call existed, and the warning says why.
  */
 export async function recordNoWork(post: PostJSONFn, body: Record<string, unknown>): Promise<void> {
-  const res = await post("/api/v1/orchestration/no-work", body);
+  const warn = (why: string) =>
+    core.warning(
+      `no-work record failed: ${why}; ` +
+        "the report group will stay short of total_reports_expected and read as missing reports",
+    );
+  let res: Awaited<ReturnType<PostJSONFn>>;
+  try {
+    res = await post("/api/v1/orchestration/no-work", body);
+  } catch (err) {
+    // Network or OIDC failure after retries: this worker ran nothing, so it
+    // must not fail its job over the record.
+    warn(err instanceof Error ? err.message : String(err));
+    return;
+  }
   // Check the body too: a server without this route answers an unknown path
   // with the web UI's index.html, which can be a 200.
   const recorded = (res.body as { recorded?: unknown } | null)?.recorded === true;
@@ -42,8 +55,5 @@ export async function recordNoWork(post: PostJSONFn, body: Record<string, unknow
     );
     return;
   }
-  core.warning(
-    `no-work record failed: ${res.status} ${JSON.stringify(res.body)}; ` +
-      "the report group will stay short of total_reports_expected and read as missing reports",
-  );
+  warn(`${res.status} ${JSON.stringify(res.body)}`);
 }

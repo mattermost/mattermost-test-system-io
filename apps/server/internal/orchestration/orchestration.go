@@ -127,6 +127,11 @@ var (
 	// ErrUnknownLease signals that no lease exists for the given worker
 	// identity on the given run (active or released).
 	ErrUnknownLease = errors.New("orchestration: unknown lease for worker")
+
+	// ErrWorkerHasLeases signals a no-work call from a worker that was
+	// issued at least one lease on the run. That worker ran tests and must
+	// upload its report instead.
+	ErrWorkerHasLeases = errors.New("orchestration: worker was issued leases on this run")
 )
 
 // CompositeIdentity is the public, stateless addressing tuple for an

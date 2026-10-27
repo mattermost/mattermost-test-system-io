@@ -1554,7 +1554,7 @@ components:
 
     TestHistoryObservation:
       type: object
-      required: [file, suite_title, title, full_title, status, retry_count, group_id, name, report_name, branch, gh_pr_number, commit_sha, created_at, error_excerpt]
+      required: [file, suite_title, title, full_title, status, retry_count, ordinal, group_id, name, report_name, branch, gh_pr_number, commit_sha, created_at, error_excerpt]
       properties:
         file: { type: string }
         suite_title:
@@ -1571,6 +1571,7 @@ components:
             keyed on file and leaf title alone treats them as a single test.
         status: { type: string }
         retry_count: { type: integer }
+        ordinal: { type: integer, description: "The case's place in its suite. A retest on the same worker repeats a retry count, never an ordinal." }
         group_id: { type: string, format: uuid }
         name:
           type: string

@@ -23,6 +23,7 @@ import (
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
@@ -138,6 +139,11 @@ type completeBody struct {
 	identityFields
 	workerFields
 	Results []completeResultBody `json:"results"`
+}
+
+type noWorkBody struct {
+	identityFields
+	workerFields
 }
 
 // ---------- handlers ----------
@@ -559,6 +565,72 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 		resp["workers"] = workers
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// NoWork serves POST /api/v1/orchestration/no-work. A worker that is leaving
+// the run without ever holding a lease (it started after the queue drained,
+// or gave up polling an empty queue) records that it ran nothing, so the
+// run's report group does not wait for a report that will never come.
+func (h *Handlers) NoWork(w http.ResponseWriter, r *http.Request) {
+	subject, err := authapi.SubjectFromContext(r.Context())
+	if err != nil {
+		api.WriteError(w, r, api.ErrUnauthorized)
+		return
+	}
+
+	var body noWorkBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
+		return
+	}
+
+	identity, ierr := identityFromFields(body.identityFields)
+	if ierr != nil {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", ierr.Error())
+		return
+	}
+	worker, werr := workerFromFields(body.workerFields)
+	if werr != nil {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", werr.Error())
+		return
+	}
+
+	run, err := h.Store.FindRunByIdentity(r.Context(), identity)
+	if err != nil {
+		if errors.Is(err, orchestration.ErrNotFound) {
+			api.WriteError(w, r, api.ErrNotFound)
+			return
+		}
+		api.WriteError(w, r, err)
+		return
+	}
+	if err := orchestration.CheckRunOwner(r.Context(), run, subject); err != nil {
+		api.WriteError(w, r, api.ErrForbidden)
+		return
+	}
+
+	groupID, err := h.Store.RecordNoWork(r.Context(), run, worker)
+	if err != nil {
+		if errors.Is(err, orchestration.ErrWorkerHasLeases) {
+			api.WriteErrorCode(w, http.StatusConflict, "WORKER_HAS_LEASES",
+				"worker was issued leases on this run; it must upload its report")
+			return
+		}
+		api.WriteError(w, r, err)
+		return
+	}
+
+	// The recorded worker may be the last one the group was waiting for.
+	// Like the upload path, a failure here leaves the group in_progress for
+	// the next upload or the staleness reaper; the record itself is durable.
+	if groupID != uuid.Nil {
+		if _, err := reports.TryAutoCompleteGroup(r.Context(), h.Pool, groupID); err != nil && h.Logger != nil {
+			h.Logger.Warn("auto-complete group failed",
+				slog.String("group_id", groupID.String()),
+				slog.String("error", err.Error()))
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"recorded": true})
 }
 
 // Status serves GET /api/v1/orchestration/status. Returns the run's current

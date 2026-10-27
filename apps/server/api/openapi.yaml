@@ -841,6 +841,62 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
+  /api/v1/orchestration/no-work:
+    post:
+      tags: [orchestration]
+      summary: Record that a worker is leaving the run without work
+      operationId: orchestrationNoWork
+      description: |
+        A worker that never held a lease on the run calls this before it
+        exits cleanly: its first checkout got 409 `RUN_NOT_IN_PROGRESS`
+        (the queue drained before it started), or it stopped polling an
+        empty queue. It ran no tests, so it uploads no report.
+
+        The run's report group counts recorded workers toward
+        `total_reports_expected` once the run is `completed`, so a run
+        whose every unit finished is not left `incomplete` by a worker that
+        had nothing to do. A worker that never reaches the orchestrator, or
+        that leased units and did not upload, records nothing and still
+        leaves the group short.
+
+        Rejected with 409 `WORKER_HAS_LEASES` when the worker was issued any
+        lease on the run: it ran tests and must upload its report.
+        Idempotent on (run, gh_job_id).
+
+        Authentication: Uploader role; calling subject MUST match the run's
+        owner (recorded at begin).
+      security:
+        - apiKey: []
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoWorkRequest'
+      responses:
+        '200':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recorded]
+                properties:
+                  recorded:
+                    type: boolean
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The worker was issued a lease on this run (`WORKER_HAS_LEASES`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /api/v1/orchestration/screenshots:
     post:
       tags: [orchestration]
@@ -2095,6 +2151,11 @@ components:
                 no lease_id is required.
               items:
                 $ref: '#/components/schemas/SpecResult'
+
+    NoWorkRequest:
+      allOf:
+        - $ref: '#/components/schemas/CompositeIdentity'
+        - $ref: '#/components/schemas/WorkerIdentity'
 
     CompleteResponse:
       type: object

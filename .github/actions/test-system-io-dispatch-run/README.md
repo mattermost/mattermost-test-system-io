@@ -16,6 +16,8 @@ At queue-empty, the accumulated invocations are uploaded as one shard:
 - `POST /api/v1/reports/register` to register the JSON + screenshot manifest. The dispatch-begin action created the report group earlier in the run, so the worker doesn't call `/reports/begin`; the register response carries the report-group UUID needed for the upload URLs.
 - Multipart `POST /api/v1/reports/upload/<group>/<upload>/{json,screenshots}`.
 
+A worker that drains cleanly without ever leasing a unit (it started after the queue drained, or gave up after `max-idle-polls` empty polls) has no report to upload. It calls `POST /api/v1/orchestration/no-work` instead, so the run's report group counts it toward `total_reports_expected` once the run is `completed`. A worker that leased units, or that failed talking to the orchestrator, does not: its missing report keeps the group short.
+
 OIDC tokens are minted on demand and cached for 5 minutes; HTTP 401 invalidates the cache and retries once. Transient network errors back off exponentially.
 
 The calling workflow MUST grant `permissions: id-token: write`.

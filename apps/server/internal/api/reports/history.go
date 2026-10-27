@@ -67,10 +67,12 @@ type historyRequest struct {
 
 // historyObservation is one execution of one test in one finished report group.
 type historyObservation struct {
-	File         string    `json:"file"`
-	Title        string    `json:"title"`
-	Status       string    `json:"status"`
-	RetryCount   int       `json:"retry_count"`
+	File       string `json:"file"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
+	RetryCount int    `json:"retry_count"`
+	// Ordinal is the case's place in its suite: a retest on the same worker repeats a retry count, never an ordinal.
+	Ordinal      int       `json:"ordinal"`
 	GroupID      uuid.UUID `json:"group_id"`
 	Name         string    `json:"name"`
 	ReportName   string    `json:"report_name"`
@@ -298,7 +300,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 			ORDER BY created_at DESC, id
 			LIMIT $6
 		)
-		SELECT s.file, COALESCE(s.title, ''), COALESCE(r.name, ''), c.title, COALESCE(c.full_title, ''), c.status, c.retry_count,
+		SELECT s.file, COALESCE(s.title, ''), COALESCE(r.name, ''), c.title, COALESCE(c.full_title, ''), c.status, c.retry_count, c.ordinal,
 		       g.id, g.name, g.branch, g.gh_pr_number, g.commit_sha, g.created_at,
 		       left(COALESCE(c.error_message, ''), $7)
 		FROM sel g
@@ -318,7 +320,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	out := make([]historyObservation, 0)
 	for rows.Next() {
 		var o historyObservation
-		if err := rows.Scan(&o.File, &o.SuiteTitle, &o.ReportName, &o.Title, &o.FullTitle, &o.Status, &o.RetryCount, &o.GroupID, &o.Name, &o.Branch, &o.GHPRNumber, &o.CommitSHA, &o.CreatedAt, &o.ErrorExcerpt); err != nil {
+		if err := rows.Scan(&o.File, &o.SuiteTitle, &o.ReportName, &o.Title, &o.FullTitle, &o.Status, &o.RetryCount, &o.Ordinal, &o.GroupID, &o.Name, &o.Branch, &o.GHPRNumber, &o.CommitSHA, &o.CreatedAt, &o.ErrorExcerpt); err != nil {
 			api.WriteError(w, r, err)
 			return
 		}

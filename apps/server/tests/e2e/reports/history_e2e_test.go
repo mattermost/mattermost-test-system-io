@@ -69,6 +69,8 @@ type historyResponse struct {
 		FullTitle  string `json:"full_title"`
 		Title      string `json:"title"`
 		Status     string `json:"status"`
+		RetryCount int    `json:"retry_count"`
+		Ordinal    int    `json:"ordinal"`
 		Branch     string `json:"branch"`
 		GHPRNumber *int   `json:"gh_pr_number"`
 		CommitSHA  string `json:"commit_sha"`
@@ -319,6 +321,49 @@ func TestReportsHistoryReturnsPastExecutionsInNamedSpecFiles(t *testing.T) {
 	} {
 		if status, _ := postHistory(t, env, bad.body); status != http.StatusBadRequest {
 			t.Fatalf("%s: status = %d, want 400", bad.name, status)
+		}
+	}
+}
+
+// A retest unit that lands on the worker of the first attempt repeats its retry count (both are 0), so only the
+// case's ordinal tells the rows apart. Without it a reader cannot tell a retest from two tests sharing one name.
+func TestReportsHistoryReturnsEachCaseOrdinal(t *testing.T) {
+	env := testenv.Start(t)
+	ctx := context.Background()
+	const repo = "mattermost/history-ordinal-e2e"
+	const file = "functional/channels/channel_classification.spec.ts"
+	const title = "User can append text to the Banner Text field"
+	now := time.Now().UTC().Truncate(time.Second)
+	seedGroup(t, env, repo, "master", nil, "aaaaaaa", "playwright-full", file, title, "failed", 0, now.Add(-time.Hour))
+	var sid string
+	if err := env.Pool.QueryRow(ctx, `SELECT s.id FROM suites s JOIN reports r ON r.id = s.report_id JOIN report_groups g ON g.id = r.report_group_id WHERE g.repository = $1`, repo).Scan(&sid); err != nil {
+		t.Fatalf("find suite: %v", err)
+	}
+	for _, c := range []struct {
+		status  string
+		retry   int
+		ordinal int
+	}{{"failed", 1, 6}, {"passed", 0, 37}} {
+		if _, err := env.Pool.Exec(ctx, `INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, ordinal) VALUES ($1, $2, $3, $4, $5, $6)`,
+			sid, title, file+" > "+title, c.status, c.retry, c.ordinal); err != nil {
+			t.Fatalf("insert case: %v", err)
+		}
+	}
+	status, out := postHistory(t, env, map[string]any{"repository": repo, "until": now.Add(time.Hour).Format(time.RFC3339), "files": []string{file}})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	var got [][3]any
+	for _, o := range out.Observations {
+		got = append(got, [3]any{o.Status, o.RetryCount, o.Ordinal})
+	}
+	want := [][3]any{{"failed", 0, 0}, {"failed", 1, 6}, {"passed", 0, 37}}
+	if len(got) != len(want) {
+		t.Fatalf("observations = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("observations = %v, want %v", got, want)
 		}
 	}
 }

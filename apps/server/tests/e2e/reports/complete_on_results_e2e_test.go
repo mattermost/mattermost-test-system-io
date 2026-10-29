@@ -367,14 +367,18 @@ func TestReaperRetriesResultsOnceTheStoreIsBack(t *testing.T) {
 	if _, err := s.env.Pool.Exec(context.Background(), `UPDATE reports SET updated_at = now() - interval '2 minutes' WHERE id = $1`, s.uploadID); err != nil {
 		t.Fatalf("age the shard: %v", err)
 	}
+	hub := events.NewHub()
+	feed, unsubscribe := hub.Subscribe(nil, "")
+	defer unsubscribe()
 	reaper := &reports.Reaper{Pool: s.env.Pool, Logger: slog.Default(),
-		Results: &reports.Handlers{Pool: s.env.Pool, Store: store, Publisher: &events.Publisher{Hub: events.NewHub()}}}
+		Results: &reports.Handlers{Pool: s.env.Pool, Store: store, Publisher: &events.Publisher{Hub: hub}}}
 
 	// Another finalization holding the shard (an upload, or a reaper on another server): this one skips it.
 	held, err := s.env.Pool.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
+	defer held.Release() // a failed assertion must not leave the pool waiting on it at cleanup
 	if _, err := held.Exec(context.Background(), `SELECT pg_advisory_lock($1, hashtext($2))`, int32(0x54534952), s.uploadID); err != nil {
 		t.Fatalf("hold the shard: %v", err)
 	}
@@ -395,11 +399,33 @@ func TestReaperRetriesResultsOnceTheStoreIsBack(t *testing.T) {
 	if report, _, group := s.statuses(t); report != complete || group != completed {
 		t.Fatalf("after the reaper's retry: shard %q, group %q; want complete, completed", report, group)
 	}
+	// A dashboard that showed the group incomplete hears that it finished.
+	if !groupEventSent(feed, s.groupID, completed) {
+		t.Fatalf("no report_updated %q event for group %s", completed, s.groupID)
+	}
 	var reason *string
 	if err := s.env.Pool.QueryRow(context.Background(), `SELECT error_message FROM reports WHERE id = $1`, s.uploadID).Scan(&reason); err != nil {
 		t.Fatalf("read error_message: %v", err)
 	}
 	if reason != nil {
 		t.Fatalf("error_message = %q on a completed shard, want the stale results reason cleared", *reason)
+	}
+}
+
+// groupEventSent reports whether the feed already holds a report_updated event giving the group this status.
+func groupEventSent(feed <-chan events.Event, groupID, status string) bool {
+	for {
+		select {
+		case ev := <-feed:
+			var p struct {
+				ReportID string `json:"report_id"`
+				Status   string `json:"status"`
+			}
+			if ev.Type == "report_updated" && json.Unmarshal(ev.Payload, &p) == nil && p.ReportID == groupID && p.Status == status {
+				return true
+			}
+		default:
+			return false
+		}
 	}
 }

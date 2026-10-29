@@ -33,6 +33,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
@@ -946,7 +947,9 @@ func ssStartedIf(n int) *string {
 // results (json) have been extracted and persisted. It flips the row from
 // `processing` to `complete` and publishes ReportEntryUpdated("complete"). When that flip happens, it
 // then attempts to flip the parent group from `in_progress` (or `incomplete`) to `completed`
-// once count(reports.complete) >= total_reports_expected. Returns true
+// once count(reports.complete) >= total_reports_expected, and publishes
+// ReportUpdated("completed") so a dashboard that showed the group in progress,
+// or incomplete, sees it finish. Returns true
 // when the per-report flip occurred — callers should skip publishing the
 // usual ReportEntryUpdated("processing") event so the UI doesn't see a
 // "complete → processing" sequence.
@@ -965,10 +968,17 @@ func (h *Handlers) tryAutoFinalize(ctx context.Context, groupID, reportID uuid.U
 		return false
 	}
 	h.Publisher.ReportEntryUpdated(groupID, reportID, "complete", time.Now().UTC())
-	if _, err := tryAutoCompleteGroup(ctx, h.Pool, groupID); err != nil && h.Logger != nil {
-		h.Logger.Warn("auto-complete group failed",
-			slog.String("group_id", groupID.String()),
-			slog.String("error", err.Error()))
+	completed, completedReports, updatedAt, err := tryAutoCompleteGroup(ctx, h.Pool, groupID)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("auto-complete group failed",
+				slog.String("group_id", groupID.String()),
+				slog.String("error", err.Error()))
+		}
+		return true
+	}
+	if completed {
+		h.Publisher.ReportUpdated(groupID, "completed", completedReports, nil, updatedAt)
 	}
 	return true
 }
@@ -1023,9 +1033,12 @@ func stillProcessing(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 // Idempotent — a repeat call after the flip is a no-op. The upload handlers
 // gate this call on a successful per-report auto-complete, which guarantees
 // the count has just incremented and the predicate has a chance of becoming
-// true.
-func tryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) (bool, error) {
-	res, err := pool.Exec(ctx, `
+// true. Returns whether this call performed the flip, with the group's
+// complete-report count and new updated_at for the ReportUpdated event.
+func tryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) (bool, int, time.Time, error) {
+	var completedReports int
+	var updatedAt time.Time
+	err := pool.QueryRow(ctx, `
 		UPDATE report_groups
 		   SET status = 'completed', updated_at = now()
 		 WHERE id = $1
@@ -1035,9 +1048,13 @@ func tryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.
 		       OR (SELECT count(*) FROM reports
 		            WHERE report_group_id = $1 AND status = 'complete') >= total_reports_expected
 		   )
-	`, groupID)
-	if err != nil {
-		return false, err
+		RETURNING (SELECT count(*) FROM reports WHERE report_group_id = $1 AND status = 'complete'), updated_at
+	`, groupID).Scan(&completedReports, &updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, 0, time.Time{}, nil
 	}
-	return res.RowsAffected() == 1, nil
+	if err != nil {
+		return false, 0, time.Time{}, err
+	}
+	return true, completedReports, updatedAt, nil
 }

@@ -50,9 +50,9 @@ func registerShard(t *testing.T) shard {
 	return registerShardWithStore(t, testenv.NewFakeStore())
 }
 
-func registerShardWithStore(t *testing.T, store storage.ObjectStore) shard {
+func registerShardWithStore(t *testing.T, store storage.ObjectStore, opts ...testenv.Option) shard {
 	t.Helper()
-	env := testenv.Start(t, testenv.WithStore(store), testenv.WithReaperDisabled())
+	env := testenv.Start(t, append([]testenv.Option{testenv.WithStore(store), testenv.WithReaperDisabled()}, opts...)...)
 	env.InsertPolicy(t, "allow-reports-e2e", 1, string(policy.RoleUploader), map[string]string{
 		"repository_owner": defaultRepoOwner,
 	})
@@ -427,5 +427,43 @@ func groupEventSent(feed <-chan events.Event, groupID, status string) bool {
 		default:
 			return false
 		}
+	}
+}
+
+// An upload whose finalization never gets its turn (another holds the shard past the time limit) leaves the reason
+// the reaper retries, instead of a shard stuck `processing` that nothing reads again.
+func TestResultsThatNeverGetTheirTurnAreLeftForTheReaper(t *testing.T) {
+	store := testenv.NewFakeStore()
+	s := registerShardWithStore(t, store, testenv.WithFinalizeTimeout(time.Second))
+	held, err := s.env.Pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer held.Release() // a failed assertion must not leave the pool waiting on it at cleanup
+	if _, err := held.Exec(context.Background(), `SELECT pg_advisory_lock($1, hashtext($2))`, int32(0x54534952), s.uploadID); err != nil {
+		t.Fatalf("hold the shard: %v", err)
+	}
+	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
+		t.Fatalf("json upload status = %d, want 200", code)
+	}
+	if reason := s.resultsReason(t); !strings.HasPrefix(reason, "results could not be read: ") {
+		t.Fatalf("error_message = %q, want the results reason the reaper retries", reason)
+	}
+	if report, _, _ := s.statuses(t); report != processing {
+		t.Fatalf("shard is %q before its results were read, want processing", report)
+	}
+	if _, err := held.Exec(context.Background(), `SELECT pg_advisory_unlock($1, hashtext($2))`, int32(0x54534952), s.uploadID); err != nil {
+		t.Fatalf("release the shard: %v", err)
+	}
+	held.Release()
+
+	if _, err := s.env.Pool.Exec(context.Background(), `UPDATE reports SET updated_at = now() - interval '2 minutes' WHERE id = $1`, s.uploadID); err != nil {
+		t.Fatalf("age the shard: %v", err)
+	}
+	reaper := &reports.Reaper{Pool: s.env.Pool, Logger: slog.Default(),
+		Results: &reports.Handlers{Pool: s.env.Pool, Store: store, Publisher: &events.Publisher{Hub: events.NewHub()}}}
+	reaper.RetryStalledResults(context.Background())
+	if report, _, group := s.statuses(t); report != complete || group != completed {
+		t.Fatalf("after the reaper's retry: shard %q, group %q; want complete, completed", report, group)
 	}
 }

@@ -393,16 +393,28 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+	timeout := h.FinalizeTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
+	// An upload already answered 200, so its results are read now or by the reaper: one that never got its turn
+	// leaves the reason the reaper retries. The reaper's own skip leaves the reason it already had.
 	select {
 	case finalizeSlots <- struct{}{}:
 		defer func() { <-finalizeSlots }()
 	case <-ctx.Done():
+		if wait {
+			h.resultsNotRead(groupID, reportID, "the server was too busy to read them in time")
+		}
 		return
 	}
 	unlock, ok := h.lockShard(ctx, reportID, wait)
 	if !ok {
+		if wait {
+			h.resultsNotRead(groupID, reportID, "another read of them did not finish in time")
+		}
 		return
 	}
 	defer unlock()
@@ -423,22 +435,13 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 	}
 	if extractErr != nil {
 		// Results that were not all read never complete the shard: it stays
-		// `processing` with the reason, and a re-upload retries it.
+		// `processing` with the reason, and the reaper or a re-upload retries it.
 		if h.Logger != nil {
 			h.Logger.Warn("json extraction failed",
 				slog.String("report_id", reportID.String()),
 				slog.String("error", extractErr.Error()))
 		}
-		// Its own context: the extraction's may have run out. Only a shard still processing takes the reason;
-		// another upload of the same results may have completed it meanwhile.
-		failCtx, cancelFail := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancelFail()
-		res, err := h.Pool.Exec(failCtx, `UPDATE reports SET error_message=$2, updated_at=now() WHERE id=$1 AND status='processing'`,
-			reportID, resultsErrorPrefix+extractErr.Error())
-		if err == nil && res.RowsAffected() == 1 {
-			h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
-		}
-		h.refreshGroupSummaryBestEffort(failCtx, groupID)
+		h.resultsNotRead(groupID, reportID, extractErr.Error())
 		return
 	}
 	if !h.tryAutoFinalize(ctx, groupID, reportID, "json") && stillProcessing(ctx, h.Pool, reportID) {
@@ -446,6 +449,20 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 	}
 	if suiteCount > 0 {
 		h.Publisher.SuitesAvailable(reportID, suiteCount)
+	}
+	h.refreshGroupSummaryBestEffort(ctx, groupID)
+}
+
+// resultsNotRead leaves a shard whose results were not all read `processing` with the reason, which the reaper
+// retries. Its own context: the finalization's may have run out. Only a shard still processing takes the reason;
+// another upload of the same results may have completed it meanwhile.
+func (h *Handlers) resultsNotRead(groupID, reportID uuid.UUID, reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := h.Pool.Exec(ctx, `UPDATE reports SET error_message=$2, updated_at=now() WHERE id=$1 AND status='processing'`,
+		reportID, resultsErrorPrefix+reason)
+	if err == nil && res.RowsAffected() == 1 {
+		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 	}
 	h.refreshGroupSummaryBestEffort(ctx, groupID)
 }

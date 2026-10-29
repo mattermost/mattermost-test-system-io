@@ -167,7 +167,7 @@ func (r *Reaper) markIncomplete(ctx context.Context) error {
 }
 
 // stalledResultsAge is how long a shard whose results could not be read waits before the reaper tries again;
-// a tick retries at most stalledResultsBatch of them, within stalledResultsBudget.
+// a tick retries at most stalledResultsBatch of them, starting each within stalledResultsBudget.
 const (
 	stalledResultsAge    = time.Minute
 	stalledResultsBatch  = 10
@@ -176,12 +176,15 @@ const (
 
 // RetryStalledResults re-reads the stored results of shards whose extraction failed after its inline retries
 // (an object-store outage), so they complete once the store is back without a re-upload. A failed attempt
-// records the reason again, which puts the shard back at the end of the wait.
+// records the reason again, which puts the shard back at the end of the wait. The budget only decides whether
+// to start another shard: each read has its own limit (Handlers.FinalizeTimeout), so a large shard is not cut
+// short on every tick.
 func (r *Reaper) RetryStalledResults(parent context.Context) {
 	if r.Results == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, stalledResultsBudget)
+	deadline := time.Now().Add(stalledResultsBudget)
+	ctx, cancel := context.WithDeadline(parent, deadline)
 	defer cancel()
 	rows, err := r.Pool.Query(ctx, `
 		SELECT id, report_group_id FROM reports
@@ -208,10 +211,10 @@ func (r *Reaper) RetryStalledResults(parent context.Context) {
 	}
 	rows.Close()
 	for _, s := range stalled {
-		if ctx.Err() != nil {
+		if parent.Err() != nil || time.Now().After(deadline) {
 			return
 		}
-		r.Results.finalizeResults(ctx, s.group, s.id, false)
+		r.Results.finalizeResults(parent, s.group, s.id, false)
 	}
 }
 

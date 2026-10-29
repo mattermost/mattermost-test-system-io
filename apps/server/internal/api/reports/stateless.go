@@ -329,52 +329,59 @@ func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
 // shardLockClass namespaces the per-shard advisory locks (pg_advisory_lock's first key).
 const shardLockClass int32 = 0x54534952 // "TSIR"
 
+// finalizeSlots bounds concurrent finalizations. Each holds one pool connection for its shard lock while its
+// extraction takes others, so a burst of uploads must not take the whole pool.
+var finalizeSlots = make(chan struct{}, 4)
+
+// lockShardRetry is how often a finalization waiting for its shard tries the lock again.
+const lockShardRetry = 250 * time.Millisecond
+
 // lockShard holds a per-shard Postgres advisory lock for one finalization, so two of them (an upload's and the
-// reaper's, on any server) never interleave their delete-and-insert of the shard's suites. With wait, it blocks
-// until the lock is free (a later upload must re-read everything); without, a held lock means another
-// finalization is already at it, and the caller skips. The returned func releases it.
+// reaper's, on any server) never interleave their delete-and-insert of the shard's suites. With wait, it tries
+// again until ctx ends (a later upload must re-read everything), holding no connection while it waits; without,
+// a held lock means another finalization is already at it, and the caller skips. The returned func releases it.
 func (h *Handlers) lockShard(ctx context.Context, reportID uuid.UUID, wait bool) (func(), bool) {
-	conn, err := h.Pool.Acquire(ctx)
-	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Warn("lock shard: acquire connection", slog.String("report_id", reportID.String()), slog.String("error", err.Error()))
-		}
-		return nil, false
-	}
 	key := reportID.String() // hashed by Postgres: hashtext($2)
-	locked := true
-	if wait {
-		_, err = conn.Exec(ctx, `SELECT pg_advisory_lock($1, hashtext($2))`, shardLockClass, key)
-	} else {
+	for {
+		conn, err := h.Pool.Acquire(ctx)
+		if err != nil {
+			if h.Logger != nil {
+				h.Logger.Warn("lock shard: acquire connection", slog.String("report_id", key), slog.String("error", err.Error()))
+			}
+			return nil, false
+		}
+		var locked bool
 		err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1, hashtext($2))`, shardLockClass, key).Scan(&locked)
-	}
-	if err != nil || !locked {
-		if err != nil && h.Logger != nil {
-			h.Logger.Warn("lock shard", slog.String("report_id", reportID.String()), slog.String("error", err.Error()))
+		if err == nil && locked {
+			return func() {
+				unlockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if _, err := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1, hashtext($2))`, shardLockClass, key); err != nil {
+					// A lock that could not be released goes with its connection.
+					_ = conn.Conn().Close(unlockCtx)
+				}
+				conn.Release()
+			}, true
 		}
 		conn.Release()
-		return nil, false
-	}
-	return func() {
-		unlockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if _, err := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1, hashtext($2))`, shardLockClass, key); err != nil {
-			// A lock that could not be released goes with its connection.
-			_ = conn.Conn().Close(unlockCtx)
+		if err != nil || !wait {
+			if err != nil && h.Logger != nil {
+				h.Logger.Warn("lock shard", slog.String("report_id", key), slog.String("error", err.Error()))
+			}
+			return nil, false
 		}
-		conn.Release()
-	}, true
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-time.After(lockShardRetry):
+		}
+	}
 }
 
-// finalizeResults reads a shard's stored results and completes it, within parent; see finalizeJSONUpload. It holds
-// the shard's lock throughout (see lockShard): wait for an upload, skip if busy for the reaper.
+// finalizeResults reads a shard's stored results and completes it, within parent and at most five minutes; see
+// finalizeJSONUpload. It takes a finalization slot, then the shard's lock (see lockShard): wait for an upload, skip
+// if busy for the reaper.
 func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uuid.UUID, wait bool) {
-	unlock, ok := h.lockShard(parent, reportID, wait)
-	if !ok {
-		return
-	}
-	defer unlock()
-
 	// No caller frame above this goroutine to recover a panic; an unrecovered
 	// one here would crash the whole process.
 	defer func() {
@@ -387,6 +394,17 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 
 	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 	defer cancel()
+	select {
+	case finalizeSlots <- struct{}{}:
+		defer func() { <-finalizeSlots }()
+	case <-ctx.Done():
+		return
+	}
+	unlock, ok := h.lockShard(ctx, reportID, wait)
+	if !ok {
+		return
+	}
+	defer unlock()
 
 	// Fire suites_available if anything parsed; ReportEntryUpdated("processing")
 	// even on zero-suite JSON so the UI's status icon still ticks forward.

@@ -176,6 +176,17 @@ func TestFailedScreenshotUploadDoesNotFailTheShard(t *testing.T) {
 	if _, group := s.waitComplete(t); group != completed {
 		t.Fatalf("group = %q, want completed", group)
 	}
+	// A retry that lands clears the failure it replaces.
+	if code := s.post(t, "screenshots", "example-does-something/test-failed-1.png", "\x89PNG"); code != http.StatusOK {
+		t.Fatalf("screenshot retry status = %d, want 200", code)
+	}
+	var reason *string
+	if err := s.env.Pool.QueryRow(context.Background(), `SELECT error_message FROM reports WHERE id = $1`, s.uploadID).Scan(&reason); err != nil {
+		t.Fatalf("read error_message: %v", err)
+	}
+	if reason != nil {
+		t.Fatalf("error_message = %q after a successful screenshot retry, want none", *reason)
+	}
 }
 
 func TestLateScreenshotsLeaveTheShardComplete(t *testing.T) {

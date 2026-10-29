@@ -307,6 +307,9 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 	go h.finalizeJSONUpload(groupID, reportID)
 }
 
+// screenshotErrorPrefix marks a screenshot upload's error, so a later successful one can clear it.
+const screenshotErrorPrefix = "screenshots: "
+
 // extractRetryDelays are the waits before each retry of a failed extraction.
 var extractRetryDelays = []time.Duration{time.Second, 2 * time.Second}
 
@@ -399,12 +402,17 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 		// results landed (or still will), so only the screenshot status records it.
 		_, _ = h.Pool.Exec(r.Context(),
 			`UPDATE reports SET screenshots_upload_status='failed', error_message=$2, updated_at=now() WHERE id=$1`,
-			reportID, err.Error())
+			reportID, screenshotErrorPrefix+err.Error())
 		api.WriteError(w, r, fmt.Errorf("%w: %v", api.ErrBadRequest, err))
 		return
 	}
-	_, _ = h.Pool.Exec(r.Context(),
-		`UPDATE reports SET screenshots_upload_status='completed', updated_at=now() WHERE id=$1`, reportID)
+	// A retry that lands clears its own earlier failure, never a results error.
+	_, _ = h.Pool.Exec(r.Context(), `
+		UPDATE reports
+		   SET screenshots_upload_status='completed',
+		       error_message = CASE WHEN starts_with(error_message, $2) THEN NULL ELSE error_message END,
+		       updated_at=now()
+		 WHERE id=$1`, reportID, screenshotErrorPrefix)
 	bumpGroupLastUpload(r.Context(), h.Pool, groupID)
 
 	// Best-effort link against whatever test_cases exist already. If JSON hasn't

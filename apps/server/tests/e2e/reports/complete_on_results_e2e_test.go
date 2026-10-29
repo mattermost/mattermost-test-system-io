@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/testutil/oidcmock"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/tests/e2e/testenv"
 )
@@ -37,7 +38,12 @@ type shard struct {
 
 func registerShard(t *testing.T) shard {
 	t.Helper()
-	env := testenv.Start(t, testenv.WithStore(testenv.NewFakeStore()), testenv.WithReaperDisabled())
+	return registerShardWithStore(t, testenv.NewFakeStore())
+}
+
+func registerShardWithStore(t *testing.T, store storage.ObjectStore) shard {
+	t.Helper()
+	env := testenv.Start(t, testenv.WithStore(store), testenv.WithReaperDisabled())
 	env.InsertPolicy(t, "allow-reports-e2e", 1, string(policy.RoleUploader), map[string]string{
 		"repository_owner": defaultRepoOwner,
 	})
@@ -118,13 +124,14 @@ func (s shard) statuses(t *testing.T) (report, screenshots, group string) {
 	return report, screenshots, group
 }
 
-// waitComplete polls until the shard is complete (JSON extraction runs after the response).
+// waitComplete polls until the shard and its group are complete (JSON extraction runs after the
+// response, and the group follows the shard).
 func (s shard) waitComplete(t *testing.T) (screenshots, group string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		report, ss, g := s.statuses(t)
-		if report == "complete" {
+		if report == "complete" && g == completed {
 			return ss, g
 		}
 		if time.Now().After(deadline) {
@@ -177,5 +184,28 @@ func TestLateScreenshotsLeaveTheShardComplete(t *testing.T) {
 	report, screenshots, group := s.statuses(t)
 	if report != "complete" || screenshots != completed || group != completed {
 		t.Fatalf("after late screenshots: shard %q, screenshots %q, group %q; want complete, completed, completed", report, screenshots, group)
+	}
+}
+
+func TestScreenshotsDuringExtractionDoNotCompleteTheShardEarly(t *testing.T) {
+	// The results take a moment to be persisted after the upload returns; screenshots that land meanwhile
+	// (an upload action that sends results first) must not complete the shard before its tests exist.
+	s := registerShardWithStore(t, &slowStore{ObjectStore: testenv.NewFakeStore(), delay: 800 * time.Millisecond})
+	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
+		t.Fatalf("json upload status = %d, want 200", code)
+	}
+	if code := s.post(t, "screenshots", "example-does-something/test-failed-1.png", "\x89PNG"); code != http.StatusOK {
+		t.Fatalf("screenshot upload status = %d, want 200", code)
+	}
+	if report, _, _ := s.statuses(t); report != "processing" {
+		t.Fatalf("shard is %q while its results are still being persisted, want processing", report)
+	}
+	s.waitComplete(t)
+	var suites int
+	if err := s.env.Pool.QueryRow(context.Background(), `SELECT count(*) FROM suites WHERE report_id = $1`, s.uploadID).Scan(&suites); err != nil {
+		t.Fatalf("count suites: %v", err)
+	}
+	if suites == 0 {
+		t.Fatal("shard completed with no suites persisted")
 	}
 }

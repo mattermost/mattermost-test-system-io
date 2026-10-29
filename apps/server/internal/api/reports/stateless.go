@@ -387,7 +387,9 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Debug("screenshots linked", slog.Int("count", linked), slog.String("report_id", reportID.String()))
 	}
 
-	if !h.tryAutoFinalize(r.Context(), groupID, reportID, "screenshots") && stillProcessing(r.Context(), h.Pool, reportID) {
+	// Completion is the JSON finalization's alone: it runs after the results are
+	// persisted, so a screenshot landing mid-extraction cannot complete the shard early.
+	if stillProcessing(r.Context(), h.Pool, reportID) {
 		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 	}
 	h.refreshGroupSummaryBestEffort(r.Context(), groupID)
@@ -818,10 +820,9 @@ func ssStartedIf(n int) *string {
 	return &s
 }
 
-// tryAutoFinalize finalizes the report (and possibly its group) once an
-// upload pipeline step (json or screenshots) just landed. It first checks
-// whether this report's results have landed (json), and if so flips the row
-// from `processing` to `complete` and publishes ReportEntryUpdated("complete"). When that flip happens, it
+// tryAutoFinalize finalizes the report (and possibly its group) once its
+// results (json) have been extracted and persisted. It flips the row from
+// `processing` to `complete` and publishes ReportEntryUpdated("complete"). When that flip happens, it
 // then attempts to flip the parent group from `in_progress` to `completed`
 // once count(reports.complete) >= total_reports_expected. Returns true
 // when the per-report flip occurred — callers should skip publishing the

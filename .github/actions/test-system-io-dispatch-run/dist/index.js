@@ -29810,8 +29810,7 @@ async function resolveJobId(token, ghJobName) {
       owner,
       repo,
       run_id: runId,
-      attempt_number: attempt,
-      per_page: 100
+      attempt_number: attempt
     })
   );
   let matches = jobs.filter((j) => j.name === ghJobName);

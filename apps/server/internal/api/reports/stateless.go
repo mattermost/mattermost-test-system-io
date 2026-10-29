@@ -396,16 +396,23 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 	ctx, cancel := context.WithTimeout(parent, h.finalizeTimeout())
 	defer cancel()
 	// An upload already answered 200, so its results are read now or by the reaper: one that never got its turn
-	// leaves the reason the reaper retries. The reaper's own skip leaves the reason it already had.
-	select {
-	case finalizeSlots <- struct{}{}:
-		defer func() { <-finalizeSlots }()
-	case <-ctx.Done():
-		if wait {
+	// leaves the reason the reaper retries. The reaper never waits: a busy server or shard is skipped, keeping the
+	// reason it already had, and tried again on its next tick.
+	if wait {
+		select {
+		case finalizeSlots <- struct{}{}:
+		case <-ctx.Done():
 			h.resultsNotRead(groupID, reportID, "the server was too busy to read them in time")
+			return
 		}
-		return
+	} else {
+		select {
+		case finalizeSlots <- struct{}{}:
+		default:
+			return
+		}
 	}
+	defer func() { <-finalizeSlots }()
 	unlock, ok := h.lockShard(ctx, reportID, wait)
 	if !ok {
 		if wait {

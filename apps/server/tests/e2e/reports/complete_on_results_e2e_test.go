@@ -65,6 +65,12 @@ func registerShardWithStore(t *testing.T, store storage.ObjectStore, opts ...tes
 		Workflow:        "ci",
 		Ref:             "refs/heads/main",
 	})
+	return registerIn(t, env, tok)
+}
+
+// registerIn registers another shard of the same run on env's server.
+func registerIn(t *testing.T, env *testenv.Env, tok string) shard {
+	t.Helper()
 	reg := env.RegisterStatelessUpload(t, "Bearer "+tok, map[string]any{
 		"repository":  defaultRepository,
 		"json_files":  []any{map[string]any{"path": "results.json", "size": len(minimalPlaywrightJSON)}},
@@ -211,10 +217,12 @@ func TestLateScreenshotsLeaveTheShardComplete(t *testing.T) {
 // gatedStore holds every read until open is closed, so extraction is still running for as long as a test needs.
 type gatedStore struct {
 	storage.ObjectStore
-	open chan struct{}
+	open  chan struct{}
+	reads atomic.Int32 // reads started, held or not
 }
 
 func (g *gatedStore) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	g.reads.Add(1)
 	select {
 	case <-g.open:
 	case <-ctx.Done():
@@ -546,4 +554,43 @@ func TestReaperStopsRetryingResultsAfterADay(t *testing.T) {
 	if report, _, _ := s.statuses(t); report != processing {
 		t.Fatalf("shard is %q after the reaper's tick, want processing: a day-old shard is not read again", report)
 	}
+}
+
+// The reaper never waits for a free read: with every slot busy reading uploads, it skips the shard (its reason
+// kept) and returns, so its next tick, and closing idle groups, are not held up.
+func TestReaperSkipsResultsWhenEveryReadIsBusy(t *testing.T) {
+	store := &gatedStore{ObjectStore: testenv.NewFakeStore(), open: make(chan struct{})}
+	s := registerShardWithStore(t, store)
+	var opened sync.Once
+	openGate := func() { opened.Do(func() { close(store.open) }) }
+	t.Cleanup(openGate) // runs before Start's pool.Close, so a failed assertion cannot leave the reads holding the pool
+	const slots = 4     // finalizeSlots
+	for range slots {
+		busy := registerIn(t, s.env, s.token)
+		if code := busy.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
+			t.Fatalf("json upload status = %d, want 200", code)
+		}
+	}
+	for deadline := time.Now().Add(10 * time.Second); store.reads.Load() < slots; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d uploads are reading, want every slot busy", store.reads.Load(), slots)
+		}
+	}
+
+	ctx := context.Background()
+	if _, err := s.env.Pool.Exec(ctx, `UPDATE reports SET json_upload_status = 'completed', error_message = 'results could not be read: store down',
+		updated_at = now() - interval '2 minutes' WHERE id = $1`, s.uploadID); err != nil {
+		t.Fatalf("stall the shard: %v", err)
+	}
+	reaper := &reports.Reaper{Pool: s.env.Pool, Logger: slog.Default(),
+		Results: &reports.Handlers{Pool: s.env.Pool, Store: store, Publisher: &events.Publisher{Hub: events.NewHub()}, FinalizeTimeout: 5 * time.Second}}
+	start := time.Now()
+	reaper.RetryStalledResults(ctx)
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("the reaper's retry took %s with every read busy, want it to skip at once", took)
+	}
+	if report, _, _ := s.statuses(t); report != processing {
+		t.Fatalf("shard is %q, want processing until a read is free", report)
+	}
+	openGate()
 }

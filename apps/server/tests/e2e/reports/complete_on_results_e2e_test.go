@@ -387,6 +387,10 @@ func TestReaperRetriesResultsOnceTheStoreIsBack(t *testing.T) {
 	}
 	held.Release()
 
+	// An outage longer than the idle window: the reaper has already closed the group as incomplete.
+	if _, err := s.env.Pool.Exec(context.Background(), `UPDATE report_groups SET status = 'incomplete' WHERE id = $1`, s.groupID); err != nil {
+		t.Fatalf("close the group: %v", err)
+	}
 	reaper.RetryStalledResults(context.Background())
 	if report, _, group := s.statuses(t); report != complete || group != completed {
 		t.Fatalf("after the reaper's retry: shard %q, group %q; want complete, completed", report, group)

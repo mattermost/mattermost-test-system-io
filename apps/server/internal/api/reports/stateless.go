@@ -945,7 +945,7 @@ func ssStartedIf(n int) *string {
 // tryAutoFinalize finalizes the report (and possibly its group) once its
 // results (json) have been extracted and persisted. It flips the row from
 // `processing` to `complete` and publishes ReportEntryUpdated("complete"). When that flip happens, it
-// then attempts to flip the parent group from `in_progress` to `completed`
+// then attempts to flip the parent group from `in_progress` (or `incomplete`) to `completed`
 // once count(reports.complete) >= total_reports_expected. Returns true
 // when the per-report flip occurred — callers should skip publishing the
 // usual ReportEntryUpdated("processing") event so the UI doesn't see a
@@ -1007,7 +1007,9 @@ func stillProcessing(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 	return status == "processing"
 }
 
-// tryAutoCompleteGroup flips a report_group from `in_progress` to `completed`.
+// tryAutoCompleteGroup flips a report_group from `in_progress` to `completed`,
+// or from `incomplete` when a shard's results finish after the reaper closed it
+// (the reaper retried them once the store was back).
 // Dual-mode predicate:
 //
 //   - When total_reports_expected is set, flip when count(reports.complete) >=
@@ -1027,7 +1029,7 @@ func tryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.
 		UPDATE report_groups
 		   SET status = 'completed', updated_at = now()
 		 WHERE id = $1
-		   AND status = 'in_progress'
+		   AND status IN ('in_progress', 'incomplete')
 		   AND (
 		       total_reports_expected IS NULL
 		       OR (SELECT count(*) FROM reports

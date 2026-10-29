@@ -126,6 +126,7 @@ func run() error {
 		Pool:      pool,
 		Publisher: publisher,
 		Logger:    logger,
+		Results:   &reports.Handlers{Pool: pool, Store: store, Publisher: publisher, Logger: logger},
 	}
 	if err := reportsReaper.Start(ctx); err != nil {
 		logger.Error("reports reaper start", slog.String("error", err.Error()))

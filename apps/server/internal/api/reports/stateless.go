@@ -307,8 +307,12 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 	go h.finalizeJSONUpload(groupID, reportID)
 }
 
-// screenshotErrorPrefix marks a screenshot upload's error, so a later successful one can clear it.
-const screenshotErrorPrefix = "screenshots: "
+// screenshotErrorPrefix marks a screenshot upload's error, so a later successful one can clear it;
+// resultsErrorPrefix marks results that could not be read, which the reaper retries.
+const (
+	screenshotErrorPrefix = "screenshots: "
+	resultsErrorPrefix    = "results could not be read: "
+)
 
 // extractRetryDelays are the waits before each retry of a failed extraction.
 var extractRetryDelays = []time.Duration{time.Second, 2 * time.Second}
@@ -319,6 +323,11 @@ var extractRetryDelays = []time.Duration{time.Second, 2 * time.Second}
 // context rather than r.Context(), which is canceled once the handler
 // returns.
 func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
+	h.finalizeResults(groupID, reportID)
+}
+
+// finalizeResults reads a shard's stored results and completes it; see finalizeJSONUpload.
+func (h *Handlers) finalizeResults(groupID, reportID uuid.UUID) {
 	// No caller frame above this goroutine to recover a panic; an unrecovered
 	// one here would crash the whole process.
 	defer func() {
@@ -359,7 +368,7 @@ func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
 		failCtx, cancelFail := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelFail()
 		res, err := h.Pool.Exec(failCtx, `UPDATE reports SET error_message=$2, updated_at=now() WHERE id=$1 AND status='processing'`,
-			reportID, "results could not be read: "+extractErr.Error())
+			reportID, resultsErrorPrefix+extractErr.Error())
 		if err == nil && res.RowsAffected() == 1 {
 			h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 		}
@@ -400,9 +409,13 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Screenshots are attachments: losing them must not fail a shard whose
 		// results landed (or still will), so only the screenshot status records it.
-		_, _ = h.Pool.Exec(r.Context(),
-			`UPDATE reports SET screenshots_upload_status='failed', error_message=$2, updated_at=now() WHERE id=$1`,
-			reportID, screenshotErrorPrefix+err.Error())
+		// A results error outranks it: the screenshot reason is kept only where there is no other.
+		_, _ = h.Pool.Exec(r.Context(), `
+			UPDATE reports
+			   SET screenshots_upload_status='failed',
+			       error_message = CASE WHEN error_message IS NULL OR starts_with(error_message, $3) THEN $2 ELSE error_message END,
+			       updated_at=now()
+			 WHERE id=$1`, reportID, screenshotErrorPrefix+err.Error(), screenshotErrorPrefix)
 		api.WriteError(w, r, fmt.Errorf("%w: %v", api.ErrBadRequest, err))
 		return
 	}

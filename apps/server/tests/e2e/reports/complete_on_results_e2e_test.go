@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -17,7 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/testutil/oidcmock"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/tests/e2e/testenv"
@@ -308,5 +311,66 @@ func TestExtractionRetriesAStoreBlip(t *testing.T) {
 			t.Fatalf("shard %q, group %q after a store blip; want complete, completed", report, group)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// resultsReason waits for the shard's error_message to be set and returns it.
+func (s shard) resultsReason(t *testing.T) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var reason *string
+		if err := s.env.Pool.QueryRow(context.Background(), `SELECT error_message FROM reports WHERE id = $1`, s.uploadID).Scan(&reason); err != nil {
+			t.Fatalf("read error_message: %v", err)
+		}
+		if reason != nil {
+			return *reason
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no error_message recorded within 10s")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestScreenshotOutcomesKeepTheResultsReason(t *testing.T) {
+	s := registerShardWithStore(t, unreadableStore{testenv.NewFakeStore()})
+	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
+		t.Fatalf("json upload status = %d, want 200", code)
+	}
+	s.resultsReason(t)
+	if code := s.send(t, "screenshots", "text/plain", strings.NewReader("not multipart")); code != http.StatusBadRequest {
+		t.Fatalf("broken screenshot upload status = %d, want 400", code)
+	}
+	if reason := s.resultsReason(t); !strings.HasPrefix(reason, "results could not be read") {
+		t.Fatalf("after a failed screenshot upload the reason is %q, want the results one kept", reason)
+	}
+	if code := s.post(t, "screenshots", "example-does-something/test-failed-1.png", "\x89PNG"); code != http.StatusOK {
+		t.Fatalf("screenshot upload status = %d, want 200", code)
+	}
+	if reason := s.resultsReason(t); !strings.HasPrefix(reason, "results could not be read") {
+		t.Fatalf("after a successful screenshot upload the reason is %q, want the results one kept", reason)
+	}
+}
+
+func TestReaperRetriesResultsOnceTheStoreIsBack(t *testing.T) {
+	store := &blipStore{ObjectStore: testenv.NewFakeStore()}
+	store.failures.Store(3) // the first read and both inline retries
+	s := registerShardWithStore(t, store)
+	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
+		t.Fatalf("json upload status = %d, want 200", code)
+	}
+	s.resultsReason(t)
+	if report, _, _ := s.statuses(t); report != processing {
+		t.Fatalf("shard is %q after the store stayed down, want processing", report)
+	}
+	if _, err := s.env.Pool.Exec(context.Background(), `UPDATE reports SET updated_at = now() - interval '2 minutes' WHERE id = $1`, s.uploadID); err != nil {
+		t.Fatalf("age the shard: %v", err)
+	}
+	reaper := &reports.Reaper{Pool: s.env.Pool, Logger: slog.Default(),
+		Results: &reports.Handlers{Pool: s.env.Pool, Store: store, Publisher: &events.Publisher{Hub: events.NewHub()}}}
+	reaper.RetryStalledResults(context.Background())
+	if report, _, group := s.statuses(t); report != complete || group != completed {
+		t.Fatalf("after the reaper's retry: shard %q, group %q; want complete, completed", report, group)
 	}
 }

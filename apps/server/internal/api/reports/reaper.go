@@ -46,6 +46,8 @@ type Reaper struct {
 	Logger    *slog.Logger
 	Timeout   time.Duration
 	Interval  time.Duration
+	// Results, when set, re-reads the results of shards whose extraction failed (see RetryStalledResults).
+	Results *Handlers
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -116,6 +118,7 @@ func (r *Reaper) loop(ctx context.Context) {
 			r.Logger.Info("reports reaper stopped")
 			return
 		case <-ticker.C:
+			r.RetryStalledResults(ctx)
 			if err := r.markIncomplete(ctx); err != nil {
 				r.Logger.Error("reports reaper: mark incomplete", slog.String("error", err.Error()))
 			}
@@ -160,6 +163,48 @@ func (r *Reaper) markIncomplete(ctx context.Context) error {
 			slog.Int("reports_count", reportsCount))
 	}
 	return rows.Err()
+}
+
+// stalledResultsAge is how long a shard whose results could not be read waits before the reaper tries again.
+const stalledResultsAge = time.Minute
+
+// RetryStalledResults re-reads the stored results of shards whose extraction failed after its inline retries
+// (an object-store outage), so they complete once the store is back without a re-upload. A failed attempt
+// records the reason again, which puts the shard back at the end of the wait.
+func (r *Reaper) RetryStalledResults(ctx context.Context) {
+	if r.Results == nil {
+		return
+	}
+	rows, err := r.Pool.Query(ctx, `
+		SELECT id, report_group_id FROM reports
+		 WHERE status = 'processing'
+		   AND json_upload_status = 'completed'
+		   AND starts_with(error_message, $1)
+		   AND updated_at < now() - make_interval(secs => $2::double precision)
+		 ORDER BY updated_at ASC
+		 LIMIT $3`, resultsErrorPrefix, stalledResultsAge.Seconds(), reaperBatchLimit)
+	if err != nil {
+		r.Logger.Error("reports reaper: list stalled results", slog.String("error", err.Error()))
+		return
+	}
+	type shard struct{ id, group uuid.UUID }
+	var stalled []shard
+	for rows.Next() {
+		var s shard
+		if err := rows.Scan(&s.id, &s.group); err != nil {
+			rows.Close()
+			r.Logger.Error("reports reaper: scan stalled results", slog.String("error", err.Error()))
+			return
+		}
+		stalled = append(stalled, s)
+	}
+	rows.Close()
+	for _, s := range stalled {
+		if ctx.Err() != nil {
+			return
+		}
+		r.Results.finalizeResults(s.group, s.id)
+	}
 }
 
 // resolveStalenessTimeout reads TSIO_REPORTS_STALENESS_TIMEOUT_MS, falling

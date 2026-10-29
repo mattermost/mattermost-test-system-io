@@ -118,10 +118,11 @@ func (r *Reaper) loop(ctx context.Context) {
 			r.Logger.Info("reports reaper stopped")
 			return
 		case <-ticker.C:
-			r.RetryStalledResults(ctx)
+			// Idle groups first: retrying results never delays them, and the retries have a bounded budget.
 			if err := r.markIncomplete(ctx); err != nil {
 				r.Logger.Error("reports reaper: mark incomplete", slog.String("error", err.Error()))
 			}
+			r.RetryStalledResults(ctx)
 		}
 	}
 }
@@ -165,16 +166,23 @@ func (r *Reaper) markIncomplete(ctx context.Context) error {
 	return rows.Err()
 }
 
-// stalledResultsAge is how long a shard whose results could not be read waits before the reaper tries again.
-const stalledResultsAge = time.Minute
+// stalledResultsAge is how long a shard whose results could not be read waits before the reaper tries again;
+// a tick retries at most stalledResultsBatch of them, within stalledResultsBudget.
+const (
+	stalledResultsAge    = time.Minute
+	stalledResultsBatch  = 10
+	stalledResultsBudget = 30 * time.Second
+)
 
 // RetryStalledResults re-reads the stored results of shards whose extraction failed after its inline retries
 // (an object-store outage), so they complete once the store is back without a re-upload. A failed attempt
 // records the reason again, which puts the shard back at the end of the wait.
-func (r *Reaper) RetryStalledResults(ctx context.Context) {
+func (r *Reaper) RetryStalledResults(parent context.Context) {
 	if r.Results == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(parent, stalledResultsBudget)
+	defer cancel()
 	rows, err := r.Pool.Query(ctx, `
 		SELECT id, report_group_id FROM reports
 		 WHERE status = 'processing'
@@ -182,7 +190,7 @@ func (r *Reaper) RetryStalledResults(ctx context.Context) {
 		   AND starts_with(error_message, $1)
 		   AND updated_at < now() - make_interval(secs => $2::double precision)
 		 ORDER BY updated_at ASC
-		 LIMIT $3`, resultsErrorPrefix, stalledResultsAge.Seconds(), reaperBatchLimit)
+		 LIMIT $3`, resultsErrorPrefix, stalledResultsAge.Seconds(), stalledResultsBatch)
 	if err != nil {
 		r.Logger.Error("reports reaper: list stalled results", slog.String("error", err.Error()))
 		return
@@ -203,7 +211,7 @@ func (r *Reaper) RetryStalledResults(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		r.Results.finalizeResults(s.group, s.id)
+		r.Results.finalizeResults(ctx, s.group, s.id)
 	}
 }
 

@@ -323,11 +323,11 @@ var extractRetryDelays = []time.Duration{time.Second, 2 * time.Second}
 // context rather than r.Context(), which is canceled once the handler
 // returns.
 func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
-	h.finalizeResults(groupID, reportID)
+	h.finalizeResults(context.Background(), groupID, reportID)
 }
 
-// finalizeResults reads a shard's stored results and completes it; see finalizeJSONUpload.
-func (h *Handlers) finalizeResults(groupID, reportID uuid.UUID) {
+// finalizeResults reads a shard's stored results and completes it, within parent; see finalizeJSONUpload.
+func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uuid.UUID) {
 	// No caller frame above this goroutine to recover a panic; an unrecovered
 	// one here would crash the whole process.
 	defer func() {
@@ -338,7 +338,7 @@ func (h *Handlers) finalizeResults(groupID, reportID uuid.UUID) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 	defer cancel()
 
 	// Fire suites_available if anything parsed; ReportEntryUpdated("processing")

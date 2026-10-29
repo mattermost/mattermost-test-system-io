@@ -369,8 +369,33 @@ func TestReaperRetriesResultsOnceTheStoreIsBack(t *testing.T) {
 	}
 	reaper := &reports.Reaper{Pool: s.env.Pool, Logger: slog.Default(),
 		Results: &reports.Handlers{Pool: s.env.Pool, Store: store, Publisher: &events.Publisher{Hub: events.NewHub()}}}
+
+	// Another finalization holding the shard (an upload, or a reaper on another server): this one skips it.
+	held, err := s.env.Pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if _, err := held.Exec(context.Background(), `SELECT pg_advisory_lock($1, hashtext($2))`, int32(0x54534952), s.uploadID); err != nil {
+		t.Fatalf("hold the shard: %v", err)
+	}
+	reaper.RetryStalledResults(context.Background())
+	if report, _, _ := s.statuses(t); report != processing {
+		t.Fatalf("shard is %q while another finalization holds it, want processing", report)
+	}
+	if _, err := held.Exec(context.Background(), `SELECT pg_advisory_unlock($1, hashtext($2))`, int32(0x54534952), s.uploadID); err != nil {
+		t.Fatalf("release the shard: %v", err)
+	}
+	held.Release()
+
 	reaper.RetryStalledResults(context.Background())
 	if report, _, group := s.statuses(t); report != complete || group != completed {
 		t.Fatalf("after the reaper's retry: shard %q, group %q; want complete, completed", report, group)
+	}
+	var reason *string
+	if err := s.env.Pool.QueryRow(context.Background(), `SELECT error_message FROM reports WHERE id = $1`, s.uploadID).Scan(&reason); err != nil {
+		t.Fatalf("read error_message: %v", err)
+	}
+	if reason != nil {
+		t.Fatalf("error_message = %q on a completed shard, want the stale results reason cleared", *reason)
 	}
 }

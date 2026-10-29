@@ -211,7 +211,7 @@ func (r *Reaper) RetryStalledResults(parent context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		r.Results.finalizeResults(ctx, s.group, s.id)
+		r.Results.finalizeResults(ctx, s.group, s.id, false)
 	}
 }
 

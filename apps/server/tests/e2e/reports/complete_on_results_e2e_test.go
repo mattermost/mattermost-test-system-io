@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -26,8 +27,11 @@ import (
 // at the gateway left the shard `processing` and the group `incomplete`, though
 // every result had arrived (desktop CMT v6.3.2-rc.2, run 40651298431).
 
-// completed is both a finished group's status and a landed upload's.
-const completed = "completed"
+// completed is both a finished group's status and a landed upload's; processing is a shard still in flight.
+const (
+	completed  = "completed"
+	processing = "processing"
+)
 
 type shard struct {
 	env      *testenv.Env
@@ -161,7 +165,7 @@ func TestFailedScreenshotUploadDoesNotFailTheShard(t *testing.T) {
 		t.Fatalf("broken screenshot upload status = %d, want 400", code)
 	}
 	report, screenshots, _ := s.statuses(t)
-	if report != "processing" || screenshots != "failed" {
+	if report != processing || screenshots != "failed" {
 		t.Fatalf("after a failed screenshot upload: shard %q, screenshots %q; want processing, failed", report, screenshots)
 	}
 	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
@@ -197,7 +201,7 @@ func TestScreenshotsDuringExtractionDoNotCompleteTheShardEarly(t *testing.T) {
 	if code := s.post(t, "screenshots", "example-does-something/test-failed-1.png", "\x89PNG"); code != http.StatusOK {
 		t.Fatalf("screenshot upload status = %d, want 200", code)
 	}
-	if report, _, _ := s.statuses(t); report != "processing" {
+	if report, _, _ := s.statuses(t); report != processing {
 		t.Fatalf("shard is %q while its results are still being persisted, want processing", report)
 	}
 	s.waitComplete(t)
@@ -207,5 +211,39 @@ func TestScreenshotsDuringExtractionDoNotCompleteTheShardEarly(t *testing.T) {
 	}
 	if suites == 0 {
 		t.Fatal("shard completed with no suites persisted")
+	}
+}
+
+// unreadableStore stores files but cannot read them back, as when the object store fails mid-extraction.
+type unreadableStore struct{ storage.ObjectStore }
+
+func (unreadableStore) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
+	return nil, storage.ObjectMeta{}, errors.New("store unavailable")
+}
+
+func TestShardWhoseResultsCannotBeReadIsNotComplete(t *testing.T) {
+	s := registerShardWithStore(t, unreadableStore{testenv.NewFakeStore()})
+	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
+		t.Fatalf("json upload status = %d, want 200", code)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var reason *string
+		if err := s.env.Pool.QueryRow(context.Background(), `SELECT error_message FROM reports WHERE id = $1`, s.uploadID).Scan(&reason); err != nil {
+			t.Fatalf("read error_message: %v", err)
+		}
+		if reason != nil {
+			if !strings.Contains(*reason, "1 of 1 result files could not be read") {
+				t.Fatalf("error_message = %q, want the unread file named", *reason)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("extraction did not record the unread results within 5s")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if report, _, group := s.statuses(t); report != processing || group == completed {
+		t.Fatalf("shard %q, group %q with no results read; want processing and the group still open", report, group)
 	}
 }

@@ -329,10 +329,19 @@ func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
 	// Fire suites_available if anything parsed; ReportEntryUpdated("processing")
 	// even on zero-suite JSON so the UI's status icon still ticks forward.
 	suiteCount, extractErr := h.extractReport(ctx, groupID, reportID)
-	if extractErr != nil && h.Logger != nil {
-		h.Logger.Warn("json extraction failed",
-			slog.String("report_id", reportID.String()),
-			slog.String("error", extractErr.Error()))
+	if extractErr != nil {
+		// Results that were not all read never complete the shard: it stays
+		// `processing` with the reason, and a re-upload retries it.
+		if h.Logger != nil {
+			h.Logger.Warn("json extraction failed",
+				slog.String("report_id", reportID.String()),
+				slog.String("error", extractErr.Error()))
+		}
+		_, _ = h.Pool.Exec(ctx, `UPDATE reports SET error_message=$2, updated_at=now() WHERE id=$1`,
+			reportID, "results could not be read: "+extractErr.Error())
+		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
+		h.refreshGroupSummaryBestEffort(ctx, groupID)
+		return
 	}
 	if !h.tryAutoFinalize(ctx, groupID, reportID, "json") && stillProcessing(ctx, h.Pool, reportID) {
 		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
@@ -522,9 +531,11 @@ func (h *Handlers) extractReport(ctx context.Context, groupID, reportID uuid.UUI
 	var allSuites []ingest.ExtractedSuite
 	var reportStart, reportEnd *time.Time
 	seq := 0
+	unread := 0
 	for _, key := range keys {
 		rc, _, err := h.Store.Get(ctx, key)
 		if err != nil {
+			unread++
 			if h.Logger != nil {
 				h.Logger.Warn("fetch json from store",
 					slog.String("object_key", key), slog.String("error", err.Error()))
@@ -534,6 +545,7 @@ func (h *Handlers) extractReport(ctx context.Context, groupID, reportID uuid.UUI
 		body, readErr := io.ReadAll(rc)
 		_ = rc.Close()
 		if readErr != nil {
+			unread++
 			if h.Logger != nil {
 				h.Logger.Warn("read json body",
 					slog.String("object_key", key), slog.String("error", readErr.Error()))
@@ -563,6 +575,10 @@ func (h *Handlers) extractReport(ctx context.Context, groupID, reportID uuid.UUI
 	if _, err := ingest.LinkScreenshots(ctx, h.Pool, reportID); err != nil && h.Logger != nil {
 		h.Logger.Warn("link screenshots post-extract",
 			slog.String("report_id", reportID.String()), slog.String("error", err.Error()))
+	}
+	// What was read is kept, but a shard missing a results file has not landed its results.
+	if unread > 0 {
+		return totals.Suites, fmt.Errorf("%d of %d result files could not be read", unread, len(keys))
 	}
 	return totals.Suites, nil
 }

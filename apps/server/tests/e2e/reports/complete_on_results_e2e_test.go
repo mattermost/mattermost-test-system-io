@@ -13,6 +13,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 // completed is both a finished group's status and a landed upload's; processing is a shard still in flight.
 const (
 	completed  = "completed"
+	complete   = "complete"
 	processing = "processing"
 )
 
@@ -135,7 +137,7 @@ func (s shard) waitComplete(t *testing.T) (screenshots, group string) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		report, ss, g := s.statuses(t)
-		if report == "complete" && g == completed {
+		if report == complete && g == completed {
 			return ss, g
 		}
 		if time.Now().After(deadline) {
@@ -186,7 +188,7 @@ func TestLateScreenshotsLeaveTheShardComplete(t *testing.T) {
 		t.Fatalf("late screenshot upload status = %d, want 200", code)
 	}
 	report, screenshots, group := s.statuses(t)
-	if report != "complete" || screenshots != completed || group != completed {
+	if report != complete || screenshots != completed || group != completed {
 		t.Fatalf("after late screenshots: shard %q, screenshots %q, group %q; want complete, completed, completed", report, screenshots, group)
 	}
 }
@@ -226,7 +228,7 @@ func TestShardWhoseResultsCannotBeReadIsNotComplete(t *testing.T) {
 	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
 		t.Fatalf("json upload status = %d, want 200", code)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var reason *string
 		if err := s.env.Pool.QueryRow(context.Background(), `SELECT error_message FROM reports WHERE id = $1`, s.uploadID).Scan(&reason); err != nil {
@@ -239,11 +241,44 @@ func TestShardWhoseResultsCannotBeReadIsNotComplete(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("extraction did not record the unread results within 5s")
+			t.Fatal("extraction did not record the unread results within 10s")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	if report, _, group := s.statuses(t); report != processing || group == completed {
 		t.Fatalf("shard %q, group %q with no results read; want processing and the group still open", report, group)
+	}
+}
+
+// blipStore fails the first reads, as a store does for a moment, then serves them.
+type blipStore struct {
+	storage.ObjectStore
+	failures atomic.Int32
+}
+
+func (b *blipStore) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	if b.failures.Add(-1) >= 0 {
+		return nil, storage.ObjectMeta{}, errors.New("store unavailable for a moment")
+	}
+	return b.ObjectStore.Get(ctx, key)
+}
+
+func TestExtractionRetriesAStoreBlip(t *testing.T) {
+	store := &blipStore{ObjectStore: testenv.NewFakeStore()}
+	store.failures.Store(1)
+	s := registerShardWithStore(t, store)
+	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
+		t.Fatalf("json upload status = %d, want 200", code)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if report, _, group := s.statuses(t); report == complete && group == completed {
+			return
+		}
+		if time.Now().After(deadline) {
+			report, _, group := s.statuses(t)
+			t.Fatalf("shard %q, group %q after a store blip; want complete, completed", report, group)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

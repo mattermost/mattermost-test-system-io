@@ -307,6 +307,9 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 	go h.finalizeJSONUpload(groupID, reportID)
 }
 
+// extractRetryDelays are the waits before each retry of a failed extraction.
+var extractRetryDelays = []time.Duration{time.Second, 2 * time.Second}
+
 // finalizeJSONUpload extracts suites + test_cases from the JSON just
 // uploaded, auto-finalizes the report/group, and refreshes the group
 // summary. Runs after UploadJSON has responded, so it uses its own bounded
@@ -329,6 +332,17 @@ func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
 	// Fire suites_available if anything parsed; ReportEntryUpdated("processing")
 	// even on zero-suite JSON so the UI's status icon still ticks forward.
 	suiteCount, extractErr := h.extractReport(ctx, groupID, reportID)
+	// The upload already answered 200, so the action will not resend: a store blip is retried here.
+	for _, wait := range extractRetryDelays {
+		if extractErr == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(wait):
+			suiteCount, extractErr = h.extractReport(ctx, groupID, reportID)
+		}
+	}
 	if extractErr != nil {
 		// Results that were not all read never complete the shard: it stays
 		// `processing` with the reason, and a re-upload retries it.

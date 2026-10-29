@@ -167,16 +167,21 @@ func (r *Reaper) markIncomplete(ctx context.Context) error {
 }
 
 // stalledResultsAge is how long a shard whose results could not be read waits before the reaper tries again;
-// a tick retries at most stalledResultsBatch of them, starting each within stalledResultsBudget.
+// a tick retries at most stalledResultsBatch of them, starting each within stalledResultsBudget. A shard older
+// than stalledResultsMaxAge is not retried again (results deleted from the store fail every read): its group
+// stays incomplete, as before.
 const (
 	stalledResultsAge    = time.Minute
 	stalledResultsBatch  = 10
 	stalledResultsBudget = 30 * time.Second
+	stalledResultsMaxAge = 24 * time.Hour
 )
 
 // RetryStalledResults re-reads the stored results of shards whose extraction failed after its inline retries
 // (an object-store outage), so they complete once the store is back without a re-upload. A failed attempt
-// records the reason again, which puts the shard back at the end of the wait. The budget only decides whether
+// records the reason again, which puts the shard back at the end of the wait. It also re-reads a shard whose
+// read left no reason at all (the server restarted, or the read panicked, after the upload's 200), once that
+// read would have run out of time; a screenshot reason does not hide it. The budget only decides whether
 // to start another shard: each read has its own limit (Handlers.FinalizeTimeout), so a large shard is not cut
 // short on every tick.
 func (r *Reaper) RetryStalledResults(parent context.Context) {
@@ -190,10 +195,15 @@ func (r *Reaper) RetryStalledResults(parent context.Context) {
 		SELECT id, report_group_id FROM reports
 		 WHERE status = 'processing'
 		   AND json_upload_status = 'completed'
-		   AND starts_with(error_message, $1)
-		   AND updated_at < now() - make_interval(secs => $2::double precision)
+		   AND created_at > now() - make_interval(secs => $6::double precision)
+		   AND (
+		       (starts_with(error_message, $1) AND updated_at < now() - make_interval(secs => $2::double precision))
+		    OR ((error_message IS NULL OR starts_with(error_message, $4))
+		        AND updated_at < now() - make_interval(secs => $5::double precision))
+		   )
 		 ORDER BY updated_at ASC
-		 LIMIT $3`, resultsErrorPrefix, stalledResultsAge.Seconds(), stalledResultsBatch)
+		 LIMIT $3`, resultsErrorPrefix, stalledResultsAge.Seconds(), stalledResultsBatch,
+		screenshotErrorPrefix, (r.Results.finalizeTimeout() + stalledResultsAge).Seconds(), stalledResultsMaxAge.Seconds())
 	if err != nil {
 		r.Logger.Error("reports reaper: list stalled results", slog.String("error", err.Error()))
 		return

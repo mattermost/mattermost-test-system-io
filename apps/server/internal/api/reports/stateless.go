@@ -393,11 +393,7 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 		}
 	}()
 
-	timeout := h.FinalizeTimeout
-	if timeout <= 0 {
-		timeout = 5 * time.Minute
-	}
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithTimeout(parent, h.finalizeTimeout())
 	defer cancel()
 	// An upload already answered 200, so its results are read now or by the reaper: one that never got its turn
 	// leaves the reason the reaper retries. The reaper's own skip leaves the reason it already had.
@@ -451,6 +447,14 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 		h.Publisher.SuitesAvailable(reportID, suiteCount)
 	}
 	h.refreshGroupSummaryBestEffort(ctx, groupID)
+}
+
+// finalizeTimeout is how long one finalization of a shard's results may take, its wait for its turn included.
+func (h *Handlers) finalizeTimeout() time.Duration {
+	if h.FinalizeTimeout > 0 {
+		return h.FinalizeTimeout
+	}
+	return 5 * time.Minute
 }
 
 // resultsNotRead leaves a shard whose results were not all read `processing` with the reason, which the reaper

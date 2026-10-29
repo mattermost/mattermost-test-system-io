@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -227,6 +228,9 @@ func TestScreenshotsDuringExtractionDoNotCompleteTheShardEarly(t *testing.T) {
 	// (an upload action that sends results first) must not complete the shard before its tests exist.
 	store := &gatedStore{ObjectStore: testenv.NewFakeStore(), open: make(chan struct{})}
 	s := registerShardWithStore(t, store)
+	var opened sync.Once
+	openGate := func() { opened.Do(func() { close(store.open) }) }
+	t.Cleanup(openGate) // runs before Start's pool.Close, so a failed assertion cannot leave the read holding the pool
 	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
 		t.Fatalf("json upload status = %d, want 200", code)
 	}
@@ -236,7 +240,7 @@ func TestScreenshotsDuringExtractionDoNotCompleteTheShardEarly(t *testing.T) {
 	if report, _, _ := s.statuses(t); report != processing {
 		t.Fatalf("shard is %q while its results are still being persisted, want processing", report)
 	}
-	close(store.open)
+	openGate()
 	s.waitComplete(t)
 	var suites int
 	if err := s.env.Pool.QueryRow(context.Background(), `SELECT count(*) FROM suites WHERE report_id = $1`, s.uploadID).Scan(&suites); err != nil {
@@ -465,5 +469,81 @@ func TestResultsThatNeverGetTheirTurnAreLeftForTheReaper(t *testing.T) {
 	reaper.RetryStalledResults(context.Background())
 	if report, _, group := s.statuses(t); report != complete || group != completed {
 		t.Fatalf("after the reaper's retry: shard %q, group %q; want complete, completed", report, group)
+	}
+}
+
+// A shard whose read left no results reason (the server restarted, or the read panicked, after the upload's 200)
+// is re-read by the reaper once that read would have run out of time; a screenshot reason does not hide it.
+func TestReaperRereadsResultsWhoseReadNeverFinished(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason *string
+	}{
+		{name: "no reason"},
+		{name: "a screenshot reason", reason: func() *string { r := "screenshots: 504"; return &r }()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testenv.NewFakeStore()
+			s := registerShardWithStore(t, store)
+			if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
+				t.Fatalf("json upload status = %d, want 200", code)
+			}
+			s.waitComplete(t)
+			// The read that never finished: its suites gone and the shard left processing.
+			ctx := context.Background()
+			if _, err := s.env.Pool.Exec(ctx, `DELETE FROM suites WHERE report_id = $1`, s.uploadID); err != nil {
+				t.Fatalf("drop suites: %v", err)
+			}
+			if _, err := s.env.Pool.Exec(ctx, `UPDATE reports SET status = 'processing', error_message = $2 WHERE id = $1`, s.uploadID, tc.reason); err != nil {
+				t.Fatalf("reset the shard: %v", err)
+			}
+			if _, err := s.env.Pool.Exec(ctx, `UPDATE report_groups SET status = 'incomplete' WHERE id = $1`, s.groupID); err != nil {
+				t.Fatalf("close the group: %v", err)
+			}
+			reaper := &reports.Reaper{Pool: s.env.Pool, Logger: slog.Default(),
+				Results: &reports.Handlers{Pool: s.env.Pool, Store: store, Publisher: &events.Publisher{Hub: events.NewHub()}}}
+
+			// Within the read's time limit it may still be running: left alone.
+			if _, err := s.env.Pool.Exec(ctx, `UPDATE reports SET updated_at = now() - interval '2 minutes' WHERE id = $1`, s.uploadID); err != nil {
+				t.Fatalf("age the shard: %v", err)
+			}
+			reaper.RetryStalledResults(ctx)
+			if report, _, _ := s.statuses(t); report != processing {
+				t.Fatalf("shard is %q while its read may still run, want processing", report)
+			}
+
+			if _, err := s.env.Pool.Exec(ctx, `UPDATE reports SET updated_at = now() - interval '7 minutes' WHERE id = $1`, s.uploadID); err != nil {
+				t.Fatalf("age the shard: %v", err)
+			}
+			reaper.RetryStalledResults(ctx)
+			if report, _, group := s.statuses(t); report != complete || group != completed {
+				t.Fatalf("after the reaper's retry: shard %q, group %q; want complete, completed", report, group)
+			}
+			var suites int
+			if err := s.env.Pool.QueryRow(ctx, `SELECT count(*) FROM suites WHERE report_id = $1`, s.uploadID).Scan(&suites); err != nil || suites == 0 {
+				t.Fatalf("suites after the retry = %d (err %v), want the results read again", suites, err)
+			}
+		})
+	}
+}
+
+// Results that fail every read (deleted from the store) are retried for a day, not forever.
+func TestReaperStopsRetryingResultsAfterADay(t *testing.T) {
+	store := &blipStore{ObjectStore: testenv.NewFakeStore()}
+	store.failures.Store(3) // the first read and both inline retries
+	s := registerShardWithStore(t, store)
+	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
+		t.Fatalf("json upload status = %d, want 200", code)
+	}
+	s.resultsReason(t)
+	if _, err := s.env.Pool.Exec(context.Background(), `UPDATE reports SET created_at = now() - interval '25 hours', updated_at = now() - interval '2 minutes' WHERE id = $1`, s.uploadID); err != nil {
+		t.Fatalf("age the shard: %v", err)
+	}
+	reaper := &reports.Reaper{Pool: s.env.Pool, Logger: slog.Default(),
+		Results: &reports.Handlers{Pool: s.env.Pool, Store: store, Publisher: &events.Publisher{Hub: events.NewHub()}}}
+	reaper.RetryStalledResults(context.Background())
+	if report, _, _ := s.statuses(t); report != processing {
+		t.Fatalf("shard is %q after the reaper's tick, want processing: a day-old shard is not read again", report)
 	}
 }

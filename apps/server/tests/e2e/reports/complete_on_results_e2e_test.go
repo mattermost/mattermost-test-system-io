@@ -193,10 +193,26 @@ func TestLateScreenshotsLeaveTheShardComplete(t *testing.T) {
 	}
 }
 
+// gatedStore holds every read until open is closed, so extraction is still running for as long as a test needs.
+type gatedStore struct {
+	storage.ObjectStore
+	open chan struct{}
+}
+
+func (g *gatedStore) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	select {
+	case <-g.open:
+	case <-ctx.Done():
+		return nil, storage.ObjectMeta{}, ctx.Err()
+	}
+	return g.ObjectStore.Get(ctx, key)
+}
+
 func TestScreenshotsDuringExtractionDoNotCompleteTheShardEarly(t *testing.T) {
 	// The results take a moment to be persisted after the upload returns; screenshots that land meanwhile
 	// (an upload action that sends results first) must not complete the shard before its tests exist.
-	s := registerShardWithStore(t, &slowStore{ObjectStore: testenv.NewFakeStore(), delay: 800 * time.Millisecond})
+	store := &gatedStore{ObjectStore: testenv.NewFakeStore(), open: make(chan struct{})}
+	s := registerShardWithStore(t, store)
 	if code := s.post(t, "json", "results.json", minimalPlaywrightJSON); code != http.StatusOK {
 		t.Fatalf("json upload status = %d, want 200", code)
 	}
@@ -206,6 +222,7 @@ func TestScreenshotsDuringExtractionDoNotCompleteTheShardEarly(t *testing.T) {
 	if report, _, _ := s.statuses(t); report != processing {
 		t.Fatalf("shard is %q while its results are still being persisted, want processing", report)
 	}
+	close(store.open)
 	s.waitComplete(t)
 	var suites int
 	if err := s.env.Pool.QueryRow(context.Background(), `SELECT count(*) FROM suites WHERE report_id = $1`, s.uploadID).Scan(&suites); err != nil {

@@ -351,10 +351,16 @@ func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
 				slog.String("report_id", reportID.String()),
 				slog.String("error", extractErr.Error()))
 		}
-		_, _ = h.Pool.Exec(ctx, `UPDATE reports SET error_message=$2, updated_at=now() WHERE id=$1`,
+		// Its own context: the extraction's may have run out. Only a shard still processing takes the reason;
+		// another upload of the same results may have completed it meanwhile.
+		failCtx, cancelFail := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelFail()
+		res, err := h.Pool.Exec(failCtx, `UPDATE reports SET error_message=$2, updated_at=now() WHERE id=$1 AND status='processing'`,
 			reportID, "results could not be read: "+extractErr.Error())
-		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
-		h.refreshGroupSummaryBestEffort(ctx, groupID)
+		if err == nil && res.RowsAffected() == 1 {
+			h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
+		}
+		h.refreshGroupSummaryBestEffort(failCtx, groupID)
 		return
 	}
 	if !h.tryAutoFinalize(ctx, groupID, reportID, "json") && stillProcessing(ctx, h.Pool, reportID) {

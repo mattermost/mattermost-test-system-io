@@ -334,8 +334,7 @@ func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
 			slog.String("report_id", reportID.String()),
 			slog.String("error", extractErr.Error()))
 	}
-	autoCompleted := h.tryAutoFinalize(ctx, groupID, reportID, "json")
-	if !autoCompleted {
+	if !h.tryAutoFinalize(ctx, groupID, reportID, "json") && stillProcessing(ctx, h.Pool, reportID) {
 		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 	}
 	if suiteCount > 0 {
@@ -367,10 +366,11 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 
 	uploaded, total, err := h.streamScreenshots(r, reportID)
 	if err != nil {
+		// Screenshots are attachments: losing them must not fail a shard whose
+		// results landed (or still will), so only the screenshot status records it.
 		_, _ = h.Pool.Exec(r.Context(),
-			`UPDATE reports SET screenshots_upload_status='failed', status='failed', error_message=$2, updated_at=now() WHERE id=$1`,
+			`UPDATE reports SET screenshots_upload_status='failed', error_message=$2, updated_at=now() WHERE id=$1`,
 			reportID, err.Error())
-		h.Publisher.ReportEntryUpdated(groupID, reportID, "failed", time.Now().UTC())
 		api.WriteError(w, r, fmt.Errorf("%w: %v", api.ErrBadRequest, err))
 		return
 	}
@@ -387,7 +387,7 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Debug("screenshots linked", slog.Int("count", linked), slog.String("report_id", reportID.String()))
 	}
 
-	if !h.tryAutoFinalize(r.Context(), groupID, reportID, "screenshots") {
+	if !h.tryAutoFinalize(r.Context(), groupID, reportID, "screenshots") && stillProcessing(r.Context(), h.Pool, reportID) {
 		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 	}
 	h.refreshGroupSummaryBestEffort(r.Context(), groupID)
@@ -820,9 +820,8 @@ func ssStartedIf(n int) *string {
 
 // tryAutoFinalize finalizes the report (and possibly its group) once an
 // upload pipeline step (json or screenshots) just landed. It first checks
-// whether this report's pipeline is now fully complete (json + optional
-// screenshots), and if so flips the row from `processing` to `complete`
-// and publishes ReportEntryUpdated("complete"). When that flip happens, it
+// whether this report's results have landed (json), and if so flips the row
+// from `processing` to `complete` and publishes ReportEntryUpdated("complete"). When that flip happens, it
 // then attempts to flip the parent group from `in_progress` to `completed`
 // once count(reports.complete) >= total_reports_expected. Returns true
 // when the per-report flip occurred — callers should skip publishing the
@@ -851,13 +850,14 @@ func (h *Handlers) tryAutoFinalize(ctx context.Context, groupID, reportID uuid.U
 	return true
 }
 
-// tryAutoCompleteReport flips a report from `processing` to `complete` when
-// its upload pipeline has fully landed: json_upload_status='completed' AND
-// screenshots_upload_status is either 'completed' or NULL (no screenshots
-// were declared at /reports/register time). Idempotent — repeated calls on
-// an already-`complete` row affect zero rows. Returns true when this call
-// performed the flip; the caller publishes ReportEntryUpdated and considers
-// auto-completing the parent group.
+// tryAutoCompleteReport flips a report from `processing` to `complete` once
+// its results have landed: json_upload_status='completed'. Screenshots do not
+// gate it — they are attachments, linked whenever they arrive, and one that
+// never arrives (a gateway timeout on a large upload) must not leave the shard,
+// and so its group, waiting until the reaper calls the run incomplete.
+// Idempotent — repeated calls on an already-`complete` row affect zero rows.
+// Returns true when this call performed the flip; the caller publishes
+// ReportEntryUpdated and considers auto-completing the parent group.
 func tryAutoCompleteReport(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID) (bool, error) {
 	res, err := pool.Exec(ctx, `
 		UPDATE reports
@@ -865,13 +865,21 @@ func tryAutoCompleteReport(ctx context.Context, pool *pgxpool.Pool, reportID uui
 		 WHERE id = $1
 		   AND status = 'processing'
 		   AND json_upload_status = 'completed'
-		   AND (screenshots_upload_status IS NULL
-		        OR screenshots_upload_status = 'completed')
 	`, reportID)
 	if err != nil {
 		return false, err
 	}
 	return res.RowsAffected() == 1, nil
+}
+
+// stillProcessing reports whether a report is still `processing`, so a late
+// upload step does not announce "processing" for one already complete.
+func stillProcessing(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID) bool {
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM reports WHERE id = $1`, reportID).Scan(&status); err != nil {
+		return false
+	}
+	return status == "processing"
 }
 
 // tryAutoCompleteGroup flips a report_group from `in_progress` to `completed`.

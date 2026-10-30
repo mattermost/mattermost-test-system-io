@@ -1,10 +1,9 @@
 /**
  * Single-shard upload pipeline: /reports/begin (idempotent) →
  * /reports/register → multipart /reports/upload/.../screenshots (chunked)
- * → .../json. Screenshots go first so a mid-batch
- * `screenshots_upload_status=completed` cannot auto-finalize the report
- * before the JSON lands (server finalize requires json completed +
- * screenshots completed-or-null).
+ * → .../json. Screenshots go first so they are linked to their tests when the
+ * JSON lands (the server completes the shard on the JSON alone). Screenshots
+ * are attachments: if they fail, the results are still uploaded.
  */
 
 import * as fs from "node:fs";
@@ -91,10 +90,11 @@ export async function uploadShard(
   }
   const uploadID = regRes.body!.upload_id;
 
-  // Screenshots before JSON: each successful screenshots POST marks
-  // screenshots_upload_status=completed server-side. Doing that before JSON
-  // completes means tryAutoFinalize cannot flip the report until JSON lands,
-  // so chunked screenshot uploads stay safe without a server API change.
+  // Screenshots before JSON, so the server links them to their tests when the
+  // JSON lands. A batch that still fails after retries (a gateway timeout on a
+  // large batch) costs its screenshots, never the results: the shard's
+  // results are what complete it.
+  let screenshotsUploaded = 0;
   if (screenshotParts.length > 0) {
     const batches = chunkScreenshotParts(screenshotParts);
     core.info(`uploading ${screenshotParts.length} screenshot(s) in ${batches.length} batch(es)`);
@@ -104,11 +104,18 @@ export async function uploadShard(
         `screenshot batch ${i + 1}/${batches.length}: ${batch.length} file(s), ` +
           `${batch.reduce((n, p) => n + p.size, 0)} bytes`,
       );
-      await uploadMultipart(
-        cfg,
-        `/api/v1/reports/upload/${reportGroupID}/${uploadID}/screenshots`,
-        batch,
-      );
+      try {
+        await uploadMultipart(
+          cfg,
+          `/api/v1/reports/upload/${reportGroupID}/${uploadID}/screenshots`,
+          batch,
+        );
+        screenshotsUploaded += batch.length;
+      } catch (err) {
+        core.warning(
+          `screenshot batch ${i + 1}/${batches.length} not uploaded, results are uploaded anyway: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
@@ -120,7 +127,7 @@ export async function uploadShard(
   );
 
   core.info(
-    `shard uploaded: 1 json + ${screenshotParts.length} screenshot(s) (group=${reportGroupID}, upload=${uploadID})`,
+    `shard uploaded: 1 json + ${screenshotsUploaded} of ${screenshotParts.length} screenshot(s) (group=${reportGroupID}, upload=${uploadID})`,
   );
 }
 

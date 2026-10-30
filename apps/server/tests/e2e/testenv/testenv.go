@@ -54,8 +54,15 @@ type Env struct {
 type Option func(*startConfig)
 
 type startConfig struct {
-	store          storage.ObjectStore
-	reaperDisabled bool
+	store           storage.ObjectStore
+	reaperDisabled  bool
+	finalizeTimeout time.Duration
+}
+
+// WithFinalizeTimeout shortens how long an upload's finalization of a shard's results may take, its wait for
+// its turn included, so a test can see one that never starts.
+func WithFinalizeTimeout(d time.Duration) Option {
+	return func(c *startConfig) { c.finalizeTimeout = d }
 }
 
 // WithStore swaps in a caller-supplied ObjectStore instead of the default
@@ -196,6 +203,7 @@ func Start(t *testing.T, opts ...Option) *Env {
 		MaxUploadBytes:   1 << 24, // 16 MiB
 		MaxArtifactBytes: 1 << 22, // 4 MiB
 		PresignTTL:       5 * time.Minute,
+		FinalizeTimeout:  cfg.finalizeTimeout,
 	})
 
 	srv := httptest.NewServer(handler)

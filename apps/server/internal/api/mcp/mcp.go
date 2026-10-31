@@ -308,7 +308,7 @@ type HistoryInput struct {
 	CompareNames []string `json:"compare_names,omitempty" jsonschema:"other lanes to report for the same commit, e.g. the other edition; at most 5"`
 	StreakRuns   int      `json:"streak_runs,omitempty" jsonschema:"earlier runs of the lane to scan; default 40, at most 200"`
 	RateDays     int      `json:"rate_days,omitempty" jsonschema:"days before the run to count; default 7, at most 30"`
-	Page         int      `json:"page,omitempty" jsonschema:"page of failing tests, from 1"`
+	Page         int      `json:"page,omitempty" jsonschema:"page of failing tests (100 a page), from 1; has_more says whether another follows"`
 }
 
 func (t tools) getTestHistory(ctx context.Context, _ *mcp.CallToolRequest, in HistoryInput) (*mcp.CallToolResult, any, error) {
@@ -322,6 +322,8 @@ func (t tools) getTestHistory(ctx context.Context, _ *mcp.CallToolRequest, in Hi
 	for _, n := range in.CompareNames {
 		q.Add("compare_names", n)
 	}
+	// One tool page is one endpoint page, so paging reaches every failing test.
+	q.Set("per_page", strconv.Itoa(maxSummaryTests))
 	for k, v := range map[string]int{"streak_runs": in.StreakRuns, "rate_days": in.RateDays, "page": in.Page} {
 		if v != 0 {
 			q.Set(k, strconv.Itoa(v))
@@ -334,10 +336,6 @@ func (t tools) getTestHistory(ctx context.Context, _ *mcp.CallToolRequest, in Hi
 	var summary map[string]any
 	if err := json.Unmarshal(body, &summary); err != nil {
 		return nil, nil, fmt.Errorf("read history summary: %w", err)
-	}
-	if tests, ok := summary["tests"].([]any); ok && len(tests) > maxSummaryTests {
-		summary["tests"] = tests[:maxSummaryTests]
-		summary["truncated"] = true
 	}
 	return textJSON(summary)
 }
@@ -435,7 +433,7 @@ func call(ctx context.Context, h http.HandlerFunc, method, target string, body [
 	h(rec, req)
 	if rec.status != http.StatusOK {
 		var e struct {
-			Code    string `json:"code"`
+			Code    string `json:"error"` // the handlers' api.Error envelope
 			Message string `json:"message"`
 		}
 		if json.Unmarshal(rec.body.Bytes(), &e) == nil && e.Message != "" {

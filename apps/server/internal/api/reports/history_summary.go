@@ -31,7 +31,7 @@ var commitPrefixRE = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 type summaryRequest struct {
 	repository, branch, name, commit, ghRunID, ghRunAttempt string
 	compareNames                                            []string
-	streakRuns, rateDays, page                              int
+	streakRuns, rateDays, page, perPage                     int
 }
 
 // parseSummaryRequest validates the query string; the second result is a 400 message, or "".
@@ -61,6 +61,9 @@ func parseSummaryRequest(q url.Values) (summaryRequest, string) {
 		return req, bad
 	}
 	if req.page, bad = intParam(q, "page", 1, 1, 1<<20); bad != "" {
+		return req, bad
+	}
+	if req.perPage, bad = intParam(q, "per_page", summaryPerPage, 1, summaryPerPage); bad != "" {
 		return req, bad
 	}
 	for _, v := range q["compare_names"] {
@@ -341,8 +344,8 @@ func (h *Handlers) HistorySummary(w http.ResponseWriter, r *http.Request) {
 	}
 	// The run's failing tests, paged; only their spec files are read from the other groups.
 	all := summarize(run, nil, windowStart, nil, runRows)
-	first := (req.page - 1) * summaryPerPage
-	pageTests := all[min(first, len(all)):min(first+summaryPerPage, len(all))]
+	first := (req.page - 1) * req.perPage
+	pageTests := all[min(first, len(all)):min(first+req.perPage, len(all))]
 	files := make([]string, 0)
 	for _, t := range pageTests {
 		if !slices.Contains(files, t.File) {
@@ -397,8 +400,8 @@ func (h *Handlers) HistorySummary(w http.ResponseWriter, r *http.Request) {
 		"lane_runs":    len(lane),
 		"total_tests":  len(all),
 		"page":         req.page,
-		"per_page":     summaryPerPage,
-		"has_more":     first+summaryPerPage < len(all),
+		"per_page":     req.perPage,
+		"has_more":     first+req.perPage < len(all),
 		"tests":        tests,
 	})
 }

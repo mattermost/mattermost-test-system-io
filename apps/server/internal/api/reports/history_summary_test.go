@@ -35,7 +35,7 @@ func TestParseSummaryRequestDefaults(t *testing.T) {
 	if bad != "" {
 		t.Fatalf("bad request: %s", bad)
 	}
-	if req.streakRuns != summaryDefaultStreakRuns || req.rateDays != summaryDefaultRateDays || req.page != 1 {
+	if req.streakRuns != summaryDefaultStreakRuns || req.rateDays != summaryDefaultRateDays || req.page != 1 || req.perPage != summaryPerPage {
 		t.Errorf("defaults = %+v", req)
 	}
 	if len(req.compareNames) != 1 || req.compareNames[0] != "playwright-full-fips-master" {
@@ -63,6 +63,8 @@ func TestParseSummaryRequestRejects(t *testing.T) {
 		"streak too long":    summaryQuery(map[string]string{"streak_runs": "201"}),
 		"window too long":    summaryQuery(map[string]string{"rate_days": "31"}),
 		"page zero":          summaryQuery(map[string]string{"page": "0"}),
+		"per_page zero":      summaryQuery(map[string]string{"per_page": "0"}),
+		"per_page too large": summaryQuery(map[string]string{"per_page": "501"}),
 		"too many compares":  summaryQuery(map[string]string{"compare_names": "a,b,c,d,e,f"}),
 	} {
 		if _, bad := parseSummaryRequest(q); bad == "" {
@@ -212,5 +214,12 @@ func TestSummarizePeerPlatformDivergenceIsAFailure(t *testing.T) {
 	got := summarize([]runGroup{run}, nil, t0.Add(-7*24*time.Hour), nil, f.rows)
 	if len(got) != 1 || got[0].StatusInRun != "failed" {
 		t.Fatalf("summaries = %+v; want failed", got)
+	}
+}
+
+func TestParseSummaryRequestPerPage(t *testing.T) {
+	req, bad := parseSummaryRequest(summaryQuery(map[string]string{"per_page": "100"}))
+	if bad != "" || req.perPage != 100 {
+		t.Errorf("per_page = %d (%s); want 100", req.perPage, bad)
 	}
 }

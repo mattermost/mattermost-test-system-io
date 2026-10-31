@@ -692,7 +692,8 @@ paths:
           description: Other lanes to report for the same commit; repeated, or comma-separated. At most 5.
         - { in: query, name: streak_runs, schema: { type: integer, minimum: 1, maximum: 200, default: 40 }, description: How many earlier runs of the lane to scan for the streak and the last run that didn't fail. }
         - { in: query, name: rate_days, schema: { type: integer, minimum: 1, maximum: 30, default: 7 }, description: Days before the run counted in `window`. }
-        - { in: query, name: page, schema: { type: integer, minimum: 1, default: 1 }, description: 'Pages of 500 tests, sorted by file and title.' }
+        - { in: query, name: page, schema: { type: integer, minimum: 1, default: 1 }, description: 'Page of tests, sorted by file and title.' }
+        - { in: query, name: per_page, schema: { type: integer, minimum: 1, maximum: 500, default: 500 }, description: Tests per page. }
       responses:
         '200':
           description: The run's failed and flaky tests with their history facts

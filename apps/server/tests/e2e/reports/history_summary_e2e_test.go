@@ -237,6 +237,14 @@ func TestHistorySummaryPagesMassFailures(t *testing.T) {
 	if len(second.Tests) == 1 && second.Tests[0].FullTitle != summarySuite+" › test 500" {
 		t.Errorf("page 2 = %q; want the last test by title", second.Tests[0].FullTitle)
 	}
+
+	// Smaller pages (what the MCP tool asks for) still reach every test.
+	params.Set("per_page", "100")
+	params.Set("page", "6")
+	_, sixth, _ := getSummary(t, env, viewer, params)
+	if len(sixth.Tests) != 1 || sixth.HasMore || sixth.Tests[0].FullTitle != summarySuite+" › test 500" {
+		t.Errorf("per_page 100, page 6: %d tests (more %v); want only test 500", len(sixth.Tests), sixth.HasMore)
+	}
 }
 
 func TestHistorySummaryIsRateLimitedPerKey(t *testing.T) {

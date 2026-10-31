@@ -9,18 +9,23 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 )
 
 type fakeReads struct {
 	consolidated string
 	summaryCode  int
+	// summaryQueries records the query strings HistorySummary received.
+	summaryQueries *[]url.Values
 }
 
 func (f fakeReads) Consolidated(w http.ResponseWriter, _ *http.Request) {
@@ -31,10 +36,13 @@ func (f fakeReads) History(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, `{"observations":[]}`)
 }
 
-func (f fakeReads) HistorySummary(w http.ResponseWriter, _ *http.Request) {
+func (f fakeReads) HistorySummary(w http.ResponseWriter, r *http.Request) {
+	if f.summaryQueries != nil {
+		*f.summaryQueries = append(*f.summaryQueries, r.URL.Query())
+	}
 	if f.summaryCode != 0 {
-		w.WriteHeader(f.summaryCode)
-		_, _ = io.WriteString(w, `{"code":"RUN_NOT_FOUND","message":"no report group for this run"}`)
+		// The real handlers' error envelope.
+		api.WriteErrorCode(w, f.summaryCode, "RUN_NOT_FOUND", "no report group for this run")
 		return
 	}
 	_, _ = io.WriteString(w, `{"tests":[]}`)
@@ -171,7 +179,7 @@ func TestHandlerErrorsBecomeToolErrors(t *testing.T) {
 	res := callTool(t, cs, "get_test_history", map[string]any{
 		"repository": "mattermost", "branch": "master", "name": "lane", "commit": "e8d166d", "gh_run_id": "1", "gh_run_attempt": "1",
 	})
-	if !res.IsError || !strings.Contains(text(res), "RUN_NOT_FOUND") {
+	if !res.IsError || !strings.Contains(text(res), "RUN_NOT_FOUND: no report group for this run") {
 		t.Errorf("result = %+v; want a tool error naming RUN_NOT_FOUND", res)
 	}
 	res = callTool(t, cs, "get_test_history", map[string]any{"repository": "mattermost", "branch": "master", "name": "lane", "commit": "e8d166d"})
@@ -192,5 +200,17 @@ func TestToolCallsAreAudited(t *testing.T) {
 	if entry["msg"] != "mcp tool call" || entry["tool"] != "get_screenshot" || entry["error"] != true ||
 		!strings.Contains(entry["arguments"].(string), "nope.txt") {
 		t.Errorf("audit entry = %v", entry)
+	}
+}
+
+// Each get_test_history page is one endpoint page of maxSummaryTests tests, so no test is skipped.
+func TestTestHistoryPagesMatchTheEndpoint(t *testing.T) {
+	var queries []url.Values
+	cs := connect(t, Deps{Reads: fakeReads{summaryQueries: &queries}, Store: fakeStore{}})
+	callTool(t, cs, "get_test_history", map[string]any{
+		"repository": "mattermost", "branch": "master", "name": "lane", "commit": "e8d166d", "gh_run_id": "1", "gh_run_attempt": "1", "page": 3,
+	})
+	if len(queries) != 1 || queries[0].Get("per_page") != strconv.Itoa(maxSummaryTests) || queries[0].Get("page") != "3" {
+		t.Errorf("queries = %v; want per_page=%d and page=3", queries, maxSummaryTests)
 	}
 }

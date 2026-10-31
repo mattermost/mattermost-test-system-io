@@ -433,8 +433,11 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [admin]
+      description: Requires an uploader, editor or admin subject; a viewer gets 403.
       responses:
         '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/reports/{id}/suites:
@@ -596,6 +599,21 @@ paths:
                     set would move between requests and a group completing mid-walk could
                     shift rows across a page boundary.
                 per_page: { type: integer, minimum: 1, maximum: 2000, default: 50 }
+                names:
+                  type: array
+                  maxItems: 10
+                  items: { type: string, minLength: 1 }
+                  description: >
+                    Keep only these lanes (report group name or run group). With `runs`,
+                    the newest N runs of these lanes rather than of every lane.
+                commit:
+                  type: string
+                  pattern: '^[0-9a-fA-F]{7,40}$'
+                  description: Keep only this commit's runs; a full SHA or a prefix of at least 7 characters.
+                include_screenshots:
+                  type: boolean
+                  default: false
+                  description: Add each row's screenshot file keys (fetch with GET /files/{key}).
       responses:
         '200':
           description: Observations, newest first
@@ -629,6 +647,69 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/TestHistoryObservation' }
         '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/reports/history/summary:
+    get:
+      tags: [reports]
+      summary: History facts for every test that failed or was flaky in one run
+      description: |
+        Names one run — a lane's report group(s) for a commit, GitHub run and
+        attempt — and returns, for each test that failed or was flaky in it,
+        facts from the lane's history as of the run:
+
+        - `earlier_consecutive_failures` and `first_failed_commit`: the lane's
+          earlier runs, newest first, in which the test failed without a run in
+          between where it didn't. Runs that didn't execute the test neither
+          break nor extend the streak.
+        - `last_not_failed`: the newest earlier run where it ran and didn't fail.
+        - `window`: counts over the lane's runs in the `rate_days` before the run.
+        - `same_commit`: its status in the other finished runs of the commit, in
+          this lane (re-runs) and in `compare_names` (e.g. the other edition).
+
+        A test's status in a run is rolled up exactly as the consolidated report
+        rolls it up, and tests are titled as it titles them (`suite › test`).
+        Returns facts, not verdicts: what they mean is the caller's policy.
+
+        Protected: a viewer, editor or admin credential, rate-limited per
+        credential. One request replaces a history read per spec file and per
+        question.
+      security:
+        - apiKey: []
+        - bearer: []
+        - sessionCookie: []
+      parameters:
+        - { in: query, name: repository, required: true, schema: { type: string }, description: 'Full "owner/repo" or the slug alone, e.g. "mattermost".' }
+        - { in: query, name: branch, required: true, schema: { type: string } }
+        - { in: query, name: name, required: true, schema: { type: string }, description: 'The lane: the report group name or run group, e.g. "playwright-full-enterprise-master".' }
+        - { in: query, name: commit, required: true, schema: { type: string, pattern: '^[0-9a-fA-F]{7,40}$' }, description: Full SHA or a prefix of at least 7 characters. }
+        - { in: query, name: gh_run_id, required: true, schema: { type: string } }
+        - { in: query, name: gh_run_attempt, required: true, schema: { type: string, pattern: '^[1-9][0-9]*$' } }
+        - in: query
+          name: compare_names
+          schema: { type: array, items: { type: string }, maxItems: 5 }
+          style: form
+          explode: true
+          description: Other lanes to report for the same commit; repeated, or comma-separated. At most 5.
+        - { in: query, name: streak_runs, schema: { type: integer, minimum: 1, maximum: 200, default: 40 }, description: How many earlier runs of the lane to scan for the streak and the last run that didn't fail. }
+        - { in: query, name: rate_days, schema: { type: integer, minimum: 1, maximum: 30, default: 7 }, description: Days before the run counted in `window`. }
+        - { in: query, name: page, schema: { type: integer, minimum: 1, default: 1 }, description: 'Page of tests, sorted by file and title.' }
+        - { in: query, name: per_page, schema: { type: integer, minimum: 1, maximum: 500, default: 500 }, description: Tests per page. }
+      responses:
+        '200':
+          description: The run's failed and flaky tests with their history facts
+          headers:
+            Cache-Control: { schema: { type: string }, description: 'private, max-age=60' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestHistorySummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429':
+          description: Over the credential's rate limit; retry after `Retry-After` seconds
+          headers:
+            Retry-After: { schema: { type: integer } }
 
   /api/v1/reports/{id}/search:
     parameters:
@@ -1038,8 +1119,10 @@ paths:
         required: true
     get:
       tags: [artifacts]
+      description: Requires any authenticated subject.
       responses:
         '302': { description: Redirect to presigned S3 URL }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/report-groups:
@@ -1552,9 +1635,73 @@ components:
         duration_ms: { type: integer, nullable: true }
         ordinal: { type: integer }
 
+    TestHistorySummary:
+      type: object
+      required: [run, until, window_start, streak_runs, rate_days, lane_runs, total_tests, page, per_page, has_more, tests]
+      properties:
+        run:
+          type: object
+          required: [group_ids, commit_sha, gh_run_id, gh_run_attempt, created_at]
+          properties:
+            group_ids: { type: array, items: { type: string, format: uuid } }
+            commit_sha: { type: string }
+            gh_run_id: { type: string }
+            gh_run_attempt: { type: string }
+            created_at: { type: string, format: date-time }
+        until: { type: string, format: date-time, description: The run's creation time; history is read from before it. }
+        window_start: { type: string, format: date-time }
+        streak_runs: { type: integer }
+        rate_days: { type: integer }
+        lane_runs: { type: integer, description: Earlier runs of the lane that were read. }
+        total_tests: { type: integer, description: 'Failed and flaky tests in the run, on every page.' }
+        page: { type: integer }
+        per_page: { type: integer }
+        has_more: { type: boolean }
+        tests:
+          type: array
+          items: { $ref: '#/components/schemas/TestHistorySummaryTest' }
+    TestHistorySummaryTest:
+      type: object
+      required: [file, full_title, status_in_run, earlier_consecutive_failures, first_failed_commit, last_not_failed, window, same_commit]
+      properties:
+        file: { type: string }
+        full_title: { type: string, description: '"suite › test", as the consolidated report titles it.' }
+        status_in_run: { type: string, enum: [failed, timedOut, flaky] }
+        earlier_consecutive_failures: { type: integer }
+        first_failed_commit: { type: string }
+        last_not_failed:
+          type: object
+          nullable: true
+          required: [commit_sha, gh_run_id, gh_run_attempt, status, created_at]
+          properties:
+            commit_sha: { type: string }
+            gh_run_id: { type: string }
+            gh_run_attempt: { type: string }
+            status: { type: string, enum: [passed, flaky] }
+            created_at: { type: string, format: date-time }
+        window:
+          type: object
+          required: [runs, passed, failed, flaky, skipped, absent]
+          properties:
+            runs: { type: integer }
+            passed: { type: integer }
+            failed: { type: integer }
+            flaky: { type: integer }
+            skipped: { type: integer }
+            absent: { type: integer, description: Runs that didn't execute the test. }
+        same_commit:
+          type: array
+          items:
+            type: object
+            required: [name, gh_run_id, gh_run_attempt, status]
+            properties:
+              name: { type: string }
+              gh_run_id: { type: string }
+              gh_run_attempt: { type: string }
+              status: { type: string, description: 'The rolled-up status, or "absent".' }
     TestHistoryObservation:
       type: object
-      required: [file, suite_title, title, full_title, status, retry_count, ordinal, group_id, name, report_name, branch, gh_pr_number, commit_sha, created_at, error_excerpt]
+      required: [file, suite_title, title, full_title, status, retry_count, ordinal, group_id, name, report_name, branch, gh_pr_number, commit_sha, created_at, error_excerpt, gh_run_id, gh_run_attempt, group_status]
       properties:
         file: { type: string }
         suite_title:
@@ -1586,6 +1733,16 @@ components:
         commit_sha: { type: string }
         created_at: { type: string, format: date-time }
         error_excerpt: { type: string }
+        gh_run_id: { type: string }
+        gh_run_attempt: { type: string }
+        group_status:
+          type: string
+          enum: [completed, incomplete]
+          description: incomplete is a group closed after its uploads stopped; what it uploaded is final.
+        screenshots:
+          type: array
+          items: { type: string }
+          description: 'The try''s screenshot file keys, in order; only with include_screenshots.'
     TestCase:
       type: object
       required: [id, suite_id, title, status, retry_count, ordinal]

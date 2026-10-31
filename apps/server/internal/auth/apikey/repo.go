@@ -8,6 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
 )
 
 // Status is the apikey row status.
@@ -34,6 +36,7 @@ type Row struct {
 	KeyPrefix  string
 	KeyHash    string
 	Status     Status
+	Role       policy.Role
 	CreatedAt  time.Time
 	LastUsedAt *time.Time
 	RevokedAt  *time.Time
@@ -44,20 +47,20 @@ type Repo struct {
 	Pool *pgxpool.Pool
 }
 
-// Insert stores a newly-issued key.
-func (r *Repo) Insert(ctx context.Context, name string, iss Issued) (Row, error) {
+// Insert stores a newly-issued key with its role.
+func (r *Repo) Insert(ctx context.Context, name string, role policy.Role, iss Issued) (Row, error) {
 	const q = `
-		INSERT INTO api_keys (name, key_prefix, key_hash, status)
-		VALUES ($1, $2, $3, 'active')
-		RETURNING id, name, key_prefix, key_hash, status, created_at, last_used_at, revoked_at
+		INSERT INTO api_keys (name, key_prefix, key_hash, status, role)
+		VALUES ($1, $2, $3, 'active', $4)
+		RETURNING id, name, key_prefix, key_hash, status, role, created_at, last_used_at, revoked_at
 	`
-	return scanRow(r.Pool.QueryRow(ctx, q, name, iss.Prefix, iss.Hash))
+	return scanRow(r.Pool.QueryRow(ctx, q, name, iss.Prefix, iss.Hash, string(role)))
 }
 
 // ByPrefix narrows an authentication lookup by prefix.
 func (r *Repo) ByPrefix(ctx context.Context, prefix string) (Row, error) {
 	const q = `
-		SELECT id, name, key_prefix, key_hash, status, created_at, last_used_at, revoked_at
+		SELECT id, name, key_prefix, key_hash, status, role, created_at, last_used_at, revoked_at
 		FROM api_keys WHERE key_prefix = $1 LIMIT 1
 	`
 	row, err := scanRow(r.Pool.QueryRow(ctx, q, prefix))
@@ -67,10 +70,23 @@ func (r *Repo) ByPrefix(ctx context.Context, prefix string) (Row, error) {
 	return row, err
 }
 
+// ByID returns one key.
+func (r *Repo) ByID(ctx context.Context, id uuid.UUID) (Row, error) {
+	const q = `
+		SELECT id, name, key_prefix, key_hash, status, role, created_at, last_used_at, revoked_at
+		FROM api_keys WHERE id = $1
+	`
+	row, err := scanRow(r.Pool.QueryRow(ctx, q, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Row{}, ErrNotFound
+	}
+	return row, err
+}
+
 // List returns all keys, optionally filtered by status.
 func (r *Repo) List(ctx context.Context, statusFilter *Status) ([]Row, error) {
 	const q = `
-		SELECT id, name, key_prefix, key_hash, status, created_at, last_used_at, revoked_at
+		SELECT id, name, key_prefix, key_hash, status, role, created_at, last_used_at, revoked_at
 		FROM api_keys
 		WHERE ($1::text IS NULL OR status = $1::text)
 		ORDER BY created_at DESC
@@ -122,10 +138,11 @@ type rowScanner interface {
 
 func scanRow(s rowScanner) (Row, error) {
 	var r Row
-	var status string
-	if err := s.Scan(&r.ID, &r.Name, &r.KeyPrefix, &r.KeyHash, &status, &r.CreatedAt, &r.LastUsedAt, &r.RevokedAt); err != nil {
+	var status, role string
+	if err := s.Scan(&r.ID, &r.Name, &r.KeyPrefix, &r.KeyHash, &status, &role, &r.CreatedAt, &r.LastUsedAt, &r.RevokedAt); err != nil {
 		return Row{}, err
 	}
 	r.Status = Status(status)
+	r.Role = policy.Role(role)
 	return r, nil
 }

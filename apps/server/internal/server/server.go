@@ -17,6 +17,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/clientcfg"
 	filesapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/files"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/health"
+	mcpapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/mcp"
 	apimw "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/middleware"
 	orchapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
@@ -79,6 +80,15 @@ type Deps struct {
 	FinalizeTimeout time.Duration
 }
 
+// Limits per credential on the history summary: one call serves one triaged run, so 60 a minute and 4
+// at once leave room for replays without letting one caller load the database.
+const (
+	historySummaryPerMinute  = 60
+	historySummaryConcurrent = 4
+	mcpPerMinute             = 120
+	mcpConcurrent            = 4
+)
+
 // Build constructs the chi router with the full feature set and returns it as
 // an http.Handler. When OpenAPISpecPath is set, request validation is enabled
 // for the /api/v1 subtree.
@@ -116,6 +126,17 @@ func Build(d Deps) chi.Router {
 		SearchMinLength:  d.SearchMinLength,
 		FinalizeTimeout:  d.FinalizeTimeout,
 	}
+
+	// MCP server: the protected reads as tools for agents and MCP clients. Viewer, editor or admin;
+	// its own per-credential budget, since one question takes a client several calls.
+	r.Group(func(r chi.Router) {
+		r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
+		r.Use(authapi.RequireRole(authapi.ReadRoles...))
+		r.Use(authapi.RateLimit(mcpPerMinute, mcpConcurrent))
+		r.Handle("/mcp", mcpapi.Handler(mcpapi.Deps{
+			Pool: d.Pool, Reads: reportsH, Store: d.Store, Logger: d.Logger, Version: d.Version,
+		}))
+	})
 	artifactsH := &artifactapi.Handlers{Pool: d.Pool, Store: d.Store, PresignTTL: d.PresignTTL}
 	wsH := &wsapi.Handler{Hub: d.Hub}
 	authH := &authapi.Handlers{
@@ -200,9 +221,27 @@ func Build(d Deps) chi.Router {
 		}
 		orchapi.RegisterPublic(r, publicOrchH)
 
-		// --- Protected: writes + admin-ish reads ---
+		// --- Protected reads that are too costly to leave anonymous: viewer, editor or admin,
+		// rate-limited per credential. CI's uploader keys can't use them. ---
 		r.Group(func(r chi.Router) {
 			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
+			r.Use(authapi.RequireRole(authapi.ReadRoles...))
+			r.Use(authapi.RateLimit(historySummaryPerMinute, historySummaryConcurrent))
+
+			r.Get("/reports/history/summary", reportsH.HistorySummary)
+		})
+
+		// --- Protected reads: any authenticated subject ---
+		r.Group(func(r chi.Router) {
+			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
+
+			r.Get("/artifacts/{id}", artifactsH.Get)
+		})
+
+		// --- Protected writes: uploader, editor or admin (a viewer can't write) ---
+		r.Group(func(r chi.Router) {
+			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
+			r.Use(authapi.RequireRole(authapi.WriteRoles...))
 
 			// Stateless upload lifecycle: each shard authenticates and registers
 			// itself independently; no controller-side coordination is required.
@@ -214,8 +253,6 @@ func Build(d Deps) chi.Router {
 			// Legacy single-shot bundle upload (returns 410).
 			r.Post("/reports", reportsH.Upload)
 			r.Delete("/reports/{id}", reportsH.Delete)
-
-			r.Get("/artifacts/{id}", artifactsH.Get)
 
 			// Test shard orchestration.
 			orchH := &orchapi.Handlers{

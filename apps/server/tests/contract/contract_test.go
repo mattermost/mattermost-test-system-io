@@ -18,12 +18,14 @@ import (
 	"net/http"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers/gorillamux"
 
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/tests/e2e/testenv"
 )
 
@@ -250,4 +252,49 @@ func TestReportsHistoryContract(t *testing.T) {
 			validatePostResponse(t, doc, opts, path, tc.payload, status, hdr, body)
 		})
 	}
+}
+
+// TestReportsHistorySummaryContract checks a summary with every kind of fact — a streak, a last run
+// that didn't fail, a run that didn't execute the test, a compared lane — against the spec.
+func TestReportsHistorySummaryContract(t *testing.T) {
+	env := testenv.Start(t)
+	doc, opts := loadSpec(t)
+	ctx := t.Context()
+	key := env.IssueAPIKeyWithRole(t, "contract", policy.RoleViewer)
+
+	seed := func(name, sha, runID string, hoursAgo int, statuses ...string) {
+		t.Helper()
+		var gid, rid, sid string
+		if err := env.Pool.QueryRow(ctx, `
+			INSERT INTO report_groups (framework, name, repository, branch, commit_sha, gh_run_id, gh_run_attempt, status, created_at)
+			VALUES ('playwright', $1, 'mattermost/mattermost', 'master', $2, $3, '1', 'completed', now() - $4 * interval '1 hour')
+			RETURNING id`, name, sha, runID, hoursAgo).Scan(&gid); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Pool.QueryRow(ctx, `INSERT INTO reports (report_group_id, name, status) VALUES ($1, 'chrome-1', 'complete') RETURNING id`, gid).Scan(&rid); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.Pool.QueryRow(ctx, `INSERT INTO suites (report_id, title, file, ordinal) VALUES ($1, 'Suite', 'a.spec.ts', 0) RETURNING id`, rid).Scan(&sid); err != nil {
+			t.Fatal(err)
+		}
+		for i, st := range statuses {
+			if _, err := env.Pool.Exec(ctx, `INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, ordinal) VALUES ($1, 't', 'Suite > t', $2, $3, $3)`, sid, st, i); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	const lane, fips = "playwright-full-enterprise-master", "playwright-full-fips-master"
+	seed(lane, "aaaaaaa"+strings.Repeat("0", 33), "r1", 30, "passed")
+	seed(lane, "bbbbbbb"+strings.Repeat("0", 33), "r2", 20) // didn't execute the test
+	seed(lane, "ccccccc"+strings.Repeat("0", 33), "r3", 10, "failed", "failed")
+	seed(lane, "ddddddd"+strings.Repeat("0", 33), "r4", 1, "failed", "failed")
+	seed(fips, "ddddddd"+strings.Repeat("0", 33), "r4", 1, "passed")
+
+	path := "/api/v1/reports/history/summary?repository=mattermost&branch=master&name=" + lane +
+		"&commit=ddddddd&gh_run_id=r4&gh_run_attempt=1&compare_names=" + fips
+	status, hdr, body := mustRecordedResponse(t, env, http.MethodGet, path, map[string]string{"X-API-Key": key})
+	if status != http.StatusOK || !strings.Contains(string(body), `"earlier_consecutive_failures":1`) {
+		t.Fatalf("status = %d; body=%s", status, body)
+	}
+	validateResponse(t, doc, opts, http.MethodGet, path, status, hdr, body)
 }

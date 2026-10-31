@@ -41,7 +41,7 @@ func (l *rateLimiter) middleware(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		key := subjectID(sub)
+		key := SubjectLabel(sub)
 		if wait, ok := l.acquire(key); !ok {
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
 			http.Error(w, "too many requests", http.StatusTooManyRequests)
@@ -81,8 +81,9 @@ func (l *rateLimiter) release(key string) {
 	l.subjects[key].inFlight--
 }
 
-// subjectID names the credential a budget belongs to.
-func subjectID(s Subject) string {
+// SubjectLabel names the credential a request came with, e.g. "apikey:<id>": the key of rate-limit
+// budgets and the subject in audit logs. It never contains the credential itself.
+func SubjectLabel(s Subject) string {
 	switch s.Kind {
 	case "apikey":
 		return "apikey:" + s.APIKeyID.String()

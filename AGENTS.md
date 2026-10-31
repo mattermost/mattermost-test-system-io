@@ -34,6 +34,7 @@ Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or 
 - `GET /api/v1/ws` — WebSocket for live ingest progress (anonymous); orchestration subscribers send `subscribe.orchestration` / `unsubscribe.orchestration` frames and receive `orchestration.run.started`, `orchestration.unit.leased`, `orchestration.unit.completed`, `orchestration.lease.expired`, `orchestration.run.completed`, `orchestration.run.timed_out` events
 - `POST /api/v1/auth/github/start`, `GET /api/v1/auth/github/callback`, `POST /api/v1/auth/logout`
 - `/swagger-ui/` — hand-authored OpenAPI 3.1 spec browser
+- `/mcp` — read-only MCP server (Streamable HTTP, stateless; viewer, editor or admin key; rate-limited per credential). Tools: `find_runs`, `get_run_failures`, `get_test_history`, `get_test_runs`, `get_screenshot`; every call is audit-logged (credential, tool, arguments, never output). Connect Claude Code with `claude mcp add --transport http test-system-io https://<host>/mcp --header "X-API-Key: <viewer key>"` after `tsioctl keys issue --name <you> --role viewer`.
 - Legacy `POST /api/v1/reports` bundle upload now returns 410 Gone.
 
 ## Style

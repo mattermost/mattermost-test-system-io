@@ -17,6 +17,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/clientcfg"
 	filesapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/files"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/health"
+	mcpapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/mcp"
 	apimw "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/middleware"
 	orchapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
@@ -84,6 +85,8 @@ type Deps struct {
 const (
 	historySummaryPerMinute  = 60
 	historySummaryConcurrent = 4
+	mcpPerMinute             = 120
+	mcpConcurrent            = 4
 )
 
 // Build constructs the chi router with the full feature set and returns it as
@@ -123,6 +126,17 @@ func Build(d Deps) chi.Router {
 		SearchMinLength:  d.SearchMinLength,
 		FinalizeTimeout:  d.FinalizeTimeout,
 	}
+
+	// MCP server: the protected reads as tools for agents and MCP clients. Viewer, editor or admin;
+	// its own per-credential budget, since one question takes a client several calls.
+	r.Group(func(r chi.Router) {
+		r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
+		r.Use(authapi.RequireRole(authapi.ReadRoles...))
+		r.Use(authapi.RateLimit(mcpPerMinute, mcpConcurrent))
+		r.Handle("/mcp", mcpapi.Handler(mcpapi.Deps{
+			Pool: d.Pool, Reads: reportsH, Store: d.Store, Logger: d.Logger, Version: d.Version,
+		}))
+	})
 	artifactsH := &artifactapi.Handlers{Pool: d.Pool, Store: d.Store, PresignTTL: d.PresignTTL}
 	wsH := &wsapi.Handler{Hub: d.Hub}
 	authH := &authapi.Handlers{

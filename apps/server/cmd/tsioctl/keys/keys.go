@@ -12,7 +12,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/config"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/db"
 )
@@ -40,13 +42,17 @@ func connect(ctx context.Context) (*apikey.Repo, func(), error) {
 }
 
 func issueCmd() *cobra.Command {
-	var name string
+	var name, roleFlag string
 	c := &cobra.Command{
 		Use:   "issue",
 		Short: "Issue a new API key (plaintext printed once)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if name == "" {
 				return errors.New("--name is required")
+			}
+			role, ok := authapi.ParseKeyRole(roleFlag)
+			if !ok {
+				return fmt.Errorf("--role must be uploader, viewer, editor or admin, not %q", roleFlag)
 			}
 			ctx := cmd.Context()
 			repo, closer, err := connect(ctx)
@@ -59,13 +65,14 @@ func issueCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			row, err := repo.Insert(ctx, name, iss)
+			row, err := repo.Insert(ctx, name, role, iss)
 			if err != nil {
 				return err
 			}
 			fmt.Printf("API key issued\n")
 			fmt.Printf("  id:         %s\n", row.ID)
 			fmt.Printf("  name:       %s\n", row.Name)
+			fmt.Printf("  role:       %s\n", row.Role)
 			fmt.Printf("  key_prefix: %s\n", row.KeyPrefix)
 			fmt.Printf("  plaintext:  %s\n", iss.PlainText)
 			fmt.Fprintln(os.Stderr, "\nStore the plaintext now — it is not shown again.")
@@ -73,6 +80,8 @@ func issueCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&name, "name", "", "Human label for the key")
+	c.Flags().StringVar(&roleFlag, "role", string(policy.RoleUploader),
+		"uploader (CI uploads), viewer (protected reads: history summary, MCP), editor or admin")
 	return c
 }
 
@@ -99,7 +108,7 @@ func listCmd() *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			if _, err := fmt.Fprintln(w, "ID\tNAME\tPREFIX\tSTATUS\tCREATED\tLAST USED"); err != nil {
+			if _, err := fmt.Fprintln(w, "ID\tNAME\tROLE\tPREFIX\tSTATUS\tCREATED\tLAST USED"); err != nil {
 				return err
 			}
 			for _, r := range rows {
@@ -107,8 +116,8 @@ func listCmd() *cobra.Command {
 				if r.LastUsedAt != nil {
 					last = r.LastUsedAt.Format(time.RFC3339)
 				}
-				if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-					r.ID, r.Name, r.KeyPrefix, r.Status,
+				if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					r.ID, r.Name, r.Role, r.KeyPrefix, r.Status,
 					r.CreatedAt.Format(time.RFC3339), last); err != nil {
 					return err
 				}
@@ -137,6 +146,10 @@ func rotateCmd() *cobra.Command {
 			}
 			defer closer()
 
+			old, err := repo.ByID(ctx, id)
+			if err != nil {
+				return err
+			}
 			if err := repo.MarkRotating(ctx, id); err != nil {
 				return err
 			}
@@ -144,7 +157,8 @@ func rotateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			row, err := repo.Insert(ctx, "(rotated)", iss)
+			// The replacement keeps the old key's role.
+			row, err := repo.Insert(ctx, "(rotated)", old.Role, iss)
 			if err != nil {
 				return err
 			}

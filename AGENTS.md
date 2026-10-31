@@ -15,7 +15,7 @@ apps/web/      # React (Vite, TailwindCSS, lucide-react)
 ```
 
 ## API
-Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or the `tsio_session` cookie. Base path for the API is `/api/v1`; `/health`, `/ready`, `/files/*`, and `/swagger-ui/*` are top-level.
+Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or the `tsio_session` cookie, and a role that may write. Roles: `uploader` (CI: API keys by default, OIDC policies), `viewer` (browser sessions; viewer API keys for protected reads), `editor`, `admin`. Writes (uploads, orchestration, delete) need uploader, editor or admin; a viewer gets 403. Issue keys with `tsioctl keys issue --name <n> [--role uploader|viewer|editor|admin]`. Base path for the API is `/api/v1`; `/health`, `/ready`, `/files/*`, and `/swagger-ui/*` are top-level.
 - `GET /health` / `GET /ready` — probes (top-level, not under `/api/v1`)
 - `GET /api/v1/reports` — list reports (public)
 - `GET /api/v1/reports/{id}` — report details (public)

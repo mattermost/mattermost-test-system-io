@@ -433,8 +433,11 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [admin]
+      description: Requires an uploader, editor or admin subject; a viewer gets 403.
       responses:
         '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/reports/{id}/suites:
@@ -1038,8 +1041,10 @@ paths:
         required: true
     get:
       tags: [artifacts]
+      description: Requires any authenticated subject.
       responses:
         '302': { description: Redirect to presigned S3 URL }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/report-groups:

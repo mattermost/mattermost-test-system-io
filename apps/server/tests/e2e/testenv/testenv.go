@@ -218,15 +218,21 @@ func Start(t *testing.T, opts ...Option) *Env {
 	}
 }
 
-// IssueAPIKey inserts a live API key and returns the plaintext.
+// IssueAPIKey inserts a live uploader API key (what CI uses) and returns the plaintext.
 func (e *Env) IssueAPIKey(t *testing.T, name string) (plaintext string) {
+	t.Helper()
+	return e.IssueAPIKeyWithRole(t, name, policy.RoleUploader)
+}
+
+// IssueAPIKeyWithRole inserts a live API key with the given role and returns the plaintext.
+func (e *Env) IssueAPIKeyWithRole(t *testing.T, name string, role policy.Role) (plaintext string) {
 	t.Helper()
 	iss, err := apikey.Issue()
 	if err != nil {
 		t.Fatalf("issue apikey: %v", err)
 	}
 	repo := &apikey.Repo{Pool: e.Pool}
-	if _, err := repo.Insert(context.Background(), name, iss); err != nil {
+	if _, err := repo.Insert(context.Background(), name, role, iss); err != nil {
 		t.Fatalf("insert apikey: %v", err)
 	}
 	return iss.PlainText
@@ -289,6 +295,13 @@ type RegisterResponse struct {
 // insert (incl. `uploaded_by_oidc_subject`).
 func (e *Env) RegisterStatelessUpload(t *testing.T, authHeader string, body map[string]any) RegisterResponse {
 	t.Helper()
+	return e.RegisterStatelessUploadWith(t, "Authorization", authHeader, body)
+}
+
+// RegisterStatelessUploadWith is RegisterStatelessUpload with the credential in any header, e.g.
+// X-API-Key.
+func (e *Env) RegisterStatelessUploadWith(t *testing.T, header, value string, body map[string]any) RegisterResponse {
+	t.Helper()
 
 	// Fill in defaults matching testenv.DefaultReportGroup's composite key so
 	// every test registers under a stable group unless it overrides.
@@ -318,8 +331,8 @@ func (e *Env) RegisterStatelessUpload(t *testing.T, authHeader string, body map[
 		t.Fatalf("register request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
+	if value != "" {
+		req.Header.Set(header, value)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -200,9 +200,17 @@ func Build(d Deps) chi.Router {
 		}
 		orchapi.RegisterPublic(r, publicOrchH)
 
-		// --- Protected: writes + admin-ish reads ---
+		// --- Protected reads: any authenticated subject ---
 		r.Group(func(r chi.Router) {
 			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
+
+			r.Get("/artifacts/{id}", artifactsH.Get)
+		})
+
+		// --- Protected writes: uploader, editor or admin (a viewer can't write) ---
+		r.Group(func(r chi.Router) {
+			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
+			r.Use(authapi.RequireRole(authapi.WriteRoles...))
 
 			// Stateless upload lifecycle: each shard authenticates and registers
 			// itself independently; no controller-side coordination is required.
@@ -214,8 +222,6 @@ func Build(d Deps) chi.Router {
 			// Legacy single-shot bundle upload (returns 410).
 			r.Post("/reports", reportsH.Upload)
 			r.Delete("/reports/{id}", reportsH.Delete)
-
-			r.Get("/artifacts/{id}", artifactsH.Get)
 
 			// Test shard orchestration.
 			orchH := &orchapi.Handlers{

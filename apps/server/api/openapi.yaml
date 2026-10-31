@@ -599,6 +599,21 @@ paths:
                     set would move between requests and a group completing mid-walk could
                     shift rows across a page boundary.
                 per_page: { type: integer, minimum: 1, maximum: 2000, default: 50 }
+                names:
+                  type: array
+                  maxItems: 10
+                  items: { type: string, minLength: 1 }
+                  description: >
+                    Keep only these lanes (report group name or run group). With `runs`,
+                    the newest N runs of these lanes rather than of every lane.
+                commit:
+                  type: string
+                  pattern: '^[0-9a-fA-F]{7,40}$'
+                  description: Keep only this commit's runs; a full SHA or a prefix of at least 7 characters.
+                include_screenshots:
+                  type: boolean
+                  default: false
+                  description: Add each row's screenshot file keys (fetch with GET /files/{key}).
       responses:
         '200':
           description: Observations, newest first
@@ -1685,7 +1700,7 @@ components:
               status: { type: string, description: 'The rolled-up status, or "absent".' }
     TestHistoryObservation:
       type: object
-      required: [file, suite_title, title, full_title, status, retry_count, ordinal, group_id, name, report_name, branch, gh_pr_number, commit_sha, created_at, error_excerpt]
+      required: [file, suite_title, title, full_title, status, retry_count, ordinal, group_id, name, report_name, branch, gh_pr_number, commit_sha, created_at, error_excerpt, gh_run_id, gh_run_attempt, group_status]
       properties:
         file: { type: string }
         suite_title:
@@ -1717,6 +1732,16 @@ components:
         commit_sha: { type: string }
         created_at: { type: string, format: date-time }
         error_excerpt: { type: string }
+        gh_run_id: { type: string }
+        gh_run_attempt: { type: string }
+        group_status:
+          type: string
+          enum: [completed, incomplete]
+          description: incomplete is a group closed after its uploads stopped; what it uploaded is final.
+        screenshots:
+          type: array
+          items: { type: string }
+          description: 'The try''s screenshot file keys, in order; only with include_screenshots.'
     TestCase:
       type: object
       required: [id, suite_id, title, status, retry_count, ordinal]

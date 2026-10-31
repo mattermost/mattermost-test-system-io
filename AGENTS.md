@@ -22,7 +22,7 @@ Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or 
 - `GET /api/v1/reports/{id}/suites` — test suites (public)
 - `GET /api/v1/reports/{id}/cases` — test cases (public)
 - `GET /api/v1/reports/{id}/json` — raw Playwright JSON, 302 → presigned S3 (public)
-- `POST /api/v1/reports/history` — past executions of the tests in named spec files, rows not verdicts (public)
+- `POST /api/v1/reports/history` — past executions of the tests in named spec files, rows not verdicts; filters by branch, lane (`names`) and `commit`; rows carry the GitHub run and attempt, and screenshot keys with `include_screenshots` (public)
 - `GET /api/v1/reports/history/summary` — for one run, each failed or flaky test's streak, last run where it didn't fail, window counts and same-commit results (viewer, editor or admin; rate-limited per credential)
 - Stateless upload (auth): `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots`. `/reports/begin` declares `total_reports_expected` (the shard count); the report group auto-finalizes once that many shards reach `complete`. Idle groups are flipped to `incomplete` by the staleness reaper.
 - `GET /api/v1/artifacts/{id}` — 302 → presigned S3 (auth required)

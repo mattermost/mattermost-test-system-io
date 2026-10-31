@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,12 @@ type historyResponse struct {
 		GHPRNumber *int   `json:"gh_pr_number"`
 		CommitSHA  string `json:"commit_sha"`
 		Error      string `json:"error_excerpt"`
+		// Added with the lane and commit filters.
+		Name         string   `json:"name"`
+		GHRunID      string   `json:"gh_run_id"`
+		GHRunAttempt string   `json:"gh_run_attempt"`
+		GroupStatus  string   `json:"group_status"`
+		Screenshots  []string `json:"screenshots"`
 	} `json:"observations"`
 }
 
@@ -365,5 +372,91 @@ func TestReportsHistoryReturnsEachCaseOrdinal(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("observations = %v, want %v", got, want)
 		}
+	}
+}
+
+// TestReportsHistoryFiltersByLaneAndCommit: `names` keeps the named lanes (so `runs` counts one lane's
+// runs, not every lane's), and `commit` keeps one commit's runs, by full SHA or prefix.
+func TestReportsHistoryFiltersByLaneAndCommit(t *testing.T) {
+	env := testenv.Start(t)
+	const file = "specs/lanes.spec.ts"
+	now := time.Now().UTC()
+	sha1, sha2 := "1111111"+strings.Repeat("a", 33), "2222222"+strings.Repeat("b", 33)
+	seedGroup(t, env, "mattermost/mattermost", "master", nil, sha1, "playwright-full-enterprise-master", file, "t", "failed", 0, now.Add(-3*time.Hour))
+	seedGroup(t, env, "mattermost/mattermost", "master", nil, sha1, "playwright-full-fips-master", file, "t", "passed", 0, now.Add(-3*time.Hour))
+	seedGroup(t, env, "mattermost/mattermost", "master", nil, sha2, "playwright-full-enterprise-master", file, "t", "passed", 0, now.Add(-2*time.Hour))
+	seedGroup(t, env, "mattermost/mattermost", "master", nil, sha2, "cypress-full-enterprise-master", file, "t", "passed", 0, now.Add(-1*time.Hour))
+
+	status, out := postHistory(t, env, map[string]any{
+		"repository": "mattermost/mattermost", "files": []string{file}, "runs": 2,
+		"names": []string{"playwright-full-enterprise-master"},
+	})
+	if status != http.StatusOK || len(out.Observations) != 2 {
+		t.Fatalf("lane filter: status %d, %d rows; want the lane's 2 runs", status, len(out.Observations))
+	}
+	for _, o := range out.Observations {
+		if o.Name != "playwright-full-enterprise-master" {
+			t.Errorf("lane filter returned %s", o.Name)
+		}
+	}
+
+	status, out = postHistory(t, env, map[string]any{
+		"repository": "mattermost/mattermost", "files": []string{file}, "commit": "1111111",
+	})
+	if status != http.StatusOK || len(out.Observations) != 2 {
+		t.Fatalf("commit filter: status %d, %d rows; want both editions of the commit", status, len(out.Observations))
+	}
+	for _, o := range out.Observations {
+		if o.CommitSHA != sha1 {
+			t.Errorf("commit filter returned %s", o.CommitSHA)
+		}
+	}
+
+	for name, body := range map[string]map[string]any{
+		"short commit":   {"commit": "11111"},
+		"too many names": {"names": repeated("lane", 11)},
+		"empty name":     {"names": []string{""}},
+	} {
+		body["repository"], body["files"] = "mattermost/mattermost", []string{file}
+		if status, _ := postHistory(t, env, body); status != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, status)
+		}
+	}
+}
+
+// TestReportsHistoryRowsCarryRunIdentityAndScreenshots: each row names its GitHub run and attempt and
+// its group's status, and with include_screenshots the file keys of the try's screenshots.
+func TestReportsHistoryRowsCarryRunIdentityAndScreenshots(t *testing.T) {
+	env := testenv.Start(t)
+	ctx := context.Background()
+	const file = "specs/shots.spec.ts"
+	sha := "3333333" + strings.Repeat("c", 33)
+	seedGroupWithStatus(t, env, "incomplete", "mattermost/mattermost", "master", nil, sha, "lane", file, "t", "failed", 0, time.Now().Add(-time.Hour))
+	if _, err := env.Pool.Exec(ctx, `
+		INSERT INTO report_screenshots (report_id, filename, s3_key, size_bytes, test_name, case_id, sequence)
+		SELECT s.report_id, 'test-failed-' || n || '.png', 'reports/x/screenshots/test-failed-' || n || '.png', 1, 't', tc.id, n
+		FROM test_cases tc JOIN suites s ON s.id = tc.suite_id, generate_series(2, 1, -1) n
+		WHERE s.file = $1`, file); err != nil {
+		t.Fatal(err)
+	}
+
+	base := map[string]any{"repository": "mattermost/mattermost", "files": []string{file}}
+	_, plain := postHistory(t, env, base)
+	if len(plain.Observations) != 1 {
+		t.Fatalf("%d rows; want 1", len(plain.Observations))
+	}
+	o := plain.Observations[0]
+	if o.GHRunID != "run-"+sha+"-lane" || o.GHRunAttempt != "1" || o.GroupStatus != "incomplete" {
+		t.Errorf("run identity = %q/%q, group %q", o.GHRunID, o.GHRunAttempt, o.GroupStatus)
+	}
+	if len(o.Screenshots) != 0 {
+		t.Errorf("screenshots without include_screenshots = %v; want none", o.Screenshots)
+	}
+
+	base["include_screenshots"] = true
+	_, withShots := postHistory(t, env, base)
+	want := []string{"reports/x/screenshots/test-failed-1.png", "reports/x/screenshots/test-failed-2.png"}
+	if got := withShots.Observations[0].Screenshots; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("screenshots = %v; want %v in sequence order", got, want)
 	}
 }

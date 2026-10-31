@@ -79,6 +79,13 @@ type Deps struct {
 	FinalizeTimeout time.Duration
 }
 
+// Limits per credential on the history summary: one call serves one triaged run, so 60 a minute and 4
+// at once leave room for replays without letting one caller load the database.
+const (
+	historySummaryPerMinute  = 60
+	historySummaryConcurrent = 4
+)
+
 // Build constructs the chi router with the full feature set and returns it as
 // an http.Handler. When OpenAPISpecPath is set, request validation is enabled
 // for the /api/v1 subtree.
@@ -199,6 +206,16 @@ func Build(d Deps) chi.Router {
 			MaxScreenshotBytes: 10 * 1024 * 1024,
 		}
 		orchapi.RegisterPublic(r, publicOrchH)
+
+		// --- Protected reads that are too costly to leave anonymous: viewer, editor or admin,
+		// rate-limited per credential. CI's uploader keys can't use them. ---
+		r.Group(func(r chi.Router) {
+			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
+			r.Use(authapi.RequireRole(authapi.ReadRoles...))
+			r.Use(authapi.RateLimit(historySummaryPerMinute, historySummaryConcurrent))
+
+			r.Get("/reports/history/summary", reportsH.HistorySummary)
+		})
 
 		// --- Protected reads: any authenticated subject ---
 		r.Group(func(r chi.Router) {

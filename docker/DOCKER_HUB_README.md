@@ -55,7 +55,7 @@ All configuration is read from `TSIO_*` environment variables. The list below mi
 | `TSIO_ORCH_MAX_SPECS_PER_RUN` | No | `5000` | Total spec-count cap (summed across every dispatch unit) for a single orchestration `begin run` request. Requests over the cap are rejected with `TOO_MANY_SPECS`. |
 | `TSIO_REPORTS_STALENESS_TIMEOUT_MS` | No | `3600000` (1h) | Idle window past which an `in_progress` report group is flipped to `incomplete` by the reports reaper. Bursty shard uploads can have minutes-long gaps, so the default sits well past the worst legitimate case. |
 | `TSIO_UPLOAD_TIMEOUT_MS` | No | `3600000` (1h) | Client-facing upload timeout surfaced via `/api/v1/config`. |
-| `TSIO_HTML_VIEW_ENABLED` | No | `false` | Enable in-browser HTML report viewing. |
+| `TSIO_HTML_VIEW_ENABLED` | No | `true` | Enable in-browser HTML report viewing. |
 | `TSIO_SEARCH_MIN_LENGTH` | No | `3` | Minimum characters for search queries. |
 | `TSIO_CORS_ALLOWED_ORIGINS` | No | — | Comma-separated list of allowed CORS origins. |
 | `TSIO_LOG_LEVEL` | No | `info` | `debug` \| `info` \| `warn` \| `error`. |

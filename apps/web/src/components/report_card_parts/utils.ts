@@ -47,9 +47,7 @@ export function calculatePassRate(stats: {
 
 export function getPassRateColorClass(passRate: number | null): string {
   if (passRate === null) return '';
-  return passRate === 100
-    ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300'
-    : 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300';
+  return passRate === 100 ? 'text-green-500' : 'text-red-500';
 }
 
 /** Retest shard name pattern — mirrors the server's retest classification. */

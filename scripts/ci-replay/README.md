@@ -125,7 +125,10 @@ Detox, just XML instead of JSON.
 | `INJECT_LEASE_TIMEOUT_RATE` | `0` | `0..1` — synthetic: probability a worker skips `/complete` to exercise lease reclaim |
 | `API_BASE` | `http://localhost:8080` | Target server |
 | `TSIO_API_KEY` | (required) | From `make seed` |
-| `TSIO_COMMIT_SHA` | current minute | Shared `commit_sha` across terminals started together |
+| `TSIO_COMMIT_SHA` | random 40-char hex | Pin exact `commit_sha` for a single replay |
+| `TSIO_COMMIT_SHA_MATTERMOST` | random per batch | Shared commit for cypress/playwright groups in `run-all-compare.cjs` |
+| `TSIO_COMMIT_SHA_MOBILE` | random per batch | Shared commit for detox/maestro groups in `run-all-compare.cjs` |
+| `TSIO_GH_RUN_ID` | `gh_run_<epoch_ms>` | Pin GitHub Actions run id (`gh_run_1234567890`) |
 | `UPLOAD_SHARDS` | `0` | Opt-in: also do shard upload — see below |
 | `VERIFY_TIMEOUT_MS` | `120000` | `UPLOAD_SHARDS=1` only: ingest-convergence poll timeout |
 

@@ -29,6 +29,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
 	authoidc "github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oidc"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/session"
@@ -54,8 +55,27 @@ type Env struct {
 type Option func(*startConfig)
 
 type startConfig struct {
-	store          storage.ObjectStore
-	reaperDisabled bool
+	store           storage.ObjectStore
+	reaperDisabled  bool
+	finalizeTimeout time.Duration
+	oauth           *oauth.Flow
+	htmlView        bool
+}
+
+// WithOAuth wires a GitHub OAuth flow so browser sign-in routes are live.
+func WithOAuth(f *oauth.Flow) Option {
+	return func(c *startConfig) { c.oauth = f }
+}
+
+// WithHTMLView serves the server-rendered report pages.
+func WithHTMLView() Option {
+	return func(c *startConfig) { c.htmlView = true }
+}
+
+// WithFinalizeTimeout shortens how long an upload's finalization of a shard's results may take, its wait for
+// its turn included, so a test can see one that never starts.
+func WithFinalizeTimeout(d time.Duration) Option {
+	return func(c *startConfig) { c.finalizeTimeout = d }
 }
 
 // WithStore swaps in a caller-supplied ObjectStore instead of the default
@@ -179,7 +199,8 @@ func Start(t *testing.T, opts ...Option) *Env {
 		Refresh:                &session.RefreshManager{Pool: pool, TTL: time.Hour},
 		Policy:                 &policy.Engine{Pool: pool},
 		OIDC:                   oidcV,
-		OAuth:                  nil, // human sign-in not exercised in these tests
+		OAuth:                  cfg.oauth, // nil unless a test exercises browser sign-in
+		HTMLViewEnabled:        cfg.htmlView,
 		Hub:                    hub,
 		Publisher:              &events.Publisher{Hub: hub},
 		OrchestrationStore:     orchStore,
@@ -196,6 +217,7 @@ func Start(t *testing.T, opts ...Option) *Env {
 		MaxUploadBytes:   1 << 24, // 16 MiB
 		MaxArtifactBytes: 1 << 22, // 4 MiB
 		PresignTTL:       5 * time.Minute,
+		FinalizeTimeout:  cfg.finalizeTimeout,
 	})
 
 	srv := httptest.NewServer(handler)

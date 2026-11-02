@@ -18,6 +18,7 @@ import {
   type RunSnapshot,
   type TestCaseStatus,
 } from '@/types/orchestration';
+import { isLiveHomeRun } from '@/components/report_summary';
 
 export const API_URL = import.meta.env.VITE_API_URL || '/api/v1';
 
@@ -89,21 +90,63 @@ export function useServerInfo() {
 // component will actually render the data — HomePage passes
 // `viewMode === 'grouped'` so the individual view doesn't pay for an
 // unused grouped fetch (and vice versa).
-export function useGroupedReports(page = 1, limit = 50, options: { enabled?: boolean } = {}) {
-  const offset = (page - 1) * limit;
+export function useReportRepositories(options: { enabled?: boolean } = {}) {
   return useQuery({
-    queryKey: ['reports-grouped', page, limit],
+    queryKey: ['reports-repositories'],
     queryFn: async () => {
-      const response = await fetch(`${API_URL}/reports/grouped?limit=${limit}&offset=${offset}`);
+      const response = await fetch(`${API_URL}/reports/repositories`, { cache: 'no-cache' });
+      return handleResponse<import('@/types').ReportRepositoriesResponse>(response);
+    },
+    enabled: options.enabled ?? true,
+    staleTime: 60_000,
+  });
+}
+
+export function useBranchFilters(repository: string, options: { enabled?: boolean } = {}) {
+  const repo = repository.trim();
+  return useQuery({
+    queryKey: ['reports-branch-filters', repo],
+    queryFn: async () => {
+      const params = new URLSearchParams({ repository: repo });
+      const response = await fetch(`${API_URL}/reports/branch-filters?${params}`, {
+        cache: 'no-cache',
+      });
+      return handleResponse<import('@/types').BranchFiltersResponse>(response);
+    },
+    enabled: (options.enabled ?? true) && repo.length > 0,
+    staleTime: 60_000,
+  });
+}
+
+export function useGroupedReports(
+  page = 1,
+  limit = 50,
+  options: { enabled?: boolean; repository?: string; branchFilter?: string } = {},
+) {
+  const offset = (page - 1) * limit;
+  const repository = options.repository?.trim() || '';
+  const branchFilter = options.branchFilter?.trim() || '';
+  return useQuery({
+    queryKey: ['reports-grouped', page, limit, repository, branchFilter],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        limit: String(limit),
+        offset: String(offset),
+      });
+      if (repository) {
+        params.set('repository', repository);
+      }
+      if (branchFilter) {
+        params.set('branch_filter', branchFilter);
+      }
+      const response = await fetch(`${API_URL}/reports/grouped?${params}`, { cache: 'no-cache' });
       return handleResponse<GroupedReportsResponse>(response);
     },
     enabled: options.enabled ?? true,
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return false;
-      const anyInProgress = data.groups.some((g) =>
-        g.runs.some((r) => r.status === 'in_progress' || r.orchestration?.status === 'in_progress'),
-      );
+      const anyInProgress = data.groups.some((g) => g.runs.some(isLiveHomeRun));
       return anyInProgress ? 5000 : false;
     },
     refetchIntervalInBackground: false,
@@ -195,7 +238,10 @@ export function useIndividualReports(page = 1, limit = 100, options: { enabled?:
     queryKey: ['reports-individual', page, limit],
     queryFn: async () => {
       const offset = (page - 1) * limit;
-      const response = await fetch(`${API_URL}/reports/individual?limit=${limit}&offset=${offset}`);
+      const response = await fetch(
+        `${API_URL}/reports/individual?limit=${limit}&offset=${offset}`,
+        { cache: 'no-cache' },
+      );
       return handleResponse<IndividualReportListResponse>(response);
     },
     enabled: options.enabled ?? true,

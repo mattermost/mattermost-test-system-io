@@ -35,6 +35,8 @@ type Handlers struct {
 	MaxArtifactBytes int64
 	PresignTTL       time.Duration
 	SearchMinLength  int
+	// FinalizeTimeout bounds one finalization of a shard's results, waiting for its turn included (0: 5 minutes).
+	FinalizeTimeout time.Duration
 
 	// groupedCache memoizes /reports/grouped responses per (limit, offset)
 	// for a short TTL so polling tabs collapse onto one DB hit per window.

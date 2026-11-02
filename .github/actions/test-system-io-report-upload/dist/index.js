@@ -24662,6 +24662,7 @@ async function uploadShard(cfg, jsonPath, screenshotsDir) {
     throw new Error(`reports/register failed: ${regRes.status} ${JSON.stringify(regRes.body)}`);
   }
   const uploadID = regRes.body.upload_id;
+  let screenshotsUploaded = 0;
   if (screenshotParts.length > 0) {
     const batches = chunkScreenshotParts(screenshotParts);
     info(`uploading ${screenshotParts.length} screenshot(s) in ${batches.length} batch(es)`);
@@ -24670,11 +24671,18 @@ async function uploadShard(cfg, jsonPath, screenshotsDir) {
       info(
         `screenshot batch ${i + 1}/${batches.length}: ${batch.length} file(s), ${batch.reduce((n, p) => n + p.size, 0)} bytes`
       );
-      await uploadMultipart(
-        cfg,
-        `/api/v1/reports/upload/${reportGroupID}/${uploadID}/screenshots`,
-        batch
-      );
+      try {
+        await uploadMultipart(
+          cfg,
+          `/api/v1/reports/upload/${reportGroupID}/${uploadID}/screenshots`,
+          batch
+        );
+        screenshotsUploaded += batch.length;
+      } catch (err) {
+        warning(
+          `screenshot batch ${i + 1}/${batches.length} not uploaded, results are uploaded anyway: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
   }
   await uploadMultipart(
@@ -24684,7 +24692,7 @@ async function uploadShard(cfg, jsonPath, screenshotsDir) {
     "application/json"
   );
   info(
-    `shard uploaded: 1 json + ${screenshotParts.length} screenshot(s) (group=${reportGroupID}, upload=${uploadID})`
+    `shard uploaded: 1 json + ${screenshotsUploaded} of ${screenshotParts.length} screenshot(s) (group=${reportGroupID}, upload=${uploadID})`
   );
 }
 function chunkScreenshotParts(parts, maxFiles = SCREENSHOT_BATCH_MAX_FILES, maxBytes = SCREENSHOT_BATCH_MAX_BYTES) {

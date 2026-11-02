@@ -224,6 +224,13 @@ func (h *Handlers) BeginRun(w http.ResponseWriter, r *http.Request) {
 	if created && h.Publisher != nil {
 		h.Publisher.RunStarted(r.Context(), run.Identity, run.Counts.Total, run.IdleTimeoutMs, run.LeaseTimeoutMs)
 	}
+	if created {
+		if seeded != nil && seeded.ID != uuid.Nil {
+			h.refreshReportGroupProjectionByID(r.Context(), seeded.ID)
+		} else {
+			h.refreshReportGroupProjection(r.Context(), run.Identity)
+		}
+	}
 	// Notify the reports-side WebSocket subscribers so the /reports index
 	// pages pick up the run-as-report_group as soon as begin commits. Only
 	// fire when this call's transaction actually inserted the report_groups
@@ -296,6 +303,9 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrForbidden)
 		return
 	}
+	// Use the stored identity so events and projection refresh match it,
+	// even when the worker sent a short SHA or bare repository name.
+	identity = run.Identity
 	if run.Status != orchestration.RunStatusInProgress {
 		api.WriteErrorCode(w, http.StatusConflict, "RUN_NOT_IN_PROGRESS",
 			"run is not in progress")
@@ -379,6 +389,7 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 		h.Publisher.UnitLeased(r.Context(), identity, worker.GHJobName, worker.GHJobID,
 			unitIDs, lease.Deadline, isRetest)
 	}
+	h.refreshReportGroupProjection(r.Context(), identity)
 
 	resp := map[string]any{
 		"deadline":    lease.Deadline.UTC(),
@@ -506,6 +517,9 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrForbidden)
 		return
 	}
+	// Use the stored identity so events and projection refresh match it,
+	// even when the worker sent a short SHA or bare repository name.
+	identity = run.Identity
 
 	outcome, err := h.Store.RecordCompletion(r.Context(), identity, worker, results)
 	if err != nil {
@@ -543,6 +557,8 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refresh before publishing so clients reload fresh projection data.
+	h.refreshReportGroupProjection(r.Context(), identity)
 	if h.Publisher != nil {
 		for _, change := range outcome.UnitStatesChanged {
 			h.Publisher.UnitCompleted(r.Context(), identity, change.UnitID,
@@ -624,10 +640,14 @@ func (h *Handlers) NoWork(w http.ResponseWriter, r *http.Request) {
 	// Like the upload path, a failure here leaves the group in_progress for
 	// the next upload or the staleness reaper; the record itself is durable.
 	if groupID != uuid.Nil {
-		if _, err := reports.TryAutoCompleteGroup(r.Context(), h.Pool, groupID); err != nil && h.Logger != nil {
+		completed, completedReports, updatedAt, err := reports.TryAutoCompleteGroup(r.Context(), h.Pool, groupID)
+		if err != nil && h.Logger != nil {
 			h.Logger.Warn("auto-complete group failed",
 				slog.String("group_id", groupID.String()),
 				slog.String("error", err.Error()))
+		}
+		if completed && h.ReportsPublisher != nil {
+			h.ReportsPublisher.ReportUpdated(groupID, "completed", completedReports, nil, updatedAt)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"recorded": true})

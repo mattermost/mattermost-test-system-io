@@ -82,7 +82,7 @@ type Config struct {
 
 	// Client-facing tunables surfaced via GET /api/v1/config.
 	UploadTimeoutMs int  `env:"TSIO_UPLOAD_TIMEOUT_MS" envDefault:"3600000"` // 1h
-	HTMLViewEnabled bool `env:"TSIO_HTML_VIEW_ENABLED" envDefault:"false"`
+	HTMLViewEnabled bool `env:"TSIO_HTML_VIEW_ENABLED" envDefault:"true"`
 	SearchMinLength int  `env:"TSIO_SEARCH_MIN_LENGTH" envDefault:"3"`
 
 	// Build metadata surfaced via GET /api/v1/info. Typically set via ldflags

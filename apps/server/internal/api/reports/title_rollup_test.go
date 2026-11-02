@@ -80,3 +80,35 @@ func TestRollupTitleStatus(t *testing.T) {
 		}
 	})
 }
+
+func TestSuiteSpecOK(t *testing.T) {
+	try := func(status string, retry int) specAttempt { return specAttempt{Status: status, Retry: retry} }
+	tests := []struct {
+		name     string
+		attempts []specAttempt
+		want     bool
+	}{
+		{"passed", []specAttempt{try(statusPassed, 0)}, true},
+		{"skipped", []specAttempt{try(statusSkipped, 0)}, true},
+		{"failed then passed on retry", []specAttempt{try(statusFailed, 0), try(statusPassed, 1)}, true},
+		{"legacy rows all flaky", []specAttempt{try(statusFlaky, 0), try(statusFlaky, 1)}, true},
+		// A Playwright test.fail() test that passed, then failed on retry: Playwright and countStatuses call it flaky.
+		{"passed then failed on retry", []specAttempt{try(statusPassed, 0), try(statusFailed, 1)}, true},
+		// A retest upload merged into the suite starts again at retry 0; the later pass decides, as before.
+		{"failed, then passed in a retest", []specAttempt{try(statusFailed, 0), try(statusFailed, 1), try(statusPassed, 0)}, true},
+		// Two Playwright projects share a full title: a pass in one is not a retry of a failure in the next.
+		{"one project passed, the next failed", []specAttempt{try(statusPassed, 0), try(statusFailed, 0)}, false},
+		{"one project flaky, the next failed", []specAttempt{try(statusFailed, 0), try(statusPassed, 1), try(statusFailed, 0), try(statusFailed, 1)}, false},
+		{"failed on every attempt", []specAttempt{try(statusFailed, 0), try(statusFailed, 1)}, false},
+		{"timed out", []specAttempt{try(statusTimedOut, 0)}, false},
+		{"interrupted after a pass", []specAttempt{try(statusPassed, 0), try("interrupted", 1)}, false},
+		{"no attempts", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := suiteSpecOK(tt.attempts); got != tt.want {
+				t.Fatalf("suiteSpecOK(%v) = %v, want %v", tt.attempts, got, tt.want)
+			}
+		})
+	}
+}

@@ -19,6 +19,7 @@ import {
   type ConnectionStatus,
   ReconnectingWebSocket,
   getWebSocketUrl,
+  onGlobalOrchestrationEvent,
 } from '@/services/websocket';
 import type { WsEventMessage } from '@/types/websocket';
 
@@ -33,6 +34,18 @@ interface WebSocketContextValue {
 
 const WebSocketContext = createContext<WebSocketContextValue | null>(null);
 
+// Report list queries refreshed on home.live.changed.
+const LIST_QUERY_KEYS = [
+  'reports',
+  'reports-grouped',
+  'reports-individual',
+  'reports-repositories',
+  'reports-branch-filters',
+] as const;
+
+// Server-side /reports/grouped cache TTL.
+const SERVER_CACHE_TTL_MS = 5000;
+
 interface WebSocketProviderProps {
   children: ReactNode;
 }
@@ -45,6 +58,22 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const queryClient = useQueryClient();
+  const lastListInvalidateRef = useRef(0);
+  const trailingListTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const invalidateLists = useCallback(() => {
+    for (const key of LIST_QUERY_KEYS) {
+      queryClient.invalidateQueries({ queryKey: [key] });
+    }
+  }, [queryClient]);
+
+  // Drop any pending trailing refetch on unmount.
+  useEffect(
+    () => () => {
+      if (trailingListTimerRef.current !== null) clearTimeout(trailingListTimerRef.current);
+    },
+    [],
+  );
 
   // Handle incoming WebSocket messages
   const handleMessage = useCallback(
@@ -83,6 +112,25 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           queryClient.invalidateQueries({ queryKey: ['reports-consolidated'] });
           break;
 
+        case 'home.live.changed': {
+          // Unscoped list signal; orchestration events are identity-scoped.
+          // Throttled: at most one immediate refetch per cache window.
+          const now = Date.now();
+          if (now - lastListInvalidateRef.current >= SERVER_CACHE_TTL_MS) {
+            lastListInvalidateRef.current = now;
+            invalidateLists();
+          }
+          // One pending trailing refetch, after the server cache window passes.
+          if (trailingListTimerRef.current === null) {
+            trailingListTimerRef.current = setTimeout(() => {
+              trailingListTimerRef.current = null;
+              lastListInvalidateRef.current = Date.now();
+              invalidateLists();
+            }, SERVER_CACHE_TTL_MS + 1000);
+          }
+          break;
+        }
+
         case 'suites_available':
           // Invalidate suites for the report
           queryClient.invalidateQueries({
@@ -91,7 +139,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           break;
       }
     },
-    [queryClient],
+    [queryClient, invalidateLists],
   );
 
   // Initialize WebSocket connection
@@ -112,6 +160,23 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
       wsRef.current = null;
     };
   }, [handleMessage]);
+
+  // Invalidate lists on orchestration events.
+  useEffect(() => {
+    return onGlobalOrchestrationEvent((event) => {
+      switch (event.type) {
+        case 'orchestration.run.started':
+        case 'orchestration.unit.leased':
+        case 'orchestration.unit.completed':
+        case 'orchestration.lease.expired':
+        case 'orchestration.run.completed':
+        case 'orchestration.run.timed_out':
+          queryClient.invalidateQueries({ queryKey: ['reports-grouped'] });
+          queryClient.invalidateQueries({ queryKey: ['reports'] });
+          break;
+      }
+    });
+  }, [queryClient]);
 
   // Reconnect function
   const reconnect = useCallback(() => {

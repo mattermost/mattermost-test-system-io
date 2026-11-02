@@ -6,6 +6,7 @@ package server
 
 import (
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -27,6 +28,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/session"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/htmlpage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/webui"
@@ -75,6 +77,8 @@ type Deps struct {
 	MaxUploadBytes   int64
 	MaxArtifactBytes int64
 	PresignTTL       time.Duration
+	// FinalizeTimeout bounds one finalization of a shard's results (0: the reports default).
+	FinalizeTimeout time.Duration
 }
 
 // Build constructs the chi router with the full feature set and returns it as
@@ -112,6 +116,7 @@ func Build(d Deps) chi.Router {
 		MaxArtifactBytes: d.MaxArtifactBytes,
 		PresignTTL:       d.PresignTTL,
 		SearchMinLength:  d.SearchMinLength,
+		FinalizeTimeout:  d.FinalizeTimeout,
 	}
 	artifactsH := &artifactapi.Handlers{Pool: d.Pool, Store: d.Store, PresignTTL: d.PresignTTL}
 	wsH := &wsapi.Handler{Hub: d.Hub}
@@ -167,6 +172,8 @@ func Build(d Deps) chi.Router {
 
 		// --- Public: report reads ---
 		r.Get("/reports", reportsH.List)
+		r.Get("/reports/repositories", reportsH.Repositories)
+		r.Get("/reports/branch-filters", reportsH.BranchFilters)
 		r.Get("/reports/grouped", reportsH.Grouped)
 		r.Get("/reports/individual", reportsH.Individual)
 		r.Get("/reports/consolidated", reportsH.Consolidated)
@@ -229,15 +236,51 @@ func Build(d Deps) chi.Router {
 		})
 	})
 
-	// Mount the embedded web UI last so the chi /api/v1 subtree keeps its
-	// normal 404 behavior; only requests that miss every other route fall
-	// through to the SPA handler.
+	var webHandler http.Handler
 	if webH, err := webui.Handler(); err != nil {
 		if d.Logger != nil {
 			d.Logger.Warn("embedded web ui disabled", slog.String("error", err.Error()))
 		}
 	} else {
-		r.NotFound(webH.ServeHTTP)
+		webHandler = webH
+	}
+
+	if d.HTMLViewEnabled && d.Pool != nil {
+		htmlH := &htmlpage.Handler{
+			Pool: d.Pool,
+			Orch: d.OrchestrationStore,
+			Site: htmlpage.SiteInfo{
+				ServerVersion:      d.Version,
+				CommitSHA:          d.CommitSHA,
+				Environment:        d.Environment,
+				BuildTime:          d.BuildTime,
+				RepoURL:            d.RepoURL,
+				GitHubOAuthEnabled: d.OAuth != nil,
+			},
+			Logger:   d.Logger,
+			Fallback: webHandler,
+		}
+		r.Get("/", htmlH.ServeHome)
+		r.Get("/reports", htmlH.ServeHome)
+		r.Get("/reports/fragment/home-live", htmlH.ServeHomeLiveFragment)
+		r.Get("/reports/fragment/run-dispatch-live", htmlH.ServeRunDispatchLiveFragment)
+		r.Get("/reports/{repo}/{branch}/{sha}/{name}", htmlH.ServeRun)
+		r.Get("/reports/{repo}", func(w http.ResponseWriter, r *http.Request) {
+			repo := chi.URLParam(r, "repo")
+			if htmlpage.IsRepoPageSegment(repo) {
+				htmlH.ServeRepo(w, r)
+				return
+			}
+			if webHandler != nil {
+				webHandler.ServeHTTP(w, r)
+				return
+			}
+			http.NotFound(w, r)
+		})
+	}
+
+	if webHandler != nil {
+		r.NotFound(webHandler.ServeHTTP)
 	}
 
 	return r

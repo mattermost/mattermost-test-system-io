@@ -39,6 +39,8 @@ type Reaper struct {
 	Publisher *Publisher
 	Logger    *slog.Logger
 	Interval  time.Duration
+	// Refresh projection after lease expiry or run timeout.
+	OnActivity func(ctx context.Context, identity CompositeIdentity)
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -161,6 +163,9 @@ func (r *Reaper) expireOverdueLeases(ctx context.Context) error {
 				slog.Int("unit_count", len(expired.ReclaimedUnitIDs)),
 			)
 			logMetric(ctx, r.Logger, "orchestration_reclaims_total", "", 1)
+			if r.OnActivity != nil {
+				r.OnActivity(ctx, expired.Identity)
+			}
 			if r.Publisher != nil {
 				r.Publisher.LeaseExpired(ctx, expired.Identity,
 					expired.Lease.Worker.GHJobName, expired.Lease.Worker.GHJobID,
@@ -219,6 +224,9 @@ func (r *Reaper) markTimedOutRuns(ctx context.Context) error {
 				slog.Int("abandoned_count", out.AbandonedAdded),
 				slog.Int("unit_count", out.Counts.Total),
 			)
+			if r.OnActivity != nil {
+				r.OnActivity(ctx, out.Identity)
+			}
 			if r.Publisher != nil {
 				r.Publisher.RunTimedOut(ctx, out.Identity, *out.TerminalAt, out.Counts, out.AbandonedAdded)
 			}

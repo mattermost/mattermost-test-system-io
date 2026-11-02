@@ -43,6 +43,23 @@ Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or 
 - CSS: TailwindCSS (dark mode supported)
 - Deps: exact versions only (`go.mod` + `go.sum`; npm `--save-exact`)
 
+### Screen sizes
+Report list layouts (SPA and Go HTML SSR) use three breakpoints; keep them aligned across `apps/web` and `apps/server/internal/htmlpage/assets/style.css`.
+
+| Size | Viewport | Tailwind / CSS |
+|------|----------|----------------|
+| **Small** | ≤ 639px | below `sm` / `max-width: 639px` |
+| **Medium** | 640px – 1023px | `sm`–`lg` / `min-width: 640px` and `max-width: 1023px` |
+| **Large** | ≥ 1024px | `lg` and up / `min-width: 1024px` |
+
+Run rows switch from a stacked 5-row grid (small) or identity+stats paired rows (medium) to a single horizontal row (large) at **1024px**. Page shell padding steps at **640px** and **1024px**. Minimum supported width is **480px**.
+
+| Size | Run row layout |
+|------|----------------|
+| **Small** | 5 stacked rows in column 3 (name → repo → specs → tests → duration) |
+| **Medium** | 4-column grid: specs align with name/run ID (row 1), tests with repo/branch/commit (row 2), duration+time on row 3 |
+| **Large** | Single horizontal row, stats right-aligned |
+
 ## Testing
 ```bash
 make test              # All tests (unit + E2E)

@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +32,8 @@ const (
 	EventTypeLeaseExpired  = "orchestration.lease.expired"
 	EventTypeRunCompleted  = "orchestration.run.completed"
 	EventTypeRunTimedOut   = "orchestration.run.timed_out"
+	// Public WS: home live list changed ({terminal: bool}).
+	EventTypeHomeLiveChanged = "home.live.changed"
 )
 
 // Publisher writes orchestration state-change events onto an events.Hub. All
@@ -40,7 +43,12 @@ const (
 type Publisher struct {
 	Hub    *events.Hub
 	Logger *slog.Logger
+
+	homeMu    sync.Mutex
+	homeTimer *time.Timer
 }
+
+const homeLiveDebounce = 300 * time.Millisecond
 
 // RunStarted emits "orchestration.run.started" when begin run inserts a new
 // orchestration_runs row.
@@ -56,6 +64,7 @@ func (p *Publisher) RunStarted(
 		"idle_timeout_ms":  idleTimeoutMs,
 		"lease_timeout_ms": leaseTimeoutMs,
 	})
+	p.notifyHomeLive(false)
 }
 
 // UnitLeased emits "orchestration.unit.leased" after a successful checkout
@@ -79,6 +88,7 @@ func (p *Publisher) UnitLeased(
 		"deadline":    deadline.UTC(),
 		"is_retest":   isRetest,
 	})
+	p.notifyHomeLive(false)
 }
 
 // UnitCompleted emits "orchestration.unit.completed" when a complete call
@@ -97,6 +107,7 @@ func (p *Publisher) UnitCompleted(
 		"late_report":    lateReport,
 		"attempts_count": attemptsCount,
 	})
+	p.notifyHomeLive(false)
 }
 
 // LeaseExpired emits "orchestration.lease.expired" when the reaper releases a
@@ -118,6 +129,7 @@ func (p *Publisher) LeaseExpired(
 		"released_at":        releasedAt.UTC(),
 		"reclaimed_unit_ids": ids,
 	})
+	p.notifyHomeLive(false)
 }
 
 // RunCompleted emits "orchestration.run.completed" when a run transitions to
@@ -132,6 +144,7 @@ func (p *Publisher) RunCompleted(
 		"terminal_at": terminalAt.UTC(),
 		"counts":      runCountsPayload(counts),
 	})
+	p.notifyHomeLive(true)
 }
 
 // RunTimedOut emits "orchestration.run.timed_out" when a run transitions to
@@ -148,6 +161,48 @@ func (p *Publisher) RunTimedOut(
 		"counts":          runCountsPayload(counts),
 		"abandoned_count": abandonedCount,
 	})
+	p.notifyHomeLive(true)
+}
+
+// Debounced home.live.changed; immediate when terminal.
+func (p *Publisher) notifyHomeLive(terminal bool) {
+	if p == nil || p.Hub == nil {
+		return
+	}
+	p.homeMu.Lock()
+	defer p.homeMu.Unlock()
+	if terminal {
+		if p.homeTimer != nil {
+			p.homeTimer.Stop()
+			p.homeTimer = nil
+		}
+		p.publishHomeLiveChanged(true)
+		return
+	}
+	if p.homeTimer != nil {
+		return
+	}
+	p.homeTimer = time.AfterFunc(homeLiveDebounce, func() {
+		p.homeMu.Lock()
+		p.homeTimer = nil
+		p.homeMu.Unlock()
+		p.publishHomeLiveChanged(false)
+	})
+}
+
+func (p *Publisher) publishHomeLiveChanged(terminal bool) {
+	payload, err := json.Marshal(map[string]any{"terminal": terminal})
+	if err != nil {
+		return
+	}
+	p.Hub.Publish(
+		events.Event{
+			Type:      EventTypeHomeLiveChanged,
+			Timestamp: time.Now().UTC(),
+			Payload:   payload,
+		},
+		events.Scope{},
+	)
 }
 
 // emit marshals the payload, builds an events.Event with the run's composite

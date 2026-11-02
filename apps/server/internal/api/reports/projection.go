@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 )
 
 // RefreshGroupSummary recomputes the denormalized projection columns on
@@ -40,18 +43,8 @@ func RefreshGroupSummary(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 	snapshotAt := time.Now().UTC()
 
 	// Pull the group's identity (orchestration lookup needs it).
-	var g groupDTO
-	var ghPRNumber *int
-	err := pool.QueryRow(ctx,
-		`SELECT `+reportGroupSelectCols+` FROM report_groups WHERE id = $1`,
-		groupID,
-	).Scan(
-		&g.ID, &g.Framework, &g.Name, &g.Status, &g.TotalReportsExpected,
-		&g.Repository, &g.Branch, &g.CommitSHA,
-		&g.GHRunID, &g.GHRunAttempt, &ghPRNumber, &g.EnvironmentMetadata,
-		&g.CreatedAt, &g.UpdatedAt, &g.LastUploadAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	g, err := fetchGroup(ctx, pool, groupID)
+	if errors.Is(err, api.ErrNotFound) {
 		// Group deleted between the parent commit and the projection
 		// call; nothing to refresh.
 		return nil
@@ -59,7 +52,6 @@ func RefreshGroupSummary(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 	if err != nil {
 		return fmt.Errorf("refresh_group_summary: load group: %w", err)
 	}
-	g.GHPRNumber = ghPRNumber
 
 	// Reuse the existing helpers. They are pure reads; calling them once
 	// at write time costs the same as calling them once per /reports/grouped
@@ -73,6 +65,7 @@ func RefreshGroupSummary(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 	if err != nil {
 		return fmt.Errorf("refresh_group_summary: orchestration: %w", err)
 	}
+	stats = mergeOrchestrationTestsIntoStats(stats, orch)
 
 	statsJSON, err := json.Marshal(stats)
 	if err != nil {
@@ -128,14 +121,107 @@ func nullableJSON(b []byte) any {
 	return b
 }
 
+// Fill test_stats from orchestration when no shards uploaded.
+func mergeOrchestrationTestsIntoStats(stats groupStats, orch *orchestrationSummary) groupStats {
+	if orch == nil || orch.Tests == nil || stats.TotalCases > 0 {
+		return stats
+	}
+	t := orch.Tests
+	stats.TotalCases = t.Total
+	stats.Passed = t.Passed
+	stats.Failed = t.Failed
+	stats.Skipped = t.Skipped
+	stats.Flaky = t.Flaky
+	return stats
+}
+
+// GroupIDForOrchestrationIdentity returns the report_groups id for an orchestration identity.
+func GroupIDForOrchestrationIdentity(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	repository, commitSHA, ghRunID, name, ghRunAttempt string,
+) (uuid.UUID, error) {
+	if pool == nil {
+		return uuid.Nil, errors.New("reports: nil pool")
+	}
+	var id uuid.UUID
+	err := pool.QueryRow(ctx, `
+		SELECT id
+		  FROM report_groups
+		 WHERE repository = $1
+		   AND commit_sha = $2
+		   AND gh_run_id = $3
+		   AND name = $4
+		   AND gh_run_attempt = $5
+		 LIMIT 1
+	`, repository, commitSHA, ghRunID, name, ghRunAttempt).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, nil
+	}
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return id, nil
+}
+
+// RefreshGroupSummaryBestEffort refreshes a group projection, logging failures.
+func RefreshGroupSummaryBestEffort(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, groupID uuid.UUID) {
+	if groupID == uuid.Nil {
+		return
+	}
+	if err := RefreshGroupSummary(ctx, pool, groupID); err != nil && logger != nil {
+		logger.Warn("refresh_group_summary failed",
+			"group_id", groupID.String(),
+			"error", err.Error())
+	}
+}
+
+// RefreshStaleGroupSummaries backfills stale projection rows.
+func RefreshStaleGroupSummaries(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, limit int) error {
+	if pool == nil || limit <= 0 {
+		return nil
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT g.id
+		  FROM report_groups g
+		 WHERE g.last_summary_at IS NULL
+		    OR g.test_stats_json IS NULL
+		    -- Group or report written after the last summary (e.g. a failed refresh).
+		    OR g.last_summary_at < GREATEST(g.updated_at, g.last_upload_at)
+		    OR EXISTS (
+		          SELECT 1 FROM reports r
+		           WHERE r.report_group_id = g.id
+		             AND r.updated_at > g.last_summary_at)
+		    -- Projection still in progress but the run finished (e.g. a refresh was abandoned).
+		    OR (g.orchestration_json->>'status' = 'in_progress' AND EXISTS (
+		          SELECT 1 FROM orchestration_runs o
+		           WHERE o.repository = g.repository
+		             AND o.commit_sha = g.commit_sha
+		             AND o.gh_run_id = g.gh_run_id
+		             AND o.name = g.name
+		             AND o.gh_run_attempt = g.gh_run_attempt
+		             AND o.status <> 'in_progress'))
+		 ORDER BY g.created_at DESC
+		 LIMIT $1
+	`, limit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		RefreshGroupSummaryBestEffort(ctx, pool, logger, id)
+	}
+	return rows.Err()
+}
+
 // refreshGroupSummaryBestEffort is the handler-side wrapper: calls
 // RefreshGroupSummary, logs any error at WARN, never returns an error
 // to the caller. Use from write paths where the projection update is
 // secondary to the primary work.
 func (h *Handlers) refreshGroupSummaryBestEffort(ctx context.Context, groupID uuid.UUID) {
-	if err := RefreshGroupSummary(ctx, h.Pool, groupID); err != nil && h.Logger != nil {
-		h.Logger.Warn("refresh_group_summary failed",
-			"group_id", groupID.String(),
-			"error", err.Error())
-	}
+	RefreshGroupSummaryBestEffort(ctx, h.Pool, h.Logger, groupID)
 }

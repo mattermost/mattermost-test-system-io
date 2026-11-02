@@ -4,7 +4,7 @@
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { randomCommitSha, commitShaForGroup } = require('./identity');
+const { randomCommitSha, commitShaForGroup, ghRunId } = require('./identity');
 
 const GROUPS = [
   'maestro-ios',
@@ -34,9 +34,9 @@ if (!API_KEY) {
 
 const replayJs = path.join(__dirname, 'replay.js');
 const results = [];
-// commit|name of each replayed group; identifies this batch's runs.
+// commit|name|gh_run_id of each replayed group; identifies this batch's runs.
 const batchKeys = new Set();
-const isBatchRun = (r) => batchKeys.has(`${r.commit}|${r.name}`);
+const isBatchRun = (r) => batchKeys.has(`${r.commit}|${r.name}|${r.gh_run_id}`);
 
 console.log(
   `Batch CI replay — mattermost ${batchCommits.mattermost.slice(0, 7)} / mobile ${batchCommits.mobile.slice(0, 7)}… speed ${SPEED}x`,
@@ -47,7 +47,8 @@ for (const group of GROUPS) {
   console.log(`=== ${group} ===`);
   const started = Date.now();
   const groupCommit = commitShaForGroup(group, batchCommits);
-  batchKeys.add(`${groupCommit}|${group}`);
+  const groupRunId = ghRunId();
+  batchKeys.add(`${groupCommit}|${group}|${groupRunId}`);
   const proc = spawnSync(process.execPath, [replayJs], {
     cwd: path.join(__dirname, '..', '..'),
     env: {
@@ -55,6 +56,7 @@ for (const group of GROUPS) {
       GROUP: group,
       SPEED,
       TSIO_COMMIT_SHA: groupCommit,
+      TSIO_GH_RUN_ID: groupRunId,
       API_BASE,
       TSIO_API_KEY: API_KEY,
     },

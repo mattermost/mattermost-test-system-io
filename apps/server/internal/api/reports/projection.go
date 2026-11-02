@@ -182,11 +182,20 @@ func RefreshStaleGroupSummaries(ctx context.Context, pool *pgxpool.Pool, logger 
 		return nil
 	}
 	rows, err := pool.Query(ctx, `
-		SELECT id
-		  FROM report_groups
-		 WHERE last_summary_at IS NULL
-		    OR test_stats_json IS NULL
-		 ORDER BY created_at DESC
+		SELECT g.id
+		  FROM report_groups g
+		 WHERE g.last_summary_at IS NULL
+		    OR g.test_stats_json IS NULL
+		    -- Projection still in progress but the run finished (e.g. a refresh was abandoned).
+		    OR (g.orchestration_json->>'status' = 'in_progress' AND EXISTS (
+		          SELECT 1 FROM orchestration_runs o
+		           WHERE o.repository = g.repository
+		             AND o.commit_sha = g.commit_sha
+		             AND o.gh_run_id = g.gh_run_id
+		             AND o.name = g.name
+		             AND o.gh_run_attempt = g.gh_run_attempt
+		             AND o.status <> 'in_progress'))
+		 ORDER BY g.created_at DESC
 		 LIMIT $1
 	`, limit)
 	if err != nil {

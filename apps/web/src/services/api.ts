@@ -94,7 +94,7 @@ export function useReportRepositories(options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['reports-repositories'],
     queryFn: async () => {
-      const response = await fetch(`${API_URL}/reports/repositories`);
+      const response = await fetch(`${API_URL}/reports/repositories`, { cache: 'no-cache' });
       return handleResponse<import('@/types').ReportRepositoriesResponse>(response);
     },
     enabled: options.enabled ?? true,
@@ -108,7 +108,9 @@ export function useBranchFilters(repository: string, options: { enabled?: boolea
     queryKey: ['reports-branch-filters', repo],
     queryFn: async () => {
       const params = new URLSearchParams({ repository: repo });
-      const response = await fetch(`${API_URL}/reports/branch-filters?${params}`);
+      const response = await fetch(`${API_URL}/reports/branch-filters?${params}`, {
+        cache: 'no-cache',
+      });
       return handleResponse<import('@/types').BranchFiltersResponse>(response);
     },
     enabled: (options.enabled ?? true) && repo.length > 0,
@@ -137,7 +139,7 @@ export function useGroupedReports(
       if (branchFilter) {
         params.set('branch_filter', branchFilter);
       }
-      const response = await fetch(`${API_URL}/reports/grouped?${params}`);
+      const response = await fetch(`${API_URL}/reports/grouped?${params}`, { cache: 'no-cache' });
       return handleResponse<GroupedReportsResponse>(response);
     },
     enabled: options.enabled ?? true,
@@ -236,7 +238,10 @@ export function useIndividualReports(page = 1, limit = 100, options: { enabled?:
     queryKey: ['reports-individual', page, limit],
     queryFn: async () => {
       const offset = (page - 1) * limit;
-      const response = await fetch(`${API_URL}/reports/individual?limit=${limit}&offset=${offset}`);
+      const response = await fetch(
+        `${API_URL}/reports/individual?limit=${limit}&offset=${offset}`,
+        { cache: 'no-cache' },
+      );
       return handleResponse<IndividualReportListResponse>(response);
     },
     enabled: options.enabled ?? true,

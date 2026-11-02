@@ -34,6 +34,18 @@ interface WebSocketContextValue {
 
 const WebSocketContext = createContext<WebSocketContextValue | null>(null);
 
+// Report list queries refreshed on home.live.changed.
+const LIST_QUERY_KEYS = [
+  'reports',
+  'reports-grouped',
+  'reports-individual',
+  'reports-repositories',
+  'reports-branch-filters',
+] as const;
+
+// Server-side /reports/grouped cache TTL.
+const SERVER_CACHE_TTL_MS = 5000;
+
 interface WebSocketProviderProps {
   children: ReactNode;
 }
@@ -84,11 +96,18 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           queryClient.invalidateQueries({ queryKey: ['reports-consolidated'] });
           break;
 
-        case 'home.live.changed':
+        case 'home.live.changed': {
           // Unscoped list signal; orchestration events are identity-scoped.
-          queryClient.invalidateQueries({ queryKey: ['reports-grouped'] });
-          queryClient.invalidateQueries({ queryKey: ['reports'] });
+          const invalidateLists = () => {
+            for (const key of LIST_QUERY_KEYS) {
+              queryClient.invalidateQueries({ queryKey: [key] });
+            }
+          };
+          invalidateLists();
+          // Refetch again once the server's grouped cache window has passed.
+          setTimeout(invalidateLists, SERVER_CACHE_TTL_MS + 1000);
           break;
+        }
 
         case 'suites_available':
           // Invalidate suites for the report

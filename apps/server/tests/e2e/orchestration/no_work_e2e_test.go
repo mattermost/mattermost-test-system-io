@@ -50,6 +50,10 @@ func TestLateWorkerWithNoWorkCompletesReportGroup(t *testing.T) {
 	expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/no-work",
 		noWorkBody("worker-B", "job-B")), http.StatusOK)
 	waitReportGroupStatus(t, env, "completed")
+	// The home index reads the projection: the call that completed the group refreshed it.
+	if !reportGroupSummaryFresh(t, env) {
+		t.Fatal("report group summary was not refreshed when no-work completed the group")
+	}
 
 	// Idempotent: a retried call is still 200.
 	expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/no-work",
@@ -316,6 +320,21 @@ func reportGroupStatus(t *testing.T, env *testenv.Env) string {
 		t.Fatalf("read report group status: %v", err)
 	}
 	return status
+}
+
+// reportGroupSummaryFresh reports whether the default run's report group
+// projection was refreshed after the group's last write.
+func reportGroupSummaryFresh(t *testing.T, env *testenv.Env) bool {
+	t.Helper()
+	id := identity(nil)
+	var fresh bool
+	if err := env.Pool.QueryRow(context.Background(), `
+		SELECT COALESCE(last_summary_at >= updated_at, false) FROM report_groups
+		 WHERE repository = $1 AND commit_sha = $2 AND gh_run_id = $3 AND name = $4 AND gh_run_attempt = $5
+	`, id["repository"], id["commit_sha"], id["gh_run_id"], id["name"], id["gh_run_attempt"]).Scan(&fresh); err != nil {
+		t.Fatalf("read report group summary freshness: %v", err)
+	}
+	return fresh
 }
 
 // waitReportGroupStatus polls until the default run's report group reaches

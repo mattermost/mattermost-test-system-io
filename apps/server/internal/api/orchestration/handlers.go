@@ -639,15 +639,23 @@ func (h *Handlers) NoWork(w http.ResponseWriter, r *http.Request) {
 	// The recorded worker may be the last one the group was waiting for.
 	// Like the upload path, a failure here leaves the group in_progress for
 	// the next upload or the staleness reaper; the record itself is durable.
+	// Its own context: the record is committed, so a client that disconnects now
+	// must not cancel the flip, which nothing else may trigger.
 	if groupID != uuid.Nil {
-		completed, completedReports, updatedAt, err := reports.TryAutoCompleteGroup(r.Context(), h.Pool, groupID)
+		ctx, cancel := detachedCtx(r.Context())
+		defer cancel()
+		completed, completedReports, updatedAt, err := reports.TryAutoCompleteGroup(ctx, h.Pool, groupID)
 		if err != nil && h.Logger != nil {
 			h.Logger.Warn("auto-complete group failed",
 				slog.String("group_id", groupID.String()),
 				slog.String("error", err.Error()))
 		}
-		if completed && h.ReportsPublisher != nil {
-			h.ReportsPublisher.ReportUpdated(groupID, "completed", completedReports, nil, updatedAt)
+		if completed {
+			// The home index reads the group's status from its projection.
+			h.refreshReportGroupProjectionByID(ctx, groupID)
+			if h.ReportsPublisher != nil {
+				h.ReportsPublisher.ReportUpdated(groupID, "completed", completedReports, nil, updatedAt)
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"recorded": true})

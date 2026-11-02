@@ -297,6 +297,9 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrForbidden)
 		return
 	}
+	// Use the stored identity so events and projection refresh match it,
+	// even when the worker sent a short SHA or bare repository name.
+	identity = run.Identity
 	if run.Status != orchestration.RunStatusInProgress {
 		api.WriteErrorCode(w, http.StatusConflict, "RUN_NOT_IN_PROGRESS",
 			"run is not in progress")
@@ -508,6 +511,9 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrForbidden)
 		return
 	}
+	// Use the stored identity so events and projection refresh match it,
+	// even when the worker sent a short SHA or bare repository name.
+	identity = run.Identity
 
 	outcome, err := h.Store.RecordCompletion(r.Context(), identity, worker, results)
 	if err != nil {

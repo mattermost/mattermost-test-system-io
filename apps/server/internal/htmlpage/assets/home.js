@@ -79,7 +79,6 @@
   var ws = null;
   var reconnectTimer = null;
   // Set after the first open; later opens are reconnects.
-  var hasConnected = false;
   var lastLiveHTML = '';
   var refreshInFlight = false;
   var refreshQueued = false;
@@ -219,11 +218,9 @@
     ws = new WebSocket(proto + '//' + location.host + '/api/v1/ws');
     ws.onopen = function () {
       setStatus('connected');
-      // On reconnect, check even without a live card: a run may have started while offline.
-      if (hasConnected || liveCard()) {
-        refreshLiveRows();
-      }
-      hasConnected = true;
+      // Check on every successful connection, including the first: a run may
+      // have started before it, while the page had no live card.
+      refreshLiveRows();
     };
     ws.onmessage = function (ev) {
       try {

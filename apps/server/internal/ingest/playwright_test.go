@@ -73,3 +73,14 @@ func TestExtractPlaywright_RetryAttempts(t *testing.T) {
 		})
 	}
 }
+
+func TestCountStatuses_FlakyStatusWithoutOutcome(t *testing.T) {
+	// A case stored as flaky with no Outcome (any extractor that still writes the
+	// verdict into Status) is flaky, not passed.
+	_, _, _, flaky, unique := countStatuses([]ExtractedCase{
+		{Title: "t", FullTitle: "s > t", Status: StatusFlaky},
+	})
+	if flaky != 1 || unique != 1 {
+		t.Fatalf("flaky=%d unique=%d, want 1 and 1", flaky, unique)
+	}
+}

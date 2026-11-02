@@ -255,7 +255,7 @@ func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, uniqu
 		g := byTitle[k]
 		unique++
 		switch {
-		case g.final.Outcome == StatusFlaky:
+		case g.final.Outcome == StatusFlaky || g.final.Status == StatusFlaky:
 			flaky++
 		case g.final.Status == StatusPassed && g.everFailed:
 			flaky++

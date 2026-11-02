@@ -1013,13 +1013,13 @@ func (h *Handlers) SuiteSpecs(w http.ResponseWriter, r *http.Request) {
 	for _, key := range groupOrder {
 		cases := groupByKey[key]
 		// A test that eventually passed (status 'passed'/'flaky'/'skipped' on
-		// the last attempt), or whose attempts roll up to flaky, is ok=true,
-		// which the web uses to distinguish flaky from failed specs.
-		statuses := make([]string, 0, len(cases))
+		// the last attempt), or whose last retries roll up to flaky, is
+		// ok=true, which the web uses to distinguish flaky from failed specs.
+		attempts := make([]specAttempt, 0, len(cases))
 		for _, c := range cases {
-			statuses = append(statuses, c.Status)
+			attempts = append(attempts, specAttempt{Status: c.Status, Retry: c.Retry})
 		}
-		ok := suiteSpecOK(statuses)
+		ok := suiteSpecOK(attempts)
 
 		results := make([]map[string]any, 0, len(cases))
 		aggScreens := []map[string]any{}

@@ -30,6 +30,7 @@
   var lastHTML = '';
   var refreshInFlight = false;
   var refreshQueued = false;
+  var forceQueued = false;
 
   var lightbox = {
     el: document.getElementById('run-lightbox'),
@@ -344,6 +345,7 @@
     if (!identity.gh_run_id) return;
     if (refreshInFlight) {
       refreshQueued = true;
+      forceQueued = forceQueued || !!opts.forceReload;
       return;
     }
     refreshInFlight = true;
@@ -373,8 +375,11 @@
       .finally(function () {
         refreshInFlight = false;
         if (refreshQueued) {
+          // Rerun with any force flag from calls made while in flight.
+          var next = { forceReload: forceQueued };
           refreshQueued = false;
-          refreshUnits(opts);
+          forceQueued = false;
+          refreshUnits(next);
         }
       });
   }
@@ -404,7 +409,13 @@
 
   function connect() {
     if (!statusBtn || !statusDot) return;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     if (ws) {
+      // Detach handlers so the old socket can't reconnect or refresh.
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
       try {
         ws.close();
       } catch (_) {}

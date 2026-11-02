@@ -63,6 +63,7 @@
   var lastLiveHTML = '';
   var refreshInFlight = false;
   var refreshQueued = false;
+  var forceQueued = false;
 
   function liveInner() {
     return document.getElementById('run-card-live-inner');
@@ -96,6 +97,7 @@
     opts = opts || {};
     if (refreshInFlight) {
       refreshQueued = true;
+      forceQueued = forceQueued || !!opts.forceStaticRefresh;
       return;
     }
     refreshInFlight = true;
@@ -142,8 +144,11 @@
       .finally(function () {
         refreshInFlight = false;
         if (refreshQueued) {
+          // Rerun with any force flag from calls made while in flight.
+          var next = { forceStaticRefresh: forceQueued };
           refreshQueued = false;
-          refreshLiveRows(opts);
+          forceQueued = false;
+          refreshLiveRows(next);
         }
       });
   }
@@ -177,7 +182,13 @@
 
   function connect() {
     if (!statusBtn || !statusDot) return;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     if (ws) {
+      // Detach handlers so the old socket can't reconnect or refresh.
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
       try {
         ws.close();
       } catch (_) {}

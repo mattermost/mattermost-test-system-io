@@ -42,7 +42,7 @@
 const { loadCorpus, percentileDurationMs } = require('./corpus');
 const { request, sleep } = require('./client');
 const { runWorker } = require('./worker');
-const { randomCommitSha, ghRunId } = require('./identity');
+const { randomCommitSha, ghRunId, isMobileGroup } = require('./identity');
 
 const API_BASE = process.env.API_BASE || 'http://localhost:8080';
 const WEB_BASE = process.env.WEB_BASE || 'http://localhost:3000';
@@ -96,8 +96,10 @@ const get = (p) => request(API_BASE, API_KEY, 'GET', p, null);
 const NOW_MS = Date.now();
 
 function buildIdentity(framework) {
+  // Detox and Maestro corpora come from mattermost-mobile.
+  const mobile = isMobileGroup(GROUP);
   return {
-    repository: framework === 'detox' ? 'mattermost/mattermost-mobile' : 'mattermost/mattermost',
+    repository: mobile ? 'mattermost/mattermost-mobile' : 'mattermost/mattermost',
     // Must be pure hex — the web dashboard's URL router only treats
     // /reports/:repo/:branch/:commit/:name as a single-run page when the
     // commit segment matches /^[0-9a-f]{7,40}$/i.
@@ -106,7 +108,7 @@ function buildIdentity(framework) {
     name: GROUP,
     gh_run_attempt: '1',
     framework,
-    branch: framework === 'detox' ? 'main' : 'master',
+    branch: mobile ? 'main' : 'master',
   };
 }
 

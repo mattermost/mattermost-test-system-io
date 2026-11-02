@@ -391,8 +391,14 @@ export function HomePage() {
           {(!groupedData || groupedData.groups.flatMap((g) => g.runs).length === 0) && (
             <div className="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">
               <Inbox className="h-12 w-12 mb-3" />
-              <p className="text-sm">No reports yet</p>
-              <p className="text-xs mt-1">Upload test reports to see them here</p>
+              {selectedRepository || effectiveBranchFilter ? (
+                <p className="text-sm">No reports match the current filters</p>
+              ) : (
+                <>
+                  <p className="text-sm">No reports yet</p>
+                  <p className="text-xs mt-1">Upload test reports to see them here</p>
+                </>
+              )}
             </div>
           )}
           {groupedData &&

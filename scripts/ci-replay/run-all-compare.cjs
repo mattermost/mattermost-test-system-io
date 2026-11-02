@@ -4,7 +4,7 @@
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { randomCommitSha, commitShaForGroup, isReplayGhRunId } = require('./identity');
+const { randomCommitSha, commitShaForGroup } = require('./identity');
 
 const GROUPS = [
   'maestro-ios',
@@ -34,7 +34,9 @@ if (!API_KEY) {
 
 const replayJs = path.join(__dirname, 'replay.js');
 const results = [];
-const batchStartedMs = Date.now();
+// commit|name of each replayed group; identifies this batch's runs.
+const batchKeys = new Set();
+const isBatchRun = (r) => batchKeys.has(`${r.commit}|${r.name}`);
 
 console.log(
   `Batch CI replay — mattermost ${batchCommits.mattermost.slice(0, 7)} / mobile ${batchCommits.mobile.slice(0, 7)}… speed ${SPEED}x`,
@@ -45,6 +47,7 @@ for (const group of GROUPS) {
   console.log(`=== ${group} ===`);
   const started = Date.now();
   const groupCommit = commitShaForGroup(group, batchCommits);
+  batchKeys.add(`${groupCommit}|${group}`);
   const proc = spawnSync(process.execPath, [replayJs], {
     cwd: path.join(__dirname, '..', '..'),
     env: {
@@ -63,7 +66,6 @@ for (const group of GROUPS) {
   process.stdout.write(proc.stdout || '');
   process.stderr.write(proc.stderr || '');
 
-  let status = 'unknown';
   let runStatus = null;
   const statusMatch = out.match(/"status"\s*:\s*"([^"]+)"/g);
   if (statusMatch) {
@@ -71,13 +73,8 @@ for (const group of GROUPS) {
     const m = last.match(/"status"\s*:\s*"([^"]+)"/);
     runStatus = m ? m[1] : null;
   }
-  if (proc.status !== 0) {
-    status = 'FAIL';
-  } else if (runStatus === 'completed' || runStatus === 'failed') {
-    status = runStatus === 'completed' ? 'PASS' : 'FAIL';
-  } else {
-    status = proc.status === 0 ? 'PASS' : 'FAIL';
-  }
+  // PASS only when the run actually completed; unfinished runs fail.
+  const status = proc.status === 0 && runStatus === 'completed' ? 'PASS' : 'FAIL';
 
   results.push({ group, status, runStatus, elapsed, exitCode: proc.status });
   console.log(`--- ${group}: ${status} (${elapsed}s, orchestration=${runStatus ?? 'n/a'}) ---\n`);
@@ -103,12 +100,7 @@ if (failed.length) {
 
   const apiRuns = grouped.groups
     .flatMap((g) => g.runs)
-    .filter((r) => {
-      const gh = String(r.gh_run_id || '');
-      if (!isReplayGhRunId(gh)) return false;
-      const ts = Number(/^gh_run_(\d+)$/.exec(gh)?.[1]);
-      return Number.isFinite(ts) && ts >= batchStartedMs - 5000;
-    });
+    .filter(isBatchRun);
 
   const htmlFailed = (html.match(/class="run-row run-row-failed"/g) || []).length;
   const htmlRows = (html.match(/class="run-row/g) || []).length;
@@ -164,12 +156,7 @@ if (failed.length) {
 
     const repoApiRuns = repoGrouped.groups
       .flatMap((g) => g.runs)
-      .filter((r) => {
-        const gh = String(r.gh_run_id || '');
-        if (!isReplayGhRunId(gh)) return false;
-        const ts = Number(/^gh_run_(\d+)$/.exec(gh)?.[1]);
-        return Number.isFinite(ts) && ts >= batchStartedMs - 5000;
-      });
+      .filter(isBatchRun);
 
     const hasStatic = repoHtml.includes('id="run-card-static"');
     const hasLiveCard = repoHtml.includes('id="run-card-live"');

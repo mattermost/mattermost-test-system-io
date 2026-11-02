@@ -74,10 +74,14 @@ func TestRefreshStaleGroupSummariesNoPool(t *testing.T) {
 	}
 }
 
+// TestBackfillSummariesDev mutates a real DB; opt-in only.
 func TestBackfillSummariesDev(t *testing.T) {
+	if os.Getenv("TSIO_ALLOW_BACKFILL_TEST") != "1" {
+		t.Skip("set TSIO_ALLOW_BACKFILL_TEST=1 to run this mutating test")
+	}
 	url := os.Getenv("TSIO_DATABASE_URL")
 	if url == "" {
-		url = "postgres://tsio:tsio@localhost:6432/tsio?sslmode=disable"
+		t.Skip("TSIO_DATABASE_URL not set")
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, url)

@@ -1665,7 +1665,7 @@ html.dark .run-test-title { color: #f3f4f6; }
 }
 html.dark .run-test-body { border-left-color: #4b5563; }
 
-.run-attempt { display: flex; flex-direction: column; gap: 0.25rem; }
+.run-test-attempt { display: flex; flex-direction: column; gap: 0.25rem; }
 .run-attempt-head {
   display: flex;
   flex-wrap: wrap;

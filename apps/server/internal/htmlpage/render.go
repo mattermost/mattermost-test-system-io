@@ -45,9 +45,9 @@ var (
 	runAsset   = template.JS(runJS)     //nolint:gosec // G203: embedded at build time
 )
 
-// queryURL returns "?"+encoded query; url.Values.Encode escapes all values.
-func queryURL(v url.Values) template.URL {
-	return template.URL("?" + v.Encode()) //nolint:gosec // G203: encoder-escaped query
+// queryURL returns "?"+encoded query; html/template normalizes it in href.
+func queryURL(v url.Values) string {
+	return "?" + v.Encode()
 }
 
 var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
@@ -55,7 +55,7 @@ var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
 	"githubRepo": githubRepo,
 	"add":        func(a, b int) int { return a + b },
 	"sub":        func(a, b int) int { return a - b },
-	"homeQuery": func(page int, repository, branchFilter string) template.URL {
+	"homeQuery": func(page int, repository, branchFilter string) string {
 		v := url.Values{}
 		if page > 1 {
 			v.Set("page", strconv.Itoa(page))
@@ -68,7 +68,7 @@ var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
 		}
 		return queryURL(v)
 	},
-	"repoQuery": func(page int, _, branchFilter string) template.URL {
+	"repoQuery": func(page int, _, branchFilter string) string {
 		v := url.Values{}
 		if page > 1 {
 			v.Set("page", strconv.Itoa(page))
@@ -78,7 +78,7 @@ var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
 		}
 		return queryURL(v)
 	},
-	"runQuery": func(page int, ghRunID, ghRunAttempt string) template.URL {
+	"runQuery": func(page int, ghRunID, ghRunAttempt string) string {
 		v := url.Values{}
 		if ghRunID != "" {
 			v.Set("gh_run_id", ghRunID)

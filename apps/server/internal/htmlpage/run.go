@@ -1137,14 +1137,14 @@ func formatRunTimeline(begin time.Time, first, retest, last *time.Time) runTimel
 		for _, r := range raws {
 			out.segments = append(out.segments, TimelineSeg{
 				Label: r.label,
-				Text:  r.t.Local().Format("3:04 PM"),
+				Text:  r.t.Local().Format("3:04 PM MST"),
 			})
 		}
 	} else {
 		for _, r := range raws {
 			out.segments = append(out.segments, TimelineSeg{
 				Label: r.label,
-				Text:  r.t.Local().Format("Jan 2, 3:04 PM"),
+				Text:  r.t.Local().Format("Jan 2, 3:04 PM MST"),
 			})
 		}
 	}
@@ -1162,7 +1162,7 @@ func formatRunDate(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	return t.Local().Format("Jan 2, 2006, 3:04 PM")
+	return t.Local().Format("Jan 2, 2006, 3:04 PM MST")
 }
 
 func unitStatusDisplay(state string) (label, class string) {

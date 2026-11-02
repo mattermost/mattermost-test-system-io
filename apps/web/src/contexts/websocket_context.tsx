@@ -84,6 +84,12 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           queryClient.invalidateQueries({ queryKey: ['reports-consolidated'] });
           break;
 
+        case 'home.live.changed':
+          // Unscoped list signal; orchestration events are identity-scoped.
+          queryClient.invalidateQueries({ queryKey: ['reports-grouped'] });
+          queryClient.invalidateQueries({ queryKey: ['reports'] });
+          break;
+
         case 'suites_available':
           // Invalidate suites for the report
           queryClient.invalidateQueries({

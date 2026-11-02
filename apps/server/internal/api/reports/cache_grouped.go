@@ -58,7 +58,8 @@ func (c *groupedCache) get(
 	repository, branchFilter string,
 	compute func(context.Context) ([]byte, error),
 ) ([]byte, error) {
-	key := fmt.Sprintf("%d:%d:%s:%s", limit, offset, repository, branchFilter)
+	// Quote strings so ":" in values cannot collide.
+	key := fmt.Sprintf("%d:%d:%q:%q", limit, offset, repository, branchFilter)
 
 	c.mu.Lock()
 	if e, ok := c.entries[key]; ok {

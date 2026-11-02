@@ -545,6 +545,8 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refresh before publishing so clients reload fresh projection data.
+	h.refreshReportGroupProjection(r.Context(), identity)
 	if h.Publisher != nil {
 		for _, change := range outcome.UnitStatesChanged {
 			h.Publisher.UnitCompleted(r.Context(), identity, change.UnitID,
@@ -555,7 +557,6 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 			h.Publisher.RunCompleted(r.Context(), identity, terminalAt, outcome.RunCounts)
 		}
 	}
-	h.refreshReportGroupProjection(r.Context(), identity)
 
 	resp := map[string]any{
 		"accepted":            true,

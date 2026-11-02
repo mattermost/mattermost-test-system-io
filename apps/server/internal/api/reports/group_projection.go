@@ -10,7 +10,7 @@ import (
 // One projected report_groups row.
 const groupProjectionSelectCols = `
 	id, repository, name, run_group, status, branch, commit_sha,
-	gh_run_id, gh_run_attempt, created_at,
+	gh_run_id, gh_run_attempt, created_at, gh_pr_number,
 	test_stats_json, orchestration_json
 `
 
@@ -25,6 +25,7 @@ type groupProjectionRow struct {
 	GHRunID      string
 	GHRunAttempt string
 	CreatedAt    time.Time
+	GHPRNumber   *int
 	Stats        *testStats
 	Orch         *orchestrationSummary
 }
@@ -35,7 +36,7 @@ func scanGroupProjection(s interface{ Scan(dst ...any) error }) (groupProjection
 	var statsRaw, orchRaw []byte
 	if err := s.Scan(
 		&row.ID, &row.Repository, &row.Name, &runGroup, &row.Status, &row.Branch, &row.CommitSHA,
-		&row.GHRunID, &row.GHRunAttempt, &row.CreatedAt,
+		&row.GHRunID, &row.GHRunAttempt, &row.CreatedAt, &row.GHPRNumber,
 		&statsRaw, &orchRaw,
 	); err != nil {
 		return groupProjectionRow{}, err
@@ -82,6 +83,7 @@ func (row groupProjectionRow) groupDTO() groupDTO {
 		GHRunID:      row.GHRunID,
 		GHRunAttempt: row.GHRunAttempt,
 		CreatedAt:    row.CreatedAt,
+		GHPRNumber:   row.GHPRNumber,
 	}
 }
 
@@ -108,6 +110,9 @@ func (row groupProjectionRow) toRunEntry() runEntry {
 			Skipped:    row.Stats.Skipped,
 			Flaky:      row.Stats.Flaky,
 			DurationMs: row.Stats.DurationMs,
+			// Keep wall-clock spans for the home duration column.
+			NumberedWallClockMs: row.Stats.WallClockMs,
+			RetestWallClockMs:   row.Stats.RetestWallClockMs,
 		}
 	}
 	e := toRunEntry(g, stats)

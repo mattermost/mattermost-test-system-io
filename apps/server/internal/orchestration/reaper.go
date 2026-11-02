@@ -163,13 +163,13 @@ func (r *Reaper) expireOverdueLeases(ctx context.Context) error {
 				slog.Int("unit_count", len(expired.ReclaimedUnitIDs)),
 			)
 			logMetric(ctx, r.Logger, "orchestration_reclaims_total", "", 1)
+			if r.OnActivity != nil {
+				r.OnActivity(ctx, expired.Identity)
+			}
 			if r.Publisher != nil {
 				r.Publisher.LeaseExpired(ctx, expired.Identity,
 					expired.Lease.Worker.GHJobName, expired.Lease.Worker.GHJobID,
 					*expired.Lease.ReleasedAt, expired.ReclaimedUnitIDs)
-			}
-			if r.OnActivity != nil {
-				r.OnActivity(ctx, expired.Identity)
 			}
 		}
 	}
@@ -224,11 +224,11 @@ func (r *Reaper) markTimedOutRuns(ctx context.Context) error {
 				slog.Int("abandoned_count", out.AbandonedAdded),
 				slog.Int("unit_count", out.Counts.Total),
 			)
-			if r.Publisher != nil {
-				r.Publisher.RunTimedOut(ctx, out.Identity, *out.TerminalAt, out.Counts, out.AbandonedAdded)
-			}
 			if r.OnActivity != nil {
 				r.OnActivity(ctx, out.Identity)
+			}
+			if r.Publisher != nil {
+				r.Publisher.RunTimedOut(ctx, out.Identity, *out.TerminalAt, out.Counts, out.AbandonedAdded)
 			}
 		}
 	}

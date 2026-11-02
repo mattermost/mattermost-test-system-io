@@ -8,7 +8,8 @@ export type WsEventType =
   | 'report_updated'
   | 'report_registered'
   | 'report_entry_updated'
-  | 'suites_available';
+  | 'suites_available'
+  | 'home.live.changed';
 
 // Test statistics included in report_updated events
 export interface TestStatsPayload {
@@ -106,10 +107,18 @@ export interface SuitesAvailableEvent {
   timestamp: string;
 }
 
+// Unscoped: live run list changed (terminal = a run finished).
+export interface HomeLiveChangedEvent {
+  type: 'home.live.changed';
+  payload: { terminal: boolean };
+  timestamp: string;
+}
+
 // Union type for all WebSocket events
 export type WsEventMessage =
   | ReportCreatedEvent
   | ReportUpdatedEvent
   | ReportRegisteredEvent
   | ReportEntryUpdatedEvent
-  | SuitesAvailableEvent;
+  | SuitesAvailableEvent
+  | HomeLiveChangedEvent;

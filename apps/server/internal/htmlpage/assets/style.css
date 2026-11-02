@@ -1234,6 +1234,11 @@ html.dark .orch-pill-timeout { background: rgba(146,64,14,.4); color: #fde68a; }
   align-items: center;
   gap: 0.5rem;
 }
+/* Phone: stack rate / counts / duration; hide redundant meta row. */
+@media (max-width: 639px) {
+  .run-summary-stats { flex-direction: column; align-items: flex-start; gap: 0.25rem; }
+  .run-summary-meta { display: none; }
+}
 /* Phone: label above chips; specs left, tests right. */
 @media (max-width: 639px) {
   .run-spec-header { flex-wrap: nowrap; align-items: flex-start; gap: 0.75rem; }

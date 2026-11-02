@@ -343,7 +343,7 @@ export function ReportSummary(props: ReportSummaryProps) {
           when no specs have been recorded yet — "0 passed / 0 total"
           on a fresh in-progress run is noise, not signal. */}
       {total > 0 && (
-        <div className="flex items-center gap-3 mt-2">
+        <div className="mt-2 flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:gap-3">
           {passRate !== null && (
             <span className={`text-sm font-medium ${passRateColorClass}`} title={statsTitle}>
               {passRate}%
@@ -455,9 +455,9 @@ export function ReportSummary(props: ReportSummaryProps) {
         );
       })()}
 
-      {/* Row 3: Metadata (date, framework, report count, progress status) */}
+      {/* Row 3: Metadata (date, framework, report count, progress status); hidden on phones as redundant. */}
       {hasMetadata && (
-        <div className="flex items-center gap-3 mt-2 text-sm text-gray-500 dark:text-gray-400">
+        <div className="mt-2 hidden items-center gap-3 text-sm text-gray-500 sm:flex dark:text-gray-400">
           {createdAt && (
             <span className="inline-flex items-center gap-1">
               <Calendar className="h-3.5 w-3.5" />

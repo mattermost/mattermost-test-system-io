@@ -24,6 +24,7 @@ type ExtractedCase struct {
 	Title        string
 	FullTitle    string // ancestor-prefixed (used by search + screenshot linker)
 	Status       string // one of: passed, failed, skipped, flaky, timedOut, interrupted
+	Outcome      string // the test's verdict across its attempts when the framework gives one (Playwright's "flaky"); empty otherwise
 	DurationMs   int64
 	RetryCount   int
 	ErrorMessage *string

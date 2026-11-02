@@ -97,7 +97,8 @@ func walkPlaywrightSuite(
 				tc := ExtractedCase{
 					Title:      spec.Title,
 					FullTitle:  combine(fullPrefix, spec.Title),
-					Status:     mapPlaywrightStatus(res.Status, t.Status),
+					Status:     mapPlaywrightStatus(res.Status),
+					Outcome:    playwrightOutcome(t.Status),
 					DurationMs: res.Duration,
 					RetryCount: res.Retry,
 					Sequence:   *seq,
@@ -150,12 +151,11 @@ func walkPlaywrightSuite(
 }
 
 // mapPlaywrightStatus normalizes Playwright's per-result status to our enum.
-// Playwright emits: passed, failed, skipped, timedOut, interrupted. A test
-// whose spec-level status is "flaky" (passed after retry) overrides.
-func mapPlaywrightStatus(resultStatus, testStatus string) string {
-	if testStatus == StatusFlaky {
-		return StatusFlaky
-	}
+// Playwright emits: passed, failed, skipped, timedOut, interrupted. Each row is
+// one attempt and keeps that attempt's own status, as Detox's retries do: a test
+// that passed after retry is a failed row then a passed one, which
+// countStatuses and the report rollups read as flaky.
+func mapPlaywrightStatus(resultStatus string) string {
 	switch resultStatus {
 	case "passed", "expected":
 		return StatusPassed
@@ -170,6 +170,16 @@ func mapPlaywrightStatus(resultStatus, testStatus string) string {
 	default:
 		return StatusPassed
 	}
+}
+
+// playwrightOutcome keeps Playwright's test-level "flaky" verdict. The attempts
+// alone can't always give it: a test.fail() test that passed and then failed is
+// flaky to Playwright, though its last attempt failed.
+func playwrightOutcome(testStatus string) string {
+	if testStatus == StatusFlaky {
+		return StatusFlaky
+	}
+	return ""
 }
 
 func combine(prefix, title string) string {

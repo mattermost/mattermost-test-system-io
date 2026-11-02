@@ -22,11 +22,12 @@ Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or 
 - `GET /api/v1/reports/{id}/suites` — test suites (public)
 - `GET /api/v1/reports/{id}/cases` — test cases (public)
 - `GET /api/v1/reports/{id}/json` — raw Playwright JSON, 302 → presigned S3 (public)
-- Stateless upload (auth): `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots`. `/reports/begin` declares `total_reports_expected` (the shard count); the report group auto-finalizes once that many shards reach `complete`. Idle groups are flipped to `incomplete` by the staleness reaper.
+- Stateless upload (auth): `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots`. `/reports/begin` declares `total_reports_expected` (the shard count); the report group auto-finalizes once that many shards reach `complete` (orchestration workers that left a completed run via `/orchestration/no-work` count toward it). Idle groups are flipped to `incomplete` by the staleness reaper.
 - `GET /api/v1/artifacts/{id}` — 302 → presigned S3 (auth required)
 - `POST /api/v1/orchestration/begin` — register a run with composite identity + dispatch units (idempotent on identity + units hash)
 - `POST /api/v1/orchestration/checkout` — atomically dispatch up to N units to a worker (worker identified by gh_job_name + gh_job_id)
 - `POST /api/v1/orchestration/complete` — report per-spec results for a worker's lease (late reports accepted; idempotent on (run, gh_job_id))
+- `POST /api/v1/orchestration/no-work` — a worker that never held a lease records that it ran nothing; the report group counts it toward `total_reports_expected` once the run is `completed` (409 `WORKER_HAS_LEASES` if it leased units)
 - `POST /api/v1/orchestration/screenshots` — upload an orchestration-flow screenshot under the `orchestration/` key prefix
 - `GET /api/v1/orchestration/status` — poll run status by composite identity (`?repository=...&commit_sha=...&gh_run_id=...&name=...&gh_run_attempt=...`)
 - `GET /api/v1/ws` — WebSocket for live ingest progress (anonymous); orchestration subscribers send `subscribe.orchestration` / `unsubscribe.orchestration` frames and receive `orchestration.run.started`, `orchestration.unit.leased`, `orchestration.unit.completed`, `orchestration.lease.expired`, `orchestration.run.completed`, `orchestration.run.timed_out` events

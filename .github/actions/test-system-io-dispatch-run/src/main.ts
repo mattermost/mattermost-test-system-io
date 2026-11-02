@@ -2,7 +2,8 @@
  * Drain this matrix entry's slice of the orchestration queue. For each
  * leased spec, dispatch Playwright via runUnit (archives per-iteration
  * results), then call /orchestration/complete. At queue-empty, upload
- * the worker's accumulated artifacts as one shard report.
+ * the worker's accumulated artifacts as one shard report. A worker that
+ * never leased a unit records a no-work exit instead (see no_work.ts).
  *
  * Identity comes from `composite-identity` + the resolved gh_job_id (looked
  * up via the GitHub API from `gh-job-name`). The orchestrator finds the
@@ -19,6 +20,7 @@ import { runUnit as runCypressUnit } from "./cypress";
 import { runUnit as runDetoxUnit } from "./detox";
 import { runUnit as runMaestroUnit, parseMaestroEnv } from "./maestro";
 import { screenshotContentType } from "./mime";
+import { ranNoWork, recordNoWork } from "./no_work";
 import { uploadShard, type UploadConfig } from "./upload";
 import type {
   CheckoutResponseBody,
@@ -125,8 +127,9 @@ export async function run(): Promise<void> {
   // upload to Test System IO even when the drain loop crashes mid-run (lease 401,
   // network drop, etc.). Otherwise everything ran so far is lost from the dashboard.
   let drainErr: Error | undefined;
+  let leasesHeld = 0;
   try {
-    await drain({
+    leasesHeld = await drain({
       baseURL,
       audience,
       compositeIdentity,
@@ -174,6 +177,12 @@ export async function run(): Promise<void> {
       core.error(`uploadShard failed: ${e.message}`);
       if (!drainErr) drainErr = e;
     }
+  } else if (ranNoWork(leasesHeld, drainErr)) {
+    await recordNoWork((urlPath, body) => postJSON({ baseURL, audience }, urlPath, body), {
+      ...(compositeIdentity as unknown as Record<string, unknown>),
+      gh_job_name: resolvedJobName,
+      gh_job_id: ghJobId,
+    });
   }
 
   if (drainErr) throw drainErr;
@@ -243,7 +252,8 @@ interface DrainConfig {
   nextIterationSeq: () => number;
 }
 
-async function drain(cfg: DrainConfig): Promise<void> {
+// Returns how many leases this worker held; 0 means it ran nothing.
+async function drain(cfg: DrainConfig): Promise<number> {
   let leasesHeld = 0;
   // Consecutive empty-poll count; reset to 0 whenever a unit is leased.
   let idlePolls = 0;
@@ -424,6 +434,7 @@ async function drain(cfg: DrainConfig): Promise<void> {
       await sleep(cfg.postFailureDelayMs);
     }
   }
+  return leasesHeld;
 }
 
 // Statuses the server's mapStatusesToUnitState (complete.go) treats as a

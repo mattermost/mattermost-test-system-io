@@ -27,5 +27,6 @@ func Register(r chi.Router, h *Handlers) {
 	r.With(timingMiddleware(h.Logger, "begin")).Post("/orchestration/begin", h.BeginRun)
 	r.With(timingMiddleware(h.Logger, "checkout")).Post("/orchestration/checkout", h.Checkout)
 	r.With(timingMiddleware(h.Logger, "complete")).Post("/orchestration/complete", h.Complete)
+	r.With(timingMiddleware(h.Logger, "no_work")).Post("/orchestration/no-work", h.NoWork)
 	r.With(timingMiddleware(h.Logger, "screenshots")).Post("/orchestration/screenshots", h.Screenshots)
 }

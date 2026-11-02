@@ -11,8 +11,9 @@
 //
 // Group lifecycle: /reports/begin declares total_reports_expected (the
 // shard count). The group auto-finalizes to `completed` once that many
-// child reports reach `complete`. Groups that go idle past the staleness
-// window are flipped to `incomplete` by the reaper.
+// child reports reach `complete`, counting orchestration workers that left
+// a completed run without work (TryAutoCompleteGroup). Groups that go idle
+// past the staleness window are flipped to `incomplete` by the reaper.
 
 package reports
 
@@ -975,7 +976,7 @@ func ssStartedIf(n int) *string {
 // results (json) have been extracted and persisted. It flips the row from
 // `processing` to `complete` and publishes ReportEntryUpdated("complete"). When that flip happens, it
 // then attempts to flip the parent group from `in_progress` (or `incomplete`) to `completed`
-// once count(reports.complete) >= total_reports_expected, and publishes
+// once enough workers have accounted for themselves (see TryAutoCompleteGroup), and publishes
 // ReportUpdated("completed") so a dashboard that showed the group in progress,
 // or incomplete, sees it finish. Returns true
 // when the per-report flip occurred — callers should skip publishing the
@@ -996,7 +997,7 @@ func (h *Handlers) tryAutoFinalize(ctx context.Context, groupID, reportID uuid.U
 		return false
 	}
 	h.Publisher.ReportEntryUpdated(groupID, reportID, "complete", time.Now().UTC())
-	completed, completedReports, updatedAt, err := tryAutoCompleteGroup(ctx, h.Pool, groupID)
+	completed, completedReports, updatedAt, err := TryAutoCompleteGroup(ctx, h.Pool, groupID)
 	if err != nil {
 		if h.Logger != nil {
 			h.Logger.Warn("auto-complete group failed",
@@ -1045,38 +1046,57 @@ func stillProcessing(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 	return status == "processing"
 }
 
-// tryAutoCompleteGroup flips a report_group from `in_progress` to `completed`,
+// TryAutoCompleteGroup flips a report_group from `in_progress` to `completed`,
 // or from `incomplete` when a shard's results finish after the reaper closed it
 // (the reaper retried them once the store was back).
 // Dual-mode predicate:
 //
-//   - When total_reports_expected is set, flip when count(reports.complete) >=
-//     total_reports_expected. The controller declared a shard count up front
-//     and we wait for that many reports to land.
+//   - When total_reports_expected is set, flip when count(reports.complete) +
+//     no-work workers >= total_reports_expected. The controller declared a
+//     shard count up front and we wait for that many workers to account for
+//     themselves. A no-work worker (orchestration_no_work_workers) left the
+//     matching orchestration run without ever holding a lease; it counts only
+//     once that run is `completed`, so every unit ran, and only while it has
+//     no lease or report of its own. A worker that leased units and never
+//     uploaded, or never reached the orchestrator, still leaves the group
+//     short.
 //   - When total_reports_expected is NULL (group was seeded via /reports/register
 //     without a prior /reports/begin), flip on any per-shard upload finalization.
 //     Without a declared count, "we have data" is the strongest terminal signal
 //     we can offer.
 //
-// Idempotent — a repeat call after the flip is a no-op. The upload handlers
-// gate this call on a successful per-report auto-complete, which guarantees
-// the count has just incremented and the predicate has a chance of becoming
-// true. Returns whether this call performed the flip, with the group's
+// Idempotent — a repeat call after the flip is a no-op. Called after a
+// successful per-report auto-complete and after a no-work worker is recorded,
+// the two events that can make the predicate true. Each runs after its own
+// write commits, so whichever of two concurrent callers runs last sees both.
+// Returns whether this call performed the flip, with the group's
 // complete-report count and new updated_at for the ReportUpdated event.
-func tryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) (bool, int, time.Time, error) {
+func TryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) (bool, int, time.Time, error) {
 	var completedReports int
 	var updatedAt time.Time
 	err := pool.QueryRow(ctx, `
-		UPDATE report_groups
+		UPDATE report_groups g
 		   SET status = 'completed', updated_at = now()
-		 WHERE id = $1
-		   AND status IN ('in_progress', 'incomplete')
+		 WHERE g.id = $1
+		   AND g.status IN ('in_progress', 'incomplete')
 		   AND (
-		       total_reports_expected IS NULL
+		       g.total_reports_expected IS NULL
 		       OR (SELECT count(*) FROM reports
-		            WHERE report_group_id = $1 AND status = 'complete') >= total_reports_expected
+		            WHERE report_group_id = g.id AND status = 'complete')
+		        + (SELECT count(*)
+		             FROM orchestration_runs o
+		             JOIN orchestration_no_work_workers nw ON nw.run_id = o.id
+		            WHERE o.repository = g.repository AND o.commit_sha = g.commit_sha
+		              AND o.gh_run_id = g.gh_run_id AND o.name = g.name
+		              AND o.gh_run_attempt = g.gh_run_attempt
+		              AND o.status = 'completed'
+		              AND NOT EXISTS (SELECT 1 FROM leases l
+		                               WHERE l.run_id = o.id AND l.gh_job_id = nw.gh_job_id)
+		              AND NOT EXISTS (SELECT 1 FROM reports r
+		                               WHERE r.report_group_id = g.id AND r.gh_job_id = nw.gh_job_id))
+		          >= g.total_reports_expected
 		   )
-		RETURNING (SELECT count(*) FROM reports WHERE report_group_id = $1 AND status = 'complete'), updated_at
+		RETURNING (SELECT count(*) FROM reports WHERE report_group_id = $1 AND status = 'complete'), g.updated_at
 	`, groupID).Scan(&completedReports, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, 0, time.Time{}, nil

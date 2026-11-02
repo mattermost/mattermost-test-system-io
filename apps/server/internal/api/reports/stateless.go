@@ -33,6 +33,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
@@ -307,12 +308,81 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 	go h.finalizeJSONUpload(groupID, reportID)
 }
 
+// screenshotErrorPrefix marks a screenshot upload's error, so a later successful one can clear it;
+// resultsErrorPrefix marks results that could not be read, which the reaper retries.
+const (
+	screenshotErrorPrefix = "screenshots: "
+	resultsErrorPrefix    = "results could not be read: "
+)
+
+// extractRetryDelays are the waits before each retry of a failed extraction.
+var extractRetryDelays = []time.Duration{time.Second, 2 * time.Second}
+
 // finalizeJSONUpload extracts suites + test_cases from the JSON just
 // uploaded, auto-finalizes the report/group, and refreshes the group
 // summary. Runs after UploadJSON has responded, so it uses its own bounded
 // context rather than r.Context(), which is canceled once the handler
 // returns.
 func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
+	h.finalizeResults(context.Background(), groupID, reportID, true)
+}
+
+// shardLockClass namespaces the per-shard advisory locks (pg_advisory_lock's first key).
+const shardLockClass int32 = 0x54534952 // "TSIR"
+
+// finalizeSlots bounds concurrent finalizations. Each holds one pool connection for its shard lock while its
+// extraction takes others, so a burst of uploads must not take the whole pool.
+var finalizeSlots = make(chan struct{}, 4)
+
+// lockShardRetry is how often a finalization waiting for its shard tries the lock again.
+const lockShardRetry = 250 * time.Millisecond
+
+// lockShard holds a per-shard Postgres advisory lock for one finalization, so two of them (an upload's and the
+// reaper's, on any server) never interleave their delete-and-insert of the shard's suites. With wait, it tries
+// again until ctx ends (a later upload must re-read everything), holding no connection while it waits; without,
+// a held lock means another finalization is already at it, and the caller skips. The returned func releases it.
+func (h *Handlers) lockShard(ctx context.Context, reportID uuid.UUID, wait bool) (func(), bool) {
+	key := reportID.String() // hashed by Postgres: hashtext($2)
+	for {
+		conn, err := h.Pool.Acquire(ctx)
+		if err != nil {
+			if h.Logger != nil {
+				h.Logger.Warn("lock shard: acquire connection", slog.String("report_id", key), slog.String("error", err.Error()))
+			}
+			return nil, false
+		}
+		var locked bool
+		err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1, hashtext($2))`, shardLockClass, key).Scan(&locked)
+		if err == nil && locked {
+			return func() {
+				unlockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if _, err := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1, hashtext($2))`, shardLockClass, key); err != nil {
+					// A lock that could not be released goes with its connection.
+					_ = conn.Conn().Close(unlockCtx)
+				}
+				conn.Release()
+			}, true
+		}
+		conn.Release()
+		if err != nil || !wait {
+			if err != nil && h.Logger != nil {
+				h.Logger.Warn("lock shard", slog.String("report_id", key), slog.String("error", err.Error()))
+			}
+			return nil, false
+		}
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-time.After(lockShardRetry):
+		}
+	}
+}
+
+// finalizeResults reads a shard's stored results and completes it, within parent and at most five minutes; see
+// finalizeJSONUpload. It takes a finalization slot, then the shard's lock (see lockShard): wait for an upload, skip
+// if busy for the reaper.
+func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uuid.UUID, wait bool) {
 	// No caller frame above this goroutine to recover a panic; an unrecovered
 	// one here would crash the whole process.
 	defer func() {
@@ -323,23 +393,87 @@ func (h *Handlers) finalizeJSONUpload(groupID, reportID uuid.UUID) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, h.finalizeTimeout())
 	defer cancel()
+	// An upload already answered 200, so its results are read now or by the reaper: one that never got its turn
+	// leaves the reason the reaper retries. The reaper never waits: a busy server or shard is skipped, keeping the
+	// reason it already had, and tried again on its next tick.
+	if wait {
+		select {
+		case finalizeSlots <- struct{}{}:
+		case <-ctx.Done():
+			h.resultsNotRead(groupID, reportID, "the server was too busy to read them in time")
+			return
+		}
+	} else {
+		select {
+		case finalizeSlots <- struct{}{}:
+		default:
+			return
+		}
+	}
+	defer func() { <-finalizeSlots }()
+	unlock, ok := h.lockShard(ctx, reportID, wait)
+	if !ok {
+		if wait {
+			h.resultsNotRead(groupID, reportID, "another read of them did not finish in time")
+		}
+		return
+	}
+	defer unlock()
 
 	// Fire suites_available if anything parsed; ReportEntryUpdated("processing")
 	// even on zero-suite JSON so the UI's status icon still ticks forward.
 	suiteCount, extractErr := h.extractReport(ctx, groupID, reportID)
-	if extractErr != nil && h.Logger != nil {
-		h.Logger.Warn("json extraction failed",
-			slog.String("report_id", reportID.String()),
-			slog.String("error", extractErr.Error()))
+	// The upload already answered 200, so the action will not resend: a store blip is retried here.
+	for _, wait := range extractRetryDelays {
+		if extractErr == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(wait):
+			suiteCount, extractErr = h.extractReport(ctx, groupID, reportID)
+		}
 	}
-	autoCompleted := h.tryAutoFinalize(ctx, groupID, reportID, "json")
-	if !autoCompleted {
+	if extractErr != nil {
+		// Results that were not all read never complete the shard: it stays
+		// `processing` with the reason, and the reaper or a re-upload retries it.
+		if h.Logger != nil {
+			h.Logger.Warn("json extraction failed",
+				slog.String("report_id", reportID.String()),
+				slog.String("error", extractErr.Error()))
+		}
+		h.resultsNotRead(groupID, reportID, extractErr.Error())
+		return
+	}
+	if !h.tryAutoFinalize(ctx, groupID, reportID, "json") && stillProcessing(ctx, h.Pool, reportID) {
 		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 	}
 	if suiteCount > 0 {
 		h.Publisher.SuitesAvailable(reportID, suiteCount)
+	}
+	h.refreshGroupSummaryBestEffort(ctx, groupID)
+}
+
+// finalizeTimeout is how long one finalization of a shard's results may take, its wait for its turn included.
+func (h *Handlers) finalizeTimeout() time.Duration {
+	if h.FinalizeTimeout > 0 {
+		return h.FinalizeTimeout
+	}
+	return 5 * time.Minute
+}
+
+// resultsNotRead leaves a shard whose results were not all read `processing` with the reason, which the reaper
+// retries. Its own context: the finalization's may have run out. Only a shard still processing takes the reason;
+// another upload of the same results may have completed it meanwhile.
+func (h *Handlers) resultsNotRead(groupID, reportID uuid.UUID, reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := h.Pool.Exec(ctx, `UPDATE reports SET error_message=$2, updated_at=now() WHERE id=$1 AND status='processing'`,
+		reportID, resultsErrorPrefix+reason)
+	if err == nil && res.RowsAffected() == 1 {
+		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 	}
 	h.refreshGroupSummaryBestEffort(ctx, groupID)
 }
@@ -367,15 +501,25 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 
 	uploaded, total, err := h.streamScreenshots(r, reportID)
 	if err != nil {
-		_, _ = h.Pool.Exec(r.Context(),
-			`UPDATE reports SET screenshots_upload_status='failed', status='failed', error_message=$2, updated_at=now() WHERE id=$1`,
-			reportID, err.Error())
-		h.Publisher.ReportEntryUpdated(groupID, reportID, "failed", time.Now().UTC())
+		// Screenshots are attachments: losing them must not fail a shard whose
+		// results landed (or still will), so only the screenshot status records it.
+		// A results error outranks it: the screenshot reason is kept only where there is no other.
+		_, _ = h.Pool.Exec(r.Context(), `
+			UPDATE reports
+			   SET screenshots_upload_status='failed',
+			       error_message = CASE WHEN error_message IS NULL OR starts_with(error_message, $3) THEN $2 ELSE error_message END,
+			       updated_at=now()
+			 WHERE id=$1`, reportID, screenshotErrorPrefix+err.Error(), screenshotErrorPrefix)
 		api.WriteError(w, r, fmt.Errorf("%w: %v", api.ErrBadRequest, err))
 		return
 	}
-	_, _ = h.Pool.Exec(r.Context(),
-		`UPDATE reports SET screenshots_upload_status='completed', updated_at=now() WHERE id=$1`, reportID)
+	// A retry that lands clears its own earlier failure, never a results error.
+	_, _ = h.Pool.Exec(r.Context(), `
+		UPDATE reports
+		   SET screenshots_upload_status='completed',
+		       error_message = CASE WHEN starts_with(error_message, $2) THEN NULL ELSE error_message END,
+		       updated_at=now()
+		 WHERE id=$1`, reportID, screenshotErrorPrefix)
 	bumpGroupLastUpload(r.Context(), h.Pool, groupID)
 
 	// Best-effort link against whatever test_cases exist already. If JSON hasn't
@@ -387,7 +531,9 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Debug("screenshots linked", slog.Int("count", linked), slog.String("report_id", reportID.String()))
 	}
 
-	if !h.tryAutoFinalize(r.Context(), groupID, reportID, "screenshots") {
+	// Completion is the JSON finalization's alone: it runs after the results are
+	// persisted, so a screenshot landing mid-extraction cannot complete the shard early.
+	if stillProcessing(r.Context(), h.Pool, reportID) {
 		h.Publisher.ReportEntryUpdated(groupID, reportID, "processing", time.Now().UTC())
 	}
 	h.refreshGroupSummaryBestEffort(r.Context(), groupID)
@@ -520,9 +666,11 @@ func (h *Handlers) extractReport(ctx context.Context, groupID, reportID uuid.UUI
 	var allSuites []ingest.ExtractedSuite
 	var reportStart, reportEnd *time.Time
 	seq := 0
+	unread := 0
 	for _, key := range keys {
 		rc, _, err := h.Store.Get(ctx, key)
 		if err != nil {
+			unread++
 			if h.Logger != nil {
 				h.Logger.Warn("fetch json from store",
 					slog.String("object_key", key), slog.String("error", err.Error()))
@@ -532,6 +680,7 @@ func (h *Handlers) extractReport(ctx context.Context, groupID, reportID uuid.UUI
 		body, readErr := io.ReadAll(rc)
 		_ = rc.Close()
 		if readErr != nil {
+			unread++
 			if h.Logger != nil {
 				h.Logger.Warn("read json body",
 					slog.String("object_key", key), slog.String("error", readErr.Error()))
@@ -561,6 +710,10 @@ func (h *Handlers) extractReport(ctx context.Context, groupID, reportID uuid.UUI
 	if _, err := ingest.LinkScreenshots(ctx, h.Pool, reportID); err != nil && h.Logger != nil {
 		h.Logger.Warn("link screenshots post-extract",
 			slog.String("report_id", reportID.String()), slog.String("error", err.Error()))
+	}
+	// What was read is kept, but a shard missing a results file has not landed its results.
+	if unread > 0 {
+		return totals.Suites, fmt.Errorf("%d of %d result files could not be read", unread, len(keys))
 	}
 	return totals.Suites, nil
 }
@@ -818,13 +971,13 @@ func ssStartedIf(n int) *string {
 	return &s
 }
 
-// tryAutoFinalize finalizes the report (and possibly its group) once an
-// upload pipeline step (json or screenshots) just landed. It first checks
-// whether this report's pipeline is now fully complete (json + optional
-// screenshots), and if so flips the row from `processing` to `complete`
-// and publishes ReportEntryUpdated("complete"). When that flip happens, it
-// then attempts to flip the parent group from `in_progress` to `completed`
-// once count(reports.complete) >= total_reports_expected. Returns true
+// tryAutoFinalize finalizes the report (and possibly its group) once its
+// results (json) have been extracted and persisted. It flips the row from
+// `processing` to `complete` and publishes ReportEntryUpdated("complete"). When that flip happens, it
+// then attempts to flip the parent group from `in_progress` (or `incomplete`) to `completed`
+// once count(reports.complete) >= total_reports_expected, and publishes
+// ReportUpdated("completed") so a dashboard that showed the group in progress,
+// or incomplete, sees it finish. Returns true
 // when the per-report flip occurred — callers should skip publishing the
 // usual ReportEntryUpdated("processing") event so the UI doesn't see a
 // "complete → processing" sequence.
@@ -843,38 +996,58 @@ func (h *Handlers) tryAutoFinalize(ctx context.Context, groupID, reportID uuid.U
 		return false
 	}
 	h.Publisher.ReportEntryUpdated(groupID, reportID, "complete", time.Now().UTC())
-	if _, err := tryAutoCompleteGroup(ctx, h.Pool, groupID); err != nil && h.Logger != nil {
-		h.Logger.Warn("auto-complete group failed",
-			slog.String("group_id", groupID.String()),
-			slog.String("error", err.Error()))
+	completed, completedReports, updatedAt, err := tryAutoCompleteGroup(ctx, h.Pool, groupID)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("auto-complete group failed",
+				slog.String("group_id", groupID.String()),
+				slog.String("error", err.Error()))
+		}
+		return true
+	}
+	if completed {
+		h.Publisher.ReportUpdated(groupID, "completed", completedReports, nil, updatedAt)
 	}
 	return true
 }
 
-// tryAutoCompleteReport flips a report from `processing` to `complete` when
-// its upload pipeline has fully landed: json_upload_status='completed' AND
-// screenshots_upload_status is either 'completed' or NULL (no screenshots
-// were declared at /reports/register time). Idempotent — repeated calls on
-// an already-`complete` row affect zero rows. Returns true when this call
-// performed the flip; the caller publishes ReportEntryUpdated and considers
-// auto-completing the parent group.
+// tryAutoCompleteReport flips a report from `processing` to `complete` once
+// its results have landed: json_upload_status='completed'. Screenshots do not
+// gate it — they are attachments, linked whenever they arrive, and one that
+// never arrives (a gateway timeout on a large upload) must not leave the shard,
+// and so its group, waiting until the reaper calls the run incomplete.
+// Idempotent — repeated calls on an already-`complete` row affect zero rows.
+// Returns true when this call performed the flip; the caller publishes
+// ReportEntryUpdated and considers auto-completing the parent group.
 func tryAutoCompleteReport(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID) (bool, error) {
 	res, err := pool.Exec(ctx, `
 		UPDATE reports
-		   SET status = 'complete', updated_at = now()
+		   SET status = 'complete',
+		       error_message = CASE WHEN starts_with(error_message, $2) THEN NULL ELSE error_message END,
+		       updated_at = now()
 		 WHERE id = $1
 		   AND status = 'processing'
 		   AND json_upload_status = 'completed'
-		   AND (screenshots_upload_status IS NULL
-		        OR screenshots_upload_status = 'completed')
-	`, reportID)
+	`, reportID, resultsErrorPrefix)
 	if err != nil {
 		return false, err
 	}
 	return res.RowsAffected() == 1, nil
 }
 
-// tryAutoCompleteGroup flips a report_group from `in_progress` to `completed`.
+// stillProcessing reports whether a report is still `processing`, so a late
+// upload step does not announce "processing" for one already complete.
+func stillProcessing(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID) bool {
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM reports WHERE id = $1`, reportID).Scan(&status); err != nil {
+		return false
+	}
+	return status == "processing"
+}
+
+// tryAutoCompleteGroup flips a report_group from `in_progress` to `completed`,
+// or from `incomplete` when a shard's results finish after the reaper closed it
+// (the reaper retried them once the store was back).
 // Dual-mode predicate:
 //
 //   - When total_reports_expected is set, flip when count(reports.complete) >=
@@ -888,21 +1061,28 @@ func tryAutoCompleteReport(ctx context.Context, pool *pgxpool.Pool, reportID uui
 // Idempotent — a repeat call after the flip is a no-op. The upload handlers
 // gate this call on a successful per-report auto-complete, which guarantees
 // the count has just incremented and the predicate has a chance of becoming
-// true.
-func tryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) (bool, error) {
-	res, err := pool.Exec(ctx, `
+// true. Returns whether this call performed the flip, with the group's
+// complete-report count and new updated_at for the ReportUpdated event.
+func tryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) (bool, int, time.Time, error) {
+	var completedReports int
+	var updatedAt time.Time
+	err := pool.QueryRow(ctx, `
 		UPDATE report_groups
 		   SET status = 'completed', updated_at = now()
 		 WHERE id = $1
-		   AND status = 'in_progress'
+		   AND status IN ('in_progress', 'incomplete')
 		   AND (
 		       total_reports_expected IS NULL
 		       OR (SELECT count(*) FROM reports
 		            WHERE report_group_id = $1 AND status = 'complete') >= total_reports_expected
 		   )
-	`, groupID)
-	if err != nil {
-		return false, err
+		RETURNING (SELECT count(*) FROM reports WHERE report_group_id = $1 AND status = 'complete'), updated_at
+	`, groupID).Scan(&completedReports, &updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, 0, time.Time{}, nil
 	}
-	return res.RowsAffected() == 1, nil
+	if err != nil {
+		return false, 0, time.Time{}, err
+	}
+	return true, completedReports, updatedAt, nil
 }

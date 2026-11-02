@@ -35,6 +35,8 @@ type Handlers struct {
 	MaxArtifactBytes int64
 	PresignTTL       time.Duration
 	SearchMinLength  int
+	// FinalizeTimeout bounds one finalization of a shard's results, waiting for its turn included (0: 5 minutes).
+	FinalizeTimeout time.Duration
 
 	// groupedCache memoizes /reports/grouped responses per (limit, offset)
 	// for a short TTL so polling tabs collapse onto one DB hit per window.
@@ -275,21 +277,27 @@ func spanMs(start, end *time.Time) *int64 {
 
 // ---------- View handlers ----------
 
-// List serves GET /api/v1/reports?limit=&offset=.
+// List serves GET /api/v1/reports?limit=&offset=&repository=&commit=&name=.
+// The optional filters let a CI step find the group for the run it belongs
+// to (repository + commit + name) without paging through everything.
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r.URL.Query().Get("limit"), 50, 200)
 	offset := parseOffset(r.URL.Query().Get("offset"))
+	repository := r.URL.Query().Get("repository")
+	commit := r.URL.Query().Get("commit")
+	name := r.URL.Query().Get("name")
+	where := `WHERE ($1 = '' OR repository = $1) AND ($2 = '' OR commit_sha = $2) AND ($3 = '' OR name = $3)`
 
 	var total int
-	if err := h.Pool.QueryRow(r.Context(), `SELECT count(*) FROM report_groups`).Scan(&total); err != nil {
+	if err := h.Pool.QueryRow(r.Context(), `SELECT count(*) FROM report_groups `+where, repository, commit, name).Scan(&total); err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
 
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT `+reportGroupSelectCols+`
-		FROM report_groups ORDER BY created_at DESC LIMIT $1 OFFSET $2
-	`, limit, offset)
+		FROM report_groups `+where+` ORDER BY created_at DESC LIMIT $4 OFFSET $5
+	`, repository, commit, name, limit, offset)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -495,7 +503,7 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 		sf = &statusFilter
 	}
 	rows, err := h.Pool.Query(r.Context(), `
-		SELECT tc.id, tc.suite_id, tc.title, tc.status, tc.retry_count, tc.duration_ms,
+		SELECT tc.id, tc.suite_id, tc.title, tc.full_title, tc.status, tc.retry_count, tc.duration_ms,
 		       tc.error_message, tc.error_stack, tc.annotations, tc.ordinal
 		FROM test_cases tc
 		JOIN suites s ON s.id = tc.suite_id
@@ -512,21 +520,24 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0)
 	for rows.Next() {
 		var cid, sid uuid.UUID
-		var title, status string
+		var title, fullTitle, status string
 		var retry, ordinal int
 		var dur *int64
 		var em, es *string
 		var annotations []byte
-		if err := rows.Scan(&cid, &sid, &title, &status, &retry, &dur, &em, &es, &annotations, &ordinal); err != nil {
+		if err := rows.Scan(&cid, &sid, &title, &fullTitle, &status, &retry, &dur, &em, &es, &annotations, &ordinal); err != nil {
 			api.WriteError(w, r, err)
 			return
 		}
 		var ann any
 		_ = json.Unmarshal(annotations, &ann)
 		out = append(out, map[string]any{
-			"id":            cid,
-			"suite_id":      sid,
-			"title":         title,
+			"id":       cid,
+			"suite_id": sid,
+			"title":    title,
+			// The ancestor-prefixed path. Two suites in one file can carry the same
+			// leaf title, and a caller keyed on the leaf alone treats them as one test.
+			"full_title":    fullTitle,
 			"status":        status,
 			"retry_count":   retry,
 			"duration_ms":   dur,

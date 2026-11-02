@@ -455,14 +455,14 @@ async function resolveJobId(
 
   // Retry transient failures (5xx, 429, network errors). gh_job_id is
   // load-bearing for orchestration leases, so we'd rather wait a few
-  // seconds than fail the whole worker on a flaky API moment.
+  // seconds than fail the whole worker on a flaky API moment. GitHub's default
+  // page size: a re-run attempt's 100-job page can 502 every time.
   const jobs = await retryGitHubCall(() =>
     octokit.paginate(octokit.rest.actions.listJobsForWorkflowRunAttempt, {
       owner,
       repo,
       run_id: runId,
       attempt_number: attempt,
-      per_page: 100,
     }),
   );
 

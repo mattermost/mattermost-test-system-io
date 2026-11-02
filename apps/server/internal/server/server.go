@@ -77,6 +77,8 @@ type Deps struct {
 	MaxUploadBytes   int64
 	MaxArtifactBytes int64
 	PresignTTL       time.Duration
+	// FinalizeTimeout bounds one finalization of a shard's results (0: the reports default).
+	FinalizeTimeout time.Duration
 }
 
 // Build constructs the chi router with the full feature set and returns it as
@@ -114,6 +116,7 @@ func Build(d Deps) chi.Router {
 		MaxArtifactBytes: d.MaxArtifactBytes,
 		PresignTTL:       d.PresignTTL,
 		SearchMinLength:  d.SearchMinLength,
+		FinalizeTimeout:  d.FinalizeTimeout,
 	}
 	artifactsH := &artifactapi.Handlers{Pool: d.Pool, Store: d.Store, PresignTTL: d.PresignTTL}
 	wsH := &wsapi.Handler{Hub: d.Hub}
@@ -180,6 +183,7 @@ func Build(d Deps) chi.Router {
 		r.Get("/reports/{id}/cases", reportsH.Cases)
 		r.Get("/reports/{id}/json", reportsH.JSONFile)
 		r.Get("/reports/{id}/search", reportsH.Search)
+		r.Post("/reports/history", reportsH.History)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)

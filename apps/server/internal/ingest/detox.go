@@ -28,6 +28,9 @@ type detoxTestResult struct {
 	FullName        string   `json:"fullName"`
 	Status          string   `json:"status"`
 	Title           string   `json:"title"`
+	// Jest's retryTimes reruns a failing test inside the same run and reports
+	// only the last attempt's status, with each earlier attempt's error here.
+	RetryReasons []string `json:"retryReasons"`
 }
 
 // extractDetox parses a Detox (Jest) JSON report. Jest reports per-file with
@@ -59,6 +62,23 @@ func extractDetox(body []byte, seq *int) []ExtractedSuite {
 			if t.Duration != nil {
 				dur = *t.Duration
 			}
+			// Each earlier attempt becomes a failed case ahead of the final one,
+			// numbered like Playwright retries. Reported as the last attempt alone,
+			// a test that failed and then passed was stored as passed: the run
+			// counted it as clean and its history never showed the failure.
+			for i, reason := range t.RetryReasons {
+				msg := reason
+				buckets[key] = append(buckets[key], ExtractedCase{
+					Title:        t.Title,
+					FullTitle:    t.FullName,
+					Status:       StatusFailed,
+					RetryCount:   i,
+					ErrorMessage: &msg,
+					Sequence:     *seq,
+					StartTime:    fileStart,
+				})
+				*seq++
+			}
 			var errMsg *string
 			if len(t.FailureMessages) > 0 {
 				msg := strings.Join(t.FailureMessages, "\n")
@@ -69,6 +89,7 @@ func extractDetox(body []byte, seq *int) []ExtractedSuite {
 				FullTitle:    t.FullName,
 				Status:       detoxStatus(t.Status),
 				DurationMs:   dur,
+				RetryCount:   len(t.RetryReasons),
 				ErrorMessage: errMsg,
 				Sequence:     *seq,
 				StartTime:    fileStart,

@@ -1550,6 +1550,13 @@ html.dark .run-search-input:focus { border-color: #60a5fa; box-shadow: 0 0 0 1px
   color: #6b7280;
 }
 .run-client-pager .pager-actions { display: flex; gap: 0.5rem; }
+.pager-short { display: none; }
+/* Phone: "1-100 of 253" keeps the pager on one row. */
+@media (max-width: 639px) {
+  .pager-long { display: none; }
+  .pager-short { display: inline; }
+  .run-client-pager { flex-wrap: nowrap; }
+}
 
 .run-unit-list {
   display: flex;

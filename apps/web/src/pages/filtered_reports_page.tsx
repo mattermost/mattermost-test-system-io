@@ -257,8 +257,13 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
           {totalPages > 1 && (
             <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
               <div className="text-sm text-gray-500 dark:text-gray-400">
-                Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of {total}{' '}
-                report groups
+                <span className="hidden sm:inline">
+                  Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of {total}{' '}
+                  report groups
+                </span>
+                <span className="sm:hidden">
+                  {(page - 1) * limit + 1}-{Math.min(page * limit, total)} of {total}
+                </span>
               </div>
               <div className="flex gap-2">
                 <button

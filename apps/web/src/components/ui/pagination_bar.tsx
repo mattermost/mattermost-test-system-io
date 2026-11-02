@@ -43,7 +43,12 @@ export function PaginationBar({
   return (
     <div className={wrapperClass}>
       <div className="text-sm text-gray-500 dark:text-gray-400">
-        Showing {start} to {end} of {totalItems} {noun}
+        <span className="hidden sm:inline">
+          Showing {start} to {end} of {totalItems} {noun}
+        </span>
+        <span className="sm:hidden">
+          {start}-{end} of {totalItems}
+        </span>
       </div>
       <div className="flex gap-2">
         <button

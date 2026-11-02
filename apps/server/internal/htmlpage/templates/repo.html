@@ -66,7 +66,7 @@
 {{if gt .TotalPages 1}}
 <nav class="pagination" aria-label="Report groups pagination">
   <span class="pagination-summary">
-    Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} report groups
+    <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} report groups</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
   </span>
   <span class="pagination-actions">
     {{if gt .Page 1}}<a class="btn-page" href="{{repoQuery (sub .Page 1) .RepoSlug .SelectedBranchFilter}}">Previous</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Previous</span>{{end}}

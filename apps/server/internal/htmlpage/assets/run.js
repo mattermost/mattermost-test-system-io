@@ -118,13 +118,19 @@
       var start = (currentPage - 1) * PAGE_SIZE + 1;
       var end = Math.min(currentPage * PAGE_SIZE, matchedCount);
       el.innerHTML =
-        '<span>Showing ' +
+        '<span><span class="pager-long">Showing ' +
         start +
         ' to ' +
         end +
         ' of ' +
         matchedCount +
-        ' specs</span>' +
+        ' specs</span><span class="pager-short">' +
+        start +
+        '-' +
+        end +
+        ' of ' +
+        matchedCount +
+        '</span></span>' +
         '<span class="pager-actions">' +
         '<button type="button" class="btn-page" data-page="' +
         (currentPage - 1) +

@@ -60,6 +60,8 @@
 
   var ws = null;
   var reconnectTimer = null;
+  // Set after the first open; later opens are reconnects.
+  var hasConnected = false;
   var lastLiveHTML = '';
   var refreshInFlight = false;
   var refreshQueued = false;
@@ -199,9 +201,11 @@
     ws = new WebSocket(proto + '//' + location.host + '/api/v1/ws');
     ws.onopen = function () {
       setStatus('connected');
-      if (liveCard()) {
+      // On reconnect, check even without a live card: a run may have started while offline.
+      if (hasConnected || liveCard()) {
         refreshLiveRows();
       }
+      hasConnected = true;
     };
     ws.onmessage = function (ev) {
       try {
@@ -235,11 +239,11 @@
   }
 
   seedLiveSnapshot();
+  // Returning to the tab: check for live runs even when none were shown.
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden && liveCard()) {
-      refreshLiveRows();
-      applyRelativeTimes();
-    }
+    if (document.hidden) return;
+    refreshLiveRows();
+    if (liveCard()) applyRelativeTimes();
   });
 
   applyRelativeTimes();

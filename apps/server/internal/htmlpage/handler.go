@@ -20,6 +20,8 @@ type Handler struct {
 	Orch   *orchestration.Store
 	Site   SiteInfo
 	Logger *slog.Logger
+	// Fallback serves run paths with no dispatch record (uploaded-only reports).
+	Fallback http.Handler
 }
 
 // ServeHome serves GET / and /reports.
@@ -218,6 +220,11 @@ func (h *Handler) ServeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if redirectQ != nil {
 		http.Redirect(w, r, r.URL.Path+"?"+redirectQ.Encode(), http.StatusSeeOther)
+		return
+	}
+	// No dispatch record: keep the existing report view for uploaded reports.
+	if page.Mode == modeEmpty && h.Fallback != nil {
+		h.Fallback.ServeHTTP(w, r)
 		return
 	}
 	html, err := RenderRun(page)

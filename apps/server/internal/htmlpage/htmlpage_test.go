@@ -225,3 +225,20 @@ func TestPassRateDisplay(t *testing.T) {
 		t.Fatal("expected 100%")
 	}
 }
+
+func TestRenderSignInLinkUsesBrowserOAuthRoute(t *testing.T) {
+	html, err := RenderHome(HomePage{
+		Title: "Test System IO",
+		Site:  SiteInfo{GitHubOAuthEnabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(html)
+	if !strings.Contains(s, `<a href="/api/v1/auth/github" class="btn-signin">`) {
+		t.Fatal("Sign in link should point at GET /api/v1/auth/github")
+	}
+	if strings.Contains(s, `/api/v1/auth/github/start`) {
+		t.Fatal("Sign in link must not use the POST-only /start route")
+	}
+}

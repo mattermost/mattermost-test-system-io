@@ -732,7 +732,7 @@ export function TestSuitesView({
         </div>
 
         {/* Search row (own line, below the header) */}
-        <div className="relative mb-4 inline-block w-[21rem]">
+        <div className="relative mb-4 inline-block w-full max-w-[21rem]">
           {isSearching ? (
             <Loader2 className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-blue-500" />
           ) : (

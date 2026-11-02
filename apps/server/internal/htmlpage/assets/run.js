@@ -335,6 +335,19 @@
     }
   }
 
+  // Put the current search text and clear button back after the section is re-rendered.
+  function restoreSearch(focus) {
+    var input = document.getElementById('run-spec-search');
+    var clear = document.getElementById('run-spec-search-clear');
+    if (!input) return;
+    input.value = searchQuery;
+    if (clear) clear.classList.toggle('hidden', !searchQuery);
+    if (focus) {
+      input.focus();
+      input.setSelectionRange(searchQuery.length, searchQuery.length);
+    }
+  }
+
   function initListUI() {
     var dispatch = document.getElementById('run-dispatch');
     if (dispatch) {
@@ -362,7 +375,8 @@
       })
       .then(function (data) {
         if (data.terminal || opts.forceReload) {
-          location.reload();
+          // A page already rendered as finished has nothing to transition.
+          if (isLive) location.reload();
           return;
         }
         var html = data.html || '';
@@ -372,9 +386,11 @@
           return;
         }
         if (html === lastHTML) return;
+        var hadFocus = document.activeElement && document.activeElement.id === 'run-spec-search';
         inner.innerHTML = html;
         lastHTML = html;
         bindSearch();
+        restoreSearch(hadFocus);
         applyListView();
       })
       .catch(function () {})
@@ -395,22 +411,27 @@
     if (inner) lastHTML = inner.innerHTML;
   }
 
-  function shouldRefresh(type) {
-    if (!type) return false;
-    if (type.indexOf('orchestration.') === 0) return true;
-    if (type === 'home.live.changed') return true;
-    return false;
+  // True when the event's envelope identity is this page's run.
+  function isOwnRun(msg) {
+    var id = msg && msg.identity;
+    if (!id) return false;
+    return (
+      id.repository === identity.repository &&
+      id.commit_sha === identity.commit_sha &&
+      id.gh_run_id === identity.gh_run_id &&
+      id.name === identity.name &&
+      String(id.gh_run_attempt || '1') === String(identity.gh_run_attempt || '1')
+    );
+  }
+
+  // Only orchestration events for this run; unscoped events (e.g. home.live.changed) belong to other runs.
+  function shouldRefresh(msg) {
+    if (!msg || !msg.type || msg.type.indexOf('orchestration.') !== 0) return false;
+    return isOwnRun(msg);
   }
 
   function isTerminal(msg) {
-    if (!msg || !msg.type) return false;
-    if (msg.type === 'orchestration.run.completed' || msg.type === 'orchestration.run.timed_out') {
-      return true;
-    }
-    if (msg.type === 'home.live.changed') {
-      return !!(msg.payload && msg.payload.terminal);
-    }
-    return false;
+    return msg.type === 'orchestration.run.completed' || msg.type === 'orchestration.run.timed_out';
   }
 
   function connect() {
@@ -440,7 +461,7 @@
     ws.onmessage = function (ev) {
       try {
         var msg = JSON.parse(ev.data);
-        if (!shouldRefresh(msg.type)) return;
+        if (!shouldRefresh(msg)) return;
         refreshUnits({ forceReload: isTerminal(msg) });
       } catch (_) {}
     };

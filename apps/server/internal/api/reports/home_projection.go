@@ -67,6 +67,12 @@ type HomePageData struct {
 
 const homeLiveRunLimit = 20
 
+// runKeySQL mirrors runEntryMergeKey: groups sharing a run_group merge into one run.
+const runKeySQL = `CASE WHEN COALESCE(run_group, '') = '' THEN id::text
+	ELSE concat_ws(E'\x1f', COALESCE(gh_run_id, ''), COALESCE(gh_run_attempt, ''),
+		regexp_replace(COALESCE(branch, ''), '^refs/(heads|tags)/', ''), COALESCE(commit_sha, ''), run_group)
+	END`
+
 // LoadHomePageData loads the home page from report_groups projections.
 func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int, repository, branchFilter string) (HomePageData, error) {
 	if pool == nil {
@@ -95,11 +101,17 @@ func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int
 	repoFilter.appendSQL(&staticWhere, &countArgs, "repository")
 	branchF.appendSQL(&staticWhere, &countArgs)
 
+	// Page over runs, not groups, so one run's groups never split across pages.
+	runsCTE := `
+		WITH runs AS (
+			SELECT id, created_at, ` + runKeySQL + ` AS run_key
+			  FROM report_groups
+			 WHERE ` + staticWhere.String() + `
+		)`
+
 	var total int
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*)
-		  FROM report_groups
-		 WHERE `+staticWhere.String()+`
+	if err := pool.QueryRow(ctx, runsCTE+`
+		SELECT count(DISTINCT run_key) FROM runs
 	`, countArgs...).Scan(&total); err != nil {
 		return HomePageData{}, err
 	}
@@ -109,12 +121,18 @@ func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int
 	limitPH := fmt.Sprintf("$%d", len(countArgs)+1)
 	offsetPH := fmt.Sprintf("$%d", len(countArgs)+2)
 
-	rows, err := pool.Query(ctx, `
+	rows, err := pool.Query(ctx, runsCTE+`,
+		paged AS (
+			SELECT run_key, max(created_at) AS run_at
+			  FROM runs
+			 GROUP BY run_key
+			 ORDER BY run_at DESC, run_key DESC
+			 LIMIT `+limitPH+` OFFSET `+offsetPH+`
+		)
 		SELECT `+groupProjectionSelectCols+`
 		  FROM report_groups
-		 WHERE `+staticWhere.String()+`
+		 WHERE id IN (SELECT runs.id FROM runs JOIN paged USING (run_key))
 		 ORDER BY created_at DESC, id DESC
-		 LIMIT `+limitPH+` OFFSET `+offsetPH+`
 	`, listArgs...)
 	if err != nil {
 		return HomePageData{}, err

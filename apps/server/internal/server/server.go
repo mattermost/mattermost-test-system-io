@@ -257,7 +257,8 @@ func Build(d Deps) chi.Router {
 				RepoURL:            d.RepoURL,
 				GitHubOAuthEnabled: d.OAuth != nil,
 			},
-			Logger: d.Logger,
+			Logger:   d.Logger,
+			Fallback: webHandler,
 		}
 		r.Get("/", htmlH.ServeHome)
 		r.Get("/reports", htmlH.ServeHome)

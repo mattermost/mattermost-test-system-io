@@ -63,6 +63,39 @@ func rollupAttemptStatuses(statuses []string) string {
 	return statusPassed
 }
 
+// specAttempt is one stored attempt of a spec in a suite, in ordinal order.
+type specAttempt struct {
+	Status string
+	Retry  int
+}
+
+// suiteSpecOK is whether a spec's attempts in one suite ended well enough to
+// show as passed, flaky or skipped: its final attempt passed or was skipped,
+// or the retries leading to it roll up to flaky. A Playwright test.fail() test
+// that passed and then failed on retry is flaky there, as countStatuses counts
+// it, though its final attempt failed. Only the final attempt's own retry chain
+// (retry counts rising up to it) counts: another Playwright project, or a
+// retest upload, starts again at retry 0, and its pass is not this failure's
+// retry.
+func suiteSpecOK(attempts []specAttempt) bool {
+	if len(attempts) == 0 {
+		return false
+	}
+	final := attempts[len(attempts)-1]
+	if statusIsPass(final.Status) || final.Status == statusSkipped {
+		return true
+	}
+	start := len(attempts) - 1
+	for start > 0 && attempts[start-1].Retry < attempts[start].Retry {
+		start--
+	}
+	chain := make([]string, 0, len(attempts)-start)
+	for _, a := range attempts[start:] {
+		chain = append(chain, a.Status)
+	}
+	return rollupAttemptStatuses(chain) == statusFlaky
+}
+
 // rollupTitleStatus is the consolidated verdict for one unique test title.
 //
 // Rules:

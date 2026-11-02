@@ -1,12 +1,4 @@
-import {
-  Folder,
-  GitBranch,
-  GitCommit,
-  GitPullRequest,
-  Clock,
-  Play,
-  RotateCcw,
-} from 'lucide-react';
+import { Folder, GitBranch, GitCommit, GitPullRequest, Clock, Play, RotateCcw } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { RepositoryGroup, RunEntry } from '@/types';
 import {
@@ -63,7 +55,10 @@ function status_icon(entry: RunEntry) {
     <span className="inline-flex flex-col items-center justify-center gap-0.5">
       {pill}
       {isNew && (
-        <span className="text-[9px] font-bold tracking-wider text-blue-600 dark:text-blue-400" title="Created within the last hour">
+        <span
+          className="text-[9px] font-bold tracking-wider text-blue-600 dark:text-blue-400"
+          title="Created within the last hour"
+        >
           NEW
         </span>
       )}
@@ -181,49 +176,49 @@ function run_entry_row({
         {status_icon(entry)}
       </span>
       <div className="flex min-w-0 shrink flex-col gap-0.5 max-lg:contents">
-          <div className="flex flex-wrap items-center gap-2 max-lg:col-start-3 max-lg:row-start-1 max-lg:min-w-0">
-            <span className="text-sm text-gray-700 dark:text-gray-300">{entry.name}</span>
-            {entry.gh_run_id && (
-              <span
-                className="inline-flex items-center gap-1 font-mono text-sm text-gray-500 dark:text-gray-500"
-                title={`GitHub Actions run ${entry.gh_run_id}`}
-              >
-                <Play className="h-3.5 w-3.5" />
-                {entry.gh_run_id}
-              </span>
-            )}
-            {entry.gh_run_attempt && entry.gh_run_attempt !== '1' && (
-              <span
-                className="inline-flex items-center gap-1 text-sm text-gray-500 dark:text-gray-500"
-                title={`GitHub Actions run attempt ${entry.gh_run_attempt}`}
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                attempt {entry.gh_run_attempt}
-              </span>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-2 max-lg:col-start-3 max-lg:row-start-2 max-lg:min-w-0">
-            {repoName && (
-              <span className="inline-flex items-center gap-1 text-sm font-medium text-gray-500 dark:text-gray-400">
-                <Folder className="h-3.5 w-3.5" />
-                {repoName}
-              </span>
-            )}
-            {entry.gh_pr_number != null ? (
-              <span className="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400">
-                <GitPullRequest className="h-3.5 w-3.5" />#{entry.gh_pr_number}
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400">
-                <GitBranch className="h-3.5 w-3.5" />
-                {branch}
-              </span>
-            )}
-            <span className="inline-flex items-center gap-1 font-mono text-sm text-gray-500 dark:text-gray-500">
-              <GitCommit className="h-3.5 w-3.5" />
-              {entry.short_sha}
+        <div className="flex flex-wrap items-center gap-2 max-lg:col-start-3 max-lg:row-start-1 max-lg:min-w-0">
+          <span className="text-sm text-gray-700 dark:text-gray-300">{entry.name}</span>
+          {entry.gh_run_id && (
+            <span
+              className="inline-flex items-center gap-1 font-mono text-sm text-gray-500 dark:text-gray-500"
+              title={`GitHub Actions run ${entry.gh_run_id}`}
+            >
+              <Play className="h-3.5 w-3.5" />
+              {entry.gh_run_id}
             </span>
-          </div>
+          )}
+          {entry.gh_run_attempt && entry.gh_run_attempt !== '1' && (
+            <span
+              className="inline-flex items-center gap-1 text-sm text-gray-500 dark:text-gray-500"
+              title={`GitHub Actions run attempt ${entry.gh_run_attempt}`}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              attempt {entry.gh_run_attempt}
+            </span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 max-lg:col-start-3 max-lg:row-start-2 max-lg:min-w-0">
+          {repoName && (
+            <span className="inline-flex items-center gap-1 text-sm font-medium text-gray-500 dark:text-gray-400">
+              <Folder className="h-3.5 w-3.5" />
+              {repoName}
+            </span>
+          )}
+          {entry.gh_pr_number != null ? (
+            <span className="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400">
+              <GitPullRequest className="h-3.5 w-3.5" />#{entry.gh_pr_number}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400">
+              <GitBranch className="h-3.5 w-3.5" />
+              {branch}
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1 font-mono text-sm text-gray-500 dark:text-gray-500">
+            <GitCommit className="h-3.5 w-3.5" />
+            {entry.short_sha}
+          </span>
+        </div>
       </div>
 
       <div className="mx-2 flex flex-1 items-center justify-end gap-2 text-sm max-lg:contents max-lg:mx-0 lg:flex-col lg:items-end lg:gap-0.5 lg:justify-center">
@@ -260,25 +255,32 @@ function run_entry_row({
                     </span>
                   ),
                   skipped > 0 && (
-                    <span key="skipped" className="whitespace-nowrap text-gray-500 dark:text-gray-400">
+                    <span
+                      key="skipped"
+                      className="whitespace-nowrap text-gray-500 dark:text-gray-400"
+                    >
                       {skipped}
                       <StatWord> skipped</StatWord>
                     </span>
                   ),
-                  inProgress &&
-                    pending > 0 && (
-                      <span key="pending" className="whitespace-nowrap text-gray-500 dark:text-gray-400">
-                        {pending}
-                        <StatWord> pending</StatWord>
-                      </span>
-                    ),
-                  inProgress &&
-                    leased > 0 && (
-                      <span key="leased" className="whitespace-nowrap text-blue-600 dark:text-blue-400">
-                        {leased}
-                        <StatWord> running</StatWord>
-                      </span>
-                    ),
+                  inProgress && pending > 0 && (
+                    <span
+                      key="pending"
+                      className="whitespace-nowrap text-gray-500 dark:text-gray-400"
+                    >
+                      {pending}
+                      <StatWord> pending</StatWord>
+                    </span>
+                  ),
+                  inProgress && leased > 0 && (
+                    <span
+                      key="leased"
+                      className="whitespace-nowrap text-blue-600 dark:text-blue-400"
+                    >
+                      {leased}
+                      <StatWord> running</StatWord>
+                    </span>
+                  ),
                   abandonedUntested > 0 && (
                     <span key="abandoned" className="whitespace-nowrap text-red-500">
                       {abandonedUntested}
@@ -286,7 +288,10 @@ function run_entry_row({
                     </span>
                   ),
                   retestEligible > 0 && (
-                    <span key="retest" className="whitespace-nowrap text-orange-700 dark:text-orange-400">
+                    <span
+                      key="retest"
+                      className="whitespace-nowrap text-orange-700 dark:text-orange-400"
+                    >
                       ({retestEligible}
                       <StatWord> for retest</StatWord>)
                     </span>
@@ -315,13 +320,19 @@ function run_entry_row({
                   </span>
                 ),
                 (stats.flaky ?? 0) > 0 && (
-                  <span key="flaky" className="whitespace-nowrap text-yellow-700 dark:text-yellow-400">
+                  <span
+                    key="flaky"
+                    className="whitespace-nowrap text-yellow-700 dark:text-yellow-400"
+                  >
                     {stats.flaky}
                     <StatWord> flaky</StatWord>
                   </span>
                 ),
                 (stats.skipped ?? 0) > 0 && (
-                  <span key="skipped" className="whitespace-nowrap text-gray-500 dark:text-gray-400">
+                  <span
+                    key="skipped"
+                    className="whitespace-nowrap text-gray-500 dark:text-gray-400"
+                  >
                     {stats.skipped}
                     <StatWord> skipped</StatWord>
                   </span>
@@ -447,32 +458,32 @@ interface RepoGroupCardProps {
 
 export function RepoGroupCard({ group, startNumber = 1, bare = false }: RepoGroupCardProps) {
   const list = (
-      <div className="divide-y divide-gray-50 dark:divide-gray-700/50">
-        {group.runs.map((entry, idx) => {
-          // Always stamp gh_run_id so same-SHA rows open the correct Actions run
-          // (bare consolidated URLs otherwise resolve to the latest run).
-          const urlPath = entry.gh_run_id
-            ? ensureRunQueryParams(entry.url_path, entry.gh_run_id, entry.gh_run_attempt)
-            : `${entry.url_path}${entry.url_path.includes('?') ? '&' : '?'}gid=${entry.report_id}`;
-          const decoratedEntry = { ...entry, url_path: urlPath };
-          const stats = resolveDisplayStats(decoratedEntry);
-          const hasFailed = !!stats && stats.total > 0 && stats.failed > 0;
-          const wrapperClass = `rounded-md transition-colors ${
-            hasFailed
-              ? 'bg-red-50/50 hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/30'
-              : 'hover:bg-gray-50 dark:hover:bg-gray-800'
-          }`;
-          return (
-            <div key={entry.report_id} className={wrapperClass}>
-              {run_entry_row({
-                entry: decoratedEntry,
-                repoName: group.repository_name || entry.url_path.split('/')[2] || '',
-                rowNumber: startNumber + idx,
-              })}
-            </div>
-          );
-        })}
-      </div>
+    <div className="divide-y divide-gray-50 dark:divide-gray-700/50">
+      {group.runs.map((entry, idx) => {
+        // Always stamp gh_run_id so same-SHA rows open the correct Actions run
+        // (bare consolidated URLs otherwise resolve to the latest run).
+        const urlPath = entry.gh_run_id
+          ? ensureRunQueryParams(entry.url_path, entry.gh_run_id, entry.gh_run_attempt)
+          : `${entry.url_path}${entry.url_path.includes('?') ? '&' : '?'}gid=${entry.report_id}`;
+        const decoratedEntry = { ...entry, url_path: urlPath };
+        const stats = resolveDisplayStats(decoratedEntry);
+        const hasFailed = !!stats && stats.total > 0 && stats.failed > 0;
+        const wrapperClass = `rounded-md transition-colors ${
+          hasFailed
+            ? 'bg-red-50/50 hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/30'
+            : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+        }`;
+        return (
+          <div key={entry.report_id} className={wrapperClass}>
+            {run_entry_row({
+              entry: decoratedEntry,
+              repoName: group.repository_name || entry.url_path.split('/')[2] || '',
+              rowNumber: startNumber + idx,
+            })}
+          </div>
+        );
+      })}
+    </div>
   );
   if (bare) return list;
   return (

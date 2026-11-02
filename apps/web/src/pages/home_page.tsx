@@ -304,9 +304,7 @@ export function HomePage() {
     return liveSourceData.groups
       .flatMap((g) => g.runs)
       .filter(isLiveHomeRun)
-      .sort((a, b) =>
-        a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
-      );
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
   }, [liveSourceData]);
 
   return (
@@ -397,7 +395,8 @@ export function HomePage() {
               <p className="text-xs mt-1">Upload test reports to see them here</p>
             </div>
           )}
-          {groupedData && groupedData.groups.flatMap((g) => g.runs).length > 0 &&
+          {groupedData &&
+            groupedData.groups.flatMap((g) => g.runs).length > 0 &&
             (() => {
               const allRuns = groupedData.groups
                 .flatMap((g) => g.runs)

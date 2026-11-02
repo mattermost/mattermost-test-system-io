@@ -97,7 +97,6 @@ func TestRenderHomeWithLiveAndStatic(t *testing.T) {
 	}
 }
 
-
 func TestRenderHomeLiveRows(t *testing.T) {
 	html, err := RenderHomeLiveRows([]HomeRunRow{{
 		GroupID: "g-1", RowNum: 1, Href: "/live", Name: "live-run", RepositoryName: "repo",

@@ -345,10 +345,7 @@ export function ReportSummary(props: ReportSummaryProps) {
       {total > 0 && (
         <div className="flex items-center gap-3 mt-2">
           {passRate !== null && (
-            <span
-              className={`text-sm font-medium ${passRateColorClass}`}
-              title={statsTitle}
-            >
+            <span className={`text-sm font-medium ${passRateColorClass}`} title={statsTitle}>
               {passRate}%
             </span>
           )}

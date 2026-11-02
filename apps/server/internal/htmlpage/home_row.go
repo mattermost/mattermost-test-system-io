@@ -11,28 +11,28 @@ import (
 
 // One home list row (live or static).
 type HomeRunRow struct {
-	GroupID        string
-	RowNum         int
-	Href           string
-	Name           string
-	RepositoryName string
-	Branch         string
-	ShortSHA       string
-	GHRunID        string
-	GHRunAttempt   string
-	GHPRNumber     *int
-	CreatedAt      string
-	CreatedAtRel   string
-	StatusIcon     string
-	HasFailed      bool
-	PassRate       string
-	PassRateClass  string
-	Passed         int
-	Failed         int
-	Flaky          int
-	Skipped        int
-	Total          int
-	HasStats       bool
+	GroupID           string
+	RowNum            int
+	Href              string
+	Name              string
+	RepositoryName    string
+	Branch            string
+	ShortSHA          string
+	GHRunID           string
+	GHRunAttempt      string
+	GHPRNumber        *int
+	CreatedAt         string
+	CreatedAtRel      string
+	StatusIcon        string
+	HasFailed         bool
+	PassRate          string
+	PassRateClass     string
+	Passed            int
+	Failed            int
+	Flaky             int
+	Skipped           int
+	Total             int
+	HasStats          bool
 	SpecDone          int
 	SpecTotal         int
 	SpecPass          int
@@ -44,13 +44,13 @@ type HomeRunRow struct {
 	SpecUntestedClass string
 	SpecRetest        int
 	SpecClass         string
-	DurationText   string
-	DurationTitle  string
-	IsLive         bool
-	IsNew          bool
-	Region         string
-	FilterRepo     string
-	FilterBranch   string
+	DurationText      string
+	DurationTitle     string
+	IsLive            bool
+	IsNew             bool
+	Region            string
+	FilterRepo        string
+	FilterBranch      string
 }
 
 func mapLiveRun(r reports.HomeLiveRun) HomeRunRow {

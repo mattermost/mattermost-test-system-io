@@ -10,21 +10,21 @@ import (
 
 // Home page view model.
 type HomePage struct {
-	Site               SiteInfo
-	LiveRuns           []HomeRunRow
-	StaticRuns         []HomeRunRow
+	Site                 SiteInfo
+	LiveRuns             []HomeRunRow
+	StaticRuns           []HomeRunRow
 	Repositories         []reports.RepositoryOption
 	SelectedRepository   string
-	BranchFilterOptions   []reports.BranchFilterOption
+	BranchFilterOptions  []reports.BranchFilterOption
 	SelectedBranchFilter string
 	Total                int
-	Limit      int
-	Offset     int
-	Page       int
-	TotalPages int
-	RowStart   int
-	ShowEnd    int
-	Title      string
+	Limit                int
+	Offset               int
+	Page                 int
+	TotalPages           int
+	RowStart             int
+	ShowEnd              int
+	Title                string
 }
 
 // Build home page view model.
@@ -75,21 +75,21 @@ func BuildHomePage(ctx context.Context, pool *pgxpool.Pool, site SiteInfo, limit
 		showEnd = 0
 	}
 	return HomePage{
-		Site:               site,
-		LiveRuns:           liveRuns,
-		StaticRuns:         staticRuns,
+		Site:                 site,
+		LiveRuns:             liveRuns,
+		StaticRuns:           staticRuns,
 		Repositories:         repositories,
 		SelectedRepository:   repository,
 		BranchFilterOptions:  branchOptions,
 		SelectedBranchFilter: branchFilter,
 		Total:                data.Total,
-		Limit:      data.Limit,
-		Offset:     data.Offset,
-		Page:       currentPage,
-		TotalPages: totalPages,
-		RowStart:   rowStart,
-		ShowEnd:    showEnd,
-		Title:      "Test System IO",
+		Limit:                data.Limit,
+		Offset:               data.Offset,
+		Page:                 currentPage,
+		TotalPages:           totalPages,
+		RowStart:             rowStart,
+		ShowEnd:              showEnd,
+		Title:                "Test System IO",
 	}, nil
 }
 

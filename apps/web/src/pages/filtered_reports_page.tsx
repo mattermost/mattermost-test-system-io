@@ -107,11 +107,7 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
         : undefined,
   };
 
-  const {
-    data: groupedData,
-    isLoading,
-    error,
-  } = useGroupedReports(page, limit, groupedOptions);
+  const { data: groupedData, isLoading, error } = useGroupedReports(page, limit, groupedOptions);
 
   const { data: liveSourceData } = useGroupedReports(1, limit, {
     enabled: isPagedList,
@@ -129,9 +125,7 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
     return liveSourceData.groups
       .flatMap((g) => g.runs)
       .filter(isLiveHomeRun)
-      .sort((a, b) =>
-        a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
-      );
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
   }, [isPagedList, liveSourceData]);
 
   const breadcrumbItems: { label: string; to?: string }[] = [{ label: 'Reports', to: '/reports' }];
@@ -160,9 +154,7 @@ export function FilteredReportsPage(props: FilteredReportsPageProps = {}) {
   const staticRuns = isPagedList
     ? repoRuns
         .filter((r) => !isLiveHomeRun(r))
-        .sort((a, b) =>
-          a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0,
-        )
+        .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0))
     : [];
   const total = isPagedList ? (groupedData?.total ?? repoRuns.length) : 0;
   const totalPages = isPagedList ? Math.max(1, Math.ceil(total / limit)) : 0;

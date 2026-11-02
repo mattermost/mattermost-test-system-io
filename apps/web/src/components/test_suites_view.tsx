@@ -504,9 +504,9 @@ export function TestSuitesView({
 
       {/* Suites Summary */}
       <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-        <div className="mb-4 flex items-center gap-4">
+        <div className="mb-4 flex items-start gap-3 sm:items-center sm:gap-4">
           {/* Section 1: Title + suite-level chips */}
-          <h3 className="flex flex-shrink-0 items-center gap-2 text-sm font-medium text-gray-900 dark:text-white">
+          <h3 className="flex min-w-0 flex-col items-start gap-1 sm:flex-shrink-0 sm:flex-row sm:items-center sm:gap-2 text-sm font-medium text-gray-900 dark:text-white">
             <button
               type="button"
               onClick={() => {
@@ -522,50 +522,54 @@ export function TestSuitesView({
             >
               {deduplicatedSuites.length} {deduplicatedSuites.length === 1 ? 'spec' : 'specs'}
             </button>
-            {specPassed > 0 && (
-              <button
-                type="button"
-                onClick={() =>
-                  setStatusFilter(statusFilter === 'spec_passed' ? 'all' : 'spec_passed')
-                }
-                title="Filter passed suites"
-                className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-green-600 transition-colors hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20 ${
-                  statusFilter === 'spec_passed' ? 'bg-green-100 dark:bg-green-900/40' : ''
-                }`}
-              >
-                <CheckCircle2 className="h-3 w-3" />
-                {specPassed}
-              </button>
-            )}
-            {specFailed > 0 && (
-              <button
-                type="button"
-                onClick={() =>
-                  setStatusFilter(statusFilter === 'spec_failed' ? 'all' : 'spec_failed')
-                }
-                title={
-                  multiShard
-                    ? 'Spec files with ≥1 failure (each shard/platform kept separate)'
-                    : 'Filter failed suites'
-                }
-                className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 ${
-                  statusFilter === 'spec_failed' ? 'bg-red-100 dark:bg-red-900/40' : ''
-                }`}
-              >
-                <XCircle className="h-3 w-3" />
-                {specFailed}
-                {multiShard ? <span className="font-normal opacity-70">with failures</span> : null}
-              </button>
-            )}
+            <span className="flex flex-wrap items-center gap-2">
+              {specPassed > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setStatusFilter(statusFilter === 'spec_passed' ? 'all' : 'spec_passed')
+                  }
+                  title="Filter passed suites"
+                  className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-green-600 transition-colors hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20 ${
+                    statusFilter === 'spec_passed' ? 'bg-green-100 dark:bg-green-900/40' : ''
+                  }`}
+                >
+                  <CheckCircle2 className="h-3 w-3" />
+                  {specPassed}
+                </button>
+              )}
+              {specFailed > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setStatusFilter(statusFilter === 'spec_failed' ? 'all' : 'spec_failed')
+                  }
+                  title={
+                    multiShard
+                      ? 'Spec files with ≥1 failure (each shard/platform kept separate)'
+                      : 'Filter failed suites'
+                  }
+                  className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 ${
+                    statusFilter === 'spec_failed' ? 'bg-red-100 dark:bg-red-900/40' : ''
+                  }`}
+                >
+                  <XCircle className="h-3 w-3" />
+                  {specFailed}
+                  {multiShard ? (
+                    <span className="hidden font-normal opacity-70 sm:inline">with failures</span>
+                  ) : null}
+                </button>
+              )}
+            </span>
           </h3>
 
           {/* Spacer */}
           <div className="flex-1" />
 
           {/* Section 2: Test-case-level pills + report dropdown */}
-          <div className="flex flex-shrink-0 items-center gap-2">
+          <div className="flex min-w-0 flex-col items-end gap-2 sm:flex-shrink-0 sm:flex-row sm:items-center">
             {/* Status filter buttons */}
-            <div className="flex items-center gap-1">
+            <div className="flex flex-col items-end gap-1 sm:flex-row sm:items-center">
               <button
                 type="button"
                 onClick={() => setStatusFilter('all')}
@@ -577,76 +581,80 @@ export function TestSuitesView({
               >
                 {totalTests} {totalTests === 1 ? 'test' : 'tests'}
               </button>
-              <button
-                type="button"
-                onClick={() => setStatusFilter('test_passed')}
-                className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
-                  statusFilter === 'test_passed'
-                    ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
-                    : 'text-green-600 hover:bg-green-50 dark:text-green-500 dark:hover:bg-green-900/20'
-                }`}
-              >
-                <span className="inline-flex items-center gap-1">
-                  <CheckCircle2 className="h-3 w-3" />
-                  {totals.passed}
-                </span>
-              </button>
-              {totals.failed > 0 && (
+              <span className="flex flex-wrap items-center justify-end gap-1">
                 <button
                   type="button"
-                  onClick={() => setStatusFilter('test_failed')}
-                  title={
-                    multiShard
-                      ? 'Failed test results summed across shards (same title can count more than once)'
-                      : 'Filter failed tests'
-                  }
+                  onClick={() => setStatusFilter('test_passed')}
                   className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
-                    statusFilter === 'test_failed'
-                      ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
-                      : 'text-red-600 hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-900/20'
+                    statusFilter === 'test_passed'
+                      ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
+                      : 'text-green-600 hover:bg-green-50 dark:text-green-500 dark:hover:bg-green-900/20'
                   }`}
                 >
                   <span className="inline-flex items-center gap-1">
-                    <XCircle className="h-3 w-3" />
-                    {totals.failed}
-                    {multiShard ? (
-                      <span className="font-normal opacity-70">across shards</span>
-                    ) : null}
+                    <CheckCircle2 className="h-3 w-3" />
+                    {totals.passed}
                   </span>
                 </button>
-              )}
-              {totals.flaky > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('test_flaky')}
-                  className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
-                    statusFilter === 'test_flaky'
-                      ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
-                      : 'text-yellow-600 hover:bg-yellow-50 dark:text-yellow-500 dark:hover:bg-yellow-900/20'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    <AlertTriangle className="h-3 w-3" />
-                    {totals.flaky}
-                  </span>
-                </button>
-              )}
-              {totals.skipped > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('test_skipped')}
-                  className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
-                    statusFilter === 'test_skipped'
-                      ? 'bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-300'
-                      : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    <MinusCircle className="h-3 w-3" />
-                    {totals.skipped}
-                  </span>
-                </button>
-              )}
+                {totals.failed > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter('test_failed')}
+                    title={
+                      multiShard
+                        ? 'Failed test results summed across shards (same title can count more than once)'
+                        : 'Filter failed tests'
+                    }
+                    className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
+                      statusFilter === 'test_failed'
+                        ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
+                        : 'text-red-600 hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-900/20'
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <XCircle className="h-3 w-3" />
+                      {totals.failed}
+                      {multiShard ? (
+                        <span className="hidden font-normal opacity-70 sm:inline">
+                          across shards
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                )}
+                {totals.flaky > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter('test_flaky')}
+                    className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
+                      statusFilter === 'test_flaky'
+                        ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
+                        : 'text-yellow-600 hover:bg-yellow-50 dark:text-yellow-500 dark:hover:bg-yellow-900/20'
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <AlertTriangle className="h-3 w-3" />
+                      {totals.flaky}
+                    </span>
+                  </button>
+                )}
+                {totals.skipped > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter('test_skipped')}
+                    className={`cursor-pointer rounded px-2 py-0.5 text-xs transition-colors ${
+                      statusFilter === 'test_skipped'
+                        ? 'bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-300'
+                        : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <MinusCircle className="h-3 w-3" />
+                      {totals.skipped}
+                    </span>
+                  </button>
+                )}
+              </span>
             </div>
 
             {/* Report filter dropdown - only show when multiple reports */}

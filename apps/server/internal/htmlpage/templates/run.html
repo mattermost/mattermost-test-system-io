@@ -113,19 +113,23 @@
 <div class="run-spec-header">
   <h3 class="run-spec-header-left">
     <button type="button" class="run-filter-btn is-active" data-filter="all" title="Show all suites">{{.UnitTotalAll}} {{if eq .UnitTotalAll 1}}spec{{else}}specs{{end}}</button>
+    <span class="run-spec-chips">
     {{if gt .UnitPass 0}}<button type="button" class="run-filter-btn text-pass" data-filter="spec_passed" title="Filter passed suites">{{template "icon-circle-check"}}{{.UnitPass}}</button>{{end}}
     {{if gt .UnitFail 0}}<button type="button" class="run-filter-btn text-fail" data-filter="spec_failed" title="Filter failed suites">{{template "icon-circle-x"}}{{.UnitFail}}</button>{{end}}
     {{if gt .SpecInProgress 0}}<button type="button" class="run-filter-btn text-live" data-filter="spec_in_progress" title="Filter running suites">{{template "icon-spinner"}}{{.SpecInProgress}}</button>{{end}}
     {{if gt .SpecRetestInProgress 0}}<button type="button" class="run-filter-btn text-retest" data-filter="spec_retest_in_progress" title="Filter retests in flight">{{template "icon-spinner"}}{{.SpecRetestInProgress}}</button>{{end}}
     {{if gt .UnitSkipped 0}}<button type="button" class="run-filter-btn text-muted" data-filter="spec_skipped" title="Filter skipped suites">{{template "icon-minus"}}{{.UnitSkipped}}</button>{{end}}
+    </span>
   </h3>
   {{if .HasTests}}
   <div class="run-spec-header-right">
     <button type="button" class="run-filter-btn" data-filter="all" title="Show all tests">{{.TestTotal}} {{if eq .TestTotal 1}}test{{else}}tests{{end}}</button>
+    <span class="run-spec-chips">
     <button type="button" class="run-filter-btn text-pass" data-filter="test_passed" title="Filter suites with passed tests">{{template "icon-circle-check"}}{{.TestPassed}}</button>
     {{if gt .TestFailed 0}}<button type="button" class="run-filter-btn text-fail" data-filter="test_failed" title="Filter suites with failed tests">{{template "icon-circle-x"}}{{.TestFailed}}</button>{{end}}
     {{if gt .TestFlaky 0}}<button type="button" class="run-filter-btn text-flaky" data-filter="test_flaky" title="Filter suites with flaky tests">{{template "icon-alert-triangle"}}{{.TestFlaky}}</button>{{end}}
     {{if gt .TestSkipped 0}}<button type="button" class="run-filter-btn text-muted" data-filter="test_skipped" title="Filter suites with skipped tests">{{template "icon-minus"}}{{.TestSkipped}}</button>{{end}}
+    </span>
   </div>
   {{end}}
 </div>

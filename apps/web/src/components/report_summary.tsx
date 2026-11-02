@@ -433,7 +433,7 @@ export function ReportSummary(props: ReportSummaryProps) {
         });
         if (!timeline.hasContent) return null;
         return (
-          <div className="flex items-center gap-1.5 mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+          <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs text-gray-500 dark:text-gray-400">
             <Calendar className="h-3 w-3" aria-hidden="true" />
             {timeline.headline && (
               <span className="font-medium text-gray-600 dark:text-gray-300">

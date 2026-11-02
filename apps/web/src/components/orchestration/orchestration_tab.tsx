@@ -1046,8 +1046,8 @@ function SpecList({ run }: { run: RunSnapshot }) {
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-      <div className="mb-4 flex items-center gap-4">
-        <h3 className="flex flex-shrink-0 items-center gap-2 text-sm font-medium text-gray-900 dark:text-white">
+      <div className="mb-4 flex items-start gap-3 sm:items-center sm:gap-4">
+        <h3 className="flex min-w-0 flex-col items-start gap-1 sm:flex-shrink-0 sm:flex-row sm:items-center sm:gap-2 text-sm font-medium text-gray-900 dark:text-white">
           <button
             type="button"
             onClick={() => {
@@ -1063,90 +1063,92 @@ function SpecList({ run }: { run: RunSnapshot }) {
           >
             {headerCount} {headerCount === 1 ? 'spec' : 'specs'}
           </button>
-          {specPassed > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                setStatusFilter(statusFilter === 'spec_passed' ? 'all' : 'spec_passed')
-              }
-              title="Filter passed suites"
-              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-green-600 transition-colors hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20 ${
-                statusFilter === 'spec_passed' ? 'bg-green-100 dark:bg-green-900/40' : ''
-              }`}
-            >
-              <CheckCircle2 className="h-3 w-3" />
-              {specPassed}
-            </button>
-          )}
-          {specFailed > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                setStatusFilter(statusFilter === 'spec_failed' ? 'all' : 'spec_failed')
-              }
-              title="Filter failed suites"
-              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 ${
-                statusFilter === 'spec_failed' ? 'bg-red-100 dark:bg-red-900/40' : ''
-              }`}
-            >
-              <XCircle className="h-3 w-3" />
-              {specFailed}
-            </button>
-          )}
-          {specInProgress > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                setStatusFilter(statusFilter === 'spec_in_progress' ? 'all' : 'spec_in_progress')
-              }
-              title="Filter running suites (first-pass leases)"
-              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20 ${
-                statusFilter === 'spec_in_progress' ? 'bg-blue-100 dark:bg-blue-900/40' : ''
-              }`}
-            >
-              <Loader2 className="h-3 w-3 animate-spin" />
-              {specInProgress}
-            </button>
-          )}
-          {specRetestInProgress > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                setStatusFilter(
-                  statusFilter === 'spec_retest_in_progress' ? 'all' : 'spec_retest_in_progress',
-                )
-              }
-              title="Filter retests in flight (lease_count > 1)"
-              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-orange-600 transition-colors hover:bg-orange-50 dark:text-orange-400 dark:hover:bg-orange-900/20 ${
-                statusFilter === 'spec_retest_in_progress'
-                  ? 'bg-orange-100 dark:bg-orange-900/40'
-                  : ''
-              }`}
-            >
-              <Loader2 className="h-3 w-3 animate-spin" />
-              {specRetestInProgress}
-            </button>
-          )}
-          {specSkipped > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                setStatusFilter(statusFilter === 'spec_skipped' ? 'all' : 'spec_skipped')
-              }
-              title="Filter skipped suites"
-              className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700 ${
-                statusFilter === 'spec_skipped' ? 'bg-gray-200 dark:bg-gray-600' : ''
-              }`}
-            >
-              <MinusCircle className="h-3 w-3" />
-              {specSkipped}
-            </button>
-          )}
+          <span className="flex flex-wrap items-center gap-2">
+            {specPassed > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setStatusFilter(statusFilter === 'spec_passed' ? 'all' : 'spec_passed')
+                }
+                title="Filter passed suites"
+                className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-green-600 transition-colors hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20 ${
+                  statusFilter === 'spec_passed' ? 'bg-green-100 dark:bg-green-900/40' : ''
+                }`}
+              >
+                <CheckCircle2 className="h-3 w-3" />
+                {specPassed}
+              </button>
+            )}
+            {specFailed > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setStatusFilter(statusFilter === 'spec_failed' ? 'all' : 'spec_failed')
+                }
+                title="Filter failed suites"
+                className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 ${
+                  statusFilter === 'spec_failed' ? 'bg-red-100 dark:bg-red-900/40' : ''
+                }`}
+              >
+                <XCircle className="h-3 w-3" />
+                {specFailed}
+              </button>
+            )}
+            {specInProgress > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setStatusFilter(statusFilter === 'spec_in_progress' ? 'all' : 'spec_in_progress')
+                }
+                title="Filter running suites (first-pass leases)"
+                className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20 ${
+                  statusFilter === 'spec_in_progress' ? 'bg-blue-100 dark:bg-blue-900/40' : ''
+                }`}
+              >
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {specInProgress}
+              </button>
+            )}
+            {specRetestInProgress > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setStatusFilter(
+                    statusFilter === 'spec_retest_in_progress' ? 'all' : 'spec_retest_in_progress',
+                  )
+                }
+                title="Filter retests in flight (lease_count > 1)"
+                className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-orange-600 transition-colors hover:bg-orange-50 dark:text-orange-400 dark:hover:bg-orange-900/20 ${
+                  statusFilter === 'spec_retest_in_progress'
+                    ? 'bg-orange-100 dark:bg-orange-900/40'
+                    : ''
+                }`}
+              >
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {specRetestInProgress}
+              </button>
+            )}
+            {specSkipped > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setStatusFilter(statusFilter === 'spec_skipped' ? 'all' : 'spec_skipped')
+                }
+                title="Filter skipped suites"
+                className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-sm text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700 ${
+                  statusFilter === 'spec_skipped' ? 'bg-gray-200 dark:bg-gray-600' : ''
+                }`}
+              >
+                <MinusCircle className="h-3 w-3" />
+                {specSkipped}
+              </button>
+            )}
+          </span>
         </h3>
         <div className="flex-1" />
         {tcCounts.total > 0 && (
-          <div className="flex flex-shrink-0 items-center gap-2">
-            <div className="flex items-center gap-1">
+          <div className="flex min-w-0 flex-col items-end gap-2 sm:flex-shrink-0 sm:flex-row sm:items-center">
+            <div className="flex flex-col items-end gap-1 sm:flex-row sm:items-center">
               <button
                 type="button"
                 onClick={() => setStatusFilter('all')}
@@ -1158,68 +1160,70 @@ function SpecList({ run }: { run: RunSnapshot }) {
               >
                 {tcCounts.total} {tcCounts.total === 1 ? 'test' : 'tests'}
               </button>
-              <button
-                type="button"
-                onClick={() => setStatusFilter('test_passed')}
-                className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
-                  statusFilter === 'test_passed'
-                    ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
-                    : 'text-green-600 hover:bg-green-50 dark:text-green-500 dark:hover:bg-green-900/20'
-                }`}
-              >
-                <span className="inline-flex items-center gap-1">
-                  <CheckCircle2 className="h-3 w-3" />
-                  {tcCounts.passed}
-                </span>
-              </button>
-              {tcCounts.failed > 0 && (
+              <span className="flex flex-wrap items-center justify-end gap-1">
                 <button
                   type="button"
-                  onClick={() => setStatusFilter('test_failed')}
+                  onClick={() => setStatusFilter('test_passed')}
                   className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
-                    statusFilter === 'test_failed'
-                      ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
-                      : 'text-red-600 hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-900/20'
+                    statusFilter === 'test_passed'
+                      ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
+                      : 'text-green-600 hover:bg-green-50 dark:text-green-500 dark:hover:bg-green-900/20'
                   }`}
                 >
                   <span className="inline-flex items-center gap-1">
-                    <XCircle className="h-3 w-3" />
-                    {tcCounts.failed}
+                    <CheckCircle2 className="h-3 w-3" />
+                    {tcCounts.passed}
                   </span>
                 </button>
-              )}
-              {tcCounts.flaky > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('test_flaky')}
-                  className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
-                    statusFilter === 'test_flaky'
-                      ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
-                      : 'text-yellow-600 hover:bg-yellow-50 dark:text-yellow-500 dark:hover:bg-yellow-900/20'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    <AlertTriangle className="h-3 w-3" />
-                    {tcCounts.flaky}
-                  </span>
-                </button>
-              )}
-              {tcCounts.skipped > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('test_skipped')}
-                  className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
-                    statusFilter === 'test_skipped'
-                      ? 'bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200'
-                      : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    <MinusCircle className="h-3 w-3" />
-                    {tcCounts.skipped}
-                  </span>
-                </button>
-              )}
+                {tcCounts.failed > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter('test_failed')}
+                    className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
+                      statusFilter === 'test_failed'
+                        ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
+                        : 'text-red-600 hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-900/20'
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <XCircle className="h-3 w-3" />
+                      {tcCounts.failed}
+                    </span>
+                  </button>
+                )}
+                {tcCounts.flaky > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter('test_flaky')}
+                    className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
+                      statusFilter === 'test_flaky'
+                        ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400'
+                        : 'text-yellow-600 hover:bg-yellow-50 dark:text-yellow-500 dark:hover:bg-yellow-900/20'
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <AlertTriangle className="h-3 w-3" />
+                      {tcCounts.flaky}
+                    </span>
+                  </button>
+                )}
+                {tcCounts.skipped > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter('test_skipped')}
+                    className={`cursor-pointer rounded px-2 py-0.5 text-sm transition-colors ${
+                      statusFilter === 'test_skipped'
+                        ? 'bg-gray-200 text-gray-700 dark:bg-gray-600 dark:text-gray-200'
+                        : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <MinusCircle className="h-3 w-3" />
+                      {tcCounts.skipped}
+                    </span>
+                  </button>
+                )}
+              </span>
             </div>
           </div>
         )}

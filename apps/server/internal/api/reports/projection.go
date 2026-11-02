@@ -186,6 +186,12 @@ func RefreshStaleGroupSummaries(ctx context.Context, pool *pgxpool.Pool, logger 
 		  FROM report_groups g
 		 WHERE g.last_summary_at IS NULL
 		    OR g.test_stats_json IS NULL
+		    -- Group or report written after the last summary (e.g. a failed refresh).
+		    OR g.last_summary_at < GREATEST(g.updated_at, g.last_upload_at)
+		    OR EXISTS (
+		          SELECT 1 FROM reports r
+		           WHERE r.report_group_id = g.id
+		             AND r.updated_at > g.last_summary_at)
 		    -- Projection still in progress but the run finished (e.g. a refresh was abandoned).
 		    OR (g.orchestration_json->>'status' = 'in_progress' AND EXISTS (
 		          SELECT 1 FROM orchestration_runs o

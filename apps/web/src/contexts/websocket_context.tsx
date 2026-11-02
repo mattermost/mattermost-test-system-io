@@ -58,6 +58,22 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const queryClient = useQueryClient();
+  const lastListInvalidateRef = useRef(0);
+  const trailingListTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const invalidateLists = useCallback(() => {
+    for (const key of LIST_QUERY_KEYS) {
+      queryClient.invalidateQueries({ queryKey: [key] });
+    }
+  }, [queryClient]);
+
+  // Drop any pending trailing refetch on unmount.
+  useEffect(
+    () => () => {
+      if (trailingListTimerRef.current !== null) clearTimeout(trailingListTimerRef.current);
+    },
+    [],
+  );
 
   // Handle incoming WebSocket messages
   const handleMessage = useCallback(
@@ -98,14 +114,20 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
 
         case 'home.live.changed': {
           // Unscoped list signal; orchestration events are identity-scoped.
-          const invalidateLists = () => {
-            for (const key of LIST_QUERY_KEYS) {
-              queryClient.invalidateQueries({ queryKey: [key] });
-            }
-          };
-          invalidateLists();
-          // Refetch again once the server's grouped cache window has passed.
-          setTimeout(invalidateLists, SERVER_CACHE_TTL_MS + 1000);
+          // Throttled: at most one immediate refetch per cache window.
+          const now = Date.now();
+          if (now - lastListInvalidateRef.current >= SERVER_CACHE_TTL_MS) {
+            lastListInvalidateRef.current = now;
+            invalidateLists();
+          }
+          // One pending trailing refetch, after the server cache window passes.
+          if (trailingListTimerRef.current === null) {
+            trailingListTimerRef.current = setTimeout(() => {
+              trailingListTimerRef.current = null;
+              lastListInvalidateRef.current = Date.now();
+              invalidateLists();
+            }, SERVER_CACHE_TTL_MS + 1000);
+          }
           break;
         }
 
@@ -117,7 +139,7 @@ export function WebSocketProvider({ children }: WebSocketProviderProps) {
           break;
       }
     },
-    [queryClient],
+    [queryClient, invalidateLists],
   );
 
   // Initialize WebSocket connection

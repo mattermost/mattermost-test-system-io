@@ -29,7 +29,7 @@ export function App() {
   return (
     <ThemeProvider>
       <BrowserRouter>
-        <div className="flex min-h-screen min-w-[480px] flex-col bg-gray-50 dark:bg-gray-900">
+        <div className="flex min-h-screen flex-col bg-gray-50 dark:bg-gray-900">
           <header className="border-b border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
             <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
               <div className="flex items-center justify-between gap-3 py-4">

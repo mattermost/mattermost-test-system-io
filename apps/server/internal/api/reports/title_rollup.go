@@ -63,6 +63,19 @@ func rollupAttemptStatuses(statuses []string) string {
 	return statusPassed
 }
 
+// suiteSpecOK is whether a spec's attempts in one suite ended well enough to
+// show as passed, flaky or skipped: its final attempt passed or was skipped,
+// or its attempts roll up to flaky. A Playwright test.fail() test that passed
+// and then failed on retry is flaky there, as countStatuses counts it, though
+// its final attempt failed.
+func suiteSpecOK(statuses []string) bool {
+	if len(statuses) == 0 {
+		return false
+	}
+	final := statuses[len(statuses)-1]
+	return statusIsPass(final) || final == statusSkipped || rollupAttemptStatuses(statuses) == statusFlaky
+}
+
 // rollupTitleStatus is the consolidated verdict for one unique test title.
 //
 // Rules:

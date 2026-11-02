@@ -80,3 +80,28 @@ func TestRollupTitleStatus(t *testing.T) {
 		}
 	})
 }
+
+func TestSuiteSpecOK(t *testing.T) {
+	tests := []struct {
+		name     string
+		statuses []string
+		want     bool
+	}{
+		{"passed", []string{statusPassed}, true},
+		{"skipped", []string{statusSkipped}, true},
+		{"failed then passed on retry", []string{statusFailed, statusPassed}, true},
+		{"legacy rows all flaky", []string{statusFlaky, statusFlaky}, true},
+		// A Playwright test.fail() test that passed, then failed on retry: Playwright and countStatuses call it flaky.
+		{"passed then failed", []string{statusPassed, statusFailed}, true},
+		{"failed on every attempt", []string{statusFailed, statusFailed}, false},
+		{"timed out", []string{statusTimedOut}, false},
+		{"interrupted after a pass", []string{statusPassed, "interrupted"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := suiteSpecOK(tt.statuses); got != tt.want {
+				t.Fatalf("suiteSpecOK(%v) = %v, want %v", tt.statuses, got, tt.want)
+			}
+		})
+	}
+}

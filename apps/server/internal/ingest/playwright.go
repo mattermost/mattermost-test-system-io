@@ -98,6 +98,7 @@ func walkPlaywrightSuite(
 					Title:      spec.Title,
 					FullTitle:  combine(fullPrefix, spec.Title),
 					Status:     mapPlaywrightStatus(res.Status),
+					Outcome:    playwrightOutcome(t.Status),
 					DurationMs: res.Duration,
 					RetryCount: res.Retry,
 					Sequence:   *seq,
@@ -169,6 +170,16 @@ func mapPlaywrightStatus(resultStatus string) string {
 	default:
 		return StatusPassed
 	}
+}
+
+// playwrightOutcome keeps Playwright's test-level "flaky" verdict. The attempts
+// alone can't always give it: a test.fail() test that passed and then failed is
+// flaky to Playwright, though its last attempt failed.
+func playwrightOutcome(testStatus string) string {
+	if testStatus == StatusFlaky {
+		return StatusFlaky
+	}
+	return ""
 }
 
 func combine(prefix, title string) string {

@@ -33,6 +33,12 @@ func TestExtractPlaywright_RetryAttempts(t *testing.T) {
 			wantCounts: [4]int{0, 0, 1, 1},
 		},
 		{
+			name:       "a test.fail() test that passed then failed is flaky, as Playwright says",
+			test:       `{"status":"flaky","expectedStatus":"failed","results":[{"status":"passed","retry":0},{"status":"failed","retry":1,"errors":[{"message":"Error: expected"}]}]}`,
+			attempts:   []attempt{{"passed", 0, ""}, {"failed", 1, "Error: expected"}},
+			wantCounts: [4]int{0, 0, 1, 1},
+		},
+		{
 			name:       "failed on every attempt is one failure",
 			test:       `{"status":"unexpected","results":[{"status":"failed","retry":0,"errors":[{"message":"Error: first"}]},{"status":"failed","retry":1,"errors":[{"message":"Error: second"}]}]}`,
 			attempts:   []attempt{{"failed", 0, "Error: first"}, {"failed", 1, "Error: second"}},

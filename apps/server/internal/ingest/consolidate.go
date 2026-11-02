@@ -230,7 +230,8 @@ func basename(p string) string {
 // The collapsed status uses the LAST entry per title (the test's terminal
 // outcome) and promotes to `flaky` when at least one earlier entry was a
 // failure but the final result is `passed` — same semantics as
-// Playwright's `test.outcome()`.
+// Playwright's `test.outcome()`. A final entry whose Outcome the framework
+// gave as `flaky` is flaky whatever its own status.
 func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, unique int) {
 	type group struct {
 		final      ExtractedCase
@@ -254,7 +255,7 @@ func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, uniqu
 		g := byTitle[k]
 		unique++
 		switch {
-		case g.final.Status == StatusFlaky:
+		case g.final.Outcome == StatusFlaky:
 			flaky++
 		case g.final.Status == StatusPassed && g.everFailed:
 			flaky++

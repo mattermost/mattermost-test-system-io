@@ -15,13 +15,15 @@ apps/web/      # React (Vite, TailwindCSS, lucide-react)
 ```
 
 ## API
-Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or the `tsio_session` cookie. Base path for the API is `/api/v1`; `/health`, `/ready`, `/files/*`, and `/swagger-ui/*` are top-level.
+Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or the `tsio_session` cookie, and a role that may write. Roles: `uploader` (CI: API keys by default, OIDC policies), `viewer` (browser sessions; viewer API keys for protected reads), `editor`, `admin`. Writes (uploads, orchestration, delete) need uploader, editor or admin; a viewer gets 403. Issue keys with `tsioctl keys issue --name <n> [--role uploader|viewer|editor|admin]`. Base path for the API is `/api/v1`; `/health`, `/ready`, `/files/*`, and `/swagger-ui/*` are top-level.
 - `GET /health` / `GET /ready` — probes (top-level, not under `/api/v1`)
 - `GET /api/v1/reports` — list reports (public)
 - `GET /api/v1/reports/{id}` — report details (public)
 - `GET /api/v1/reports/{id}/suites` — test suites (public)
 - `GET /api/v1/reports/{id}/cases` — test cases (public)
 - `GET /api/v1/reports/{id}/json` — raw Playwright JSON, 302 → presigned S3 (public)
+- `POST /api/v1/reports/history` — past executions of the tests in named spec files, rows not verdicts; filters by branch, lane (`names`) and `commit`; rows carry the GitHub run and attempt, and screenshot keys with `include_screenshots` (public)
+- `GET /api/v1/reports/history/summary` — for one run, each failed or flaky test's streak, last run where it didn't fail, window counts and same-commit results (viewer, editor or admin; rate-limited per credential)
 - Stateless upload (auth): `POST /api/v1/reports/begin` → `register` → `upload/{rid}/{uid}/json` → `upload/{rid}/{uid}/screenshots`. `/reports/begin` declares `total_reports_expected` (the shard count); the report group auto-finalizes once that many shards reach `complete`. Idle groups are flipped to `incomplete` by the staleness reaper.
 - `GET /api/v1/artifacts/{id}` — 302 → presigned S3 (auth required)
 - `POST /api/v1/orchestration/begin` — register a run with composite identity + dispatch units (idempotent on identity + units hash)
@@ -32,6 +34,7 @@ Reads are public; writes/admin require `X-API-Key`, `Authorization: Bearer`, or 
 - `GET /api/v1/ws` — WebSocket for live ingest progress (anonymous); orchestration subscribers send `subscribe.orchestration` / `unsubscribe.orchestration` frames and receive `orchestration.run.started`, `orchestration.unit.leased`, `orchestration.unit.completed`, `orchestration.lease.expired`, `orchestration.run.completed`, `orchestration.run.timed_out` events
 - `POST /api/v1/auth/github/start`, `GET /api/v1/auth/github/callback`, `POST /api/v1/auth/logout`
 - `/swagger-ui/` — hand-authored OpenAPI 3.1 spec browser
+- `/mcp` — read-only MCP server (Streamable HTTP, stateless; viewer, editor or admin key; rate-limited per credential). Tools: `find_runs`, `get_run_failures`, `get_test_history`, `get_test_runs`, `get_screenshot`; every call is audit-logged (credential, tool, arguments, never output). Connect Claude Code with `claude mcp add --transport http test-system-io https://<host>/mcp --header "X-API-Key: <viewer key>"` after `tsioctl keys issue --name <you> --role viewer`.
 - Legacy `POST /api/v1/reports` bundle upload now returns 410 Gone.
 
 ## Style

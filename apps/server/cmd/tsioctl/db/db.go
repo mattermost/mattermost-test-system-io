@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/config"
 	tsiodb "github.com/mattermost/mattermost-test-system-io/apps/server/internal/db"
 )
@@ -113,7 +114,7 @@ func seedCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			row, err := repo.Insert(ctx, "dev", iss)
+			row, err := repo.Insert(ctx, "dev", policy.RoleUploader, iss)
 			if err != nil {
 				return err
 			}

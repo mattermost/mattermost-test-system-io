@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/policy"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/tests/e2e/testenv"
 )
 
@@ -25,12 +26,12 @@ func TestKeysLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	row, err := repo.Insert(ctx, "ci-primary", iss)
+	row, err := repo.Insert(ctx, "ci-primary", policy.RoleUploader, iss)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if row.Status != apikey.StatusActive {
-		t.Errorf("status = %q, want active", row.Status)
+	if row.Status != apikey.StatusActive || row.Role != policy.RoleUploader {
+		t.Errorf("status, role = %q, %q; want active, uploader", row.Status, row.Role)
 	}
 
 	// list active
@@ -51,7 +52,7 @@ func TestKeysLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue2: %v", err)
 	}
-	if _, err := repo.Insert(ctx, "ci-primary-rotated", iss2); err != nil {
+	if _, err := repo.Insert(ctx, "ci-primary-rotated", policy.RoleUploader, iss2); err != nil {
 		t.Fatalf("insert2: %v", err)
 	}
 	allRows, err := repo.List(ctx, nil)
@@ -108,5 +109,43 @@ func TestKeysLifecycle(t *testing.T) {
 	}
 	if !apikey.Verify(iss2.PlainText, fetched2.KeyHash) {
 		t.Error("new key hash failed to verify")
+	}
+}
+
+// TestKeyRoles: a key keeps the role it was issued with, and keys that predate roles (000027) are
+// uploaders, so CI keeps uploading after the migration.
+func TestKeyRoles(t *testing.T) {
+	env := testenv.Start(t)
+	repo := &apikey.Repo{Pool: env.Pool}
+	ctx := context.Background()
+
+	iss, err := apikey.Issue()
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	viewer, err := repo.Insert(ctx, "alpha-ai", policy.RoleViewer, iss)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got, err := repo.ByID(ctx, viewer.ID)
+	if err != nil || got.Role != policy.RoleViewer {
+		t.Errorf("ByID = %+v, %v; want a viewer key", got, err)
+	}
+
+	// A key inserted the way it was before roles existed.
+	var legacyRole string
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO api_keys (name, key_prefix, key_hash, status)
+		VALUES ('legacy-ci', 'legacyprefix', 'x', 'active') RETURNING role`).Scan(&legacyRole); err != nil {
+		t.Fatalf("insert legacy key: %v", err)
+	}
+	if legacyRole != string(policy.RoleUploader) {
+		t.Errorf("legacy key role = %q, want uploader", legacyRole)
+	}
+
+	if _, err := env.Pool.Exec(ctx, `
+		INSERT INTO api_keys (name, key_prefix, key_hash, status, role)
+		VALUES ('bad', 'badprefix', 'x', 'active', 'denied')`); err == nil {
+		t.Error("a denied key was accepted; keys may only be uploader, viewer, editor or admin")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,7 @@ const (
 	historyDefaultPerPage = 50
 	historyMaxPerPage     = 2000
 	historyErrorChars     = 400
+	historyMaxNames       = 10
 )
 
 // historyRequest names the spec files whose past executions the caller wants.
@@ -63,6 +65,13 @@ type historyRequest struct {
 	Report     string   `json:"report"`
 	Page       int      `json:"page"`
 	PerPage    int      `json:"per_page"`
+	// Names keeps the named lanes (report group name or run group); with `runs`, the newest N runs of
+	// those lanes rather than of every lane.
+	Names []string `json:"names"`
+	// Commit keeps one commit's runs: a full SHA or a prefix of at least 7 characters.
+	Commit string `json:"commit"`
+	// IncludeScreenshots adds each row's screenshot file keys.
+	IncludeScreenshots bool `json:"include_screenshots"`
 }
 
 // historyObservation is one execution of one test in one finished report group.
@@ -83,6 +92,12 @@ type historyObservation struct {
 	CommitSHA    string    `json:"commit_sha"`
 	CreatedAt    time.Time `json:"created_at"`
 	ErrorExcerpt string    `json:"error_excerpt"`
+	GHRunID      string    `json:"gh_run_id"`
+	GHRunAttempt string    `json:"gh_run_attempt"`
+	// GroupStatus is completed, or incomplete for a group closed after its uploads stopped.
+	GroupStatus string `json:"group_status"`
+	// Screenshots holds the try's screenshot file keys (GET /files/<key>), in order, when requested.
+	Screenshots []string `json:"screenshots,omitempty"`
 }
 
 // History serves POST /api/v1/reports/history: every execution recorded against
@@ -110,6 +125,9 @@ type historyQuery struct {
 	runs       int
 	page       int
 	perPage    int
+	names      []string
+	commit     string
+	shots      bool
 }
 
 // validate checks a decoded request and resolves the defaults. A non-empty
@@ -142,6 +160,20 @@ func (req historyRequest) validate() (historyQuery, string) {
 		}
 		seen[f] = true
 		files = append(files, f)
+	}
+	if len(req.Names) > historyMaxNames {
+		return historyQuery{}, fmt.Sprintf("at most %d names per request", historyMaxNames)
+	}
+	names := make([]string, 0, len(req.Names))
+	for _, n := range req.Names {
+		if n == "" {
+			return historyQuery{}, "names must not contain an empty name"
+		}
+		names = append(names, n)
+	}
+	commit := strings.ToLower(req.Commit)
+	if commit != "" && !commitPrefixRE.MatchString(commit) {
+		return historyQuery{}, "commit must be 7 to 40 hexadecimal characters"
 	}
 	page := req.Page
 	if page == 0 {
@@ -191,6 +223,9 @@ func (req historyRequest) validate() (historyQuery, string) {
 		runs:       req.Runs,
 		page:       page,
 		perPage:    perPage,
+		names:      names,
+		commit:     commit,
+		shots:      req.IncludeScreenshots,
 	}
 	// Exactly one of these two reaches the query as a non-NULL parameter, and
 	// that is what selects the mode. `groupLimit` set means the newest N runs
@@ -277,7 +312,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	// over the same join.
 	rows, err := h.Pool.Query(r.Context(), `
 		WITH sel AS (
-			SELECT id, name, branch, gh_pr_number, commit_sha, created_at
+			SELECT id, name, branch, gh_pr_number, commit_sha, created_at, gh_run_id, gh_run_attempt, status
 			FROM report_groups
 			WHERE repository = $1
 			  -- Finished groups. 'incomplete' is a group the reaper closed after
@@ -289,6 +324,8 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 			  AND created_at < $2
 			  AND ($3::timestamptz IS NULL OR created_at >= $3)
 			  AND ($4 = '' OR branch = $4)
+			  AND (cardinality($11::text[]) = 0 OR name = ANY($11) OR run_group = ANY($11))
+			  AND ($12 = '' OR commit_sha LIKE $12 || '%')
 			  AND EXISTS (
 				  SELECT 1
 				  FROM reports r
@@ -302,7 +339,12 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		)
 		SELECT s.file, COALESCE(s.title, ''), COALESCE(r.name, ''), c.title, COALESCE(c.full_title, ''), c.status, c.retry_count, c.ordinal,
 		       g.id, g.name, g.branch, g.gh_pr_number, g.commit_sha, g.created_at,
-		       left(COALESCE(c.error_message, ''), $7)
+		       left(COALESCE(c.error_message, ''), $7),
+		       g.gh_run_id, g.gh_run_attempt, g.status,
+		       CASE WHEN $13 THEN ARRAY(
+		           SELECT rs.s3_key FROM report_screenshots rs
+		           WHERE rs.case_id = c.id ORDER BY rs.sequence, rs.created_at
+		       ) ELSE '{}'::text[] END
 		FROM sel g
 		JOIN reports r ON r.report_group_id = g.id
 		JOIN suites s ON s.report_id = r.id
@@ -311,7 +353,8 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 		  AND ($10 = '' OR starts_with(r.name, $10))
 		ORDER BY g.created_at DESC, g.id, s.id, c.ordinal, c.id
 		LIMIT $8 OFFSET $9
-	`, q.repository, q.until, q.since, q.branch, q.files, q.groupLimit, historyErrorChars, q.perPage+1, (q.page-1)*q.perPage, q.report)
+	`, q.repository, q.until, q.since, q.branch, q.files, q.groupLimit, historyErrorChars, q.perPage+1, (q.page-1)*q.perPage, q.report,
+		q.names, q.commit, q.shots)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -320,7 +363,8 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	out := make([]historyObservation, 0)
 	for rows.Next() {
 		var o historyObservation
-		if err := rows.Scan(&o.File, &o.SuiteTitle, &o.ReportName, &o.Title, &o.FullTitle, &o.Status, &o.RetryCount, &o.Ordinal, &o.GroupID, &o.Name, &o.Branch, &o.GHPRNumber, &o.CommitSHA, &o.CreatedAt, &o.ErrorExcerpt); err != nil {
+		if err := rows.Scan(&o.File, &o.SuiteTitle, &o.ReportName, &o.Title, &o.FullTitle, &o.Status, &o.RetryCount, &o.Ordinal, &o.GroupID, &o.Name, &o.Branch, &o.GHPRNumber, &o.CommitSHA, &o.CreatedAt, &o.ErrorExcerpt,
+			&o.GHRunID, &o.GHRunAttempt, &o.GroupStatus, &o.Screenshots); err != nil {
 			api.WriteError(w, r, err)
 			return
 		}

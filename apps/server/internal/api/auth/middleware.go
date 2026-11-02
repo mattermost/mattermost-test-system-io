@@ -81,7 +81,7 @@ func resolve(
 		if !apikey.Verify(raw, row.KeyHash) {
 			return Subject{}, false
 		}
-		return Subject{Kind: "apikey", APIKeyID: row.ID, Role: policy.RoleUploader}, true
+		return Subject{Kind: "apikey", APIKeyID: row.ID, Role: row.Role}, true
 	}
 
 	// 2) Authorization: Bearer <jwt> (GitHub Actions OIDC)

@@ -8,7 +8,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 )
 
-// Repo page view model.
+// RepoPage is the repo page view model.
 type RepoPage struct {
 	Site                 SiteInfo
 	RepoSlug             string
@@ -27,7 +27,7 @@ type RepoPage struct {
 	Title                string
 }
 
-// Build repo page view model.
+// BuildRepoPage builds the repo page view model.
 func BuildRepoPage(ctx context.Context, pool *pgxpool.Pool, site SiteInfo, repoSlug string, limit, offset int, branchFilter string) (RepoPage, error) {
 	if limit <= 0 {
 		limit = 50

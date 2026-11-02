@@ -135,14 +135,14 @@ func mergeOrchestrationTestsIntoStats(stats groupStats, orch *orchestrationSumma
 	return stats
 }
 
-// report_groups id for orchestration identity.
+// GroupIDForOrchestrationIdentity returns the report_groups id for an orchestration identity.
 func GroupIDForOrchestrationIdentity(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	repository, commitSHA, ghRunID, name, ghRunAttempt string,
 ) (uuid.UUID, error) {
 	if pool == nil {
-		return uuid.Nil, fmt.Errorf("reports: nil pool")
+		return uuid.Nil, errors.New("reports: nil pool")
 	}
 	var id uuid.UUID
 	err := pool.QueryRow(ctx, `
@@ -164,7 +164,7 @@ func GroupIDForOrchestrationIdentity(
 	return id, nil
 }
 
-// Refresh projection; log failures.
+// RefreshGroupSummaryBestEffort refreshes a group projection, logging failures.
 func RefreshGroupSummaryBestEffort(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, groupID uuid.UUID) {
 	if groupID == uuid.Nil {
 		return
@@ -176,7 +176,7 @@ func RefreshGroupSummaryBestEffort(ctx context.Context, pool *pgxpool.Pool, logg
 	}
 }
 
-// Backfill stale projection rows.
+// RefreshStaleGroupSummaries backfills stale projection rows.
 func RefreshStaleGroupSummaries(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, limit int) error {
 	if pool == nil || limit <= 0 {
 		return nil

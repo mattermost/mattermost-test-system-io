@@ -8,7 +8,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 )
 
-// Home page view model.
+// HomePage is the home page view model.
 type HomePage struct {
 	Site                 SiteInfo
 	LiveRuns             []HomeRunRow
@@ -27,7 +27,7 @@ type HomePage struct {
 	Title                string
 }
 
-// Build home page view model.
+// BuildHomePage builds the home page view model.
 func BuildHomePage(ctx context.Context, pool *pgxpool.Pool, site SiteInfo, limit, offset int, repository, branchFilter string) (HomePage, error) {
 	if limit <= 0 {
 		limit = 50
@@ -93,7 +93,7 @@ func BuildHomePage(ctx context.Context, pool *pgxpool.Pool, site SiteInfo, limit
 	}, nil
 }
 
-// Build live row models.
+// BuildHomeLiveRows builds live row models.
 func BuildHomeLiveRows(ctx context.Context, pool *pgxpool.Pool, repository, branchFilter string) ([]HomeRunRow, error) {
 	live, err := reports.LoadHomeLiveRuns(ctx, pool, repository, branchFilter)
 	if err != nil {

@@ -9,7 +9,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 )
 
-// One home list row (live or static).
+// HomeRunRow is one home list row (live or static).
 type HomeRunRow struct {
 	GroupID           string
 	RowNum            int
@@ -66,7 +66,7 @@ func mapLiveRun(r reports.HomeLiveRun) HomeRunRow {
 		GHPRNumber:     r.GHPRNumber,
 		CreatedAt:      r.CreatedAt,
 		CreatedAtRel:   relativeTimeISO(r.CreatedAt),
-		StatusIcon:     "live",
+		StatusIcon:     iconLive,
 		IsLive:         true,
 		Region:         "home-live",
 		FilterRepo:     strings.ToLower(r.RepositoryName),
@@ -132,7 +132,7 @@ func fillSpecProgress(row *HomeRunRow, orch *reports.HomeOrchView) {
 	row.SpecSkipped = c.CompletedSkipped
 	row.SpecDone = c.CompletedPass + c.CompletedFail + c.CompletedSkipped + c.Abandoned
 	switch {
-	case row.SpecDone < orch.TotalUnits && orch.Status == "in_progress":
+	case row.SpecDone < orch.TotalUnits && orch.Status == statusInProgress:
 		row.SpecClass = "spec-blue"
 	case row.SpecDone < orch.TotalUnits:
 		row.SpecClass = "spec-orange"
@@ -140,7 +140,7 @@ func fillSpecProgress(row *HomeRunRow, orch *reports.HomeOrchView) {
 		row.SpecClass = "spec-neutral"
 	}
 	row.SpecRetest = c.RetestEligible
-	if orch.Status == "in_progress" {
+	if orch.Status == statusInProgress {
 		row.SpecPending = c.Pending
 		row.SpecLeased = c.Leased
 	} else if c.Abandoned > 0 {
@@ -220,23 +220,23 @@ func statusIconForRun(groupStatus string, orch *reports.HomeOrchView, total int,
 	// Icon from orchestration when present.
 	if orch != nil {
 		switch orch.Status {
-		case "in_progress":
-			return "live"
-		case "timed_out":
-			return "failed"
+		case statusInProgress:
+			return iconLive
+		case statusTimedOut:
+			return statusFailed
 		}
 		if hasFailed || orch.Counts.CompletedFail > 0 || orch.Counts.Abandoned > 0 {
-			return "failed"
+			return statusFailed
 		}
-		return "passed"
+		return statusPassed
 	}
-	if groupStatus == "in_progress" {
-		return "live"
+	if groupStatus == statusInProgress {
+		return iconLive
 	}
 	if hasFailed || groupStatus == "incomplete" {
-		return "failed"
+		return statusFailed
 	}
-	return "passed"
+	return statusPassed
 }
 
 func passRateDisplay(passed, failed, flaky int) string {

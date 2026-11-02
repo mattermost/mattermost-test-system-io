@@ -166,13 +166,13 @@ func TestRenderHomeWithStaticRunOnly(t *testing.T) {
 }
 
 func TestStatusIconForRun(t *testing.T) {
-	if statusIconForRun("completed", &reports.HomeOrchView{Status: "completed"}, 10, true, 0) != "failed" {
+	if statusIconForRun("completed", &reports.HomeOrchView{Status: "completed"}, 10, true, 0) != statusFailed {
 		t.Fatal("expected failed for completed orch with failures")
 	}
-	if statusIconForRun("incomplete", nil, 0, false, 0) != "failed" {
+	if statusIconForRun("incomplete", nil, 0, false, 0) != statusFailed {
 		t.Fatal("expected failed for incomplete group")
 	}
-	if statusIconForRun("completed", &reports.HomeOrchView{Status: "timed_out"}, 3, false, 0) != "failed" {
+	if statusIconForRun("completed", &reports.HomeOrchView{Status: "timed_out"}, 3, false, 0) != statusFailed {
 		t.Fatal("expected failed for timed_out orch")
 	}
 	if statusIconForRun("completed", &reports.HomeOrchView{Status: "completed"}, 10, false, 2) != "passed" {
@@ -188,7 +188,7 @@ func TestStatusIconForRun(t *testing.T) {
 	if statusIconForRun("incomplete", &reports.HomeOrchView{
 		Status: "completed",
 		Counts: reports.HomeOrchCountsView{Abandoned: 6},
-	}, 3, false, 0) != "failed" {
+	}, 3, false, 0) != statusFailed {
 		t.Fatal("expected failed for completed orch with abandoned units")
 	}
 }

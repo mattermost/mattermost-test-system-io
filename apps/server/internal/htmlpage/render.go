@@ -36,6 +36,20 @@ var repoJS string
 //go:embed assets/run.js
 var runJS string
 
+// Build-time embedded assets; trusted, so safe to mark as CSS/JS.
+var (
+	styleAsset = template.CSS(styleCSS) //nolint:gosec // G203: embedded at build time
+	themeAsset = template.JS(themeJS)   //nolint:gosec // G203: embedded at build time
+	homeAsset  = template.JS(homeJS)    //nolint:gosec // G203: embedded at build time
+	repoAsset  = template.JS(repoJS)    //nolint:gosec // G203: embedded at build time
+	runAsset   = template.JS(runJS)     //nolint:gosec // G203: embedded at build time
+)
+
+// queryURL returns "?"+encoded query; url.Values.Encode escapes all values.
+func queryURL(v url.Values) template.URL {
+	return template.URL("?" + v.Encode()) //nolint:gosec // G203: encoder-escaped query
+}
+
 var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
 	"shortSHA":   shortSHA,
 	"githubRepo": githubRepo,
@@ -52,13 +66,9 @@ var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
 		if branchFilter != "" {
 			v.Set("branch_filter", branchFilter)
 		}
-		q := v.Encode()
-		if q == "" {
-			return template.URL("?")
-		}
-		return template.URL("?" + q)
+		return queryURL(v)
 	},
-	"repoQuery": func(page int, repo, branchFilter string) template.URL {
+	"repoQuery": func(page int, _, branchFilter string) template.URL {
 		v := url.Values{}
 		if page > 1 {
 			v.Set("page", strconv.Itoa(page))
@@ -66,11 +76,7 @@ var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
 		if branchFilter != "" {
 			v.Set("branch_filter", branchFilter)
 		}
-		q := v.Encode()
-		if q == "" {
-			return template.URL("?")
-		}
-		return template.URL("?" + q)
+		return queryURL(v)
 	},
 	"runQuery": func(page int, ghRunID, ghRunAttempt string) template.URL {
 		v := url.Values{}
@@ -83,11 +89,7 @@ var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
 		if page > 1 {
 			v.Set("page", strconv.Itoa(page))
 		}
-		q := v.Encode()
-		if q == "" {
-			return template.URL("?")
-		}
-		return template.URL("?" + q)
+		return queryURL(v)
 	},
 }).Parse(layoutHTML + homeHTML + repoHTML + runHTML))
 
@@ -101,7 +103,7 @@ type layoutData struct {
 	PageJS  template.JS
 }
 
-// Render live row HTML fragment.
+// RenderHomeLiveRows renders the live rows HTML fragment.
 func RenderHomeLiveRows(runs []HomeRunRow) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := pageTmpl.ExecuteTemplate(&buf, "home-live-rows", runs); err != nil {
@@ -119,14 +121,14 @@ func RenderRunDispatchLive(live RunDispatchLive) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Render home page HTML.
+// RenderHome renders the home page HTML.
 func RenderHome(page HomePage) ([]byte, error) {
 	data := layoutData{
 		Site:    page.Site,
 		Home:    &page,
-		CSS:     template.CSS(styleCSS),
-		ThemeJS: template.JS(themeJS),
-		PageJS:  template.JS(homeJS),
+		CSS:     styleAsset,
+		ThemeJS: themeAsset,
+		PageJS:  homeAsset,
 	}
 	var buf bytes.Buffer
 	if err := pageTmpl.ExecuteTemplate(&buf, "layout", data); err != nil {
@@ -135,14 +137,14 @@ func RenderHome(page HomePage) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Render repo page HTML.
+// RenderRepo renders the repo page HTML.
 func RenderRepo(page RepoPage) ([]byte, error) {
 	data := layoutData{
 		Site:    page.Site,
 		Repo:    &page,
-		CSS:     template.CSS(styleCSS),
-		ThemeJS: template.JS(themeJS),
-		PageJS:  template.JS(repoJS),
+		CSS:     styleAsset,
+		ThemeJS: themeAsset,
+		PageJS:  repoAsset,
 	}
 	var buf bytes.Buffer
 	if err := pageTmpl.ExecuteTemplate(&buf, "layout", data); err != nil {
@@ -156,9 +158,9 @@ func RenderRun(page RunPage) ([]byte, error) {
 	data := layoutData{
 		Site:    page.Site,
 		Run:     &page,
-		CSS:     template.CSS(styleCSS),
-		ThemeJS: template.JS(themeJS),
-		PageJS:  template.JS(runJS),
+		CSS:     styleAsset,
+		ThemeJS: themeAsset,
+		PageJS:  runAsset,
 	}
 	var buf bytes.Buffer
 	if err := pageTmpl.ExecuteTemplate(&buf, "layout", data); err != nil {

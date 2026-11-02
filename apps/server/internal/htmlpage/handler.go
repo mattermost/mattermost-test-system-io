@@ -14,7 +14,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 )
 
-// HTML page handlers.
+// Handler serves HTML report pages.
 type Handler struct {
 	Pool   *pgxpool.Pool
 	Orch   *orchestration.Store
@@ -22,7 +22,7 @@ type Handler struct {
 	Logger *slog.Logger
 }
 
-// GET / and /reports.
+// ServeHome serves GET / and /reports.
 func (h *Handler) ServeHome(w http.ResponseWriter, r *http.Request) {
 	if h.Pool == nil {
 		http.Error(w, "html pages unavailable", http.StatusServiceUnavailable)
@@ -76,10 +76,7 @@ func (h *Handler) ServeHome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to render page", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(html)
+	writeHTML(w, html)
 }
 
 type homeLiveFragmentResponse struct {
@@ -87,7 +84,7 @@ type homeLiveFragmentResponse struct {
 	Count int    `json:"count"`
 }
 
-// GET /reports/{repo}.
+// ServeRepo serves GET /reports/{repo}.
 func (h *Handler) ServeRepo(w http.ResponseWriter, r *http.Request) {
 	if h.Pool == nil {
 		http.Error(w, "html pages unavailable", http.StatusServiceUnavailable)
@@ -143,13 +140,10 @@ func (h *Handler) ServeRepo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to render page", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(html)
+	writeHTML(w, html)
 }
 
-// GET /reports/fragment/home-live — live rows JSON.
+// ServeHomeLiveFragment serves GET /reports/fragment/home-live (live rows JSON).
 func (h *Handler) ServeHomeLiveFragment(w http.ResponseWriter, r *http.Request) {
 	if h.Pool == nil {
 		http.Error(w, "html pages unavailable", http.StatusServiceUnavailable)
@@ -186,7 +180,7 @@ func (h *Handler) ServeHomeLiveFragment(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// GET /reports/{repo}/{branch}/{sha}/{name}.
+// ServeRun serves GET /reports/{repo}/{branch}/{sha}/{name}.
 func (h *Handler) ServeRun(w http.ResponseWriter, r *http.Request) {
 	if h.Pool == nil {
 		http.Error(w, "html pages unavailable", http.StatusServiceUnavailable)
@@ -234,10 +228,7 @@ func (h *Handler) ServeRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to render page", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(html)
+	writeHTML(w, html)
 }
 
 type runDispatchLiveFragmentResponse struct {
@@ -247,7 +238,7 @@ type runDispatchLiveFragmentResponse struct {
 	Terminal bool   `json:"terminal"`
 }
 
-// GET /reports/fragment/run-dispatch-live.
+// ServeRunDispatchLiveFragment serves GET /reports/fragment/run-dispatch-live.
 func (h *Handler) ServeRunDispatchLiveFragment(w http.ResponseWriter, r *http.Request) {
 	if h.Orch == nil {
 		http.Error(w, "html pages unavailable", http.StatusServiceUnavailable)
@@ -296,4 +287,12 @@ func (h *Handler) ServeRunDispatchLiveFragment(w http.ResponseWriter, r *http.Re
 		Total:    total,
 		Terminal: !live,
 	})
+}
+
+// writeHTML writes a rendered html/template page.
+func writeHTML(w http.ResponseWriter, html []byte) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(html) //nolint:gosec // G705: html/template output is already escaped
 }

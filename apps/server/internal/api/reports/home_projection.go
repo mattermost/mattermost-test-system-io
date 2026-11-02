@@ -2,6 +2,7 @@ package reports
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// In-progress home row.
+// HomeLiveRun is an in-progress home row.
 type HomeLiveRun struct {
 	GroupID        string
 	Href           string
@@ -27,7 +28,7 @@ type HomeLiveRun struct {
 	Orch           *HomeOrchView
 }
 
-// Terminal home row.
+// HomeStaticRun is a terminal home row.
 type HomeStaticRun struct {
 	GroupID        string
 	Href           string
@@ -55,7 +56,7 @@ type HomeStaticRun struct {
 	PassRate       *int
 }
 
-// Home page projection payload.
+// HomePageData is the home page projection payload.
 type HomePageData struct {
 	Live   []HomeLiveRun
 	Static []HomeStaticRun
@@ -66,10 +67,10 @@ type HomePageData struct {
 
 const homeLiveRunLimit = 20
 
-// Load home page from report_groups projections.
+// LoadHomePageData loads the home page from report_groups projections.
 func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int, repository, branchFilter string) (HomePageData, error) {
 	if pool == nil {
-		return HomePageData{}, fmt.Errorf("reports: nil pool")
+		return HomePageData{}, errors.New("reports: nil pool")
 	}
 	if limit <= 0 {
 		limit = 50
@@ -150,7 +151,7 @@ func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int
 	}, nil
 }
 
-// Load live home rows.
+// LoadHomeLiveRuns loads live home rows.
 func LoadHomeLiveRuns(ctx context.Context, pool *pgxpool.Pool, repository, branchFilter string) ([]HomeLiveRun, error) {
 	repoFilter := RepositoryFilter(repository)
 	branchF := BranchFilter(branchFilter)
@@ -210,7 +211,7 @@ func toHomeLiveRun(row groupProjectionRow) HomeLiveRun {
 	}
 }
 
-// Orchestration fields for HTML rows.
+// HomeOrchView holds orchestration fields for HTML rows.
 type HomeOrchView struct {
 	Status     string
 	TotalUnits int
@@ -219,6 +220,7 @@ type HomeOrchView struct {
 	Durations  *HomeOrchDurationsView
 }
 
+// HomeOrchCountsView holds orchestration unit counts.
 type HomeOrchCountsView struct {
 	Pending          int
 	Leased           int
@@ -229,6 +231,7 @@ type HomeOrchCountsView struct {
 	RetestEligible   int
 }
 
+// HomeOrchDurationsView holds orchestration durations.
 type HomeOrchDurationsView struct {
 	FirstPassMs *int64
 	RetestMs    *int64

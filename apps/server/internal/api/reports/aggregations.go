@@ -360,10 +360,10 @@ func toIndividualSummary(g groupDTO, e reportEntryDTO, stats groupStats) individ
 
 // ---------- aggregation handlers ----------
 
-// Distinct repositories for home filter dropdown.
+// LoadReportRepositories lists distinct repositories for the home filter dropdown.
 func LoadReportRepositories(ctx context.Context, pool *pgxpool.Pool) ([]RepositoryOption, error) {
 	if pool == nil {
-		return nil, fmt.Errorf("reports: nil pool")
+		return nil, errors.New("reports: nil pool")
 	}
 	rows, err := pool.Query(ctx, `
 		SELECT repository
@@ -391,7 +391,7 @@ func LoadReportRepositories(ctx context.Context, pool *pgxpool.Pool) ([]Reposito
 	return out, rows.Err()
 }
 
-// GET /api/v1/reports/repositories.
+// Repositories serves GET /api/v1/reports/repositories.
 func (h *Handlers) Repositories(w http.ResponseWriter, r *http.Request) {
 	opts, err := LoadReportRepositories(r.Context(), h.Pool)
 	if err != nil {
@@ -403,7 +403,7 @@ func (h *Handlers) Repositories(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"repositories": opts})
 }
 
-// GET /api/v1/reports/branch-filters.
+// BranchFilters serves GET /api/v1/reports/branch-filters.
 func (h *Handlers) BranchFilters(w http.ResponseWriter, r *http.Request) {
 	repository := strings.TrimSpace(r.URL.Query().Get("repository"))
 	if repository == "" {

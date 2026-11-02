@@ -2,6 +2,7 @@ package reports
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,25 +10,29 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const branchMaster = "master"
+
 const (
 	branchFilterMainMaster = "branch:main-master"
 	branchFilterRelease    = "kind:release"
 	branchFilterPR         = "kind:pr"
 )
 
-// Home branch filter option.
+// BranchFilterOption is a home branch filter option.
 type BranchFilterOption struct {
 	Value string `json:"value"`
 	Label string `json:"label"`
 }
 
-// Branch filter param values: "", "branch:main-master", "kind:release", "kind:pr".
+// BranchFilter is a branch filter param value: "", "branch:main-master", "kind:release", "kind:pr".
 type BranchFilter string
 
+// Active reports whether a filter is set.
 func (f BranchFilter) Active() bool {
 	return strings.TrimSpace(string(f)) != ""
 }
 
+// Value returns the raw filter value.
 func (f BranchFilter) Value() string {
 	return strings.TrimSpace(string(f))
 }
@@ -39,7 +44,7 @@ func (f BranchFilter) appendSQL(b *strings.Builder, args *[]any) {
 	v := f.Value()
 	switch v {
 	case branchFilterMainMaster, "branch:main", "branch:master":
-		names := []string{"main", "master"}
+		names := []string{"main", branchMaster}
 		placeholders := make([]string, 0, len(names)*3)
 		for _, name := range names {
 			barePH := fmt.Sprintf("$%d", len(*args)+1)
@@ -98,7 +103,7 @@ func classifyBranchFilterRow(branch string, prNum *int) (kind int, sawMain bool,
 	switch {
 	case lower == "main":
 		return branchKindMainMaster, true, true
-	case lower == "master":
+	case lower == branchMaster:
 		return branchKindMainMaster, false, true
 	case strings.HasPrefix(lower, "release-"):
 		return branchKindRelease, false, true
@@ -107,14 +112,14 @@ func classifyBranchFilterRow(branch string, prNum *int) (kind int, sawMain bool,
 	}
 }
 
-// Branch filter options for one repository.
+// LoadBranchFilterOptions lists branch filter options for one repository.
 func LoadBranchFilterOptions(ctx context.Context, pool *pgxpool.Pool, repository string) ([]BranchFilterOption, error) {
 	repoFilter := RepositoryFilter(repository)
 	if !repoFilter.Active() {
 		return nil, nil
 	}
 	if pool == nil {
-		return nil, fmt.Errorf("reports: nil pool")
+		return nil, errors.New("reports: nil pool")
 	}
 
 	where := strings.Builder{}
@@ -156,7 +161,7 @@ func LoadBranchFilterOptions(ctx context.Context, pool *pgxpool.Pool, repository
 			if sawMain {
 				mainLabel = "main"
 			} else if mainLabel == "" {
-				mainLabel = "master"
+				mainLabel = branchMaster
 			}
 		case branchKindRelease:
 			hasRelease = true
@@ -171,7 +176,7 @@ func LoadBranchFilterOptions(ctx context.Context, pool *pgxpool.Pool, repository
 	out := make([]BranchFilterOption, 0, 3)
 	if hasMainMaster {
 		if mainLabel == "" {
-			mainLabel = "master"
+			mainLabel = branchMaster
 		}
 		out = append(out, BranchFilterOption{
 			Value: branchFilterMainMaster,
@@ -193,7 +198,7 @@ func LoadBranchFilterOptions(ctx context.Context, pool *pgxpool.Pool, repository
 	return out, nil
 }
 
-// Resolve filter; default when only one option exists.
+// ResolveBranchFilter validates the filter; defaults when only one option exists.
 func ResolveBranchFilter(requested string, options []BranchFilterOption) string {
 	if v := strings.TrimSpace(requested); v != "" {
 		return v

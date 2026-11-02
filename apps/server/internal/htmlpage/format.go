@@ -1,3 +1,4 @@
+// Package htmlpage renders server-side HTML report pages.
 package htmlpage
 
 func shortSHA(sha string) string {

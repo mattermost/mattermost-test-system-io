@@ -1,6 +1,6 @@
 package htmlpage
 
-// Site footer metadata.
+// SiteInfo is site footer metadata.
 type SiteInfo struct {
 	ServerVersion      string
 	CommitSHA          string

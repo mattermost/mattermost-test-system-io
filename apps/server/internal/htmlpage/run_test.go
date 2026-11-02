@@ -8,7 +8,7 @@ import (
 func TestRenderRunDispatch(t *testing.T) {
 	html, err := RenderRun(RunPage{
 		Title: "cypress-full · Test System IO",
-		Site:  SiteInfo{ServerVersion: "0.15.0", Environment: "test"},
+		Site:  SiteInfo{ServerVersion: "0.16.0", Environment: "test"},
 		Breadcrumbs: []Crumb{
 			{Label: "Reports", Href: "/reports"},
 			{Label: "mattermost", Href: "/reports/mattermost"},

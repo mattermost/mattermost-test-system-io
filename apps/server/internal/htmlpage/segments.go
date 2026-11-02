@@ -4,7 +4,7 @@ import "regexp"
 
 var commitSHAParamRE = regexp.MustCompile(`(?i)^[0-9a-f]{7,40}$`)
 
-// Repo slug segment vs commit SHA or reserved path.
+// IsRepoPageSegment reports whether segment is a repo slug (not a commit SHA or reserved path).
 func IsRepoPageSegment(segment string) bool {
 	if segment == "" {
 		return false

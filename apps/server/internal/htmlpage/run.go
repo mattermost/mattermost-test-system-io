@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,22 +17,20 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 )
 
-const runUnitPageSize = 100
-
-// Run page query options.
+// RunPageOpts holds run page query options.
 type RunPageOpts struct {
 	GHRunID      string
 	GHRunAttempt string
 	Page         int // 1-based unit list page
 }
 
-// Breadcrumb crumb.
+// Crumb is one breadcrumb entry.
 type Crumb struct {
 	Label string
 	Href  string // empty = current
 }
 
-// Resolved composite identity for templates + WS.
+// RunIdentity is the resolved composite identity for templates + WS.
 type RunIdentity struct {
 	Repository   string
 	CommitSHA    string
@@ -44,14 +43,14 @@ type RunIdentity struct {
 	GHPRNumber   int // 0 = none
 }
 
-// Worker slot badge on a unit row.
+// WorkerSlot is a worker slot badge on a unit row.
 type WorkerSlot struct {
 	Label string
 	Class string // slot-inflight | slot-pass | slot-fail | slot-neutral
 	Title string
 }
 
-// One dispatch unit row (SpecList-style).
+// RunUnitRow is one dispatch unit row (SpecList-style).
 type RunUnitRow struct {
 	RowNum             int
 	SpecPath           string
@@ -76,7 +75,7 @@ type RunUnitRow struct {
 	Tests       []RunTestRow
 }
 
-// Aggregated test under a spec (expandable).
+// RunTestRow is an aggregated test under a spec (expandable).
 type RunTestRow struct {
 	SubIndex     int
 	DisplayNum   string // e.g. "108.2" — mirrors SPA SpecList numbering
@@ -91,7 +90,7 @@ type RunTestRow struct {
 	Attempts     []RunTestAttempt
 }
 
-// One chronological attempt/retry for a test.
+// RunTestAttempt is one chronological attempt/retry for a test.
 type RunTestAttempt struct {
 	Label        string
 	JobName      string
@@ -103,19 +102,19 @@ type RunTestAttempt struct {
 	Screenshots  []RunScreenshot
 }
 
-// Screenshot thumb / lightbox entry.
+// RunScreenshot is a screenshot thumb / lightbox entry.
 type RunScreenshot struct {
 	Key  string
 	Path string
 }
 
-// Timeline segment for summary row.
+// TimelineSeg is a timeline segment for the summary row.
 type TimelineSeg struct {
 	Label string
 	Text  string
 }
 
-// Run page view model.
+// RunPage is the run page view model.
 type RunPage struct {
 	Site        SiteInfo
 	Title       string
@@ -171,7 +170,7 @@ type RunPage struct {
 	ReportsHint string
 }
 
-// Live fragment body (header chips + rows).
+// RunDispatchLive is the live fragment body (header chips + rows).
 type RunDispatchLive struct {
 	UnitTotalAll         int
 	UnitPass             int
@@ -199,7 +198,7 @@ func BuildRunPage(
 	opts RunPageOpts,
 ) (RunPage, url.Values, error) {
 	if pool == nil {
-		return RunPage{}, nil, fmt.Errorf("htmlpage: nil pool")
+		return RunPage{}, nil, errors.New("htmlpage: nil pool")
 	}
 	branch := decodeBranchPathSegment(branchSeg)
 	attempt := strings.TrimSpace(opts.GHRunAttempt)
@@ -230,12 +229,12 @@ func BuildRunPage(
 			Branch:       branch,
 		},
 		UnitPage: pageNum,
-		Mode:     "empty",
+		Mode:     modeEmpty,
 	}
 
 	ghRunID := strings.TrimSpace(opts.GHRunID)
 	if orch == nil {
-		base.Mode = "empty"
+		base.Mode = modeEmpty
 		base.ReportsHint = "Orchestration store unavailable."
 		return base, nil, nil
 	}
@@ -253,7 +252,7 @@ func BuildRunPage(
 		}
 		picked := pickRunForRedirect(candidates)
 		if picked == nil {
-			base.Mode = "empty"
+			base.Mode = modeEmpty
 			base.ReportsHint = "No orchestration run or reports found for this path."
 			return base, nil, nil
 		}
@@ -261,7 +260,7 @@ func BuildRunPage(
 		q.Set("gh_run_id", picked.Identity.GHRunID)
 		q.Set("gh_run_attempt", picked.Identity.GHRunAttempt)
 		if pageNum > 1 {
-			q.Set("page", fmt.Sprintf("%d", pageNum))
+			q.Set("page", strconv.Itoa(pageNum))
 		}
 		return RunPage{}, q, nil
 	}
@@ -276,7 +275,7 @@ func BuildRunPage(
 	snap, err := orch.GetRunWithUnits(ctx, ci)
 	if err != nil {
 		if errors.Is(err, orchestration.ErrNotFound) {
-			base.Mode = "empty"
+			base.Mode = modeEmpty
 			base.Identity.GHRunID = ghRunID
 			base.ReportsHint = "No orchestration run found for this identity."
 			return base, nil, nil
@@ -347,23 +346,23 @@ func applyRunSummary(base *RunPage, snap *orchestration.RunWithUnits) {
 	switch run.Status {
 	case orchestration.RunStatusInProgress:
 		base.HasTestStatus = false
-		base.ProgressStatus = "in_progress"
+		base.ProgressStatus = statusInProgress
 		base.ProgressClass = "progress-live"
 		base.ProgressLabel = "In Progress"
 	case orchestration.RunStatusTimedOut:
 		base.HasTestStatus = true
-		base.TestStatus = "timed_out"
+		base.TestStatus = statusTimedOut
 		base.TestStatusClass = "test-status-timeout"
-		base.ProgressStatus = "timed_out"
+		base.ProgressStatus = statusTimedOut
 		base.ProgressClass = "progress-timeout"
 		base.ProgressLabel = "Timed Out"
 	default:
 		base.HasTestStatus = true
 		if tcFailed > 0 {
-			base.TestStatus = "failed"
+			base.TestStatus = statusFailed
 			base.TestStatusClass = "test-status-fail"
 		} else {
-			base.TestStatus = "passed"
+			base.TestStatus = statusPassed
 			base.TestStatusClass = "test-status-pass"
 		}
 		base.ProgressStatus = "completed"
@@ -379,15 +378,15 @@ func applyRunSummary(base *RunPage, snap *orchestration.RunWithUnits) {
 	base.UnitTotalAll = len(built)
 	for _, r := range built {
 		switch r.StatusIcon {
-		case "pass", "flaky":
+		case iconPass, statusFlaky:
 			base.UnitPass++
-		case "fail":
+		case iconFail:
 			base.UnitFail++
-		case "skipped":
+		case statusSkipped:
 			base.UnitSkipped++
-		case "leased":
+		case iconLeased:
 			base.SpecInProgress++
-		case "retest":
+		case iconRetest:
 			base.SpecRetestInProgress++
 		}
 	}
@@ -439,7 +438,7 @@ func BuildRunDispatchLive(
 	page int,
 ) (live RunDispatchLive, total int, isLive bool, err error) {
 	if orch == nil {
-		return RunDispatchLive{}, 0, false, fmt.Errorf("htmlpage: nil orch store")
+		return RunDispatchLive{}, 0, false, errors.New("htmlpage: nil orch store")
 	}
 	if attempt == "" {
 		attempt = "1"
@@ -558,25 +557,25 @@ func aggregateUnitTests(u orchestration.UnitView) map[string]string {
 		everPassed, everFailed, everSkipped := false, false, false
 		for _, e := range entries {
 			switch e.Status {
-			case "passed", "flaky":
+			case statusPassed, statusFlaky:
 				everPassed = true
-			case "failed", "timedOut", "interrupted":
+			case statusFailed, statusTimedOutPW, statusInterrupted:
 				everFailed = true
-			case "skipped":
+			case statusSkipped:
 				everSkipped = true
 			}
 		}
 		switch {
 		case everPassed && everFailed:
-			out[title] = "flaky"
+			out[title] = statusFlaky
 		case everPassed:
-			out[title] = "passed"
+			out[title] = statusPassed
 		case everFailed:
-			out[title] = "failed"
+			out[title] = statusFailed
 		case everSkipped:
-			out[title] = "skipped"
+			out[title] = statusSkipped
 		default:
-			out[title] = "failed"
+			out[title] = statusFailed
 		}
 	}
 	return out
@@ -590,13 +589,13 @@ func buildSpecRows(units []orchestration.UnitView, allJobNames []string) []RunUn
 		passed, failed, flaky, skipped := 0, 0, 0, 0
 		for _, s := range agg {
 			switch s {
-			case "passed":
+			case statusPassed:
 				passed++
-			case "failed":
+			case statusFailed:
 				failed++
-			case "flaky":
+			case statusFlaky:
 				flaky++
-			case "skipped":
+			case statusSkipped:
 				skipped++
 			}
 		}
@@ -606,26 +605,26 @@ func buildSpecRows(units []orchestration.UnitView, allJobNames []string) []RunUn
 		statusClass := ""
 		switch {
 		case u.State == orchestration.UnitStatePending:
-			icon, status, statusClass = "pending", "pending", "unit-pending"
+			icon, status, statusClass = statusPending, statusPending, clsUnitPending
 		case u.State == orchestration.UnitStateLeased:
 			if u.LeaseCount > 1 {
-				icon, status, statusClass = "retest", "running", "unit-retest"
+				icon, status, statusClass = iconRetest, statusRunning, "unit-retest"
 			} else {
-				icon, status, statusClass = "leased", "running", "unit-leased"
+				icon, status, statusClass = iconLeased, statusRunning, "unit-leased"
 			}
 		case u.State == orchestration.UnitStateAbandoned:
-			icon, status, statusClass = "abandoned", "abandoned", "unit-abandoned"
+			icon, status, statusClass = statusAbandoned, statusAbandoned, "unit-abandoned"
 		case total == 0:
 			status, statusClass = unitStatusDisplay(u.State)
 			icon = statusIconFromState(u.State, false)
 		case failed > 0:
-			icon, status, statusClass = "fail", "failed", "unit-fail"
+			icon, status, statusClass = iconFail, statusFailed, clsUnitFail
 		case flaky > 0:
-			icon, status, statusClass = "flaky", "passed", "unit-flaky"
+			icon, status, statusClass = statusFlaky, statusPassed, "unit-flaky"
 		case passed > 0:
-			icon, status, statusClass = "pass", "passed", "unit-pass"
+			icon, status, statusClass = iconPass, statusPassed, clsUnitPass
 		default:
-			icon, status, statusClass = "skipped", "skipped", "unit-skipped"
+			icon, status, statusClass = statusSkipped, statusSkipped, clsUnitSkipped
 		}
 
 		tests := buildUnitTestRows(u, i+1)
@@ -685,15 +684,15 @@ func buildSpecRows(units []orchestration.UnitView, allJobNames []string) []RunUn
 func unitFilterAttrs(icon, _ string, passed, failed, flaky, skipped int) string {
 	var parts []string
 	switch icon {
-	case "pass", "flaky":
+	case iconPass, statusFlaky:
 		parts = append(parts, "spec_passed")
-	case "fail":
+	case iconFail:
 		parts = append(parts, "spec_failed")
-	case "leased":
+	case iconLeased:
 		parts = append(parts, "spec_in_progress")
-	case "retest":
+	case iconRetest:
 		parts = append(parts, "spec_retest_in_progress")
-	case "skipped":
+	case statusSkipped:
 		parts = append(parts, "spec_skipped")
 	}
 	if passed > 0 {
@@ -786,71 +785,71 @@ func aggregateTestEntries(entries []testCaseEntry) string {
 	everPassed, everFailed, everSkipped := false, false, false
 	for _, e := range entries {
 		switch e.tc.Status {
-		case "passed", "flaky":
+		case statusPassed, statusFlaky:
 			everPassed = true
-		case "failed", "timedOut", "interrupted":
+		case statusFailed, statusTimedOutPW, statusInterrupted:
 			everFailed = true
-		case "skipped":
+		case statusSkipped:
 			everSkipped = true
 		}
 	}
 	switch {
 	case everPassed && everFailed:
-		return "flaky"
+		return statusFlaky
 	case everPassed:
-		return "passed"
+		return statusPassed
 	case everFailed:
-		return "failed"
+		return statusFailed
 	case everSkipped:
-		return "skipped"
+		return statusSkipped
 	default:
-		return "failed"
+		return statusFailed
 	}
 }
 
 func testStatusIcon(status string) string {
 	switch status {
-	case "passed":
-		return "pass"
-	case "failed":
-		return "fail"
-	case "flaky":
-		return "flaky"
-	case "skipped":
-		return "skipped"
+	case statusPassed:
+		return iconPass
+	case statusFailed:
+		return iconFail
+	case statusFlaky:
+		return statusFlaky
+	case statusSkipped:
+		return statusSkipped
 	default:
-		return "fail"
+		return iconFail
 	}
 }
 
 func testStatusClass(status string) string {
 	switch status {
-	case "passed":
-		return "unit-pass"
-	case "failed":
-		return "unit-fail"
-	case "flaky":
+	case statusPassed:
+		return clsUnitPass
+	case statusFailed:
+		return clsUnitFail
+	case statusFlaky:
 		return "unit-flaky"
-	case "skipped":
-		return "unit-skipped"
+	case statusSkipped:
+		return clsUnitSkipped
 	default:
-		return "unit-pending"
+		return clsUnitPending
 	}
 }
 
 func buildTestAttempt(e testCaseEntry, n int) RunTestAttempt {
 	tc := e.tc
-	isFail := tc.Status == "failed" || tc.Status == "timedOut" || tc.Status == "interrupted"
-	isSkip := tc.Status == "skipped"
-	isPass := tc.Status == "passed" || tc.Status == "flaky"
-	icon, cls := "fail", "unit-fail"
+	isFail := tc.Status == statusFailed || tc.Status == statusTimedOutPW || tc.Status == statusInterrupted
+	isSkip := tc.Status == statusSkipped
+	isPass := tc.Status == statusPassed || tc.Status == statusFlaky
+	icon, cls := iconFail, clsUnitFail
 	switch {
 	case isSkip:
-		icon, cls = "skipped", "unit-skipped"
+		icon, cls = statusSkipped, clsUnitSkipped
 	case isPass:
-		icon, cls = "pass", "unit-pass"
+		icon, cls = iconPass, clsUnitPass
 	case isFail:
-		icon, cls = "fail", "unit-fail"
+		icon, cls = iconFail, clsUnitFail
 	}
 	att := RunTestAttempt{
 		Label:       fmt.Sprintf("Attempt %d", n),
@@ -886,23 +885,23 @@ func buildTestAttempt(e testCaseEntry, n int) RunTestAttempt {
 
 func statusIconFromState(state string, flaky bool) string {
 	if flaky {
-		return "flaky"
+		return statusFlaky
 	}
 	switch state {
 	case orchestration.UnitStatePending:
-		return "pending"
+		return statusPending
 	case orchestration.UnitStateLeased:
-		return "leased"
+		return iconLeased
 	case orchestration.UnitStateCompletedPass:
-		return "pass"
+		return iconPass
 	case orchestration.UnitStateCompletedFail:
-		return "fail"
+		return iconFail
 	case orchestration.UnitStateCompletedSkipped:
-		return "skipped"
+		return statusSkipped
 	case orchestration.UnitStateAbandoned:
-		return "abandoned"
+		return statusAbandoned
 	default:
-		return "pending"
+		return statusPending
 	}
 }
 
@@ -925,8 +924,8 @@ func buildWorkerSlots(u orchestration.UnitView, allJobNames []string) []WorkerSl
 	for i, a := range u.Attempts {
 		slot := workerSlotLabel(a.GHJobName, i+1, allJobNames)
 		inFlight := a.Status == nil && !a.Expired
-		passed := a.Status != nil && (*a.Status == "passed" || *a.Status == "flaky")
-		failed := a.Expired || (a.Status != nil && (*a.Status == "failed" || *a.Status == "timedOut" || *a.Status == "interrupted"))
+		passed := a.Status != nil && (*a.Status == statusPassed || *a.Status == statusFlaky)
+		failed := a.Expired || (a.Status != nil && (*a.Status == statusFailed || *a.Status == statusTimedOutPW || *a.Status == statusInterrupted))
 		cls := "slot-neutral"
 		switch {
 		case inFlight:
@@ -940,7 +939,7 @@ func buildWorkerSlots(u orchestration.UnitView, allJobNames []string) []WorkerSl
 		if title == "" {
 			title = fmt.Sprintf("Attempt %d", i+1)
 		}
-		out = append(out, WorkerSlot{Label: fmt.Sprintf("%d", slot), Class: cls, Title: title})
+		out = append(out, WorkerSlot{Label: strconv.Itoa(slot), Class: cls, Title: title})
 	}
 	return out
 }
@@ -1003,11 +1002,12 @@ func deriveSuiteTitle(u orchestration.UnitView) string {
 	suite := tc.FullTitle
 	if tc.Title != "" {
 		pw := " > " + tc.Title
-		if strings.HasSuffix(suite, pw) {
+		switch {
+		case strings.HasSuffix(suite, pw):
 			suite = suite[:len(suite)-len(pw)]
-		} else if suite == tc.Title {
+		case suite == tc.Title:
 			return ""
-		} else if strings.HasSuffix(suite, " "+tc.Title) {
+		case strings.HasSuffix(suite, " "+tc.Title):
 			suite = suite[:len(suite)-len(tc.Title)-1]
 		}
 	}
@@ -1168,19 +1168,19 @@ func formatRunDate(t time.Time) string {
 func unitStatusDisplay(state string) (label, class string) {
 	switch state {
 	case orchestration.UnitStatePending:
-		return "pending", "unit-pending"
+		return statusPending, clsUnitPending
 	case orchestration.UnitStateLeased:
-		return "running", "unit-leased"
+		return statusRunning, "unit-leased"
 	case orchestration.UnitStateCompletedPass:
-		return "passed", "unit-pass"
+		return statusPassed, clsUnitPass
 	case orchestration.UnitStateCompletedFail:
-		return "failed", "unit-fail"
+		return statusFailed, clsUnitFail
 	case orchestration.UnitStateCompletedSkipped:
-		return "skipped", "unit-skipped"
+		return statusSkipped, clsUnitSkipped
 	case orchestration.UnitStateAbandoned:
-		return "abandoned", "unit-abandoned"
+		return statusAbandoned, "unit-abandoned"
 	default:
-		return state, "unit-pending"
+		return state, clsUnitPending
 	}
 }
 

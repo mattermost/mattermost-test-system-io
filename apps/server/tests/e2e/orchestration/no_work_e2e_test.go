@@ -38,6 +38,11 @@ func TestLateWorkerWithNoWorkCompletesReportGroup(t *testing.T) {
 	if got := reportGroupStatus(t, env); got != "in_progress" {
 		t.Fatalf("group status after 1 of 2 reports = %q, want in_progress", got)
 	}
+	// Worker A's upload refreshes the projection after its report completes. Wait
+	// for it, so only the no-work call can refresh the projection after the flip.
+	pollUntil(t, 5*time.Second, 50*time.Millisecond, "worker-A's upload to refresh the report group summary", func() bool {
+		return reportGroupSummaryCurrent(t, env)
+	})
 
 	late := postJSON(t, env, tok, "/api/v1/orchestration/checkout", checkoutBody("worker-B", "job-B", 1))
 	if late.StatusCode != http.StatusConflict {
@@ -51,7 +56,7 @@ func TestLateWorkerWithNoWorkCompletesReportGroup(t *testing.T) {
 		noWorkBody("worker-B", "job-B")), http.StatusOK)
 	waitReportGroupStatus(t, env, "completed")
 	// The home index reads the projection: the call that completed the group refreshed it.
-	if !reportGroupSummaryFresh(t, env) {
+	if !reportGroupSummaryCurrent(t, env) {
 		t.Fatal("report group summary was not refreshed when no-work completed the group")
 	}
 
@@ -322,19 +327,25 @@ func reportGroupStatus(t *testing.T, env *testenv.Env) string {
 	return status
 }
 
-// reportGroupSummaryFresh reports whether the default run's report group
-// projection was refreshed after the group's last write.
-func reportGroupSummaryFresh(t *testing.T, env *testenv.Env) bool {
+// reportGroupSummaryCurrent reports whether the default run's report group
+// projection covers every write to the group and its reports: the inverse of
+// the reaper's stale-summary predicate (RefreshStaleGroupSummaries).
+func reportGroupSummaryCurrent(t *testing.T, env *testenv.Env) bool {
 	t.Helper()
 	id := identity(nil)
-	var fresh bool
+	var current bool
 	if err := env.Pool.QueryRow(context.Background(), `
-		SELECT COALESCE(last_summary_at >= updated_at, false) FROM report_groups
-		 WHERE repository = $1 AND commit_sha = $2 AND gh_run_id = $3 AND name = $4 AND gh_run_attempt = $5
-	`, id["repository"], id["commit_sha"], id["gh_run_id"], id["name"], id["gh_run_attempt"]).Scan(&fresh); err != nil {
+		SELECT g.last_summary_at IS NOT NULL
+		   AND g.test_stats_json IS NOT NULL
+		   AND g.last_summary_at >= GREATEST(g.updated_at, g.last_upload_at)
+		   AND NOT EXISTS (SELECT 1 FROM reports r
+		                    WHERE r.report_group_id = g.id AND r.updated_at > g.last_summary_at)
+		  FROM report_groups g
+		 WHERE g.repository = $1 AND g.commit_sha = $2 AND g.gh_run_id = $3 AND g.name = $4 AND g.gh_run_attempt = $5
+	`, id["repository"], id["commit_sha"], id["gh_run_id"], id["name"], id["gh_run_attempt"]).Scan(&current); err != nil {
 		t.Fatalf("read report group summary freshness: %v", err)
 	}
-	return fresh
+	return current
 }
 
 // waitReportGroupStatus polls until the default run's report group reaches

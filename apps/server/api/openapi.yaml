@@ -922,10 +922,14 @@ paths:
         `total_reports_expected` once the run is `completed` and every
         worker that held a lease on it has a complete report, so a run
         whose every unit finished is not left `incomplete` by a worker that
-        had nothing to do. A worker that never reaches the orchestrator, or
-        that leased units and did not upload, records nothing and still
-        leaves the group short; a no-work record (for example from that
-        worker's re-run under a new job id) does not fill its slot.
+        had nothing to do.
+
+        A worker that leased units and did not upload leaves the group
+        short: no no-work record counts, including one from that worker's
+        re-run under a new job id, until its report arrives. A worker that
+        never reaches the orchestrator records nothing and also leaves the
+        group short, but it never held a lease, so its re-run can record no
+        work and fill its slot.
 
         Rejected with 409 `WORKER_HAS_LEASES` when the worker was issued any
         lease on the run: it ran tests and must upload its report.

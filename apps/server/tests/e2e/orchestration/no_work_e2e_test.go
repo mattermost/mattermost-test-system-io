@@ -209,6 +209,44 @@ func TestWorkerThatLeasedAndDiedBeforeUploadKeepsGroupIncomplete(t *testing.T) {
 	waitReportGroupStatus(t, env, "incomplete")
 }
 
+// TestRetriedWorkerNoWorkDoesNotStandInForMissingReport: on a GitHub "re-run
+// failed jobs", the run keeps its first attempt's identity. A worker that ran
+// tests and failed its upload is retried under a new job id, finds the run
+// complete and records no work. That record must not fill the slot of the
+// report the first worker never uploaded.
+func TestRetriedWorkerNoWorkDoesNotStandInForMissingReport(t *testing.T) {
+	env, tok := startEnv(t)
+
+	specs := []string{"tests/a.spec.ts", "tests/b.spec.ts"}
+	expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/begin",
+		beginRunBody(specs, map[string]any{"total_reports_expected": 2})), http.StatusCreated)
+
+	// A and B each run one spec; only A uploads. B's upload fails.
+	for _, w := range []struct{ name, id string }{{"worker-A", "job-A"}, {"worker-B", "job-B"}} {
+		check := expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+			checkoutBody(w.name, w.id, 1)), http.StatusOK)
+		units := check["units"].([]any)
+		if len(units) != 1 {
+			t.Fatalf("%s checkout: want 1 unit, got %v", w.name, units)
+		}
+		leased := units[0].(map[string]any)["spec_path"].(string)
+		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete",
+			completeBody(w.name, w.id, passResults([]string{leased}))), http.StatusOK)
+	}
+	uploadWorkerReport(t, env, tok, "worker-A", "job-A")
+
+	// B's retry runs under the same job name with a new job id: 1 report + 1 no-work of 2 expected.
+	expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/no-work",
+		noWorkBody("worker-B", "job-B-retry")), http.StatusOK)
+	if got := reportGroupStatus(t, env); got != "in_progress" {
+		t.Fatalf("group status with worker B's report missing = %q, want in_progress", got)
+	}
+
+	// B's report arriving late still completes the group.
+	uploadWorkerReport(t, env, tok, "worker-B", "job-B")
+	waitReportGroupStatus(t, env, "completed")
+}
+
 // reapStaleReportGroups runs the reports staleness reaper (not started by
 // testenv) with a near-zero window, so any group still in_progress is marked
 // incomplete the way production marks it after an hour without uploads.

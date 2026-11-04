@@ -1057,9 +1057,12 @@ func stillProcessing(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID
 //     themselves. A no-work worker (orchestration_no_work_workers) left the
 //     matching orchestration run without ever holding a lease; it counts only
 //     once that run is `completed`, so every unit ran, and only while it has
-//     no lease or report of its own. A worker that leased units and never
-//     uploaded, or never reached the orchestrator, still leaves the group
-//     short.
+//     no lease or report of its own. No-work workers count only once every
+//     worker that held a lease on the run has a complete report: on a GitHub
+//     re-run of failed jobs, a worker whose upload failed is retried under a
+//     new job id and records no work, and that record must not fill the slot
+//     of the missing report. A worker that leased units and never uploaded,
+//     or never reached the orchestrator, still leaves the group short.
 //   - When total_reports_expected is NULL (group was seeded via /reports/register
 //     without a prior /reports/begin), flip on any per-shard upload finalization.
 //     Without a declared count, "we have data" is the strongest terminal signal
@@ -1093,7 +1096,12 @@ func TryAutoCompleteGroup(ctx context.Context, pool *pgxpool.Pool, groupID uuid.
 		              AND NOT EXISTS (SELECT 1 FROM leases l
 		                               WHERE l.run_id = o.id AND l.gh_job_id = nw.gh_job_id)
 		              AND NOT EXISTS (SELECT 1 FROM reports r
-		                               WHERE r.report_group_id = g.id AND r.gh_job_id = nw.gh_job_id))
+		                               WHERE r.report_group_id = g.id AND r.gh_job_id = nw.gh_job_id)
+		              AND NOT EXISTS (SELECT 1 FROM leases l
+		                               WHERE l.run_id = o.id
+		                                 AND NOT EXISTS (SELECT 1 FROM reports r
+		                                                  WHERE r.report_group_id = g.id AND r.gh_job_id = l.gh_job_id
+		                                                    AND r.status = 'complete')))
 		          >= g.total_reports_expected
 		   )
 		RETURNING (SELECT count(*) FROM reports WHERE report_group_id = $1 AND status = 'complete'), g.updated_at

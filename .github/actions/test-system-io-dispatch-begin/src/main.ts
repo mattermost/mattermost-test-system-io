@@ -289,7 +289,7 @@ async function loadDurationHints(opts: {
   try {
     const h = await fetchDurationHistory({ ...opts, timeoutMs: DURATION_LOOKUP_TIMEOUT_MS });
     core.info(
-      `duration hints: ${opts.framework} run ${h.runId} (${h.commit.slice(0, 8)}) on ${opts.branch} ` +
+      `duration hints: ${opts.framework} run ${h.runId} (${h.commit.slice(0, 8)}) of "${h.name}" on ${opts.branch} ` +
         `has durations for ${h.durations.size} file(s)`,
     );
     return h.durations;

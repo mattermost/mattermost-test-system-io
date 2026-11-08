@@ -123,9 +123,10 @@ inputs:
   duration-base-branch:
     description: >
       Longest-first dispatch for framework playwright or cypress. Reads the
-      per-file durations of the newest complete run of this lane (same
-      repository and composite name, framework and branch) on this branch from
-      the public Test System IO read API, then dispatches the slowest specs
+      per-file durations of the newest completed run of this lane on this
+      branch (same repository and framework; the lane's name with "-<branch>"
+      added, before a "-subpath" suffix, then the non-subpath lane, then the
+      lane's own name) from the public Test System IO read API, then dispatches the slowest specs
       first so a long spec is not leased late in a worker's window. Specs with
       no history keep alphabetical order after the timed ones. Any lookup
       failure (no such run, HTTP error, timeout) logs a warning and keeps the

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
+  durationLaneNames,
   durationOf,
   fetchDurationHistory,
   orderLongestFirst,
@@ -78,11 +79,14 @@ test("orderLongestFirst: no history keeps the input order untouched (fallback)",
   );
 });
 
-test("fetchDurationHistory: takes the newest complete base-branch group of the same lane and framework", async () => {
+test("fetchDurationHistory: takes the newest completed base-branch group of the same lane and framework", async () => {
   const urls: string[] = [];
   const fetchImpl = (async (input: string | URL | Request) => {
     const url = String(input);
     urls.push(url);
+    // No base-branch lane of its own: the lane's own name holds its base-branch runs.
+    if (url.includes("name=e2e-playwright-chrome-master"))
+      return jsonResponse(200, { reports: [] });
     if (url.includes("/api/v1/reports?")) {
       return jsonResponse(200, {
         reports: [
@@ -90,7 +94,7 @@ test("fetchDurationHistory: takes the newest complete base-branch group of the s
             id: "g-pr",
             branch: "feature/x",
             framework: "playwright",
-            status: "complete",
+            status: "completed",
             commit: "c3",
             gh_run_id: "3",
           },
@@ -106,7 +110,7 @@ test("fetchDurationHistory: takes the newest complete base-branch group of the s
             id: "g-cy",
             branch: "master",
             framework: "cypress",
-            status: "complete",
+            status: "completed",
             commit: "c1",
             gh_run_id: "1",
           },
@@ -114,7 +118,7 @@ test("fetchDurationHistory: takes the newest complete base-branch group of the s
             id: "g-ok",
             branch: "master",
             framework: "playwright",
-            status: "complete",
+            status: "completed",
             commit: "c0",
             gh_run_id: "0",
           },
@@ -136,15 +140,151 @@ test("fetchDurationHistory: takes the newest complete base-branch group of the s
   assert.equal(h.commit, "c0");
   // Rows of one file add up: a describe row holds its own cases, not its parent's.
   assert.deepEqual([...h.durations], [["specs/a.spec.ts", 2500]]);
-  assert.equal(urls.length, 2);
-  const listURL = new URL(urls[0]!);
+  assert.equal(h.name, "e2e-playwright-chrome");
+  assert.equal(urls.length, 3);
+  const baseURL = new URL(urls[0]!);
+  assert.equal(baseURL.searchParams.get("name"), "e2e-playwright-chrome-master");
+  assert.equal(baseURL.searchParams.get("limit"), "20");
+  const listURL = new URL(urls[1]!);
   assert.equal(listURL.searchParams.get("repository"), "mattermost/mattermost");
   assert.equal(listURL.searchParams.get("name"), "e2e-playwright-chrome");
   assert.equal(listURL.searchParams.get("limit"), "200");
-  assert.equal(new URL(urls[1]!).pathname, "/api/v1/reports/g-ok/suites");
+  assert.equal(new URL(urls[2]!).pathname, "/api/v1/reports/g-ok/suites");
 });
 
-test("fetchDurationHistory: no complete base-branch group throws, so the caller can fall back", async () => {
+test("durationLaneNames: a base-branch run is stored under the lane name with the branch added", () => {
+  const cases: [string, string, string[]][] = [
+    [
+      "playwright-full-enterprise",
+      "master",
+      ["playwright-full-enterprise-master", "playwright-full-enterprise"],
+    ],
+    [
+      "playwright-full-enterprise-subpath",
+      "master",
+      [
+        "playwright-full-enterprise-master-subpath",
+        "playwright-full-enterprise-master",
+        "playwright-full-enterprise-subpath",
+      ],
+    ],
+    ["cypress-full-enterprise-master", "master", ["cypress-full-enterprise-master"]],
+    [
+      "playwright-full-enterprise-master-subpath",
+      "master",
+      ["playwright-full-enterprise-master-subpath", "playwright-full-enterprise-master"],
+    ],
+    [
+      "playwright-full-fips-upgrade-from-release-11.10",
+      "master",
+      [
+        "playwright-full-fips-upgrade-from-release-11.10-master",
+        "playwright-full-fips-upgrade-from-release-11.10",
+      ],
+    ],
+    [
+      "e2e-playwright-chrome",
+      "release/11.0",
+      ["e2e-playwright-chrome-release-11.0", "e2e-playwright-chrome"],
+    ],
+  ];
+  for (const [name, branch, want] of cases)
+    assert.deepEqual(durationLaneNames(name, branch), want, name);
+});
+
+// The shape test-system-io serves (checked against the production API, Nov 2026): a PR lane's own name lists only PR
+// runs (branch pr-<n>; /reports ignores a branch filter), master's runs of the lane are under "<name>-master", and a
+// group that finished is "completed" ("complete" is a per-shard report status, never a group's).
+function realShapeFetch(byName: Record<string, object[]>, urls: string[]): typeof fetch {
+  return (async (input: string | URL | Request) => {
+    const url = new URL(String(input));
+    urls.push(String(input));
+    if (url.pathname === "/api/v1/reports") {
+      return jsonResponse(200, { reports: byName[url.searchParams.get("name") ?? ""] ?? [] });
+    }
+    return jsonResponse(200, {
+      suites: [
+        { file_path: "specs/functional/channels/a.spec.ts", duration_ms: 90000 },
+        { file_path: "specs/functional/channels/b.spec.ts", duration_ms: 30000 },
+      ],
+    });
+  }) as typeof fetch;
+}
+
+const row = (id: string, branch: string, status: string, framework = "playwright") => ({
+  id,
+  name: "",
+  branch,
+  framework,
+  status,
+  commit: `sha-${id}`,
+  gh_run_id: `run-${id}`,
+});
+
+test("fetchDurationHistory: a PR lane reads master's runs of the lane from <name>-master", async () => {
+  const urls: string[] = [];
+  const fetchImpl = realShapeFetch(
+    {
+      "playwright-full-enterprise": [
+        row("pr1", "pr-39803", "completed"),
+        row("pr2", "pr-38885", "completed"),
+      ],
+      "playwright-full-enterprise-master": [
+        row("m-run", "master", "in_progress"),
+        row("m-inc", "master", "incomplete"),
+        row("m-shard", "master", "complete"),
+        row("m-ok", "master", "completed"),
+      ],
+    },
+    urls,
+  );
+  const h = await fetchDurationHistory({
+    ...baseOpts(fetchImpl),
+    name: "playwright-full-enterprise",
+  });
+  assert.equal(h.name, "playwright-full-enterprise-master");
+  assert.equal(h.runId, "run-m-ok");
+  assert.equal(h.durations.get("specs/functional/channels/a.spec.ts"), 90000);
+  assert.equal(urls.length, 2);
+  assert.equal(new URL(urls[1]!).pathname, "/api/v1/reports/m-ok/suites");
+});
+
+test("fetchDurationHistory: a subpath lane falls back to master's non-subpath lane", async () => {
+  const urls: string[] = [];
+  const fetchImpl = realShapeFetch(
+    {
+      "playwright-full-enterprise-master-subpath": [row("ms-inc", "master", "incomplete")],
+      "playwright-full-enterprise-master": [row("m-ok", "master", "completed")],
+    },
+    urls,
+  );
+  const h = await fetchDurationHistory({
+    ...baseOpts(fetchImpl),
+    name: "playwright-full-enterprise-subpath",
+  });
+  assert.equal(h.name, "playwright-full-enterprise-master");
+  assert.deepEqual(
+    urls.slice(0, 2).map((u) => new URL(u).searchParams.get("name")),
+    ["playwright-full-enterprise-master-subpath", "playwright-full-enterprise-master"],
+  );
+});
+
+test("fetchDurationHistory: only PR runs under every name throws", async () => {
+  const fetchImpl = realShapeFetch(
+    { "cypress-full-enterprise": [row("pr1", "pr-1", "completed", "cypress")] },
+    [],
+  );
+  await assert.rejects(
+    fetchDurationHistory({
+      ...baseOpts(fetchImpl),
+      name: "cypress-full-enterprise",
+      framework: "cypress",
+    }),
+    /no completed cypress run on master under "cypress-full-enterprise-master", "cypress-full-enterprise"/,
+  );
+});
+
+test("fetchDurationHistory: no completed base-branch group throws, so the caller can fall back", async () => {
   const fetchImpl = (async () =>
     jsonResponse(200, {
       reports: [
@@ -152,13 +292,16 @@ test("fetchDurationHistory: no complete base-branch group throws, so the caller 
           id: "g",
           branch: "feature/x",
           framework: "playwright",
-          status: "complete",
+          status: "completed",
           commit: "c",
           gh_run_id: "1",
         },
       ],
     })) as typeof fetch;
-  await assert.rejects(fetchDurationHistory(baseOpts(fetchImpl)), /no complete playwright run/);
+  await assert.rejects(
+    fetchDurationHistory(baseOpts(fetchImpl)),
+    /no completed playwright run on master under "e2e-playwright-chrome-master", "e2e-playwright-chrome"/,
+  );
 });
 
 test("fetchDurationHistory: a group whose suites carry no durations throws", async () => {
@@ -171,7 +314,7 @@ test("fetchDurationHistory: a group whose suites carry no durations throws", asy
               id: "g",
               branch: "master",
               framework: "playwright",
-              status: "complete",
+              status: "completed",
               commit: "c",
               gh_run_id: "9",
             },

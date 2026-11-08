@@ -26252,6 +26252,18 @@ function toRelative(detoxDir, full) {
 
 // src/durations.ts
 var DURATION_LOOKUP_LIMIT = 200;
+var BASE_LANE_LOOKUP_LIMIT = 20;
+var GROUP_COMPLETED = "completed";
+var SUBPATH = "-subpath";
+function durationLaneNames(name, branch) {
+  const seg = `-${branch.replace(/\//g, "-")}`;
+  const subpath = name.endsWith(SUBPATH);
+  const stem = subpath ? name.slice(0, -SUBPATH.length) : name;
+  const baseStem = stem.endsWith(seg) ? stem : `${stem}${seg}`;
+  const names = subpath ? [`${baseStem}${SUBPATH}`, baseStem] : [baseStem];
+  if (!names.includes(name)) names.push(name);
+  return names;
+}
 async function getJSON(fetchImpl, url, timeoutMs) {
   const res = await fetchImpl(url, {
     headers: { Accept: "application/json" },
@@ -26264,22 +26276,32 @@ async function getJSON(fetchImpl, url, timeoutMs) {
 }
 async function fetchDurationHistory(opts) {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const query = new URLSearchParams({
-    repository: opts.repository,
-    name: opts.name,
-    limit: String(DURATION_LOOKUP_LIMIT)
-  });
-  const list = await getJSON(
-    fetchImpl,
-    `${opts.baseURL}/api/v1/reports?${query.toString()}`,
-    opts.timeoutMs
-  );
-  const group = (list.reports ?? []).find(
-    (r) => r.branch === opts.branch && r.framework === opts.framework && r.status === "complete"
-  );
+  const names = durationLaneNames(opts.name, opts.branch);
+  let group;
+  let name = "";
+  for (const candidate of names) {
+    const limit = candidate === opts.name ? DURATION_LOOKUP_LIMIT : BASE_LANE_LOOKUP_LIMIT;
+    const query = new URLSearchParams({
+      repository: opts.repository,
+      name: candidate,
+      limit: String(limit)
+    });
+    const list = await getJSON(
+      fetchImpl,
+      `${opts.baseURL}/api/v1/reports?${query.toString()}`,
+      opts.timeoutMs
+    );
+    group = (list.reports ?? []).find(
+      (r) => r.branch === opts.branch && r.framework === opts.framework && r.status === GROUP_COMPLETED
+    );
+    if (group) {
+      name = candidate;
+      break;
+    }
+  }
   if (!group) {
     throw new Error(
-      `no complete ${opts.framework} run of "${opts.name}" on ${opts.branch} among the ${DURATION_LOOKUP_LIMIT} newest groups`
+      `no completed ${opts.framework} run on ${opts.branch} under ${names.map((n) => `"${n}"`).join(", ")}`
     );
   }
   const suites = await getJSON(
@@ -26295,7 +26317,7 @@ async function fetchDurationHistory(opts) {
   if (durations.size === 0) {
     throw new Error(`run ${group.gh_run_id} on ${opts.branch} has no per-file durations`);
   }
-  return { durations, runId: group.gh_run_id, commit: group.commit };
+  return { durations, runId: group.gh_run_id, commit: group.commit, name };
 }
 function durationOf(spec, durations) {
   const exact = durations.get(spec);
@@ -26745,7 +26767,7 @@ async function loadDurationHints(opts) {
   try {
     const h = await fetchDurationHistory({ ...opts, timeoutMs: DURATION_LOOKUP_TIMEOUT_MS });
     info(
-      `duration hints: ${opts.framework} run ${h.runId} (${h.commit.slice(0, 8)}) on ${opts.branch} has durations for ${h.durations.size} file(s)`
+      `duration hints: ${opts.framework} run ${h.runId} (${h.commit.slice(0, 8)}) of "${h.name}" on ${opts.branch} has durations for ${h.durations.size} file(s)`
     );
     return h.durations;
   } catch (err) {

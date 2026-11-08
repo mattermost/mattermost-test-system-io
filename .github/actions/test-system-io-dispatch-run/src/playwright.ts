@@ -41,6 +41,10 @@ export interface PlaywrightUnitResult {
   screenshots: { specPath: string; ordinal: number; absPath: string }[];
 }
 
+/**
+ * Runs Playwright once over the lease's specs and returns each spec's result from the JSON report,
+ * with the screenshots of its failed tests.
+ */
 export async function runUnit(
   cfg: RunUnitConfig,
   iterationSeq: number,
@@ -157,6 +161,11 @@ const RANKS: Record<TestStatus, number> = {
   failed: 5,
 };
 
+/**
+ * One spec's result from the Playwright JSON report: every test case of the spec's file, the total
+ * duration (fallbackDurationMs when the report has none), the worst status, and the failed tests'
+ * screenshots.
+ */
 export function aggregateSpec(
   json: PlaywrightJson,
   specPath: string,
@@ -167,6 +176,7 @@ export function aggregateSpec(
   let totalMs = 0;
   let worst: TestStatus = "skipped";
 
+  /** Whether a report file path is this spec: equal, or one is a path suffix of the other. */
   function fileMatches(file: string | undefined): boolean {
     if (!file) return false;
     if (file === specPath) return true;
@@ -175,6 +185,10 @@ export function aggregateSpec(
     return false;
   }
 
+  /**
+   * Collects the cases of the spec's file in this suite, then in its nested suites, keeping the
+   * suite titles as the title path.
+   */
   function visit(suite: PlaywrightSuite, ancestors: string[], currentFile: string): void {
     const here = suite.title ? [...ancestors, suite.title] : ancestors;
     const suiteFile = suite.file || currentFile;
@@ -256,6 +270,7 @@ export function aggregateSpec(
   return { result: out, screenshots };
 }
 
+/** Maps a Playwright test or result status to test-system-io's status. */
 function mapStatus(s: string | undefined): TestStatus {
   switch (s) {
     case "expected":

@@ -44,6 +44,10 @@ const DURATION_LOOKUP_TIMEOUT_MS = 10_000;
 const PRODUCTION_URL = "https://test-io.test.mattermost.com";
 const STAGING_URL = "https://staging-test-io.test.mattermost.com";
 
+/**
+ * Entry point: reads the inputs, discovers the lane's specs, orders them (longest first when
+ * duration hints load), and begins the orchestration run and the report group in test-system-io.
+ */
 export async function run(): Promise<void> {
   const baseURL = resolveBaseURL();
   const audience = core.getInput("oidc-audience") || "mattermost-test-system-io";
@@ -245,6 +249,10 @@ export async function run(): Promise<void> {
   }
 }
 
+/**
+ * Posts a pending commit status on the tested commit under commit-status-context, linking to the
+ * report page; with no context it warns and skips.
+ */
 async function pushPendingCommitStatus(c: CompositeIdentity, reportURL: string): Promise<void> {
   const context = core.getInput("commit-status-context");
   if (!context) {
@@ -271,6 +279,7 @@ async function pushPendingCommitStatus(c: CompositeIdentity, reportURL: string):
   });
 }
 
+/** The pending commit status text, naming the server image tag and its aliases when they are given. */
 function formatPendingDescription(): string {
   const imageTag = core.getInput("image-tag");
   const imageAliases = core.getInput("image-aliases");
@@ -279,6 +288,10 @@ function formatPendingDescription(): string {
   return `tests running, image_tag:${imageTag}${aliases}`;
 }
 
+/**
+ * Duration hints for longest-first dispatch. A failed lookup logs a warning and returns no hints,
+ * so dispatch keeps its default order.
+ */
 async function loadDurationHints(opts: {
   baseURL: string;
   repository: string;
@@ -300,6 +313,10 @@ async function loadDurationHints(opts: {
   }
 }
 
+/**
+ * The composite identity in the shape test-system-io's report endpoints take, with the framework
+ * and the expected report count.
+ */
 function identityForReports(
   c: CompositeIdentity,
   framework: string,
@@ -319,11 +336,13 @@ function identityForReports(
   return body;
 }
 
+/** The test-system-io base URL: staging when use-staging is "true", else production. */
 function resolveBaseURL(): string {
   const useStaging = core.getInput("use-staging").trim().toLowerCase() === "true";
   return useStaging ? STAGING_URL : PRODUCTION_URL;
 }
 
+/** An integer action input; fallback when it is empty. Throws when it is not an integer. */
 function intInput(name: string, fallback: number): number {
   const raw = core.getInput(name);
   if (raw === "") return fallback;
@@ -334,13 +353,15 @@ function intInput(name: string, fallback: number): number {
   return n;
 }
 
-// normalizeCompositeIdentity coerces gh_pr_number to a number when it
-// arrived as a string. Shell-built composite-identity payloads (jq
-// `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
-// identityFields.GHPRNumber is *int and json.Decode rejects the string
-// form, surfacing as a 400 BAD_REQUEST "invalid JSON body" on every
-// orchestration endpoint. Normalizing once here keeps the rest of the
-// action body-agnostic.
+/**
+ * normalizeCompositeIdentity coerces gh_pr_number to a number when it
+ * arrived as a string. Shell-built composite-identity payloads (jq
+ * `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
+ * identityFields.GHPRNumber is *int and json.Decode rejects the string
+ * form, surfacing as a 400 BAD_REQUEST "invalid JSON body" on every
+ * orchestration endpoint. Normalizing once here keeps the rest of the
+ * action body-agnostic.
+ */
 function normalizeCompositeIdentity(c: CompositeIdentity): void {
   if (typeof c.gh_pr_number === "string") {
     const n = Number.parseInt(c.gh_pr_number, 10);

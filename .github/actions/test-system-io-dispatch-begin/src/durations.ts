@@ -81,6 +81,7 @@ interface SuiteRowLike {
   duration_ms?: number | null;
 }
 
+/** GETs url and parses its JSON body; throws on a non-200 status, a network error, or after timeoutMs. */
 async function getJSON<T>(fetchImpl: typeof fetch, url: string, timeoutMs: number): Promise<T> {
   const res = await fetchImpl(url, {
     headers: { Accept: "application/json" },
@@ -92,6 +93,10 @@ async function getJSON<T>(fetchImpl: typeof fetch, url: string, timeoutMs: numbe
   return (await res.json()) as T;
 }
 
+/**
+ * Per-file durations from the newest completed run of this lane on opts.branch, tried under each
+ * name durationLaneNames gives. Throws when no such run, or no duration, is found.
+ */
 export async function fetchDurationHistory(
   opts: FetchDurationHistoryOptions,
 ): Promise<DurationHistory> {

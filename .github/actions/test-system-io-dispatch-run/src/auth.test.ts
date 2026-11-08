@@ -156,3 +156,83 @@ test("bearer cache: an empty token is an error, not cached", async () => {
   });
   await assert.rejects(provider.get("aud"), /OIDC mint returned empty value/);
 });
+
+/** A promise and the functions that settle it, so a test controls when a mint finishes. */
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (v: T) => void;
+  reject: (e: unknown) => void;
+} {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+test("bearer cache: concurrent misses share one in-flight mint", async () => {
+  let calls = 0;
+  const gate = deferred<string>();
+  const provider = createBearerProvider({
+    mint: async () => {
+      calls += 1;
+      return gate.promise;
+    },
+    now: () => 0,
+    sleep: async () => {},
+    log: () => {},
+  });
+  const both = Promise.all([provider.get("aud"), provider.get("aud")]);
+  gate.resolve("jwt-1");
+  assert.deepEqual(await both, ["jwt-1", "jwt-1"]);
+  assert.equal(calls, 1);
+  // The shared mint was cached: a later get does not mint again.
+  assert.equal(await provider.get("aud"), "jwt-1");
+  assert.equal(calls, 1);
+});
+
+test("bearer cache: a failed shared mint is dropped, so the next get mints again", async () => {
+  let calls = 0;
+  const provider = createBearerProvider({
+    mint: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("Error Code : 403");
+      return "jwt-2";
+    },
+    now: () => 0,
+    sleep: async () => {},
+    log: () => {},
+  });
+  const results = await Promise.allSettled([provider.get("aud"), provider.get("aud")]);
+  assert.deepEqual(
+    results.map((r) => r.status),
+    ["rejected", "rejected"],
+  );
+  assert.equal(calls, 1);
+  assert.equal(await provider.get("aud"), "jwt-2");
+  assert.equal(calls, 2);
+});
+
+test("bearer cache: a mint that began before invalidate does not repopulate the cache", async () => {
+  const gates = [deferred<string>(), deferred<string>()];
+  let calls = 0;
+  const provider = createBearerProvider({
+    mint: async () => gates[calls++]!.promise,
+    now: () => 0,
+    sleep: async () => {},
+    log: () => {},
+  });
+  const stale = provider.get("aud");
+  provider.invalidate();
+  const fresh = provider.get("aud");
+  assert.equal(calls, 2, "the get after invalidate starts its own mint");
+  gates[0]!.resolve("jwt-old");
+  gates[1]!.resolve("jwt-new");
+  assert.equal(await stale, "jwt-old");
+  assert.equal(await fresh, "jwt-new");
+  // Only the mint started after invalidate was cached.
+  assert.equal(await provider.get("aud"), "jwt-new");
+  assert.equal(calls, 2);
+});

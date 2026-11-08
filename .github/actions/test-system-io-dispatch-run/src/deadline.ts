@@ -18,10 +18,12 @@ export function parseDeadlineMinutes(raw: string): number | null {
   return n;
 }
 
+/** The epoch ms at which the worker stops, minutes after startedAt; null when there is no deadline. */
 export function deadlineAtFrom(startedAt: number, minutes: number | null): number | null {
   return minutes === null ? null : startedAt + minutes * 60_000;
 }
 
+/** Whether the worker's deadline has passed at now; never when there is no deadline. */
 export function deadlineReached(deadlineAt: number | null, now: number): boolean {
   return deadlineAt !== null && now >= deadlineAt;
 }

@@ -24567,6 +24567,8 @@ function createBearerProvider(opts) {
   const backoffMs = opts.backoffMs ?? OIDC_MINT_BACKOFF_MS;
   let cachedToken = null;
   let cachedTokenMintedAt = 0;
+  let inflight = null;
+  let generation = 0;
   async function mintWithRetry(audience) {
     for (let attempt = 1; ; attempt++) {
       try {
@@ -24592,13 +24594,27 @@ function createBearerProvider(opts) {
       if (cachedToken && now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS) {
         return cachedToken;
       }
-      const token = await mintWithRetry(audience);
-      if (!token) throw new Error("OIDC mint returned empty value");
-      cachedToken = token;
-      cachedTokenMintedAt = now();
-      return token;
+      if (inflight) return inflight;
+      const gen = generation;
+      const mint = (async () => {
+        const token = await mintWithRetry(audience);
+        if (!token) throw new Error("OIDC mint returned empty value");
+        if (gen === generation) {
+          cachedToken = token;
+          cachedTokenMintedAt = now();
+        }
+        return token;
+      })();
+      inflight = mint;
+      try {
+        return await mint;
+      } finally {
+        if (inflight === mint) inflight = null;
+      }
     },
     invalidate() {
+      generation += 1;
+      inflight = null;
       cachedToken = null;
       cachedTokenMintedAt = 0;
     }

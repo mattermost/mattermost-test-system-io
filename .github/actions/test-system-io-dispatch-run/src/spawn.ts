@@ -27,6 +27,11 @@ export interface SpawnWithDeadlineOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Spawns command with inherited stdio and resolves with its exit status, its signal, and whether
+ * the kill timer (opts.timeoutMs) ended it. It never rejects: a spawn failure comes back as
+ * outcome.error.
+ */
 export function spawnWithDeadline(
   command: string,
   args: string[],
@@ -44,6 +49,7 @@ export function spawnWithDeadline(
     let timedOut = false;
     let timer: NodeJS.Timeout | undefined;
 
+    /** Settles the promise once, clearing the kill timer. */
     const finish = (outcome: SpawnOutcome) => {
       if (settled) return;
       settled = true;
@@ -51,6 +57,10 @@ export function spawnWithDeadline(
       resolve(outcome);
     };
 
+    /**
+     * SIGKILLs the child's whole process group (the child alone on Windows), so the framework's own
+     * workers stop too.
+     */
     const killGroup = () => {
       if (child.pid == null) return;
       try {

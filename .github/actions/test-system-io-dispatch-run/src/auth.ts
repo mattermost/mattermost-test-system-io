@@ -51,6 +51,7 @@ export function classifyOIDCError(message: string): ErrorClass {
   return "permanent";
 }
 
+/** The message of a thrown value: an Error's message, or the value as text. */
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -66,7 +67,9 @@ export interface BearerProviderOptions {
 }
 
 export interface BearerProvider {
+  /** The cached bearer while it is fresh, else a newly minted one (concurrent misses share one mint). */
   get(audience: string): Promise<string>;
+  /** Drops the cached bearer, and any mint already running, so the next get mints afresh. */
   invalidate(): void;
 }
 
@@ -74,6 +77,12 @@ export interface BearerProvider {
  * Caches one bearer and re-mints it once it is older than TOKEN_REFRESH_AGE_MS.
  * Mint failures are retried with backoff only when classifyOIDCError calls them
  * transient; a permanent failure throws on the first attempt with a hint.
+ *
+ * Concurrent cache misses (parallel uploads awaiting a bearer) share one in-flight
+ * mint, so a slow ID-token endpoint is asked once, not once per caller. The shared
+ * mint is dropped when it settles, failure included, so the next miss retries. A
+ * generation counter keeps a mint that began before invalidate() (the 401 path)
+ * from writing its token into the cache.
  */
 export function createBearerProvider(opts: BearerProviderOptions): BearerProvider {
   const now = opts.now ?? (() => Date.now());
@@ -84,7 +93,10 @@ export function createBearerProvider(opts: BearerProviderOptions): BearerProvide
 
   let cachedToken: string | null = null;
   let cachedTokenMintedAt = 0;
+  let inflight: Promise<string> | null = null;
+  let generation = 0;
 
+  /** Mints a bearer, backing off and retrying while the failure is transient. */
   async function mintWithRetry(audience: string): Promise<string> {
     for (let attempt = 1; ; attempt++) {
       try {
@@ -115,19 +127,35 @@ export function createBearerProvider(opts: BearerProviderOptions): BearerProvide
       if (cachedToken && now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS) {
         return cachedToken;
       }
-      const token = await mintWithRetry(audience);
-      if (!token) throw new Error("OIDC mint returned empty value");
-      cachedToken = token;
-      cachedTokenMintedAt = now();
-      return token;
+      if (inflight) return inflight;
+      const gen = generation;
+      /** The shared mint: caches its token unless invalidate() ran after it began. */
+      const mint = (async () => {
+        const token = await mintWithRetry(audience);
+        if (!token) throw new Error("OIDC mint returned empty value");
+        if (gen === generation) {
+          cachedToken = token;
+          cachedTokenMintedAt = now();
+        }
+        return token;
+      })();
+      inflight = mint;
+      try {
+        return await mint;
+      } finally {
+        if (inflight === mint) inflight = null;
+      }
     },
     invalidate(): void {
+      generation += 1;
+      inflight = null;
       cachedToken = null;
       cachedTokenMintedAt = 0;
     },
   };
 }
 
+/** Resolves after ms milliseconds. */
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -142,14 +170,17 @@ const defaultProvider = createBearerProvider({
   },
 });
 
+/** The worker's OIDC bearer for the audience, from the process-wide cache (see createBearerProvider). */
 export async function getBearer(audience: string): Promise<string> {
   return defaultProvider.get(audience);
 }
 
+/** Drops the process-wide cached bearer, so the next getBearer mints a new one. */
 function invalidateToken(): void {
   defaultProvider.invalidate();
 }
 
+/** Resolves after ms milliseconds; the backoff between fetch retries. */
 function sleep(ms: number): Promise<void> {
   return defaultSleep(ms);
 }

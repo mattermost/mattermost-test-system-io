@@ -65,16 +65,16 @@ export interface CypressSpecConfig {
 }
 
 /**
- * Walk the cypress project for spec files matching the consumer's
- * `specPattern`, parse each file's header tags, and apply the filter
- * pipeline. Returns paths relative to cypressDir with `/` separators.
- */
-/**
  * Orders one sort bucket (sort-first, middle, sort-last). main.ts passes
  * longest-first ordering from duration history; the default keeps discovery order.
  */
 export type BucketOrder = (specs: AnnotatedSpec[]) => AnnotatedSpec[];
 
+/**
+ * Walk the cypress project for spec files matching the consumer's
+ * `specPattern`, parse each file's header tags, and apply the filter
+ * pipeline. Returns paths relative to cypressDir with `/` separators.
+ */
 export function discoverCypressSpecs(
   cypressDir: string,
   filters: CypressFilters,

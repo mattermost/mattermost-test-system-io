@@ -49,6 +49,10 @@ export interface CypressUnitResult {
   screenshotsBySpec: Record<string, string[]>;
 }
 
+/**
+ * Runs Cypress once over the lease's specs and returns each spec's result from its mochawesome
+ * report, with the screenshots of its failed tests.
+ */
 export async function runUnit(
   cfg: RunUnitConfig,
   iterationSeq: number,
@@ -209,6 +213,7 @@ export async function runUnit(
   };
 }
 
+/** Appends every PNG or JPEG file under dir, recursively, to out. */
 function walkPng(dir: string, out: string[]): void {
   for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, ent.name);
@@ -245,12 +250,17 @@ const RANKS: Record<TestStatus, number> = {
   failed: 5,
 };
 
+/**
+ * One spec's result from its mochawesome report: every test case, the total duration, and the worst
+ * status.
+ */
 export function aggregateSpec(json: MochawesomeJson, specPath: string): SpecResult {
   const cases: TestCaseResult[] = [];
   let totalMs = 0;
   let worst: TestStatus = "skipped";
   let ordinal = 0;
 
+  /** Collects the suite's tests, then its nested suites'. */
   function visit(suite: MochawesomeSuite): void {
     for (const t of suite.tests || []) {
       const attempts = Array.isArray(t.attempts) ? t.attempts.length : 0;

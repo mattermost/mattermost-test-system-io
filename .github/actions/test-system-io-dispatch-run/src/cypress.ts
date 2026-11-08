@@ -28,7 +28,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
-import { deadlineInterruptedResults, spawnWithDeadline } from "./spawn";
+import { deadlineLease, spawnWithDeadline } from "./spawn";
 import type { InvocationRecord, SpecResult, TestCaseResult, TestStatus } from "./types";
 
 export interface RunUnitConfig {
@@ -103,18 +103,19 @@ export async function runUnit(
       (child.error ? ` error=${child.error.message}` : ""),
   );
   if (child.timedOut) {
-    // Mochawesome output from a killed run is partial, so nothing from this
-    // lease is archived. Every spec is reported interrupted, as in playwright.ts.
+    // Mochawesome output from a killed run is partial, so none of it is archived. Every spec is reported
+    // interrupted, and the lease leaves an empty report in its archive, as in playwright.ts.
     core.warning(
       `cypress killed at worker deadline; reporting interrupted for ${specPaths.join(", ")}`,
     );
     return {
-      invocation: {
-        specPath: specPaths[0]!,
+      ...deadlineLease({
+        framework: "cypress",
         iterDir,
-        playwrightJsonPath: path.join(reportRoot, "json", "tests", "killed-at-deadline.json"),
-      },
-      results: deadlineInterruptedResults(specPaths, durationMs),
+        specPaths,
+        startedAt,
+        endedAt: startedAt + durationMs,
+      }),
       screenshotsBySpec: {},
     };
   }

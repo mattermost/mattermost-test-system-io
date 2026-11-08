@@ -9,7 +9,7 @@
     "format": "npx oxfmt src --write",
     "format:check": "npx oxfmt src --check",
     "lint": "npx oxlint src",
-    "test": "node --test src/auth.test.ts src/deadline.test.ts src/detox.test.ts src/maestro.test.ts src/mime.test.ts src/no_work.test.ts src/spawn.test.ts"
+    "test": "node --test src/auth.test.ts src/deadline.test.ts src/detox.test.ts src/maestro.test.ts src/mime.test.ts src/no_work.test.ts src/shard.test.ts src/spawn.test.ts"
   },
   "dependencies": {
     "@actions/core": "3.0.1",

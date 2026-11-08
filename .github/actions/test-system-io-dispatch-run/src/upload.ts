@@ -13,6 +13,7 @@ import * as path from "node:path";
 import * as core from "@actions/core";
 import { fetchWithAuthRetry, getBearer } from "./auth";
 import { imageContentType } from "./mime";
+import { shardJsonParts } from "./shard";
 import type {
   CompositeIdentity,
   InvocationRecord,
@@ -38,23 +39,8 @@ export async function uploadShard(
     return;
   }
 
-  const jsonParts: UploadPart[] = [];
+  const jsonParts = shardJsonParts(invocations);
   const screenshotParts: UploadPart[] = [];
-  // Collect existing JSON paths first so filename mode reflects what will
-  // actually upload (not invocations that listed missing reports).
-  const existingJsonPaths: string[] = [];
-  for (const inv of invocations) {
-    for (const jsonPath of [inv.playwrightJsonPath, ...(inv.additionalJsonPaths ?? [])]) {
-      if (fs.existsSync(jsonPath)) existingJsonPaths.push(jsonPath);
-    }
-  }
-  const multiJson = existingJsonPaths.length > 1;
-  for (let j = 0; j < existingJsonPaths.length; j++) {
-    const jsonPath = existingJsonPaths[j]!;
-    const stat = fs.statSync(jsonPath);
-    const rel = multiJson ? `playwright-results-${j}.json` : "playwright-results.json";
-    jsonParts.push({ absPath: jsonPath, relPath: rel, size: stat.size });
-  }
   for (let i = 0; i < invocations.length; i++) {
     const inv = invocations[i]!;
     const outputRoot = path.join(inv.iterDir, "output");

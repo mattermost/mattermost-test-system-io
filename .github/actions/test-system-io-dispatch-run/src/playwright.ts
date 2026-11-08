@@ -20,7 +20,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
-import { deadlineInterruptedResults, spawnWithDeadline } from "./spawn";
+import { deadlineLease, spawnWithDeadline } from "./spawn";
 import type { InvocationRecord, SpecResult, TestCaseResult, TestStatus } from "./types";
 
 export interface RunUnitConfig {
@@ -79,19 +79,20 @@ export async function runUnit(
       (child.error ? ` error=${child.error.message}` : ""),
   );
   if (child.timedOut) {
-    // SIGKILL leaves no reporter JSON, so nothing from this lease is archived.
-    // Every spec gets an interrupted result (the server needs full coverage of
-    // the lease) and the worker goes on to upload what earlier leases produced.
+    // SIGKILL leaves no reporter JSON. Every spec gets an interrupted result (the server needs full coverage
+    // of the lease, and another worker retests it), and the lease leaves an empty report so the worker's
+    // shard uploads even when this was its only lease (see deadlineLease in spawn.ts).
     core.warning(
       `playwright killed at worker deadline; reporting interrupted for ${specPaths.join(", ")}`,
     );
     return {
-      invocation: {
-        specPath: specPaths[0]!,
+      ...deadlineLease({
+        framework: "playwright",
         iterDir,
-        playwrightJsonPath: path.join(iterDir, "results", "reporter", "results.json"),
-      },
-      results: deadlineInterruptedResults(specPaths, durationMs),
+        specPaths,
+        startedAt,
+        endedAt: startedAt + durationMs,
+      }),
       screenshots: [],
     };
   }

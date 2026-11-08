@@ -7,36 +7,151 @@
  * demand, cache for a few minutes, and on a 401 we invalidate and
  * retry once. Pure transient-network failures get an exponential
  * backoff on top.
+ *
+ * Minting itself is retried too: the ID-token endpoint times out under
+ * load (26 workers of one run died on a single `Request timeout` before
+ * leasing anything), so transient mint failures back off and retry.
+ * Permanent ones (missing `id-token: write`, unset request env) fail at once.
  */
 
 import * as core from "@actions/core";
 
 const TOKEN_REFRESH_AGE_MS = 5 * 60 * 1000;
 
-let cachedToken: string | null = null;
-let cachedTokenMintedAt = 0;
+export const OIDC_MINT_ATTEMPTS = 5;
+// Sleep before attempt 2, 3, 4, 5 (about 30s total before giving up).
+export const OIDC_MINT_BACKOFF_MS = [2000, 4000, 8000, 16000];
 
-function invalidateToken(): void {
-  cachedToken = null;
-  cachedTokenMintedAt = 0;
+type ErrorClass = "transient" | "permanent";
+
+/**
+ * Classifies an error message from @actions/core's getIDToken. That helper
+ * rethrows the HTTP failure as text (`Error Code : <status>` plus the
+ * original message), so the status is parsed back out of the text.
+ *
+ * - HTTP 408, 429 and 5xx are transient, and so are network/timeout codes.
+ * - Any other HTTP status (401/403/404: wrong permissions or endpoint) is permanent.
+ * - Anything else (missing ACTIONS_ID_TOKEN_REQUEST_* env, malformed body) is
+ *   permanent: retrying cannot fix a missing environment.
+ */
+export function classifyOIDCError(message: string): ErrorClass {
+  const status = /Error Code\s*:\s*(\d{3})/.exec(message);
+  if (status) {
+    const code = Number(status[1]);
+    if (code === 408 || code === 429 || code >= 500) return "transient";
+    return "permanent";
+  }
+  if (
+    /timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network|fetch failed/i.test(
+      message,
+    )
+  ) {
+    return "transient";
+  }
+  return "permanent";
 }
 
-export async function getBearer(audience: string): Promise<string> {
-  if (cachedToken && Date.now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS) {
-    return cachedToken;
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export interface BearerProviderOptions {
+  /** Mints one OIDC ID token for the audience. Injected so tests never touch the runner. */
+  mint: (audience: string) => Promise<string>;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  log?: (message: string) => void;
+  attempts?: number;
+  backoffMs?: readonly number[];
+}
+
+export interface BearerProvider {
+  get(audience: string): Promise<string>;
+  invalidate(): void;
+}
+
+/**
+ * Caches one bearer and re-mints it once it is older than TOKEN_REFRESH_AGE_MS.
+ * Mint failures are retried with backoff only when classifyOIDCError calls them
+ * transient; a permanent failure throws on the first attempt with a hint.
+ */
+export function createBearerProvider(opts: BearerProviderOptions): BearerProvider {
+  const now = opts.now ?? (() => Date.now());
+  const sleep = opts.sleep ?? defaultSleep;
+  const log = opts.log ?? ((m: string) => core.info(m));
+  const attempts = opts.attempts ?? OIDC_MINT_ATTEMPTS;
+  const backoffMs = opts.backoffMs ?? OIDC_MINT_BACKOFF_MS;
+
+  let cachedToken: string | null = null;
+  let cachedTokenMintedAt = 0;
+
+  async function mintWithRetry(audience: string): Promise<string> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await opts.mint(audience);
+      } catch (err) {
+        const msg = errorMessage(err);
+        const klass = classifyOIDCError(msg);
+        if (klass === "permanent" || attempt >= attempts) {
+          throw new Error(
+            `OIDC token mint failed (${klass}, attempt ${attempt}/${attempts}): ${msg}` +
+              (/ACTIONS_ID_TOKEN_REQUEST|Error Code\s*:\s*40[13]/.test(msg)
+                ? " — the job needs `permissions: id-token: write`"
+                : ""),
+          );
+        }
+        const delayMs = backoffMs[attempt - 1] ?? backoffMs[backoffMs.length - 1] ?? 0;
+        log(
+          `OIDC token mint attempt ${attempt}/${attempts} failed (transient): ${msg}; ` +
+            `retrying in ${delayMs}ms`,
+        );
+        await sleep(delayMs);
+      }
+    }
   }
-  const token = await core.getIDToken(audience);
-  if (!token) throw new Error("OIDC mint returned empty value");
-  // Mark the JWT for the runner's output filter so subsequent `core.info`,
-  // error messages, or stack traces involving it print as `***`.
-  core.setSecret(token);
-  cachedToken = token;
-  cachedTokenMintedAt = Date.now();
-  return token;
+
+  return {
+    async get(audience: string): Promise<string> {
+      if (cachedToken && now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS) {
+        return cachedToken;
+      }
+      const token = await mintWithRetry(audience);
+      if (!token) throw new Error("OIDC mint returned empty value");
+      cachedToken = token;
+      cachedTokenMintedAt = now();
+      return token;
+    },
+    invalidate(): void {
+      cachedToken = null;
+      cachedTokenMintedAt = 0;
+    },
+  };
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+const defaultProvider = createBearerProvider({
+  mint: async (audience) => {
+    const token = await core.getIDToken(audience);
+    // Mark the JWT for the runner's output filter so subsequent `core.info`,
+    // error messages, or stack traces involving it print as `***`.
+    core.setSecret(token);
+    return token;
+  },
+});
+
+export async function getBearer(audience: string): Promise<string> {
+  return defaultProvider.get(audience);
+}
+
+function invalidateToken(): void {
+  defaultProvider.invalidate();
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+  return defaultSleep(ms);
 }
 
 /**

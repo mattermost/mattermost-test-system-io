@@ -15,6 +15,7 @@ import * as core from "@actions/core";
 import { setCommitStatus } from "./commit-status";
 import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
 import { discoverDetoxSpecs } from "./detox";
+import { durationOf, fetchDurationHistory, orderLongestFirst } from "./durations";
 import { discoverMaestroSpecs } from "./maestro";
 import { discoverPlaywrightSpecs } from "./playwright";
 import { buildReportURL } from "./report_url";
@@ -38,6 +39,8 @@ interface DispatchUnit {
   spec_path: string;
 }
 
+// Bounds the duration-hint read so a slow API cannot hold up the whole run.
+const DURATION_LOOKUP_TIMEOUT_MS = 10_000;
 const PRODUCTION_URL = "https://test-io.test.mattermost.com";
 const STAGING_URL = "https://staging-test-io.test.mattermost.com";
 
@@ -75,6 +78,9 @@ export async function run(): Promise<void> {
   if (totalReportsExpected <= 0) {
     throw new Error("total-reports-expected is required and must be > 0");
   }
+  // Base branch whose last complete run of this lane supplies per-spec
+  // durations for longest-first dispatch. Empty disables it.
+  const durationBaseBranch = core.getInput("duration-base-branch").trim();
 
   let compositeIdentity: CompositeIdentity;
   try {
@@ -83,6 +89,17 @@ export async function run(): Promise<void> {
     throw new Error(`composite-identity is not valid JSON: ${(e as Error).message}`);
   }
   normalizeCompositeIdentity(compositeIdentity);
+
+  const durations =
+    durationBaseBranch && (framework === "playwright" || framework === "cypress")
+      ? await loadDurationHints({
+          baseURL,
+          repository: compositeIdentity.repository,
+          name: compositeIdentity.name,
+          framework,
+          branch: durationBaseBranch,
+        })
+      : new Map<string, number>();
 
   let specs: string[];
   if (framework === "cypress") {
@@ -95,7 +112,9 @@ export async function run(): Promise<void> {
       sortFirst: parseTagList(core.getInput("cypress-sort-first")),
       sortLast: parseTagList(core.getInput("cypress-sort-last")),
     };
-    specs = discoverCypressSpecs(cypressDir, filters);
+    specs = discoverCypressSpecs(cypressDir, filters, (bucket) =>
+      orderLongestFirst(bucket, (s) => s.path, durations),
+    );
     if (specs.length === 0) {
       throw new Error(
         `no Cypress specs survived the filter under ${cypressDir} ` +
@@ -143,6 +162,14 @@ export async function run(): Promise<void> {
     if (specs.length === 0) {
       throw new Error(`no Playwright specs found under ${playwrightDir}`);
     }
+    specs = orderLongestFirst(specs, (s) => s, durations);
+  }
+  if (durations.size > 0) {
+    const withHistory = specs.filter((p) => durationOf(p, durations) !== undefined).length;
+    core.info(
+      `longest-first: ${withHistory}/${specs.length} ${framework} spec(s) have base-branch durations; ` +
+        "the rest follow alphabetically",
+    );
   }
   const dispatchUnits: DispatchUnit[] = specs.map((p) => ({ spec_path: p }));
   core.info(`discovered ${dispatchUnits.length} ${framework} spec file(s)`);
@@ -250,6 +277,27 @@ function formatPendingDescription(): string {
   if (!imageTag) return "tests running";
   const aliases = imageAliases ? ` (${imageAliases})` : "";
   return `tests running, image_tag:${imageTag}${aliases}`;
+}
+
+async function loadDurationHints(opts: {
+  baseURL: string;
+  repository: string;
+  name: string;
+  framework: string;
+  branch: string;
+}): Promise<Map<string, number>> {
+  try {
+    const h = await fetchDurationHistory({ ...opts, timeoutMs: DURATION_LOOKUP_TIMEOUT_MS });
+    core.info(
+      `duration hints: ${opts.framework} run ${h.runId} (${h.commit.slice(0, 8)}) on ${opts.branch} ` +
+        `has durations for ${h.durations.size} file(s)`,
+    );
+    return h.durations;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    core.warning(`duration hints unavailable (${msg}); keeping the default dispatch order`);
+    return new Map<string, number>();
+  }
 }
 
 function identityForReports(

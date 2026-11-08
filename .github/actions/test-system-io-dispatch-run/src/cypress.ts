@@ -27,14 +27,16 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
 import * as core from "@actions/core";
+import { deadlineInterruptedResults, spawnWithDeadline } from "./spawn";
 import type { InvocationRecord, SpecResult, TestCaseResult, TestStatus } from "./types";
 
 export interface RunUnitConfig {
   cypressDir: string;
   resultsDir: string;
   workerArtifacts: string;
+  /** Kill the run at this many ms (worker deadline). Undefined = no kill timer. */
+  timeoutMs?: number;
 }
 
 export interface CypressUnitResult {
@@ -47,11 +49,11 @@ export interface CypressUnitResult {
   screenshotsBySpec: Record<string, string[]>;
 }
 
-export function runUnit(
+export async function runUnit(
   cfg: RunUnitConfig,
   iterationSeq: number,
   specPaths: string[],
-): CypressUnitResult {
+): Promise<CypressUnitResult> {
   const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs.mkdirSync(iterDir, { recursive: true });
 
@@ -85,13 +87,33 @@ export function runUnit(
   ];
 
   const startedAt = Date.now();
-  const child = spawnSync("npx", args, {
+  const child = await spawnWithDeadline("npx", args, {
     cwd: cfg.cypressDir,
     env: { ...process.env, FORCE_COLOR: "0" },
-    stdio: "inherit",
+    timeoutMs: cfg.timeoutMs,
   });
   const durationMs = Date.now() - startedAt;
-  core.info(`cypress exit ${child.status} in ${Math.round(durationMs / 1000)}s`);
+  core.info(
+    `cypress exit ${child.status} in ${Math.round(durationMs / 1000)}s` +
+      (child.timedOut ? " (killed at worker deadline)" : "") +
+      (child.error ? ` error=${child.error.message}` : ""),
+  );
+  if (child.timedOut) {
+    // Mochawesome output from a killed run is partial, so nothing from this
+    // lease is archived. Every spec is reported interrupted, as in playwright.ts.
+    core.warning(
+      `cypress killed at worker deadline; reporting interrupted for ${specPaths.join(", ")}`,
+    );
+    return {
+      invocation: {
+        specPath: specPaths[0]!,
+        iterDir,
+        playwrightJsonPath: path.join(reportRoot, "json", "tests", "killed-at-deadline.json"),
+      },
+      results: deadlineInterruptedResults(specPaths, durationMs),
+      screenshotsBySpec: {},
+    };
+  }
 
   // Cypress writes one JSON per spec under results/mochawesome-report/
   // json/tests/[name].json by reporter-config.json convention. Aggregate

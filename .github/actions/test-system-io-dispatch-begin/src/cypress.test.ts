@@ -257,6 +257,41 @@ test("partitionBySort: sortFirst wins when a spec matches both lists", () => {
   assert.equal(ordered[0]?.path, "a.ts");
 });
 
+test("partitionBySort: orderBucket reorders inside each sort bucket and keeps the bucket boundaries", () => {
+  const specs = [
+    { path: "short.ts", meta: { ...emptyMeta(), groups: ["@channels"] } },
+    { path: "long.ts", meta: { ...emptyMeta(), groups: ["@channels"] } },
+    { path: "first-short.ts", meta: { ...emptyMeta(), groups: ["@flaky"] } },
+    { path: "first-long.ts", meta: { ...emptyMeta(), groups: ["@flaky"] } },
+    { path: "last.ts", meta: { ...emptyMeta(), groups: ["@known_issue"] } },
+  ];
+  const durations = new Map([
+    ["short.ts", 1_000],
+    ["long.ts", 9_000],
+    ["first-short.ts", 2_000],
+    ["first-long.ts", 8_000],
+  ]);
+  const filters = { ...noFilters, sortFirst: ["@flaky"], sortLast: ["@known_issue"] };
+  const byDuration = (bucket: typeof specs) =>
+    [...bucket].sort((a, b) => (durations.get(b.path) ?? 0) - (durations.get(a.path) ?? 0));
+  const ordered = partitionBySort(specs, filters, byDuration);
+  assert.deepEqual(
+    ordered.map((s) => s.path),
+    ["first-long.ts", "first-short.ts", "long.ts", "short.ts", "last.ts"],
+  );
+});
+
+test("partitionBySort: the default bucket order is discovery order", () => {
+  const specs = [
+    { path: "z.ts", meta: { ...emptyMeta(), groups: ["@channels"] } },
+    { path: "a.ts", meta: { ...emptyMeta(), groups: ["@channels"] } },
+  ];
+  assert.deepEqual(
+    partitionBySort(specs, noFilters).map((s) => s.path),
+    ["z.ts", "a.ts"],
+  );
+});
+
 // ── parseTagList ────────────────────────────────────────────────────────
 
 test("parseTagList: splits commas, trims, drops empties", () => {

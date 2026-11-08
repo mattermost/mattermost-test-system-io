@@ -20,6 +20,13 @@ import { runUnit as runCypressUnit } from "./cypress";
 import { runUnit as runDetoxUnit } from "./detox";
 import { runUnit as runMaestroUnit, parseMaestroEnv } from "./maestro";
 import { screenshotContentType } from "./mime";
+import {
+  deadlineAtFrom,
+  deadlineReached,
+  parseDeadlineMinutes,
+  specTimeoutMs,
+  unitsLeftOf,
+} from "./deadline";
 import { ranNoWork, recordNoWork } from "./no_work";
 import { uploadShard, type UploadConfig } from "./upload";
 import type {
@@ -95,6 +102,10 @@ export async function run(): Promise<void> {
   const maxIdlePolls = intInput("max-idle-polls", 5);
   // Longer than the server's retry_after_ms ceiling (~7s); see drain().
   const postFailureDelayMs = intInput("post-failure-delay-ms", 10000);
+  // Worker deadline (empty = off). Measured from this run() call, which is
+  // inside the step's timeout-minutes window.
+  const deadlineMinutes = parseDeadlineMinutes(core.getInput("deadline-minutes"));
+  const deadlineAt = deadlineAtFrom(Date.now(), deadlineMinutes);
 
   let compositeIdentity: CompositeIdentity;
   try {
@@ -153,6 +164,8 @@ export async function run(): Promise<void> {
       playwrightProject,
       maxIdlePolls,
       postFailureDelayMs,
+      deadlineAt,
+      deadlineMinutes,
       invocations,
       nextIterationSeq: () => iterationSeq++,
     });
@@ -248,6 +261,9 @@ interface DrainConfig {
   // Extra sleep after reporting a retest-eligible failure, before this
   // worker's next /checkout.
   postFailureDelayMs: number;
+  // Absolute epoch ms; null = no deadline. See deadline.ts.
+  deadlineAt: number | null;
+  deadlineMinutes: number | null;
   invocations: InvocationRecord[];
   nextIterationSeq: () => number;
 }
@@ -257,7 +273,17 @@ async function drain(cfg: DrainConfig): Promise<number> {
   let leasesHeld = 0;
   // Consecutive empty-poll count; reset to 0 whenever a unit is leased.
   let idlePolls = 0;
+  // Units not yet done by any worker, from the latest counts snapshot. Only
+  // used for the deadline log line.
+  let unitsLeft: number | null = null;
   while (true) {
+    if (deadlineReached(cfg.deadlineAt, Date.now())) {
+      core.warning(
+        `deadline reached after ${cfg.deadlineMinutes} min; stopped leasing; ` +
+          `${unitsLeft ?? "unknown"} units left for other workers`,
+      );
+      break;
+    }
     // Maestro runs one flow per invocation (runMaestroUnit only executes
     // specPaths[0]); never lease more than one unit for that framework.
     const checkoutBatchSize = cfg.framework === "maestro" ? 1 : cfg.batchSize;
@@ -285,6 +311,7 @@ async function drain(cfg: DrainConfig): Promise<number> {
 
     const body = checkout.body!;
     const diag = formatDiagnostics(body);
+    if (body.counts) unitsLeft = unitsLeftOf(body.counts);
     if (body.queue_empty) {
       const retryAfterMs = Number(body.retry_after_ms);
       if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
@@ -320,11 +347,12 @@ async function drain(cfg: DrainConfig): Promise<number> {
     let results: SpecResult[];
     try {
       if (cfg.framework === "cypress") {
-        const out = runCypressUnit(
+        const out = await runCypressUnit(
           {
             cypressDir: cfg.cypressDir,
             resultsDir: cfg.resultsDir,
             workerArtifacts: cfg.workerArtifacts,
+            timeoutMs: specTimeoutMs(cfg.deadlineAt, Date.now()),
           },
           cfg.nextIterationSeq(),
           specPaths,
@@ -371,13 +399,14 @@ async function drain(cfg: DrainConfig): Promise<number> {
         // the single spec/test_case this invocation ran — no matching needed.
         await attachMaestroScreenshots(cfg, results, out.screenshotsBySpec);
       } else {
-        const out = runPlaywrightUnit(
+        const out = await runPlaywrightUnit(
           {
             playwrightDir: cfg.playwrightDir,
             resultsDir: cfg.resultsDir,
             workerArtifacts: cfg.workerArtifacts,
             playwrightRetries: cfg.playwrightRetries,
             playwrightProject: cfg.playwrightProject,
+            timeoutMs: specTimeoutMs(cfg.deadlineAt, Date.now()),
           },
           cfg.nextIterationSeq(),
           specPaths,
@@ -425,8 +454,13 @@ async function drain(cfg: DrainConfig): Promise<number> {
     // Client-side only: delay this worker's next /checkout so another
     // worker's poll gets a chance at the retest first. Only once pending
     // fresh units are 0, since the server gates all retest dispatch on that.
+    if (completeRes.body?.counts) unitsLeft = unitsLeftOf(completeRes.body.counts);
     const pendingElsewhere = completeRes.body?.counts?.pending;
-    if (results.some((r) => RETEST_ELIGIBLE_STATUSES.has(r.status)) && pendingElsewhere === 0) {
+    if (
+      results.some((r) => RETEST_ELIGIBLE_STATUSES.has(r.status)) &&
+      pendingElsewhere === 0 &&
+      !deadlineReached(cfg.deadlineAt, Date.now())
+    ) {
       core.info(
         `failed result reported; waiting ${cfg.postFailureDelayMs}ms before next checkout ` +
           "so another worker's poll can pick up the retest",

@@ -24540,25 +24540,88 @@ function getOctokit(token, options, ...additionalPlugins) {
 
 // src/auth.ts
 var TOKEN_REFRESH_AGE_MS = 5 * 60 * 1e3;
-var cachedToken = null;
-var cachedTokenMintedAt = 0;
-function invalidateToken() {
-  cachedToken = null;
-  cachedTokenMintedAt = 0;
-}
-async function getBearer(audience) {
-  if (cachedToken && Date.now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS) {
-    return cachedToken;
+var OIDC_MINT_ATTEMPTS = 5;
+var OIDC_MINT_BACKOFF_MS = [2e3, 4e3, 8e3, 16e3];
+function classifyOIDCError(message) {
+  const status = /Error Code\s*:\s*(\d{3})/.exec(message);
+  if (status) {
+    const code = Number(status[1]);
+    if (code === 408 || code === 429 || code >= 500) return "transient";
+    return "permanent";
   }
-  const token = await getIDToken(audience);
-  if (!token) throw new Error("OIDC mint returned empty value");
-  setSecret(token);
-  cachedToken = token;
-  cachedTokenMintedAt = Date.now();
-  return token;
+  if (/timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network|fetch failed/i.test(
+    message
+  )) {
+    return "transient";
+  }
+  return "permanent";
+}
+function errorMessage(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+function createBearerProvider(opts) {
+  const now = opts.now ?? (() => Date.now());
+  const sleep3 = opts.sleep ?? defaultSleep;
+  const log = opts.log ?? ((m) => info(m));
+  const attempts = opts.attempts ?? OIDC_MINT_ATTEMPTS;
+  const backoffMs = opts.backoffMs ?? OIDC_MINT_BACKOFF_MS;
+  let cachedToken = null;
+  let cachedTokenMintedAt = 0;
+  async function mintWithRetry(audience) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await opts.mint(audience);
+      } catch (err) {
+        const msg = errorMessage(err);
+        const klass = classifyOIDCError(msg);
+        if (klass === "permanent" || attempt >= attempts) {
+          throw new Error(
+            `OIDC token mint failed (${klass}, attempt ${attempt}/${attempts}): ${msg}` + (/ACTIONS_ID_TOKEN_REQUEST|Error Code\s*:\s*40[13]/.test(msg) ? " \u2014 the job needs `permissions: id-token: write`" : "")
+          );
+        }
+        const delayMs = backoffMs[attempt - 1] ?? backoffMs[backoffMs.length - 1] ?? 0;
+        log(
+          `OIDC token mint attempt ${attempt}/${attempts} failed (transient): ${msg}; retrying in ${delayMs}ms`
+        );
+        await sleep3(delayMs);
+      }
+    }
+  }
+  return {
+    async get(audience) {
+      if (cachedToken && now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS) {
+        return cachedToken;
+      }
+      const token = await mintWithRetry(audience);
+      if (!token) throw new Error("OIDC mint returned empty value");
+      cachedToken = token;
+      cachedTokenMintedAt = now();
+      return token;
+    },
+    invalidate() {
+      cachedToken = null;
+      cachedTokenMintedAt = 0;
+    }
+  };
+}
+function defaultSleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+var defaultProvider = createBearerProvider({
+  mint: async (audience) => {
+    const token = await getIDToken(audience);
+    setSecret(token);
+    return token;
+  }
+});
+async function getBearer(audience) {
+  return defaultProvider.get(audience);
+}
+function invalidateToken() {
+  defaultProvider.invalidate();
 }
 function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  return defaultSleep(ms);
 }
 async function fetchWithRetry(makeRequest, attempts = 4) {
   let lastErr;
@@ -24591,21 +24654,95 @@ async function fetchWithAuthRetry(makeRequest) {
 // src/playwright.ts
 var fs2 = __toESM(require("fs"));
 var path = __toESM(require("path"));
+
+// src/spawn.ts
 var import_node_child_process = require("child_process");
-function runUnit(cfg, iterationSeq, specPaths) {
+function spawnWithDeadline(command, args, opts) {
+  return new Promise((resolve2) => {
+    const child = (0, import_node_child_process.spawn)(command, args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: "inherit",
+      detached: opts.timeoutMs !== void 0 && process.platform !== "win32"
+    });
+    let settled = false;
+    let timedOut = false;
+    let timer;
+    const finish = (outcome) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve2(outcome);
+    };
+    const killGroup = () => {
+      if (child.pid == null) return;
+      try {
+        if (process.platform === "win32") {
+          child.kill("SIGKILL");
+        } else {
+          process.kill(-child.pid, "SIGKILL");
+        }
+      } catch {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
+      }
+    };
+    if (opts.timeoutMs !== void 0) {
+      timer = setTimeout(
+        () => {
+          timedOut = true;
+          killGroup();
+        },
+        Math.max(0, opts.timeoutMs)
+      );
+    }
+    child.on("error", (error2) => finish({ status: null, signal: null, error: error2, timedOut }));
+    child.on("close", (status, signal) => finish({ status, signal, timedOut }));
+  });
+}
+function deadlineInterruptedResults(specPaths, durationMs) {
+  return specPaths.map((spec_path) => ({
+    spec_path,
+    status: "interrupted",
+    actual_duration_ms: durationMs,
+    test_cases: [],
+    error_message: "killed at worker deadline (deadline-minutes); spec did not finish in this worker"
+  }));
+}
+
+// src/playwright.ts
+async function runUnit(cfg, iterationSeq, specPaths) {
   const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs2.mkdirSync(iterDir, { recursive: true });
   const args = ["playwright", "test", `--project=${cfg.playwrightProject}`, "--no-deps"];
   if (cfg.playwrightRetries > 0) args.push(`--retries=${cfg.playwrightRetries}`);
   args.push(...specPaths);
   const startedAt = Date.now();
-  const child = (0, import_node_child_process.spawnSync)("npx", args, {
+  const child = await spawnWithDeadline("npx", args, {
     cwd: cfg.playwrightDir,
     env: { ...process.env, PW_SNAPSHOT_ENABLE: "true" },
-    stdio: "inherit"
+    timeoutMs: cfg.timeoutMs
   });
   const durationMs = Date.now() - startedAt;
-  info(`playwright exit ${child.status} in ${Math.round(durationMs / 1e3)}s`);
+  info(
+    `playwright exit ${child.status} in ${Math.round(durationMs / 1e3)}s` + (child.timedOut ? " (killed at worker deadline)" : "") + (child.error ? ` error=${child.error.message}` : "")
+  );
+  if (child.timedOut) {
+    warning(
+      `playwright killed at worker deadline; reporting interrupted for ${specPaths.join(", ")}`
+    );
+    return {
+      invocation: {
+        specPath: specPaths[0],
+        iterDir,
+        playwrightJsonPath: path.join(iterDir, "results", "reporter", "results.json")
+      },
+      results: deadlineInterruptedResults(specPaths, durationMs),
+      screenshots: []
+    };
+  }
   if (!fs2.existsSync(cfg.resultsDir)) {
     throw new Error(`results dir missing after playwright run: ${cfg.resultsDir}`);
   }
@@ -24745,8 +24882,7 @@ function mapStatus(s) {
 // src/cypress.ts
 var fs3 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
-var import_node_child_process2 = require("child_process");
-function runUnit2(cfg, iterationSeq, specPaths) {
+async function runUnit2(cfg, iterationSeq, specPaths) {
   const iterDir = path2.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs3.mkdirSync(iterDir, { recursive: true });
   const reportRoot = path2.join(cfg.cypressDir, "results", "mochawesome-report");
@@ -24767,13 +24903,29 @@ function runUnit2(cfg, iterationSeq, specPaths) {
     specPaths.join(",")
   ];
   const startedAt = Date.now();
-  const child = (0, import_node_child_process2.spawnSync)("npx", args, {
+  const child = await spawnWithDeadline("npx", args, {
     cwd: cfg.cypressDir,
     env: { ...process.env, FORCE_COLOR: "0" },
-    stdio: "inherit"
+    timeoutMs: cfg.timeoutMs
   });
   const durationMs = Date.now() - startedAt;
-  info(`cypress exit ${child.status} in ${Math.round(durationMs / 1e3)}s`);
+  info(
+    `cypress exit ${child.status} in ${Math.round(durationMs / 1e3)}s` + (child.timedOut ? " (killed at worker deadline)" : "") + (child.error ? ` error=${child.error.message}` : "")
+  );
+  if (child.timedOut) {
+    warning(
+      `cypress killed at worker deadline; reporting interrupted for ${specPaths.join(", ")}`
+    );
+    return {
+      invocation: {
+        specPath: specPaths[0],
+        iterDir,
+        playwrightJsonPath: path2.join(reportRoot, "json", "tests", "killed-at-deadline.json")
+      },
+      results: deadlineInterruptedResults(specPaths, durationMs),
+      screenshotsBySpec: {}
+    };
+  }
   const results = [];
   const archivedPaths = [];
   for (const sp of specPaths) {
@@ -24903,7 +25055,7 @@ function aggregateSpec2(json, specPath) {
 // src/detox.ts
 var fs4 = __toESM(require("fs"));
 var path3 = __toESM(require("path"));
-var import_node_child_process3 = require("child_process");
+var import_node_child_process2 = require("child_process");
 var DETOX_NODE_OPTIONS = "--max_old_space_size=4096";
 function runUnit3(cfg, iterationSeq, specPaths) {
   const iterDir = path3.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
@@ -24933,7 +25085,7 @@ function runUnit3(cfg, iterationSeq, specPaths) {
     `detox invoke: ${specPaths.length} spec(s), DETOX_MAX_WORKERS=${maxWorkers}, config=${cfg.detoxConfig}`
   );
   const startedAt = Date.now();
-  const child = (0, import_node_child_process3.spawnSync)("npx", args, {
+  const child = (0, import_node_child_process2.spawnSync)("npx", args, {
     cwd: cfg.detoxDir,
     env: {
       ...process.env,
@@ -25067,7 +25219,7 @@ function aggregateDetoxFile(file, specPath) {
 // src/maestro.ts
 var fs5 = __toESM(require("fs"));
 var path4 = __toESM(require("path"));
-var import_node_child_process4 = require("child_process");
+var import_node_child_process3 = require("child_process");
 
 // node_modules/fast-xml-parser/src/util.js
 var nameStartChar = ":A-Za-z_\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u02FF\\u0370-\\u037D\\u037F-\\u1FFF\\u200C-\\u200D\\u2070-\\u218F\\u2C00-\\u2FEF\\u3001-\\uD7FF\\uF900-\\uFDCF\\uFDF0-\\uFFFD";
@@ -29179,7 +29331,7 @@ async function runUnit4(cfg, iterationSeq, specPaths) {
 }
 function spawnMaestro(args, cwd, timeoutMs) {
   return new Promise((resolve2) => {
-    const child = (0, import_node_child_process4.spawn)("maestro", args, {
+    const child = (0, import_node_child_process3.spawn)("maestro", args, {
       cwd,
       stdio: "inherit",
       // Own process group so timeout can signal Maestro and its descendants.
@@ -29350,6 +29502,30 @@ function imageContentType(filePath) {
   if (ext === ".png") return "image/png";
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
   return null;
+}
+
+// src/deadline.ts
+function parseDeadlineMinutes(raw) {
+  const v = raw.trim();
+  if (v === "") return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`deadline-minutes must be a positive integer or empty, got "${raw}"`);
+  }
+  return n;
+}
+function deadlineAtFrom(startedAt, minutes) {
+  return minutes === null ? null : startedAt + minutes * 6e4;
+}
+function deadlineReached(deadlineAt, now) {
+  return deadlineAt !== null && now >= deadlineAt;
+}
+function specTimeoutMs(deadlineAt, now) {
+  if (deadlineAt === null) return void 0;
+  return Math.max(1, deadlineAt - now);
+}
+function unitsLeftOf(counts) {
+  return counts.pending + counts.retest_eligible;
 }
 
 // src/no_work.ts
@@ -29579,6 +29755,8 @@ async function run() {
   }
   const maxIdlePolls = intInput("max-idle-polls", 5);
   const postFailureDelayMs = intInput("post-failure-delay-ms", 1e4);
+  const deadlineMinutes = parseDeadlineMinutes(getInput("deadline-minutes"));
+  const deadlineAt = deadlineAtFrom(Date.now(), deadlineMinutes);
   let compositeIdentity;
   try {
     compositeIdentity = JSON.parse(compositeIdentityRaw);
@@ -29626,6 +29804,8 @@ async function run() {
       playwrightProject,
       maxIdlePolls,
       postFailureDelayMs,
+      deadlineAt,
+      deadlineMinutes,
       invocations,
       nextIterationSeq: () => iterationSeq++
     });
@@ -29681,7 +29861,14 @@ function formatDiagnostics(body) {
 async function drain(cfg) {
   let leasesHeld = 0;
   let idlePolls = 0;
+  let unitsLeft = null;
   while (true) {
+    if (deadlineReached(cfg.deadlineAt, Date.now())) {
+      warning(
+        `deadline reached after ${cfg.deadlineMinutes} min; stopped leasing; ${unitsLeft ?? "unknown"} units left for other workers`
+      );
+      break;
+    }
     const checkoutBatchSize = cfg.framework === "maestro" ? 1 : cfg.batchSize;
     const checkout = await postJSON2(cfg, "/api/v1/orchestration/checkout", {
       ...cfg.compositeIdentity,
@@ -29703,6 +29890,7 @@ async function drain(cfg) {
     }
     const body = checkout.body;
     const diag = formatDiagnostics(body);
+    if (body.counts) unitsLeft = unitsLeftOf(body.counts);
     if (body.queue_empty) {
       const retryAfterMs = Number(body.retry_after_ms);
       if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
@@ -29731,11 +29919,12 @@ async function drain(cfg) {
     let results;
     try {
       if (cfg.framework === "cypress") {
-        const out = runUnit2(
+        const out = await runUnit2(
           {
             cypressDir: cfg.cypressDir,
             resultsDir: cfg.resultsDir,
-            workerArtifacts: cfg.workerArtifacts
+            workerArtifacts: cfg.workerArtifacts,
+            timeoutMs: specTimeoutMs(cfg.deadlineAt, Date.now())
           },
           cfg.nextIterationSeq(),
           specPaths
@@ -29774,13 +29963,14 @@ async function drain(cfg) {
         results = out.results;
         await attachMaestroScreenshots(cfg, results, out.screenshotsBySpec);
       } else {
-        const out = runUnit(
+        const out = await runUnit(
           {
             playwrightDir: cfg.playwrightDir,
             resultsDir: cfg.resultsDir,
             workerArtifacts: cfg.workerArtifacts,
             playwrightRetries: cfg.playwrightRetries,
-            playwrightProject: cfg.playwrightProject
+            playwrightProject: cfg.playwrightProject,
+            timeoutMs: specTimeoutMs(cfg.deadlineAt, Date.now())
           },
           cfg.nextIterationSeq(),
           specPaths
@@ -29817,8 +30007,9 @@ async function drain(cfg) {
     info(
       `reported (${results.map((r) => r.status).join(",")}) \u2192 ${transitions || "(no transition)"}` + formatDiagnostics(completeRes.body || {})
     );
+    if (completeRes.body?.counts) unitsLeft = unitsLeftOf(completeRes.body.counts);
     const pendingElsewhere = completeRes.body?.counts?.pending;
-    if (results.some((r) => RETEST_ELIGIBLE_STATUSES.has(r.status)) && pendingElsewhere === 0) {
+    if (results.some((r) => RETEST_ELIGIBLE_STATUSES.has(r.status)) && pendingElsewhere === 0 && !deadlineReached(cfg.deadlineAt, Date.now())) {
       info(
         `failed result reported; waiting ${cfg.postFailureDelayMs}ms before next checkout so another worker's poll can pick up the retest`
       );

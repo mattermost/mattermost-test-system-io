@@ -19,8 +19,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
 import * as core from "@actions/core";
+import { deadlineInterruptedResults, spawnWithDeadline } from "./spawn";
 import type { InvocationRecord, SpecResult, TestCaseResult, TestStatus } from "./types";
 
 export interface RunUnitConfig {
@@ -29,6 +29,8 @@ export interface RunUnitConfig {
   workerArtifacts: string;
   playwrightRetries: number;
   playwrightProject: string;
+  /** Kill the run at this many ms (worker deadline). Undefined = no kill timer. */
+  timeoutMs?: number;
 }
 
 export interface PlaywrightUnitResult {
@@ -39,11 +41,11 @@ export interface PlaywrightUnitResult {
   screenshots: { specPath: string; ordinal: number; absPath: string }[];
 }
 
-export function runUnit(
+export async function runUnit(
   cfg: RunUnitConfig,
   iterationSeq: number,
   specPaths: string[],
-): PlaywrightUnitResult {
+): Promise<PlaywrightUnitResult> {
   const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs.mkdirSync(iterDir, { recursive: true });
 
@@ -61,13 +63,34 @@ export function runUnit(
   args.push(...specPaths);
 
   const startedAt = Date.now();
-  const child = spawnSync("npx", args, {
+  const child = await spawnWithDeadline("npx", args, {
     cwd: cfg.playwrightDir,
     env: { ...process.env, PW_SNAPSHOT_ENABLE: "true" },
-    stdio: "inherit",
+    timeoutMs: cfg.timeoutMs,
   });
   const durationMs = Date.now() - startedAt;
-  core.info(`playwright exit ${child.status} in ${Math.round(durationMs / 1000)}s`);
+  core.info(
+    `playwright exit ${child.status} in ${Math.round(durationMs / 1000)}s` +
+      (child.timedOut ? " (killed at worker deadline)" : "") +
+      (child.error ? ` error=${child.error.message}` : ""),
+  );
+  if (child.timedOut) {
+    // SIGKILL leaves no reporter JSON, so nothing from this lease is archived.
+    // Every spec gets an interrupted result (the server needs full coverage of
+    // the lease) and the worker goes on to upload what earlier leases produced.
+    core.warning(
+      `playwright killed at worker deadline; reporting interrupted for ${specPaths.join(", ")}`,
+    );
+    return {
+      invocation: {
+        specPath: specPaths[0]!,
+        iterDir,
+        playwrightJsonPath: path.join(iterDir, "results", "reporter", "results.json"),
+      },
+      results: deadlineInterruptedResults(specPaths, durationMs),
+      screenshots: [],
+    };
+  }
 
   if (!fs.existsSync(cfg.resultsDir)) {
     throw new Error(`results dir missing after playwright run: ${cfg.resultsDir}`);

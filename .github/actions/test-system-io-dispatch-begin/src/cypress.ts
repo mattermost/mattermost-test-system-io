@@ -65,11 +65,21 @@ export interface CypressSpecConfig {
 }
 
 /**
+ * Orders one sort bucket (sort-first, middle, sort-last). main.ts passes
+ * longest-first ordering from duration history; the default keeps discovery order.
+ */
+export type BucketOrder = (specs: AnnotatedSpec[]) => AnnotatedSpec[];
+
+/**
  * Walk the cypress project for spec files matching the consumer's
  * `specPattern`, parse each file's header tags, and apply the filter
  * pipeline. Returns paths relative to cypressDir with `/` separators.
  */
-export function discoverCypressSpecs(cypressDir: string, filters: CypressFilters): string[] {
+export function discoverCypressSpecs(
+  cypressDir: string,
+  filters: CypressFilters,
+  orderBucket: BucketOrder = (b) => b,
+): string[] {
   const specCfg = readCypressSpecConfig(cypressDir);
   const seen = new Set<string>();
   const annotated: AnnotatedSpec[] = [];
@@ -92,7 +102,7 @@ export function discoverCypressSpecs(cypressDir: string, filters: CypressFilters
   }
 
   const filtered = annotated.filter((s) => passesFilters(s.meta, filters));
-  return partitionBySort(filtered, filters).map((s) => s.path);
+  return partitionBySort(filtered, filters, orderBucket).map((s) => s.path);
 }
 
 /**
@@ -235,7 +245,11 @@ export function passesFilters(meta: SpecMetadata, filters: CypressFilters): bool
  * A spec matching both lists goes to sort-first only — early surfacing of
  * a flagged failure is more useful than queue-tail demotion.
  */
-export function partitionBySort(specs: AnnotatedSpec[], filters: CypressFilters): AnnotatedSpec[] {
+export function partitionBySort(
+  specs: AnnotatedSpec[],
+  filters: CypressFilters,
+  orderBucket: BucketOrder = (b) => b,
+): AnnotatedSpec[] {
   const first: AnnotatedSpec[] = [];
   const middle: AnnotatedSpec[] = [];
   const last: AnnotatedSpec[] = [];
@@ -248,7 +262,7 @@ export function partitionBySort(specs: AnnotatedSpec[], filters: CypressFilters)
       middle.push(s);
     }
   }
-  return [...first, ...middle, ...last];
+  return [...orderBucket(first), ...orderBucket(middle), ...orderBucket(last)];
 }
 
 /** True when a and b share at least one element. */

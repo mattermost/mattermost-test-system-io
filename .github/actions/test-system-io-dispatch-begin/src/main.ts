@@ -15,6 +15,7 @@ import * as core from "@actions/core";
 import { setCommitStatus } from "./commit-status";
 import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
 import { discoverDetoxSpecs } from "./detox";
+import { durationOf, fetchDurationHistory, orderLongestFirst } from "./durations";
 import { discoverMaestroSpecs } from "./maestro";
 import { discoverPlaywrightSpecs } from "./playwright";
 import { buildReportURL } from "./report_url";
@@ -38,9 +39,15 @@ interface DispatchUnit {
   spec_path: string;
 }
 
+// Bounds the duration-hint read so a slow API cannot hold up the whole run.
+const DURATION_LOOKUP_TIMEOUT_MS = 10_000;
 const PRODUCTION_URL = "https://test-io.test.mattermost.com";
 const STAGING_URL = "https://staging-test-io.test.mattermost.com";
 
+/**
+ * Entry point: reads the inputs, discovers the lane's specs, orders them (longest first when
+ * duration hints load), and begins the orchestration run and the report group in test-system-io.
+ */
 export async function run(): Promise<void> {
   const baseURL = resolveBaseURL();
   const audience = core.getInput("oidc-audience") || "mattermost-test-system-io";
@@ -75,6 +82,9 @@ export async function run(): Promise<void> {
   if (totalReportsExpected <= 0) {
     throw new Error("total-reports-expected is required and must be > 0");
   }
+  // Base branch whose last complete run of this lane supplies per-spec
+  // durations for longest-first dispatch. Empty disables it.
+  const durationBaseBranch = core.getInput("duration-base-branch").trim();
 
   let compositeIdentity: CompositeIdentity;
   try {
@@ -83,6 +93,17 @@ export async function run(): Promise<void> {
     throw new Error(`composite-identity is not valid JSON: ${(e as Error).message}`);
   }
   normalizeCompositeIdentity(compositeIdentity);
+
+  const durations =
+    durationBaseBranch && (framework === "playwright" || framework === "cypress")
+      ? await loadDurationHints({
+          baseURL,
+          repository: compositeIdentity.repository,
+          name: compositeIdentity.name,
+          framework,
+          branch: durationBaseBranch,
+        })
+      : new Map<string, number>();
 
   let specs: string[];
   if (framework === "cypress") {
@@ -95,7 +116,9 @@ export async function run(): Promise<void> {
       sortFirst: parseTagList(core.getInput("cypress-sort-first")),
       sortLast: parseTagList(core.getInput("cypress-sort-last")),
     };
-    specs = discoverCypressSpecs(cypressDir, filters);
+    specs = discoverCypressSpecs(cypressDir, filters, (bucket) =>
+      orderLongestFirst(bucket, (s) => s.path, durations),
+    );
     if (specs.length === 0) {
       throw new Error(
         `no Cypress specs survived the filter under ${cypressDir} ` +
@@ -143,6 +166,14 @@ export async function run(): Promise<void> {
     if (specs.length === 0) {
       throw new Error(`no Playwright specs found under ${playwrightDir}`);
     }
+    specs = orderLongestFirst(specs, (s) => s, durations);
+  }
+  if (durations.size > 0) {
+    const withHistory = specs.filter((p) => durationOf(p, durations) !== undefined).length;
+    core.info(
+      `longest-first: ${withHistory}/${specs.length} ${framework} spec(s) have base-branch durations; ` +
+        "the rest follow alphabetically",
+    );
   }
   const dispatchUnits: DispatchUnit[] = specs.map((p) => ({ spec_path: p }));
   core.info(`discovered ${dispatchUnits.length} ${framework} spec file(s)`);
@@ -218,6 +249,10 @@ export async function run(): Promise<void> {
   }
 }
 
+/**
+ * Posts a pending commit status on the tested commit under commit-status-context, linking to the
+ * report page; with no context it warns and skips.
+ */
 async function pushPendingCommitStatus(c: CompositeIdentity, reportURL: string): Promise<void> {
   const context = core.getInput("commit-status-context");
   if (!context) {
@@ -244,6 +279,7 @@ async function pushPendingCommitStatus(c: CompositeIdentity, reportURL: string):
   });
 }
 
+/** The pending commit status text, naming the server image tag and its aliases when they are given. */
 function formatPendingDescription(): string {
   const imageTag = core.getInput("image-tag");
   const imageAliases = core.getInput("image-aliases");
@@ -252,6 +288,35 @@ function formatPendingDescription(): string {
   return `tests running, image_tag:${imageTag}${aliases}`;
 }
 
+/**
+ * Duration hints for longest-first dispatch. A failed lookup logs a warning and returns no hints,
+ * so dispatch keeps its default order.
+ */
+async function loadDurationHints(opts: {
+  baseURL: string;
+  repository: string;
+  name: string;
+  framework: string;
+  branch: string;
+}): Promise<Map<string, number>> {
+  try {
+    const h = await fetchDurationHistory({ ...opts, timeoutMs: DURATION_LOOKUP_TIMEOUT_MS });
+    core.info(
+      `duration hints: ${opts.framework} run ${h.runId} (${h.commit.slice(0, 8)}) of "${h.name}" on ${opts.branch} ` +
+        `has durations for ${h.durations.size} file(s)`,
+    );
+    return h.durations;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    core.warning(`duration hints unavailable (${msg}); keeping the default dispatch order`);
+    return new Map<string, number>();
+  }
+}
+
+/**
+ * The composite identity in the shape test-system-io's report endpoints take, with the framework
+ * and the expected report count.
+ */
 function identityForReports(
   c: CompositeIdentity,
   framework: string,
@@ -271,11 +336,13 @@ function identityForReports(
   return body;
 }
 
+/** The test-system-io base URL: staging when use-staging is "true", else production. */
 function resolveBaseURL(): string {
   const useStaging = core.getInput("use-staging").trim().toLowerCase() === "true";
   return useStaging ? STAGING_URL : PRODUCTION_URL;
 }
 
+/** An integer action input; fallback when it is empty. Throws when it is not an integer. */
 function intInput(name: string, fallback: number): number {
   const raw = core.getInput(name);
   if (raw === "") return fallback;
@@ -286,13 +353,15 @@ function intInput(name: string, fallback: number): number {
   return n;
 }
 
-// normalizeCompositeIdentity coerces gh_pr_number to a number when it
-// arrived as a string. Shell-built composite-identity payloads (jq
-// `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
-// identityFields.GHPRNumber is *int and json.Decode rejects the string
-// form, surfacing as a 400 BAD_REQUEST "invalid JSON body" on every
-// orchestration endpoint. Normalizing once here keeps the rest of the
-// action body-agnostic.
+/**
+ * normalizeCompositeIdentity coerces gh_pr_number to a number when it
+ * arrived as a string. Shell-built composite-identity payloads (jq
+ * `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
+ * identityFields.GHPRNumber is *int and json.Decode rejects the string
+ * form, surfacing as a 400 BAD_REQUEST "invalid JSON body" on every
+ * orchestration endpoint. Normalizing once here keeps the rest of the
+ * action body-agnostic.
+ */
 function normalizeCompositeIdentity(c: CompositeIdentity): void {
   if (typeof c.gh_pr_number === "string") {
     const n = Number.parseInt(c.gh_pr_number, 10);

@@ -77,6 +77,20 @@ inputs:
       immediately.
     required: false
     default: "10000"
+  deadline-minutes:
+    description: >
+      Minutes after this worker starts (this step's own start, not the job's)
+      at which it stops leasing. A spec still running at that point is killed
+      and every spec in its lease is reported `interrupted` (retest-eligible);
+      the worker then uploads its shard. Set it below the dispatch-run step's
+      `timeout-minutes` (e.g. 20 for a 25-minute step), leaving room for the
+      kill, the /complete call and the upload. Each worker that stops this way
+      logs `deadline reached after N min; stopped leasing; M units left for
+      other workers`. Empty disables the deadline (the default). Playwright and
+      Cypress only; Detox and Maestro runs are not killed at the deadline (they
+      still stop leasing).
+    required: false
+    default: ""
 
   # ── Playwright-specific ──────────────────────────────────────────────
   playwright-dir:

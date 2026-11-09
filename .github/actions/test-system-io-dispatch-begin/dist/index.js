@@ -26033,7 +26033,7 @@ function truncateDescription(s) {
 var fs3 = __toESM(require("fs"));
 var path = __toESM(require("path"));
 var CYPRESS_DEFAULT_SPEC_PATTERN = ["**/*.cy.{js,jsx,ts,tsx}"];
-function discoverCypressSpecs(cypressDir, filters) {
+function discoverCypressSpecs(cypressDir, filters, orderBucket = (b) => b) {
   const specCfg = readCypressSpecConfig(cypressDir);
   const seen = /* @__PURE__ */ new Set();
   const annotated = [];
@@ -26052,7 +26052,7 @@ function discoverCypressSpecs(cypressDir, filters) {
     }
   }
   const filtered = annotated.filter((s) => passesFilters(s.meta, filters));
-  return partitionBySort(filtered, filters).map((s) => s.path);
+  return partitionBySort(filtered, filters, orderBucket).map((s) => s.path);
 }
 function readCypressSpecConfig(cypressDir) {
   for (const name of [
@@ -26140,7 +26140,7 @@ function passesFilters(meta, filters) {
   if (filters.skipOn.length > 0 && shareAny(meta.skips, filters.skipOn)) return false;
   return true;
 }
-function partitionBySort(specs, filters) {
+function partitionBySort(specs, filters, orderBucket = (b) => b) {
   const first = [];
   const middle = [];
   const last = [];
@@ -26153,7 +26153,7 @@ function partitionBySort(specs, filters) {
       middle.push(s);
     }
   }
-  return [...first, ...middle, ...last];
+  return [...orderBucket(first), ...orderBucket(middle), ...orderBucket(last)];
 }
 function shareAny(a, b) {
   if (a.length === 0 || b.length === 0) return false;
@@ -26248,6 +26248,104 @@ function shareAny2(a, b) {
 }
 function toRelative(detoxDir, full) {
   return path2.relative(detoxDir, full).split(path2.sep).join("/");
+}
+
+// src/durations.ts
+var DURATION_LOOKUP_LIMIT = 200;
+var BASE_LANE_LOOKUP_LIMIT = 20;
+var GROUP_COMPLETED = "completed";
+var SUBPATH = "-subpath";
+function durationLaneNames(name, branch) {
+  const seg = `-${branch.replace(/\//g, "-")}`;
+  const subpath = name.endsWith(SUBPATH);
+  const stem = subpath ? name.slice(0, -SUBPATH.length) : name;
+  const baseStem = stem.endsWith(seg) ? stem : `${stem}${seg}`;
+  const names = subpath ? [`${baseStem}${SUBPATH}`, baseStem] : [baseStem];
+  if (!names.includes(name)) names.push(name);
+  return names;
+}
+async function getJSON(fetchImpl, url, timeoutMs) {
+  const res = await fetchImpl(url, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (res.status !== 200) {
+    throw new Error(`GET ${new URL(url).pathname} returned HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+async function fetchDurationHistory(opts) {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const names = durationLaneNames(opts.name, opts.branch);
+  let group;
+  let name = "";
+  for (const candidate of names) {
+    const limit = candidate === opts.name ? DURATION_LOOKUP_LIMIT : BASE_LANE_LOOKUP_LIMIT;
+    const query = new URLSearchParams({
+      repository: opts.repository,
+      name: candidate,
+      limit: String(limit)
+    });
+    const list = await getJSON(
+      fetchImpl,
+      `${opts.baseURL}/api/v1/reports?${query.toString()}`,
+      opts.timeoutMs
+    );
+    group = (list.reports ?? []).find(
+      (r) => r.branch === opts.branch && r.framework === opts.framework && r.status === GROUP_COMPLETED
+    );
+    if (group) {
+      name = candidate;
+      break;
+    }
+  }
+  if (!group) {
+    throw new Error(
+      `no completed ${opts.framework} run on ${opts.branch} under ${names.map((n) => `"${n}"`).join(", ")}`
+    );
+  }
+  const suites = await getJSON(
+    fetchImpl,
+    `${opts.baseURL}/api/v1/reports/${encodeURIComponent(group.id)}/suites`,
+    opts.timeoutMs
+  );
+  const durations = /* @__PURE__ */ new Map();
+  for (const s of suites.suites ?? []) {
+    if (!s.file_path || typeof s.duration_ms !== "number" || s.duration_ms <= 0) continue;
+    durations.set(s.file_path, (durations.get(s.file_path) ?? 0) + s.duration_ms);
+  }
+  if (durations.size === 0) {
+    throw new Error(`run ${group.gh_run_id} on ${opts.branch} has no per-file durations`);
+  }
+  return { durations, runId: group.gh_run_id, commit: group.commit, name };
+}
+function durationOf(spec, durations) {
+  const exact = durations.get(spec);
+  if (exact !== void 0) return exact;
+  let best;
+  let bestLen = -1;
+  for (const [file, ms] of durations) {
+    if (spec.endsWith("/" + file) || file.endsWith("/" + spec)) {
+      if (file.length > bestLen) {
+        best = ms;
+        bestLen = file.length;
+      }
+    }
+  }
+  return best;
+}
+function orderLongestFirst(items, keyOf, durations) {
+  if (durations.size === 0) return [...items];
+  return [...items].sort((a, b) => {
+    const ka = keyOf(a);
+    const kb = keyOf(b);
+    const da = durationOf(ka, durations);
+    const db = durationOf(kb, durations);
+    if (da !== void 0 && db !== void 0 && da !== db) return db - da;
+    if (da !== void 0 && db === void 0) return -1;
+    if (da === void 0 && db !== void 0) return 1;
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
 }
 
 // src/maestro.ts
@@ -26470,6 +26568,7 @@ async function safeText(res, max = 500) {
 }
 
 // src/main.ts
+var DURATION_LOOKUP_TIMEOUT_MS = 1e4;
 var PRODUCTION_URL = "https://test-io.test.mattermost.com";
 var STAGING_URL = "https://staging-test-io.test.mattermost.com";
 async function run() {
@@ -26501,6 +26600,7 @@ async function run() {
   if (totalReportsExpected <= 0) {
     throw new Error("total-reports-expected is required and must be > 0");
   }
+  const durationBaseBranch = getInput("duration-base-branch").trim();
   let compositeIdentity;
   try {
     compositeIdentity = JSON.parse(compositeIdentityRaw);
@@ -26508,6 +26608,13 @@ async function run() {
     throw new Error(`composite-identity is not valid JSON: ${e.message}`);
   }
   normalizeCompositeIdentity(compositeIdentity);
+  const durations = durationBaseBranch && (framework === "playwright" || framework === "cypress") ? await loadDurationHints({
+    baseURL,
+    repository: compositeIdentity.repository,
+    name: compositeIdentity.name,
+    framework,
+    branch: durationBaseBranch
+  }) : /* @__PURE__ */ new Map();
   let specs;
   if (framework === "cypress") {
     const cypressDir = path5.resolve(repoDir, cypressDirInput);
@@ -26519,7 +26626,11 @@ async function run() {
       sortFirst: parseTagList(getInput("cypress-sort-first")),
       sortLast: parseTagList(getInput("cypress-sort-last"))
     };
-    specs = discoverCypressSpecs(cypressDir, filters);
+    specs = discoverCypressSpecs(
+      cypressDir,
+      filters,
+      (bucket) => orderLongestFirst(bucket, (s) => s.path, durations)
+    );
     if (specs.length === 0) {
       throw new Error(
         `no Cypress specs survived the filter under ${cypressDir} (stage=${filters.stage.join(",") || "*"}, include=${filters.includeGroup.join(",") || "*"}, exclude=${filters.excludeGroup.join(",") || "none"}, skip-on=${filters.skipOn.join(",") || "none"})`
@@ -26554,6 +26665,13 @@ async function run() {
     if (specs.length === 0) {
       throw new Error(`no Playwright specs found under ${playwrightDir}`);
     }
+    specs = orderLongestFirst(specs, (s) => s, durations);
+  }
+  if (durations.size > 0) {
+    const withHistory = specs.filter((p) => durationOf(p, durations) !== void 0).length;
+    info(
+      `longest-first: ${withHistory}/${specs.length} ${framework} spec(s) have base-branch durations; the rest follow alphabetically`
+    );
   }
   const dispatchUnits = specs.map((p) => ({ spec_path: p }));
   info(`discovered ${dispatchUnits.length} ${framework} spec file(s)`);
@@ -26644,6 +26762,19 @@ function formatPendingDescription() {
   if (!imageTag) return "tests running";
   const aliases = imageAliases ? ` (${imageAliases})` : "";
   return `tests running, image_tag:${imageTag}${aliases}`;
+}
+async function loadDurationHints(opts) {
+  try {
+    const h = await fetchDurationHistory({ ...opts, timeoutMs: DURATION_LOOKUP_TIMEOUT_MS });
+    info(
+      `duration hints: ${opts.framework} run ${h.runId} (${h.commit.slice(0, 8)}) of "${h.name}" on ${opts.branch} has durations for ${h.durations.size} file(s)`
+    );
+    return h.durations;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    warning(`duration hints unavailable (${msg}); keeping the default dispatch order`);
+    return /* @__PURE__ */ new Map();
+  }
 }
 function identityForReports(c, framework, totalReportsExpected) {
   const body = {

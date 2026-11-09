@@ -19,8 +19,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
 import * as core from "@actions/core";
+import { deadlineLease, spawnWithDeadline } from "./spawn";
 import type { InvocationRecord, SpecResult, TestCaseResult, TestStatus } from "./types";
 
 export interface RunUnitConfig {
@@ -29,6 +29,8 @@ export interface RunUnitConfig {
   workerArtifacts: string;
   playwrightRetries: number;
   playwrightProject: string;
+  /** Kill the run at this many ms (worker deadline). Undefined = no kill timer. */
+  timeoutMs?: number;
 }
 
 export interface PlaywrightUnitResult {
@@ -39,11 +41,15 @@ export interface PlaywrightUnitResult {
   screenshots: { specPath: string; ordinal: number; absPath: string }[];
 }
 
-export function runUnit(
+/**
+ * Runs Playwright once over the lease's specs and returns each spec's result from the JSON report,
+ * with the screenshots of its failed tests.
+ */
+export async function runUnit(
   cfg: RunUnitConfig,
   iterationSeq: number,
   specPaths: string[],
-): PlaywrightUnitResult {
+): Promise<PlaywrightUnitResult> {
   const iterDir = path.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs.mkdirSync(iterDir, { recursive: true });
 
@@ -61,13 +67,35 @@ export function runUnit(
   args.push(...specPaths);
 
   const startedAt = Date.now();
-  const child = spawnSync("npx", args, {
+  const child = await spawnWithDeadline("npx", args, {
     cwd: cfg.playwrightDir,
     env: { ...process.env, PW_SNAPSHOT_ENABLE: "true" },
-    stdio: "inherit",
+    timeoutMs: cfg.timeoutMs,
   });
   const durationMs = Date.now() - startedAt;
-  core.info(`playwright exit ${child.status} in ${Math.round(durationMs / 1000)}s`);
+  core.info(
+    `playwright exit ${child.status} in ${Math.round(durationMs / 1000)}s` +
+      (child.timedOut ? " (killed at worker deadline)" : "") +
+      (child.error ? ` error=${child.error.message}` : ""),
+  );
+  if (child.timedOut) {
+    // SIGKILL leaves no reporter JSON. Every spec gets an interrupted result (the server needs full coverage
+    // of the lease, and another worker retests it), and the lease leaves an empty report so the worker's
+    // shard uploads even when this was its only lease (see deadlineLease in spawn.ts).
+    core.warning(
+      `playwright killed at worker deadline; reporting interrupted for ${specPaths.join(", ")}`,
+    );
+    return {
+      ...deadlineLease({
+        framework: "playwright",
+        iterDir,
+        specPaths,
+        startedAt,
+        endedAt: startedAt + durationMs,
+      }),
+      screenshots: [],
+    };
+  }
 
   if (!fs.existsSync(cfg.resultsDir)) {
     throw new Error(`results dir missing after playwright run: ${cfg.resultsDir}`);
@@ -134,6 +162,11 @@ const RANKS: Record<TestStatus, number> = {
   failed: 5,
 };
 
+/**
+ * One spec's result from the Playwright JSON report: every test case of the spec's file, the total
+ * duration (fallbackDurationMs when the report has none), the worst status, and the failed tests'
+ * screenshots.
+ */
 export function aggregateSpec(
   json: PlaywrightJson,
   specPath: string,
@@ -144,6 +177,7 @@ export function aggregateSpec(
   let totalMs = 0;
   let worst: TestStatus = "skipped";
 
+  /** Whether a report file path is this spec: equal, or one is a path suffix of the other. */
   function fileMatches(file: string | undefined): boolean {
     if (!file) return false;
     if (file === specPath) return true;
@@ -152,6 +186,10 @@ export function aggregateSpec(
     return false;
   }
 
+  /**
+   * Collects the cases of the spec's file in this suite, then in its nested suites, keeping the
+   * suite titles as the title path.
+   */
   function visit(suite: PlaywrightSuite, ancestors: string[], currentFile: string): void {
     const here = suite.title ? [...ancestors, suite.title] : ancestors;
     const suiteFile = suite.file || currentFile;
@@ -233,6 +271,7 @@ export function aggregateSpec(
   return { result: out, screenshots };
 }
 
+/** Maps a Playwright test or result status to test-system-io's status. */
 function mapStatus(s: string | undefined): TestStatus {
   switch (s) {
     case "expected":

@@ -20,6 +20,13 @@ import { runUnit as runCypressUnit } from "./cypress";
 import { runUnit as runDetoxUnit } from "./detox";
 import { runUnit as runMaestroUnit, parseMaestroEnv } from "./maestro";
 import { screenshotContentType } from "./mime";
+import {
+  deadlineAtFrom,
+  deadlineReached,
+  parseDeadlineMinutes,
+  specTimeoutMs,
+  unitsLeftOf,
+} from "./deadline";
 import { ranNoWork, recordNoWork } from "./no_work";
 import { uploadShard, type UploadConfig } from "./upload";
 import type {
@@ -36,6 +43,10 @@ import type {
 const PRODUCTION_URL = "https://test-io.test.mattermost.com";
 const STAGING_URL = "https://staging-test-io.test.mattermost.com";
 
+/**
+ * Entry point: leases spec units from the lane's orchestration run until the queue is empty or the
+ * worker deadline passes, runs each with the framework's runner, and reports every lease's results.
+ */
 export async function run(): Promise<void> {
   const baseURL = resolveBaseURL();
   const audience = core.getInput("oidc-audience") || "mattermost-test-system-io";
@@ -95,6 +106,10 @@ export async function run(): Promise<void> {
   const maxIdlePolls = intInput("max-idle-polls", 5);
   // Longer than the server's retry_after_ms ceiling (~7s); see drain().
   const postFailureDelayMs = intInput("post-failure-delay-ms", 10000);
+  // Worker deadline (empty = off). Measured from this run() call, which is
+  // inside the step's timeout-minutes window.
+  const deadlineMinutes = parseDeadlineMinutes(core.getInput("deadline-minutes"));
+  const deadlineAt = deadlineAtFrom(Date.now(), deadlineMinutes);
 
   let compositeIdentity: CompositeIdentity;
   try {
@@ -153,6 +168,8 @@ export async function run(): Promise<void> {
       playwrightProject,
       maxIdlePolls,
       postFailureDelayMs,
+      deadlineAt,
+      deadlineMinutes,
       invocations,
       nextIterationSeq: () => iterationSeq++,
     });
@@ -248,16 +265,31 @@ interface DrainConfig {
   // Extra sleep after reporting a retest-eligible failure, before this
   // worker's next /checkout.
   postFailureDelayMs: number;
+  // Absolute epoch ms; null = no deadline. See deadline.ts.
+  deadlineAt: number | null;
+  deadlineMinutes: number | null;
   invocations: InvocationRecord[];
   nextIterationSeq: () => number;
 }
 
-// Returns how many leases this worker held; 0 means it ran nothing.
+/**
+ * Returns how many leases this worker held; 0 means it ran nothing.
+ */
 async function drain(cfg: DrainConfig): Promise<number> {
   let leasesHeld = 0;
   // Consecutive empty-poll count; reset to 0 whenever a unit is leased.
   let idlePolls = 0;
+  // Units not yet done by any worker, from the latest counts snapshot. Only
+  // used for the deadline log line.
+  let unitsLeft: number | null = null;
   while (true) {
+    if (deadlineReached(cfg.deadlineAt, Date.now())) {
+      core.warning(
+        `deadline reached after ${cfg.deadlineMinutes} min; stopped leasing; ` +
+          `${unitsLeft ?? "unknown"} units left for other workers`,
+      );
+      break;
+    }
     // Maestro runs one flow per invocation (runMaestroUnit only executes
     // specPaths[0]); never lease more than one unit for that framework.
     const checkoutBatchSize = cfg.framework === "maestro" ? 1 : cfg.batchSize;
@@ -285,6 +317,7 @@ async function drain(cfg: DrainConfig): Promise<number> {
 
     const body = checkout.body!;
     const diag = formatDiagnostics(body);
+    if (body.counts) unitsLeft = unitsLeftOf(body.counts);
     if (body.queue_empty) {
       const retryAfterMs = Number(body.retry_after_ms);
       if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
@@ -320,11 +353,12 @@ async function drain(cfg: DrainConfig): Promise<number> {
     let results: SpecResult[];
     try {
       if (cfg.framework === "cypress") {
-        const out = runCypressUnit(
+        const out = await runCypressUnit(
           {
             cypressDir: cfg.cypressDir,
             resultsDir: cfg.resultsDir,
             workerArtifacts: cfg.workerArtifacts,
+            timeoutMs: specTimeoutMs(cfg.deadlineAt, Date.now()),
           },
           cfg.nextIterationSeq(),
           specPaths,
@@ -371,13 +405,14 @@ async function drain(cfg: DrainConfig): Promise<number> {
         // the single spec/test_case this invocation ran — no matching needed.
         await attachMaestroScreenshots(cfg, results, out.screenshotsBySpec);
       } else {
-        const out = runPlaywrightUnit(
+        const out = await runPlaywrightUnit(
           {
             playwrightDir: cfg.playwrightDir,
             resultsDir: cfg.resultsDir,
             workerArtifacts: cfg.workerArtifacts,
             playwrightRetries: cfg.playwrightRetries,
             playwrightProject: cfg.playwrightProject,
+            timeoutMs: specTimeoutMs(cfg.deadlineAt, Date.now()),
           },
           cfg.nextIterationSeq(),
           specPaths,
@@ -425,8 +460,13 @@ async function drain(cfg: DrainConfig): Promise<number> {
     // Client-side only: delay this worker's next /checkout so another
     // worker's poll gets a chance at the retest first. Only once pending
     // fresh units are 0, since the server gates all retest dispatch on that.
+    if (completeRes.body?.counts) unitsLeft = unitsLeftOf(completeRes.body.counts);
     const pendingElsewhere = completeRes.body?.counts?.pending;
-    if (results.some((r) => RETEST_ELIGIBLE_STATUSES.has(r.status)) && pendingElsewhere === 0) {
+    if (
+      results.some((r) => RETEST_ELIGIBLE_STATUSES.has(r.status)) &&
+      pendingElsewhere === 0 &&
+      !deadlineReached(cfg.deadlineAt, Date.now())
+    ) {
       core.info(
         `failed result reported; waiting ${cfg.postFailureDelayMs}ms before next checkout ` +
           "so another worker's poll can pick up the retest",
@@ -519,15 +559,17 @@ interface PostResponse<T> {
   body: T | null;
 }
 
-// postJSON wraps fetchWithAuthRetry with a 5xx-retry policy. The
-// underlying fetchWithAuthRetry handles network-layer errors and OIDC
-// 401 refresh, but passes HTTP responses through verbatim — appropriate
-// for upload endpoints whose callers branch on specific status codes.
-// For the orchestration JSON endpoints (/checkout, /complete) a 5xx is
-// always transient: the proxy timed out waiting for the backend, the
-// caller can re-send safely (orchestrator detects duplicate completion
-// on a lease). 4xx still passes through so business signals like 409
-// `WORKER_HAS_ACTIVE_LEASE` reach the caller intact.
+/**
+ * postJSON wraps fetchWithAuthRetry with a 5xx-retry policy. The
+ * underlying fetchWithAuthRetry handles network-layer errors and OIDC
+ * 401 refresh, but passes HTTP responses through verbatim — appropriate
+ * for upload endpoints whose callers branch on specific status codes.
+ * For the orchestration JSON endpoints (/checkout, /complete) a 5xx is
+ * always transient: the proxy timed out waiting for the backend, the
+ * caller can re-send safely (orchestrator detects duplicate completion
+ * on a lease). 4xx still passes through so business signals like 409
+ * `WORKER_HAS_ACTIVE_LEASE` reach the caller intact.
+ */
 async function postJSON<T>(
   cfg: { baseURL: string; audience: string },
   urlPath: string,
@@ -567,6 +609,7 @@ async function postJSON<T>(
   return { status: 0, body: null };
 }
 
+/** Resolves after ms milliseconds. */
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -590,10 +633,15 @@ function sleep(ms: number): Promise<void> {
  */
 const CYPRESS_INVALID_FILENAME_CHARS_RE = /[/\\:*?"<>|]/g;
 
+/** A test title with the characters Cypress drops from screenshot file names removed. */
 function stripCypressInvalidFilenameChars(title: string): string {
   return title.replace(CYPRESS_INVALID_FILENAME_CHARS_RE, "");
 }
 
+/**
+ * Uploads the failure screenshots of each Cypress spec and attaches their keys to the spec's failed
+ * test cases.
+ */
 async function attachCypressScreenshots(
   cfg: {
     baseURL: string;
@@ -742,6 +790,9 @@ async function attachMaestroScreenshots(
   }
 }
 
+/**
+ * Uploads one screenshot to the orchestration screenshot endpoint and returns its storage key and file name.
+ */
 async function uploadOrchScreenshot(
   cfg: {
     baseURL: string;
@@ -806,11 +857,16 @@ async function uploadOrchScreenshot(
   return { key: body.key, relative_path: relPath };
 }
 
+/** The test-system-io base URL: staging when use-staging is "true", else production. */
 function resolveBaseURL(): string {
   const useStaging = core.getInput("use-staging").trim().toLowerCase() === "true";
   return useStaging ? STAGING_URL : PRODUCTION_URL;
 }
 
+/**
+ * A non-negative integer action input; fallback when it is empty. Throws on decimals, negatives or
+ * trailing text.
+ */
 function intInput(name: string, fallback: number): number {
   const raw = core.getInput(name);
   if (raw === "") return fallback;
@@ -822,13 +878,15 @@ function intInput(name: string, fallback: number): number {
   return n;
 }
 
-// normalizeCompositeIdentity coerces gh_pr_number to a number when it
-// arrived as a string. Shell-built composite-identity payloads (jq
-// `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
-// identityFields.GHPRNumber is *int and json.Decode rejects the string
-// form, surfacing as a 400 BAD_REQUEST "invalid JSON body" on every
-// orchestration endpoint. Normalizing once here keeps the rest of the
-// action body-agnostic.
+/**
+ * normalizeCompositeIdentity coerces gh_pr_number to a number when it
+ * arrived as a string. Shell-built composite-identity payloads (jq
+ * `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
+ * identityFields.GHPRNumber is *int and json.Decode rejects the string
+ * form, surfacing as a 400 BAD_REQUEST "invalid JSON body" on every
+ * orchestration endpoint. Normalizing once here keeps the rest of the
+ * action body-agnostic.
+ */
 function normalizeCompositeIdentity(c: CompositeIdentity): void {
   if (typeof c.gh_pr_number === "string") {
     const n = Number.parseInt(c.gh_pr_number, 10);
@@ -840,11 +898,13 @@ function normalizeCompositeIdentity(c: CompositeIdentity): void {
   }
 }
 
-// retryGitHubCall wraps an Octokit/REST API call with bounded retries on
-// transient failures (5xx, 429, network/abort errors). 4xx errors that
-// indicate a permanent problem — bad token, missing permissions, no
-// such job — fall through immediately so the action surfaces a clear
-// failure instead of pointlessly retrying.
+/**
+ * retryGitHubCall wraps an Octokit/REST API call with bounded retries on
+ * transient failures (5xx, 429, network/abort errors). 4xx errors that
+ * indicate a permanent problem — bad token, missing permissions, no
+ * such job — fall through immediately so the action surfaces a clear
+ * failure instead of pointlessly retrying.
+ */
 async function retryGitHubCall<T>(fn: () => Promise<T>): Promise<T> {
   const delays = [500, 1500, 4000]; // ms; 3 attempts after the first
   let lastErr: unknown;
@@ -865,6 +925,7 @@ async function retryGitHubCall<T>(fn: () => Promise<T>): Promise<T> {
   throw lastErr;
 }
 
+/** Whether a GitHub API error is worth retrying: network errors, 408, 429 and 5xx. */
 function isRetryableGitHubError(err: unknown): boolean {
   // Octokit RequestError exposes `.status`; native fetch / network
   // errors tend to lack it.

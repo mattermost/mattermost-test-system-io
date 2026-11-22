@@ -247,28 +247,11 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	// flattens the CTE and drives off suites_pkey instead; that is its choice
 	// to make and it is cheap enough.
 	//
-	// Measured on Postgres 18.3 against production scale (19,800 report groups,
-	// 5.25M suites), with no index on suites.file:
-	//
-	//   window mode                                 20ms
-	//   runs mode, file has history, branch-scoped    3ms
-	//   runs mode, file has history, no branch       10ms
-	//   runs mode, no history at all, branch-scoped 498ms
-	//   runs mode, no history at all, no branch    1753ms
-	//
-	// So an index on suites.file is not load-bearing for either mode: with one
-	// present the window plan is unchanged and the planner does not even choose
-	// it, and the slow case above improves only to 1544ms. That case is a file
-	// list with no history — a new or renamed spec — where the walk probes every
-	// candidate group without finding LIMIT of them. Only bounding the candidate
-	// set would fix it, which is not worth a knob: this is a CI-triggered read
-	// with a 120s client timeout, the intended callers scope by branch, and the
-	// answer is an empty history, which leaves the caller blocking. That is the
-	// safe direction.
-	//
-	// The figures come from a synthetic corpus where every group carries the
-	// same 265 spec files, so real selectivity will differ; they bound the shape
-	// of the plan, not the exact cost.
+	// In count mode, cap the walk at 90 days before `until` and rely on
+	// suites_report_id_file_idx (report_id, file) for the EXISTS semi-join so
+	// a newly added or renamed spec cannot walk multi-year history and hit the
+	// 60s load-balancer timeout. 90 days still covers infrequent ESR/release
+	// branches while bounding worst-case latency.
 	//
 	// Both ORDER BYs are total orders — id breaks ties in the CTE, and group,
 	// suite and case id break every tie outside it — so neither a group nor a
@@ -287,7 +270,7 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 			  -- 'in_progress' groups are still uploading and stay out.
 			  AND status IN ('completed', 'incomplete')
 			  AND created_at < $2
-			  AND ($3::timestamptz IS NULL OR created_at >= $3)
+			  AND created_at >= COALESCE($3::timestamptz, $2::timestamptz - interval '90 days')
 			  AND ($4 = '' OR branch = $4)
 			  AND EXISTS (
 				  SELECT 1

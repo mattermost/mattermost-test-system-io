@@ -145,9 +145,10 @@ func TestReportsHistoryReturnsPastExecutionsInNamedSpecFiles(t *testing.T) {
 	// Same spec file, a test the caller never named: file-keyed requests return
 	// it, which is the whole point of keying on the file.
 	seedGroup(t, env, repo, "pr-9", &pr9, "ddddddd", "playwright-full", file, "MM-T2 reworded later", "failed", 0, now.Add(-12*time.Hour))
-	seedGroup(t, env, repo, "master", nil, "eeeeeee", "playwright-full-master", other, title, "failed", 0, now.Add(-6*time.Hour))  // another file
-	seedGroup(t, env, repo, "master", nil, "fffffff", "playwright-full-master", file, title, "failed", 0, now.Add(-480*time.Hour)) // outside the window
-	seedGroup(t, env, "mattermost/elsewhere", "master", nil, "9999999", "playwright-full-master", file, title, "failed", 0, now)   // other repo
+	seedGroup(t, env, repo, "master", nil, "eeeeeee", "playwright-full-master", other, title, "failed", 0, now.Add(-6*time.Hour))   // another file
+	seedGroup(t, env, repo, "master", nil, "fffffff", "playwright-full-master", file, title, "failed", 0, now.Add(-480*time.Hour))  // outside 14d window, inside 90d count-mode floor
+	seedGroup(t, env, repo, "master", nil, "1111111", "playwright-full-master", file, title, "failed", 0, now.Add(-2400*time.Hour)) // 100d old: outside 90d count-mode floor
+	seedGroup(t, env, "mattermost/elsewhere", "master", nil, "9999999", "playwright-full-master", file, title, "failed", 0, now)    // other repo
 
 	status, out := postHistory(t, env, map[string]any{"repository": repo, "until": until, "files": []string{file}})
 	if status != http.StatusOK {

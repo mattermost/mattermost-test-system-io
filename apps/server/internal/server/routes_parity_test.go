@@ -37,9 +37,10 @@ func TestRoutesMatchOpenAPI(t *testing.T) {
 		}
 	}
 
-	// Zero-value deps are enough: Build only wires handlers, nothing runs.
+	// Zero-value deps plus the spec path are enough: Build only wires handlers,
+	// and the path mounts the spec and swagger routes that exemptRoutes covers.
 	routes := map[string]bool{}
-	err = chi.Walk(Build(Deps{}), func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+	err = chi.Walk(Build(Deps{OpenAPISpecPath: specPath}), func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if key := routeKey(method, route); key != "" && !exemptRoutes[key] {
 			routes[key] = true
 		}

@@ -373,7 +373,6 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '413': { $ref: '#/components/responses/PayloadTooLarge' }
 
   /api/v1/reports/upload/{rid}/{uid}/screenshots:
     parameters:
@@ -401,7 +400,6 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '413': { $ref: '#/components/responses/PayloadTooLarge' }
 
   /api/v1/reports/repositories:
     get:
@@ -552,7 +550,7 @@ paths:
               schema: { $ref: '#/components/schemas/ReportDetail' }
         '404': { $ref: '#/components/responses/NotFound' }
     delete:
-      tags: [admin]
+      tags: [reports]
       responses:
         '204': { description: Deleted }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1411,36 +1409,6 @@ components:
               items: { $ref: '#/components/schemas/ReportEntry' }
             error_message: { type: string }
 
-    Report:
-      type: object
-      description: Go-native report shape returned by the upload endpoint.
-      required: [id, report_group_id, source, framework, status, gh_run_attempt, total_cases, created_at]
-      properties:
-        id: { type: string, format: uuid }
-        report_group_id: { type: string, format: uuid }
-        source: { type: string }
-        framework: { type: string, enum: [playwright, cypress, detox, maestro] }
-        repository: { type: string, nullable: true }
-        branch: { type: string, nullable: true }
-        commit_sha: { type: string, nullable: true }
-        gh_run_id: { type: string, nullable: true }
-        gh_run_number: { type: string, nullable: true }
-        gh_run_attempt: { type: string }
-        gh_pr_number: { type: integer, nullable: true }
-        gh_job_id: { type: string, nullable: true }
-        gh_job_name: { type: string, nullable: true }
-        status: { type: string, enum: [ingesting, ready, failed] }
-        total_suites: { type: integer }
-        total_cases: { type: integer }
-        passed_cases: { type: integer }
-        failed_cases: { type: integer }
-        skipped_cases: { type: integer }
-        flaky_cases: { type: integer }
-        duration_ms: { type: integer, nullable: true }
-        created_at: { type: string, format: date-time }
-        ingested_at: { type: string, format: date-time, nullable: true }
-        ingest_error: { type: string, nullable: true }
-
     ReportListResponse:
       type: object
       required: [reports, total, limit, offset]
@@ -1736,15 +1704,15 @@ components:
       type: object
       required: [repository, commit, gh_run_id, framework, name]
       properties:
-        repository: { type: string, description: "GitHub 'owner/repo' slug." }
-        commit: { type: string }
-        gh_run_id: { type: string }
+        repository: { type: string, minLength: 1, description: "GitHub 'owner/repo' slug." }
+        commit: { type: string, minLength: 1 }
+        gh_run_id: { type: string, minLength: 1 }
         gh_run_attempt: { type: string, description: "Defaults to '1' when omitted." }
         framework: { type: string, enum: [playwright, cypress, detox, maestro] }
-        name: { type: string }
+        name: { type: string, minLength: 1 }
         run_group: { type: string }
         branch: { type: string }
-        gh_pr_number: { type: integer }
+        gh_pr_number: { type: integer, nullable: true }
 
     ReportBeginRequest:
       allOf:
@@ -1765,16 +1733,18 @@ components:
         - $ref: '#/components/schemas/ReportGroupKey'
         - type: object
           properties:
-            total_reports_expected: { type: integer, minimum: 1 }
+            total_reports_expected: { type: integer, minimum: 1, nullable: true }
             gh_job_id: { type: string }
             gh_job_name: { type: string }
             json_files:
               type: array
+              nullable: true
               items: { $ref: '#/components/schemas/DeclaredFile' }
             screenshots:
               type: array
+              nullable: true
               items: { $ref: '#/components/schemas/DeclaredFile' }
-            environment_metadata: { type: object, additionalProperties: true }
+            environment_metadata: { type: object, additionalProperties: true, nullable: true }
 
     RejectedFile:
       type: object

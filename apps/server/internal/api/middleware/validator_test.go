@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,7 +20,9 @@ func TestValidatorBodyValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOpenAPIValidator: %v", err)
 	}
-	h := v.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var got []byte // body the downstream handler saw
+	h := v.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -45,9 +48,13 @@ func TestValidatorBodyValidation(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, testHost+tc.path, strings.NewReader(tc.body))
 			req.Header.Set("Content-Type", tc.contentType)
 			rec := httptest.NewRecorder()
+			got = nil
 			h.ServeHTTP(rec, req)
 			if rec.Code != tc.want {
 				t.Fatalf("POST %s: got %d, want %d; body=%s", tc.path, rec.Code, tc.want, rec.Body.String())
+			}
+			if tc.want == http.StatusNoContent && string(got) != tc.body {
+				t.Fatalf("POST %s: handler saw body %q, want %q", tc.path, got, tc.body)
 			}
 		})
 	}

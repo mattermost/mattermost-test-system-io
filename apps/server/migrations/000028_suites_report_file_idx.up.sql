@@ -14,21 +14,28 @@
 --   CREATE INDEX CONCURRENTLY suites_report_id_file_idx ON suites (report_id, file);
 DO $$
 DECLARE
-    idx_valid boolean;
+    suites_schema text;
+    idx_valid     boolean;
 BEGIN
+    SELECT n.nspname
+    INTO suites_schema
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.oid = 'suites'::regclass;
+
     SELECT i.indisvalid
     INTO idx_valid
     FROM pg_class c
     JOIN pg_index i ON i.indexrelid = c.oid
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relname = 'suites_report_id_file_idx'
-      AND n.nspname = current_schema();
+      AND n.nspname = suites_schema;
 
     IF idx_valid IS FALSE THEN
-        DROP INDEX suites_report_id_file_idx;
+        EXECUTE format('DROP INDEX %I.%I', suites_schema, 'suites_report_id_file_idx');
     END IF;
 
     IF idx_valid IS DISTINCT FROM TRUE THEN
-        CREATE INDEX suites_report_id_file_idx ON suites (report_id, file);
+        EXECUTE format('CREATE INDEX %I ON %I.suites (report_id, file)', 'suites_report_id_file_idx', suites_schema);
     END IF;
 END $$;

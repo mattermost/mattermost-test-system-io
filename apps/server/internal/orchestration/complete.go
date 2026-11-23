@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -54,6 +55,7 @@ type CompleteOutcome struct {
 	LateReport        bool
 	Idempotent        bool // true when the lease was already released-completed (first answer wins)
 	UnitStatesChanged []UnitStateChange
+	SupersededUnitIDs []uuid.UUID
 	RunNowCompleted   bool
 	RunCounts         RunCounts
 }
@@ -76,52 +78,55 @@ func (s *Store) RecordCompletion(
 		return nil, err
 	}
 
-	lease, err := s.FindLeaseByWorker(ctx, run.ID, worker)
-	if err != nil {
-		return nil, err
-	}
-
-	// Idempotent path: if the lease is already released as 'completed', first
-	// answer wins (no DB mutation, no events).
-	if lease.ReleasedAt != nil && lease.ReleaseReason != nil && *lease.ReleaseReason == LeaseReleaseCompleted {
-		logEvent(ctx, s.Logger, "orchestration.complete.idempotent", "orchestration complete idempotent replay", run,
-			slog.String("gh_job_id", worker.GHJobID),
-			slog.String("lease_id", lease.ID.String()),
-		)
-		logMetric(ctx, s.Logger, "orchestration_completions_total", "late_idempotent", 1)
-		return &CompleteOutcome{
-			LeaseID:    lease.ID,
-			Idempotent: true,
-			LateReport: false,
-			RunCounts:  run.Counts,
-		}, nil
-	}
-
-	// All-or-nothing: results must cover every (lease, spec_path) attempt row.
-	specsInLease, err := s.specsForLease(ctx, lease.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateResultsCoverLease(results, specsInLease); err != nil {
-		return nil, err
-	}
-
-	now := time.Now().UTC()
-	lateReport := isLateReport(now, lease.Deadline)
-
 	var (
-		stateChanges    []UnitStateChange
-		runNowCompleted bool
-		updatedCounts   RunCounts
+		lease             *Lease
+		idempotent        bool
+		lateReport        bool
+		stateChanges      []UnitStateChange
+		supersededUnitIDs = []uuid.UUID{}
+		runNowCompleted   bool
+		updatedCounts     RunCounts
 	)
 
 	txErr := s.inTx(ctx, func(tx pgx.Tx) error {
+		// Lock the lease row first, matching expireOneLease's lock order
+		// (leases -> attempts -> dispatch_units -> orchestration_runs).
+		var err error
+		lease, err = findLeaseByWorkerForUpdateTx(ctx, tx, run.ID, worker)
+		if err != nil {
+			return err
+		}
+
+		// Idempotent path: if the lease is already released as 'completed',
+		// first answer wins (no DB mutation, no events).
+		if lease.ReleasedAt != nil && lease.ReleaseReason != nil && *lease.ReleaseReason == LeaseReleaseCompleted {
+			counts, _, err := readRunCountsAndStatusTx(ctx, tx, run.ID)
+			if err != nil {
+				return err
+			}
+			idempotent = true
+			updatedCounts = counts
+			return nil
+		}
+
+		// All-or-nothing: results must cover every (lease, spec_path) attempt row.
+		specsInLease, err := specsForLeaseTx(ctx, tx, lease.ID)
+		if err != nil {
+			return err
+		}
+		if err := validateResultsCoverLease(results, specsInLease); err != nil {
+			return err
+		}
+
+		now := time.Now().UTC()
+		lateReport = isLateReportOrReleased(now, lease.Deadline, lease.ReleasedAt)
+
 		// Update the per-spec attempts rows.
 		if err := updateAttemptsForCompletionTx(ctx, tx, lease.ID, results, lateReport, now); err != nil {
 			return err
 		}
 
-		// Group results by dispatch_unit so we can compute per-unit outcomes.
+		// Group results by dispatch_unit and lock each unit FOR UPDATE OF du.
 		unitOutcomes, err := groupResultsByUnitTx(ctx, tx, lease.ID, results)
 		if err != nil {
 			return err
@@ -132,16 +137,18 @@ func (s *Store) RecordCompletion(
 			RetestBudget: run.RetestBudget,
 		}
 		for _, uo := range unitOutcomes {
-			change, applied, err := finalizeUnitStateTx(ctx, tx, run.ID, uo, now, lateReport, retestCfg)
+			change, applied, err := finalizeUnitStateTx(ctx, tx, run.ID, lease.ID, uo, now, retestCfg)
 			if err != nil {
 				return err
 			}
 			if applied {
 				stateChanges = append(stateChanges, change)
+			} else {
+				supersededUnitIDs = append(supersededUnitIDs, uo.UnitID)
 			}
 		}
 
-		// Release the lease (idempotent guard: only when still active).
+		// Release the lease (preserve prior release_reason if already expired/timed out).
 		if _, err := tx.Exec(ctx, `
 			UPDATE leases
 			   SET released_at = COALESCE(released_at, $2),
@@ -152,41 +159,13 @@ func (s *Store) RecordCompletion(
 		}
 
 		// Re-read run counters and decide on completion transition.
-		var (
-			pending        int
-			leased         int
-			retestEligible int
-			passed         int
-			failed         int
-			skipped        int
-			abandoned      int
-			total          int
-			status         string
-		)
-		err = tx.QueryRow(ctx, `
-			SELECT pending_count, leased_count, retest_eligible_count,
-			       completed_pass_count, completed_fail_count, completed_skipped_count,
-			       abandoned_count, total_units, status
-			  FROM orchestration_runs
-			 WHERE id = $1
-		`, run.ID).Scan(&pending, &leased, &retestEligible,
-			&passed, &failed, &skipped,
-			&abandoned, &total, &status)
+		counts, status, err := readRunCountsAndStatusTx(ctx, tx, run.ID)
 		if err != nil {
-			return fmt.Errorf("re-read run counters: %w", err)
+			return err
 		}
-		updatedCounts = RunCounts{
-			Pending:          pending,
-			Leased:           leased,
-			CompletedPass:    passed,
-			CompletedFail:    failed,
-			CompletedSkipped: skipped,
-			Abandoned:        abandoned,
-			RetestEligible:   retestEligible,
-			Total:            total,
-		}
+		updatedCounts = counts
 
-		if status == RunStatusInProgress && pending == 0 && leased == 0 && retestEligible == 0 {
+		if status == RunStatusInProgress && counts.Pending == 0 && counts.Leased == 0 && counts.RetestEligible == 0 {
 			if _, err := tx.Exec(ctx, `
 				UPDATE orchestration_runs
 				   SET status = 'completed',
@@ -202,6 +181,21 @@ func (s *Store) RecordCompletion(
 	})
 	if txErr != nil {
 		return nil, txErr
+	}
+
+	if idempotent {
+		logEvent(ctx, s.Logger, "orchestration.complete.idempotent", "orchestration complete idempotent replay", run,
+			slog.String("gh_job_id", worker.GHJobID),
+			slog.String("lease_id", lease.ID.String()),
+		)
+		logMetric(ctx, s.Logger, "orchestration_completions_total", "late_idempotent", 1)
+		return &CompleteOutcome{
+			LeaseID:           lease.ID,
+			Idempotent:        true,
+			LateReport:        false,
+			SupersededUnitIDs: []uuid.UUID{},
+			RunCounts:         updatedCounts,
+		}, nil
 	}
 
 	for _, change := range stateChanges {
@@ -230,9 +224,30 @@ func (s *Store) RecordCompletion(
 		LateReport:        lateReport,
 		Idempotent:        false,
 		UnitStatesChanged: stateChanges,
+		SupersededUnitIDs: supersededUnitIDs,
 		RunNowCompleted:   runNowCompleted,
 		RunCounts:         updatedCounts,
 	}, nil
+}
+
+func readRunCountsAndStatusTx(ctx context.Context, tx pgx.Tx, runID uuid.UUID) (RunCounts, string, error) {
+	var (
+		c      RunCounts
+		status string
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT pending_count, leased_count, retest_eligible_count,
+		       completed_pass_count, completed_fail_count, completed_skipped_count,
+		       abandoned_count, total_units, status
+		  FROM orchestration_runs
+		 WHERE id = $1
+	`, runID).Scan(&c.Pending, &c.Leased, &c.RetestEligible,
+		&c.CompletedPass, &c.CompletedFail, &c.CompletedSkipped,
+		&c.Abandoned, &c.Total, &status)
+	if err != nil {
+		return RunCounts{}, "", fmt.Errorf("re-read run counters: %w", err)
+	}
+	return c, status, nil
 }
 
 // attemptOutcomeFromUnitState maps a terminal dispatch_units state onto the
@@ -251,11 +266,10 @@ func attemptOutcomeFromUnitState(state string) string {
 	return state
 }
 
-// specsForLease returns every (dispatch_unit_id, spec_path) pair attached to
-// the lease. Used both to validate the worker's payload and to drive the
-// per-unit outcome rollup.
-func (s *Store) specsForLease(ctx context.Context, leaseID uuid.UUID) (map[string]uuid.UUID, error) {
-	rows, err := s.Pool.Query(ctx, `
+// specsForLeaseTx returns every (dispatch_unit_id, spec_path) pair attached to
+// the lease inside the active transaction.
+func specsForLeaseTx(ctx context.Context, tx pgx.Tx, leaseID uuid.UUID) (map[string]uuid.UUID, error) {
+	rows, err := tx.Query(ctx, `
 		SELECT spec_path, dispatch_unit_id
 		  FROM attempts
 		 WHERE lease_id = $1
@@ -357,12 +371,13 @@ func updateAttemptsForCompletionTx(
 }
 
 // unitOutcome groups every spec result reported on the lease that maps to one
-// dispatch_unit, plus the unit's current state read inside the same tx.
+// dispatch_unit, plus the unit's current state and owning lease read inside the same tx.
 type unitOutcome struct {
-	UnitID       uuid.UUID
-	CurrentState string
-	FailCount    int
-	SpecStatuses []string
+	UnitID         uuid.UUID
+	CurrentState   string
+	CurrentLeaseID *uuid.UUID
+	FailCount      int
+	SpecStatuses   []string
 }
 
 // runRetestConfig is the subset of orchestration_runs used by complete to
@@ -373,7 +388,7 @@ type runRetestConfig struct {
 }
 
 // groupResultsByUnitTx joins the worker's payload to the lease's
-// dispatch_units, returning one unitOutcome per leased unit.
+// dispatch_units, locking each unit FOR UPDATE OF du in dispatch_seq order.
 func groupResultsByUnitTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -381,10 +396,12 @@ func groupResultsByUnitTx(
 	results []SpecResult,
 ) ([]unitOutcome, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT a.dispatch_unit_id, a.spec_path, du.state, du.fail_count
+		SELECT a.dispatch_unit_id, a.spec_path, du.state, du.current_lease_id, du.fail_count
 		  FROM attempts a
 		  JOIN dispatch_units du ON du.id = a.dispatch_unit_id
 		 WHERE a.lease_id = $1
+		 ORDER BY du.dispatch_seq
+		 FOR UPDATE OF du
 	`, leaseID)
 	if err != nil {
 		return nil, fmt.Errorf("group results by unit: %w", err)
@@ -400,17 +417,23 @@ func groupResultsByUnitTx(
 	order := []uuid.UUID{}
 	for rows.Next() {
 		var (
-			unitID    uuid.UUID
-			specPath  string
-			state     string
-			failCount int
+			unitID         uuid.UUID
+			specPath       string
+			state          string
+			currentLeaseID *uuid.UUID
+			failCount      int
 		)
-		if err := rows.Scan(&unitID, &specPath, &state, &failCount); err != nil {
+		if err := rows.Scan(&unitID, &specPath, &state, &currentLeaseID, &failCount); err != nil {
 			return nil, err
 		}
 		uo, ok := byUnit[unitID]
 		if !ok {
-			uo = &unitOutcome{UnitID: unitID, CurrentState: state, FailCount: failCount}
+			uo = &unitOutcome{
+				UnitID:         unitID,
+				CurrentState:   state,
+				CurrentLeaseID: currentLeaseID,
+				FailCount:      failCount,
+			}
 			byUnit[unitID] = uo
 			order = append(order, unitID)
 		}
@@ -426,44 +449,27 @@ func groupResultsByUnitTx(
 	return out, nil
 }
 
-// finalizeUnitStateTx applies a unit's outcome under the most-recent-non-expired
-// completion rule. The unit's current state must be 'leased' for any
-// transition to occur; both first-pass leases and retest leases land here
-// (retest dispatch has already flipped the unit's state from completed_fail
-// back to 'leased'). A completion for a unit that is no longer 'leased' is
-// necessarily a late report against an expired lease; attempt rows are still
-// updated by the caller, but the unit's outcome is preserved.
+// canFinalizeUnit reports whether the reporting lease still owns the unit.
+func canFinalizeUnit(currentState string, currentLeaseID *uuid.UUID, leaseID uuid.UUID) bool {
+	return currentState == UnitStateLeased && currentLeaseID != nil && *currentLeaseID == leaseID
+}
+
+// finalizeUnitStateTx applies a unit's outcome only when the reporting lease
+// still owns the unit (state == 'leased' and current_lease_id == leaseID).
 //
-// Counter math (single transaction, atomic with the unit-row update):
-//
-//	leased -> completed_pass / completed_skipped:
-//	  leased_count -= 1
-//	  <target>_count += 1
-//	leased -> completed_fail:
-//	  leased_count -= 1
-//	  completed_fail_count += 1
-//	  fail_count++ on the unit
-//	  when retest_on_fail AND new fail_count <= retest_budget:
-//	    retest_eligible_count += 1   (subset of completed_fail_count;
-//	                                  not added to the counters-sum invariant)
-//
-// Returns (change, applied, err): applied=false when the unit-state update is
-// a no-op (e.g. already terminal).
+// Returns (change, applied, err): applied=false when the unit was superseded
+// (reclaimed, re-leased, or already terminal); attempt rows are still saved
+// by the caller, while the unit's state and ownership remain intact.
 func finalizeUnitStateTx(
 	ctx context.Context,
 	tx pgx.Tx,
 	runID uuid.UUID,
+	leaseID uuid.UUID,
 	uo unitOutcome,
 	now time.Time,
-	lateReport bool,
 	retestCfg runRetestConfig,
 ) (UnitStateChange, bool, error) {
-	if uo.CurrentState != UnitStateLeased {
-		// A non-'leased' unit means this is a late report (the lease
-		// timed out and the unit either reached terminal state via a
-		// later lease or is awaiting one). Attempt rows are still
-		// updated by the caller; the unit's outcome is preserved.
-		_ = lateReport
+	if !canFinalizeUnit(uo.CurrentState, uo.CurrentLeaseID, leaseID) {
 		return UnitStateChange{}, false, nil
 	}
 
@@ -474,10 +480,9 @@ func finalizeUnitStateTx(
 		failIncrement = 1
 	}
 
-	// Update the unit row. Capture the post-update fail_count so we can
-	// decide retest-eligibility transactionally without a second read.
+	// Update the unit row only while still leased to this lease.
 	var newFailCount int
-	if err := tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		UPDATE dispatch_units
 		   SET state = $2,
 		       outcome_set_at = $3,
@@ -485,8 +490,14 @@ func finalizeUnitStateTx(
 		       fail_count = fail_count + $4,
 		       updated_at = now()
 		 WHERE id = $1
+		   AND state = 'leased'
+		   AND current_lease_id = $5
 		RETURNING fail_count
-	`, uo.UnitID, target, now, failIncrement).Scan(&newFailCount); err != nil {
+	`, uo.UnitID, target, now, failIncrement, leaseID).Scan(&newFailCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return UnitStateChange{}, false, nil
+	}
+	if err != nil {
 		return UnitStateChange{}, false, fmt.Errorf("transition unit %s -> %s: %w", uo.UnitID, target, err)
 	}
 
@@ -506,7 +517,7 @@ func finalizeUnitStateTx(
 		retestEligibleDelta = 1
 	}
 
-	_, err := tx.Exec(ctx, fmt.Sprintf(`
+	_, err = tx.Exec(ctx, fmt.Sprintf(`
 		UPDATE orchestration_runs
 		   SET leased_count = leased_count - 1,
 		       %s = %s + 1,
@@ -526,6 +537,12 @@ func finalizeUnitStateTx(
 		Outcome:   target,
 		At:        now,
 	}, true, nil
+}
+
+// isLateReportOrReleased returns true when the report arrived after the lease
+// deadline or after the lease was already released by the reaper.
+func isLateReportOrReleased(now, deadline time.Time, releasedAt *time.Time) bool {
+	return isLateReport(now, deadline) || releasedAt != nil
 }
 
 // isLateReport returns true when the report time is strictly after the

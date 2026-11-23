@@ -103,7 +103,7 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx) error) (err error) {
 func (s *Store) FindLeaseByWorker(ctx context.Context, runID uuid.UUID, worker WorkerIdentity) (*Lease, error) {
 	row := s.Pool.QueryRow(ctx, `
 		SELECT id, run_id, gh_job_name, gh_job_id, unit_ids,
-		       issued_at, deadline, released_at, release_reason,
+		       kind, issued_at, deadline, released_at, release_reason,
 		       auth_oidc_subject, auth_api_key_id
 		  FROM leases
 		 WHERE run_id = $1 AND gh_job_id = $2
@@ -120,6 +120,29 @@ func (s *Store) FindLeaseByWorker(ctx context.Context, runID uuid.UUID, worker W
 	return lease, nil
 }
 
+// findLeaseByWorkerForUpdateTx resolves and row-locks the worker's lease
+// inside an active transaction, matching the reaper's leases-first lock order.
+func findLeaseByWorkerForUpdateTx(ctx context.Context, tx pgx.Tx, runID uuid.UUID, worker WorkerIdentity) (*Lease, error) {
+	row := tx.QueryRow(ctx, `
+		SELECT id, run_id, gh_job_name, gh_job_id, unit_ids,
+		       kind, issued_at, deadline, released_at, release_reason,
+		       auth_oidc_subject, auth_api_key_id
+		  FROM leases
+		 WHERE run_id = $1 AND gh_job_id = $2
+		 ORDER BY (released_at IS NULL) DESC, issued_at DESC
+		 LIMIT 1
+		 FOR UPDATE
+	`, runID, worker.GHJobID)
+	lease, err := scanLeaseRow(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrUnknownLease
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lock lease by worker: %w", err)
+	}
+	return lease, nil
+}
+
 // scanLeaseRow scans a row in the canonical lease column order into a Lease.
 func scanLeaseRow(row pgx.Row) (*Lease, error) {
 	var (
@@ -131,7 +154,7 @@ func scanLeaseRow(row pgx.Row) (*Lease, error) {
 	)
 	err := row.Scan(
 		&l.ID, &l.RunID, &l.Worker.GHJobName, &l.Worker.GHJobID, &l.UnitIDs,
-		&l.IssuedAt, &l.Deadline, &releasedAt, &releaseReason,
+		&l.Kind, &l.IssuedAt, &l.Deadline, &releasedAt, &releaseReason,
 		&authOIDCSubject, &authAPIKeyID,
 	)
 	if err != nil {

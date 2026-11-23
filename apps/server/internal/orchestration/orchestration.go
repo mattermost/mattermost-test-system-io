@@ -90,6 +90,13 @@ const (
 	LeaseReleaseRunTimedOut = "run_timed_out"
 )
 
+// Lease and attempt kind enum values.
+const (
+	LeaseKindFresh   = "fresh"
+	LeaseKindReclaim = "reclaim"
+	LeaseKindRetest  = "retest"
+)
+
 // Attempt status enum values. Mirrors test_cases.status.
 const (
 	AttemptStatusPassed      = "passed"
@@ -219,6 +226,7 @@ type Lease struct {
 	RunID           uuid.UUID
 	Worker          WorkerIdentity
 	UnitIDs         []uuid.UUID
+	Kind            string
 	IssuedAt        time.Time
 	Deadline        time.Time
 	ReleasedAt      *time.Time
@@ -234,6 +242,7 @@ type Attempt struct {
 	DispatchUnitID   uuid.UUID
 	RunID            uuid.UUID
 	SpecPath         string
+	Kind             string
 	Status           *string
 	ActualDurationMs *int64
 	ErrorMessage     *string
@@ -261,6 +270,7 @@ type CurrentLeaseView struct {
 	ID        uuid.UUID
 	GHJobName string
 	GHJobID   string
+	Kind      string
 	IssuedAt  time.Time
 	Deadline  time.Time
 }

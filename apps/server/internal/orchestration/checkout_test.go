@@ -88,3 +88,34 @@ func TestAtomicRetestCheckout_PackageCompiles(t *testing.T) {
 		_ = s.AtomicRetestCheckout
 	}
 }
+
+func TestAttemptKindForUnit(t *testing.T) {
+	t.Parallel()
+
+	if got := attemptKindForUnit(1, false); got != LeaseKindFresh {
+		t.Fatalf("attemptKindForUnit(1, false) = %q, want %q", got, LeaseKindFresh)
+	}
+	if got := attemptKindForUnit(2, false); got != LeaseKindReclaim {
+		t.Fatalf("attemptKindForUnit(2, false) = %q, want %q", got, LeaseKindReclaim)
+	}
+	if got := attemptKindForUnit(2, true); got != LeaseKindRetest {
+		t.Fatalf("attemptKindForUnit(2, true) = %q, want %q", got, LeaseKindRetest)
+	}
+	if got := attemptKindForUnit(1, true); got != LeaseKindRetest {
+		t.Fatalf("attemptKindForUnit(1, true) = %q, want %q", got, LeaseKindRetest)
+	}
+}
+
+func TestLeaseKindForBatch(t *testing.T) {
+	t.Parallel()
+
+	freshOnly := []*DispatchUnit{{LeaseCount: 1}, {LeaseCount: 1}}
+	if got := leaseKindForBatch(freshOnly); got != LeaseKindFresh {
+		t.Fatalf("leaseKindForBatch(freshOnly) = %q, want %q", got, LeaseKindFresh)
+	}
+
+	mixed := []*DispatchUnit{{LeaseCount: 1}, {LeaseCount: 2}}
+	if got := leaseKindForBatch(mixed); got != LeaseKindReclaim {
+		t.Fatalf("leaseKindForBatch(mixed) = %q, want %q", got, LeaseKindReclaim)
+	}
+}

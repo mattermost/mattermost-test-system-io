@@ -538,8 +538,12 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 				tags = []string{}
 			}
 		}
-		var ann any
-		_ = json.Unmarshal(annotations, &ann)
+		ann := []any{}
+		if len(annotations) > 0 {
+			if err := json.Unmarshal(annotations, &ann); err != nil || ann == nil {
+				ann = []any{}
+			}
+		}
 		out = append(out, map[string]any{
 			"id":       cid,
 			"suite_id": sid,

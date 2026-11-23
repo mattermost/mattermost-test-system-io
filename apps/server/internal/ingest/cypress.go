@@ -165,7 +165,7 @@ func extractCypressError(t cypressTest) (errMsg, errStack *string) {
 		msg = t.Err.Message
 		stack = firstNonEmpty(t.Err.Estack, t.Err.Stack)
 	}
-	if msg == "" && stack == "" {
+	if msg == "" || stack == "" {
 		for _, raw := range t.Attempts {
 			var a cypressAttempt
 			if err := json.Unmarshal(raw, &a); err != nil {
@@ -175,14 +175,17 @@ func extractCypressError(t cypressTest) (errMsg, errStack *string) {
 				if candidate == nil {
 					continue
 				}
-				m := candidate.Message
-				s := firstNonEmpty(candidate.Estack, candidate.Stack)
-				if m != "" || s != "" {
-					msg, stack = m, s
+				if msg == "" {
+					msg = candidate.Message
+				}
+				if stack == "" {
+					stack = firstNonEmpty(candidate.Estack, candidate.Stack)
+				}
+				if msg != "" && stack != "" {
 					break
 				}
 			}
-			if msg != "" || stack != "" {
+			if msg != "" && stack != "" {
 				break
 			}
 		}

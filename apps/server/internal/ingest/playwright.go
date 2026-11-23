@@ -196,8 +196,8 @@ func mergeAnnotations(groups ...[]json.RawMessage) []json.RawMessage {
 	seen := map[string]struct{}{}
 	for _, g := range groups {
 		for _, raw := range g {
-			var v any
-			if err := json.Unmarshal(raw, &v); err != nil {
+			var v map[string]any
+			if err := json.Unmarshal(raw, &v); err != nil || v == nil {
 				continue
 			}
 			canon, err := json.Marshal(v)

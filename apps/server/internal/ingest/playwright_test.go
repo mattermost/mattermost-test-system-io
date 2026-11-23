@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -178,5 +179,35 @@ func TestExtractPlaywright_MinimalBackwardCompat(t *testing.T) {
 	c := suites[0].Cases[0]
 	if c.Project != nil || len(c.Tags) != 0 || len(c.Annotations) != 0 || c.ErrorStack != nil {
 		t.Errorf("unexpected metadata on minimal payload: %+v", c)
+	}
+}
+
+func TestMergeAnnotations_SkipsNonObjects(t *testing.T) {
+	got := mergeAnnotations(
+		[]json.RawMessage{
+			json.RawMessage(`null`),
+			json.RawMessage(`"str"`),
+			json.RawMessage(`123`),
+			json.RawMessage(`true`),
+			json.RawMessage(`["arr"]`),
+			json.RawMessage(`{invalid`),
+			json.RawMessage(`{"type":"issue","description":"SEC-1"}`),
+		},
+		[]json.RawMessage{
+			json.RawMessage(`{"description":"SEC-1","type":"issue"}`),
+			json.RawMessage(`{"type":"slow"}`),
+		},
+	)
+	want := []string{
+		`{"description":"SEC-1","type":"issue"}`,
+		`{"type":"slow"}`,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d (%s), want %d (%v)", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Errorf("got[%d] = %s, want %s", i, got[i], want[i])
+		}
 	}
 }

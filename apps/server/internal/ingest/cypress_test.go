@@ -160,6 +160,24 @@ func TestExtractCypress_Errors(t *testing.T) {
 			wantMsg:   "singular err",
 			wantStack: "Error: singular err\n    at attempt 0",
 		},
+		{
+			name:      "partial top-level message preserved and missing stack filled from attempts",
+			testJSON:  `{"title":"t","fail":true,"state":"failed","err":{"message":"timeout"},"attempts":[{"err":{"message":"ignored msg"}},{"error":{"stack":"Error: timeout\n    at attempt 1"}}]}`,
+			wantMsg:   "timeout",
+			wantStack: "Error: timeout\n    at attempt 1",
+		},
+		{
+			name:      "partial top-level estack preserved and missing message filled from attempt",
+			testJSON:  `{"title":"t","fail":true,"state":"failed","err":{"estack":"Error: top stack\n    at top"},"attempts":[{"err":{"message":"attempt msg","estack":"Error: attempt stack"}}]}`,
+			wantMsg:   "attempt msg",
+			wantStack: "Error: top stack\n    at top",
+		},
+		{
+			name:      "complete top-level error unchanged when attempts also have errors",
+			testJSON:  `{"title":"t","fail":true,"state":"failed","err":{"message":"top msg","estack":"top stack"},"attempts":[{"err":{"message":"attempt msg","estack":"attempt stack"}}]}`,
+			wantMsg:   "top msg",
+			wantStack: "top stack",
+		},
 	}
 
 	for _, tc := range cases {

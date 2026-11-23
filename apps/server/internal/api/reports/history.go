@@ -37,13 +37,12 @@ const (
 //   - `since`/`until` — a time window. Right for questions about recent
 //     activity across many branches, such as "did this test fail on three other
 //     PRs in the last fortnight", where the fortnight is the point.
-//   - `runs` — the newest N runs of these files, however long ago they ran.
-//     Right for questions about one branch's own history, such as "did the last
-//     five runs of this lane on trunk pass". A wall-clock window cannot express
-//     that: a branch that runs rarely — a release or ESR branch between
-//     cherry-picks — has no runs at all inside any window short enough to be
-//     cheap, so a windowed caller sees an empty history and can conclude
-//     nothing. `runs` has no time bound for exactly that reason.
+//   - `runs` — the newest N runs of these files within a 90-day floor before
+//     `until`. Right for questions about one branch's own history, such as "did
+//     the last five runs of this lane on trunk pass". A short wall-clock window
+//     cannot express that: a release or ESR branch between cherry-picks may sit
+//     outside a 14-day window, while capping at 90 days keeps sparse/new specs
+//     from scanning multi-year history and hitting gateway timeouts.
 //
 // The two are mutually exclusive, because a request carrying both would have to
 // silently drop one of them.
@@ -194,7 +193,7 @@ func (req historyRequest) validate() (historyQuery, string) {
 	}
 	// Exactly one of these two reaches the query as a non-NULL parameter, and
 	// that is what selects the mode. `groupLimit` set means the newest N runs
-	// with no lower time bound; `since` set means every run in [since, until).
+	// within the 90-day lookback floor; `since` set means every run in [since, until).
 	if req.Runs > 0 {
 		// A local, not &q.runs: q is returned by value, so a pointer into it
 		// would alias this frame's copy rather than the caller's.
@@ -320,8 +319,8 @@ func (h *Handlers) History(w http.ResponseWriter, r *http.Request) {
 	// `since` is null in count mode rather than backfilled from the rows on this
 	// page: the oldest row of page 2 is not the floor of the set, so any value
 	// derived per page would describe a different window on every page. Null
-	// says what is true — the set has no lower time bound — and `runs` echoes
-	// what bounded it instead.
+	// signals count mode (capped at 90 days before `until`) and `runs` echoes
+	// the group limit that bounded it.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"since":        q.since,
 		"until":        q.until,

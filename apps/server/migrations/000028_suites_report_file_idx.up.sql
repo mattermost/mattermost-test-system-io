@@ -2,4 +2,10 @@
 --   JOIN suites s ON s.report_id = r.id WHERE s.file = ANY($5::text[])
 -- Without a (report_id, file) index, Postgres scans every suite row of each
 -- candidate report, causing 60s ALB 504s for sparse or newly added specs.
+--
+-- Production rollout note: golang-migrate's pgx5 driver wraps every migration
+-- in a transaction, so CONCURRENTLY cannot live inside this file. On large
+-- production databases (~5M+ suites rows), run the concurrent build manually
+-- BEFORE deploying this migration so IF NOT EXISTS turns it into a zero-lock no-op:
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS suites_report_id_file_idx ON suites (report_id, file);
 CREATE INDEX IF NOT EXISTS suites_report_id_file_idx ON suites (report_id, file);

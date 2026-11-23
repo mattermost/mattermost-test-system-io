@@ -592,13 +592,12 @@ paths:
           before `until` (default now), capped at 30 days. Right when the
           window is the point, such as "did this test fail on three other PRs
           in the last fortnight".
-        - `runs` — the newest N runs of these files, however long ago they ran,
-          with no lower time bound. Right for one branch's own history, such as
-          "did the last five runs of this lane on trunk pass". A window cannot
-          express that: a branch that runs rarely — a release or ESR branch
-          between cherry-picks — has no runs inside any window short enough to
-          be cheap, so a windowed caller sees an empty history and can conclude
-          nothing.
+        - `runs` — the newest N runs of these files within a 90-day floor before
+          `until`. Right for one branch's own history, such as "did the last
+          five runs of this lane on trunk pass". A short window cannot express
+          that: a branch that runs rarely — a release or ESR branch between
+          cherry-picks — may have no runs inside a 14-day window, while capping
+          at 90 days bounds worst-case scans for sparse or newly added specs.
 
         Keyed on the spec file rather than on individual test titles: a title is
         edited far more often than the file it lives in, so a caller keyed on
@@ -650,8 +649,8 @@ paths:
                   minimum: 1
                   maximum: 200
                   description: >
-                    Read the newest N runs of these files instead of a window, with no
-                    lower time bound. Mutually exclusive with `since`.
+                    Read the newest N runs of these files within a 90-day floor before
+                    `until` instead of an explicit window. Mutually exclusive with `since`.
                 page:
                   type: integer
                   minimum: 1
@@ -676,9 +675,10 @@ paths:
                     format: date-time
                     nullable: true
                     description: >
-                      The window start that was applied, or null in `runs` mode, where the
-                      set has no lower time bound. It is not backfilled from the rows on
-                      the page: the oldest row of page 2 is not the floor of the set.
+                      The explicit window start that was applied, or null in `runs` mode
+                      (which applies a 90-day floor before `until`). It is not backfilled
+                      from the rows on the page: the oldest row of page 2 is not the floor
+                      of the set.
                   until: { type: string, format: date-time }
                   runs:
                     type: integer

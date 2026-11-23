@@ -6,6 +6,29 @@
 -- Production rollout note: golang-migrate's pgx5 driver wraps every migration
 -- in a transaction, so CONCURRENTLY cannot live inside this file. On large
 -- production databases (~5M+ suites rows), run the concurrent build manually
--- BEFORE deploying this migration so IF NOT EXISTS turns it into a zero-lock no-op:
+-- BEFORE deploying this migration so the valid-index check below is a zero-lock no-op:
 --   CREATE INDEX CONCURRENTLY IF NOT EXISTS suites_report_id_file_idx ON suites (report_id, file);
-CREATE INDEX IF NOT EXISTS suites_report_id_file_idx ON suites (report_id, file);
+-- If an earlier concurrent build failed and left an invalid index behind, drop
+-- and rebuild it before deploying:
+--   DROP INDEX CONCURRENTLY IF EXISTS suites_report_id_file_idx;
+--   CREATE INDEX CONCURRENTLY suites_report_id_file_idx ON suites (report_id, file);
+DO $$
+DECLARE
+    idx_valid boolean;
+BEGIN
+    SELECT i.indisvalid
+    INTO idx_valid
+    FROM pg_class c
+    JOIN pg_index i ON i.indexrelid = c.oid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'suites_report_id_file_idx'
+      AND n.nspname = current_schema();
+
+    IF idx_valid IS FALSE THEN
+        DROP INDEX suites_report_id_file_idx;
+    END IF;
+
+    IF idx_valid IS DISTINCT FROM TRUE THEN
+        CREATE INDEX suites_report_id_file_idx ON suites (report_id, file);
+    END IF;
+END $$;

@@ -8,6 +8,7 @@ import (
 func TestValidate_defaults(t *testing.T) {
 	c := Config{
 		LogFormat:        "json",
+		AuthzMode:        "log-only",
 		MaxUploadBytes:   1024,
 		MaxArtifactBytes: 512,
 	}
@@ -16,22 +17,29 @@ func TestValidate_defaults(t *testing.T) {
 	}
 }
 
+func TestValidate_rejectsBadAuthzMode(t *testing.T) {
+	c := Config{LogFormat: "json", AuthzMode: "strict", MaxUploadBytes: 1, MaxArtifactBytes: 1}
+	if err := c.validate(); err == nil {
+		t.Fatal("expected error for bad authz mode")
+	}
+}
+
 func TestValidate_rejectsBadLogFormat(t *testing.T) {
-	c := Config{LogFormat: "xml", MaxUploadBytes: 1, MaxArtifactBytes: 1}
+	c := Config{LogFormat: "xml", AuthzMode: "log-only", MaxUploadBytes: 1, MaxArtifactBytes: 1}
 	if err := c.validate(); err == nil {
 		t.Fatal("expected error for bad log format")
 	}
 }
 
 func TestValidate_rejectsZeroMaxUpload(t *testing.T) {
-	c := Config{LogFormat: "json", MaxUploadBytes: 0, MaxArtifactBytes: 1}
+	c := Config{LogFormat: "json", AuthzMode: "log-only", MaxUploadBytes: 0, MaxArtifactBytes: 1}
 	if err := c.validate(); err == nil {
 		t.Fatal("expected error for zero MaxUploadBytes")
 	}
 }
 
 func TestValidate_rejectsNegativeMaxArtifact(t *testing.T) {
-	c := Config{LogFormat: "json", MaxUploadBytes: 1, MaxArtifactBytes: -1}
+	c := Config{LogFormat: "json", AuthzMode: "log-only", MaxUploadBytes: 1, MaxArtifactBytes: -1}
 	if err := c.validate(); err == nil {
 		t.Fatal("expected error for negative MaxArtifactBytes")
 	}

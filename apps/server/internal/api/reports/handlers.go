@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
+	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 )
@@ -37,6 +38,8 @@ type Handlers struct {
 	SearchMinLength  int
 	// FinalizeTimeout bounds one finalization of a shard's results, waiting for its turn included (0: 5 minutes).
 	FinalizeTimeout time.Duration
+	// AuthzMode governs the token-to-repository check on upload writes.
+	AuthzMode authapi.AuthzMode
 
 	// groupedCache memoizes /reports/grouped responses per (limit, offset)
 	// for a short TTL so polling tabs collapse onto one DB hit per window.

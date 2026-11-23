@@ -83,6 +83,9 @@ type Handlers struct {
 	// MaxScreenshotBytes caps the size of a single multipart screenshot
 	// upload. Default 10 * 1024 * 1024.
 	MaxScreenshotBytes int64
+
+	// AuthzMode governs the token-to-repository check on orchestration writes.
+	AuthzMode authapi.AuthzMode
 }
 
 // ---------- request/response bodies ----------
@@ -166,6 +169,10 @@ func (h *Handlers) BeginRun(w http.ResponseWriter, r *http.Request) {
 	identity, ierr := identityFromFields(body.identityFields)
 	if ierr != nil {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", ierr.Error())
+		return
+	}
+	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, subject, identity.Repository); err != nil {
+		api.WriteError(w, r, err)
 		return
 	}
 	if len(body.DispatchUnits) == 0 {
@@ -301,6 +308,10 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := orchestration.CheckRunOwner(r.Context(), run, subject); err != nil {
 		api.WriteError(w, r, api.ErrForbidden)
+		return
+	}
+	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, subject, run.Identity.Repository); err != nil {
+		api.WriteError(w, r, err)
 		return
 	}
 	// Use the stored identity so events and projection refresh match it,
@@ -517,6 +528,10 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrForbidden)
 		return
 	}
+	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, subject, run.Identity.Repository); err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
 	// Use the stored identity so events and projection refresh match it,
 	// even when the worker sent a short SHA or bare repository name.
 	identity = run.Identity
@@ -622,6 +637,10 @@ func (h *Handlers) NoWork(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := orchestration.CheckRunOwner(r.Context(), run, subject); err != nil {
 		api.WriteError(w, r, api.ErrForbidden)
+		return
+	}
+	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, subject, run.Identity.Repository); err != nil {
+		api.WriteError(w, r, err)
 		return
 	}
 
@@ -999,6 +1018,10 @@ func (h *Handlers) Screenshots(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := orchestration.CheckRunOwner(r.Context(), run, subject); err != nil {
 		api.WriteError(w, r, api.ErrForbidden)
+		return
+	}
+	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, subject, run.Identity.Repository); err != nil {
+		api.WriteError(w, r, err)
 		return
 	}
 

@@ -161,6 +161,7 @@ func run() error {
 		CommitSHA:              commitSHA,
 		BuildTime:              buildTime,
 		AdminKey:               cfg.AdminKey,
+		AuthzMode:              authapi.AuthzMode(cfg.AuthzMode),
 		UploadTimeoutMs:        cfg.UploadTimeoutMs,
 		HTMLViewEnabled:        cfg.HTMLViewEnabled,
 		SearchMinLength:        cfg.SearchMinLength,

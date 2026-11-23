@@ -553,6 +553,7 @@ paths:
       tags: [reports]
       responses:
         '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/reports/{id}/suites:
@@ -1220,6 +1221,7 @@ paths:
       tags: [artifacts]
       responses:
         '302': { description: Redirect to presigned S3 URL }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/ws:

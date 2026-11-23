@@ -24,6 +24,16 @@ const (
 	RoleDenied   Role = "denied"
 )
 
+// roleRank orders the grantable roles. RoleDenied and unknown roles rank 0.
+var roleRank = map[Role]int{RoleViewer: 1, RoleUploader: 2, RoleEditor: 3, RoleAdmin: 4}
+
+// AtLeast reports whether r grants at least minRole. RoleDenied and unknown
+// roles never pass.
+func (r Role) AtLeast(minRole Role) bool {
+	rank := roleRank[r]
+	return rank > 0 && rank >= roleRank[minRole]
+}
+
 // ErrDenied is returned when no matching enabled rule grants access.
 var ErrDenied = errors.New("policy: denied")
 

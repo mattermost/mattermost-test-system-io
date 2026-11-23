@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
 	authoidc "github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oidc"
@@ -60,6 +61,12 @@ type startConfig struct {
 	finalizeTimeout time.Duration
 	oauth           *oauth.Flow
 	htmlView        bool
+	authzMode       authapi.AuthzMode
+}
+
+// WithAuthzMode sets TSIO_AUTHZ_MODE for the server. Default is log-only.
+func WithAuthzMode(mode authapi.AuthzMode) Option {
+	return func(c *startConfig) { c.authzMode = mode }
 }
 
 // WithOAuth wires a GitHub OAuth flow so browser sign-in routes are live.
@@ -218,6 +225,7 @@ func Start(t *testing.T, opts ...Option) *Env {
 		MaxArtifactBytes: 1 << 22, // 4 MiB
 		PresignTTL:       5 * time.Minute,
 		FinalizeTimeout:  cfg.finalizeTimeout,
+		AuthzMode:        cfg.authzMode, // "" means log-only
 	})
 
 	srv := httptest.NewServer(handler)

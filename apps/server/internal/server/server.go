@@ -60,6 +60,8 @@ type Deps struct {
 	CommitSHA string
 	BuildTime string
 	AdminKey  string
+	// AuthzMode for route-role and token-repository checks ("" means log-only).
+	AuthzMode authapi.AuthzMode
 
 	// Client-facing config surfaced via GET /api/v1/config.
 	UploadTimeoutMs int
@@ -107,6 +109,12 @@ func Build(d Deps) chi.Router {
 		r.Get("/api/v1/openapi.yaml", rawSpecH)
 	}
 
+	authzMode := d.AuthzMode
+	if authzMode == "" {
+		authzMode = authapi.AuthzLogOnly
+	}
+	root := r
+
 	reportsH := &reports.Handlers{
 		Pool:             d.Pool,
 		Store:            d.Store,
@@ -117,6 +125,7 @@ func Build(d Deps) chi.Router {
 		PresignTTL:       d.PresignTTL,
 		SearchMinLength:  d.SearchMinLength,
 		FinalizeTimeout:  d.FinalizeTimeout,
+		AuthzMode:        authzMode,
 	}
 	artifactsH := &artifactapi.Handlers{Pool: d.Pool, Store: d.Store, PresignTTL: d.PresignTTL}
 	wsH := &wsapi.Handler{Hub: d.Hub}
@@ -207,6 +216,7 @@ func Build(d Deps) chi.Router {
 		// --- Protected: writes + admin-ish reads ---
 		r.Group(func(r chi.Router) {
 			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
+			r.Use(authapi.RequireAuthz(authzMode, d.Logger, root))
 
 			// Stateless upload lifecycle: each shard authenticates and registers
 			// itself independently; no controller-side coordination is required.
@@ -231,6 +241,7 @@ func Build(d Deps) chi.Router {
 				Logger:             d.Logger,
 				LeaseRetentionMs:   60_000,
 				MaxScreenshotBytes: 10 * 1024 * 1024,
+				AuthzMode:          authzMode,
 			}
 			orchapi.Register(r, orchH)
 		})

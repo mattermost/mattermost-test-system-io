@@ -13,7 +13,7 @@ import (
 
 // TestProtectedRoutesMatchRouteMinRole fails when a route behind RequireAuth
 // is missing from authapi.RouteMinRole, a table entry is not behind
-// RequireAuth, or a protected route skips RequireAuthz.
+// RequireAuth, or a protected route skips RequireAuthz or runs it first.
 func TestProtectedRoutesMatchRouteMinRole(t *testing.T) {
 	// With nil auth deps and enforce mode, an anonymous probe is answered 401
 	// by RequireAuth and 403 by RequireAuthz; other middleware passes through.
@@ -21,19 +21,19 @@ func TestProtectedRoutesMatchRouteMinRole(t *testing.T) {
 
 	protected := map[string]bool{}
 	err := chi.Walk(h, func(method, route string, _ http.Handler, mws ...func(http.Handler) http.Handler) error {
-		var hasAuth, hasAuthz bool
-		for _, mw := range mws {
+		authIdx, authzIdx := -1, -1
+		for i, mw := range mws {
 			switch probe(mw) {
 			case http.StatusUnauthorized:
-				hasAuth = true
+				authIdx = i
 			case http.StatusForbidden:
-				hasAuthz = true
+				authzIdx = i
 			}
 		}
-		if hasAuth != hasAuthz {
-			t.Errorf("%s %s: RequireAuth=%v but RequireAuthz=%v", method, route, hasAuth, hasAuthz)
+		if (authIdx < 0) != (authzIdx < 0) || authzIdx < authIdx {
+			t.Errorf("%s %s: RequireAuth at %d, RequireAuthz at %d; want both, Authz after Auth", method, route, authIdx, authzIdx)
 		}
-		if hasAuth {
+		if authIdx >= 0 {
 			protected[method+" "+route] = true
 		}
 		return nil

@@ -28,10 +28,10 @@ const (
 var roleRank = map[Role]int{RoleViewer: 1, RoleUploader: 2, RoleEditor: 3, RoleAdmin: 4}
 
 // AtLeast reports whether r grants at least minRole. RoleDenied and unknown
-// roles never pass.
+// roles never pass, on either side.
 func (r Role) AtLeast(minRole Role) bool {
-	rank := roleRank[r]
-	return rank > 0 && rank >= roleRank[minRole]
+	need := roleRank[minRole]
+	return need > 0 && roleRank[r] >= need
 }
 
 // ErrDenied is returned when no matching enabled rule grants access.

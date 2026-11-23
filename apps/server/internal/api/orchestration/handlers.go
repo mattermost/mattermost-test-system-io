@@ -297,21 +297,8 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 		batchSize = 64
 	}
 
-	run, err := h.Store.FindRunByIdentity(r.Context(), identity)
-	if err != nil {
-		if errors.Is(err, orchestration.ErrNotFound) {
-			api.WriteError(w, r, api.ErrNotFound)
-			return
-		}
-		api.WriteError(w, r, err)
-		return
-	}
-	if err := orchestration.CheckRunOwner(r.Context(), run, subject); err != nil {
-		api.WriteError(w, r, api.ErrForbidden)
-		return
-	}
-	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, subject, run.Identity.Repository); err != nil {
-		api.WriteError(w, r, err)
+	run := h.authorizeRun(w, r, subject, identity)
+	if run == nil {
 		return
 	}
 	// Use the stored identity so events and projection refresh match it,
@@ -515,21 +502,8 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	run, err := h.Store.FindRunByIdentity(r.Context(), identity)
-	if err != nil {
-		if errors.Is(err, orchestration.ErrNotFound) {
-			api.WriteError(w, r, api.ErrNotFound)
-			return
-		}
-		api.WriteError(w, r, err)
-		return
-	}
-	if err := orchestration.CheckRunOwner(r.Context(), run, subject); err != nil {
-		api.WriteError(w, r, api.ErrForbidden)
-		return
-	}
-	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, subject, run.Identity.Repository); err != nil {
-		api.WriteError(w, r, err)
+	run := h.authorizeRun(w, r, subject, identity)
+	if run == nil {
 		return
 	}
 	// Use the stored identity so events and projection refresh match it,
@@ -626,21 +600,8 @@ func (h *Handlers) NoWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := h.Store.FindRunByIdentity(r.Context(), identity)
-	if err != nil {
-		if errors.Is(err, orchestration.ErrNotFound) {
-			api.WriteError(w, r, api.ErrNotFound)
-			return
-		}
-		api.WriteError(w, r, err)
-		return
-	}
-	if err := orchestration.CheckRunOwner(r.Context(), run, subject); err != nil {
-		api.WriteError(w, r, api.ErrForbidden)
-		return
-	}
-	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, subject, run.Identity.Repository); err != nil {
-		api.WriteError(w, r, err)
+	run := h.authorizeRun(w, r, subject, identity)
+	if run == nil {
 		return
 	}
 
@@ -1007,23 +968,12 @@ func (h *Handlers) Screenshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := h.Store.FindRunByIdentity(r.Context(), identity)
-	if err != nil {
-		if errors.Is(err, orchestration.ErrNotFound) {
-			api.WriteError(w, r, api.ErrNotFound)
-			return
-		}
-		api.WriteError(w, r, err)
+	run := h.authorizeRun(w, r, subject, identity)
+	if run == nil {
 		return
 	}
-	if err := orchestration.CheckRunOwner(r.Context(), run, subject); err != nil {
-		api.WriteError(w, r, api.ErrForbidden)
-		return
-	}
-	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, subject, run.Identity.Repository); err != nil {
-		api.WriteError(w, r, err)
-		return
-	}
+	// Store against the authorized run, not a fresh bare-repo lookup.
+	identity = run.Identity
 
 	if r.MultipartForm == nil || r.MultipartForm.File == nil {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "file part is required")
@@ -1124,6 +1074,28 @@ func workerFromFields(f workerFields) (orchestration.WorkerIdentity, error) {
 		return orchestration.WorkerIdentity{}, errors.New("gh_job_id is required")
 	}
 	return orchestration.WorkerIdentity{GHJobName: name, GHJobID: id}, nil
+}
+
+// authorizeRun loads the run for identity and checks that subject owns it and
+// may write to its repository. On failure it writes the error response and
+// returns nil.
+func (h *Handlers) authorizeRun(w http.ResponseWriter, r *http.Request, subject authapi.Subject, identity orchestration.CompositeIdentity) *orchestration.Run {
+	run, err := h.Store.FindRunByIdentity(r.Context(), identity)
+	switch {
+	case errors.Is(err, orchestration.ErrNotFound):
+		api.WriteError(w, r, api.ErrNotFound)
+	case err != nil:
+		api.WriteError(w, r, err)
+	case orchestration.CheckRunOwner(r.Context(), run, subject) != nil:
+		api.WriteError(w, r, api.ErrForbidden)
+	default:
+		if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, subject, run.Identity.Repository); err != nil {
+			api.WriteError(w, r, err)
+			return nil
+		}
+		return run
+	}
+	return nil
 }
 
 // ownerFromSubject projects the auth subject onto the orchestration owner

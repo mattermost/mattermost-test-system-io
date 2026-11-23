@@ -76,10 +76,9 @@ func (m *Manager) Issue(ctx context.Context, userID uuid.UUID, ip, userAgent str
 func (m *Manager) Verify(ctx context.Context, token string) (Session, error) {
 	hash := hashToken(token)
 	const q = `
-		SELECT s.id, s.user_id, s.issued_at, s.expires_at, s.last_seen_at,
-		       COALESCE(u.role, 'viewer')
+		SELECT s.id, s.user_id, s.issued_at, s.expires_at, s.last_seen_at, u.role
 		FROM sessions s
-		LEFT JOIN users u ON u.id = s.user_id
+		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
 		LIMIT 1
 	`

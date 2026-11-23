@@ -101,6 +101,7 @@ func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
 		return
 	}
+	body.Repository = strings.TrimSpace(body.Repository)
 	if err := validateGroupKey(body.Repository, body.Commit, body.GHRunID, body.Framework, body.Name, body.Branch); err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -159,6 +160,7 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
 		return
 	}
+	body.Repository = strings.TrimSpace(body.Repository)
 	if err := validateGroupKey(body.Repository, body.Commit, body.GHRunID, body.Framework, body.Name, body.Branch); err != nil {
 		api.WriteError(w, r, err)
 		return

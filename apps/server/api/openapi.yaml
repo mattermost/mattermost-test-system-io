@@ -553,6 +553,7 @@ paths:
       tags: [reports]
       responses:
         '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -1162,6 +1163,7 @@ paths:
       tags: [orchestration]
       summary: List runs matching a display identity
       operationId: orchestrationListRuns
+      security: []
       description: |
         Lists every orchestration run matching the dashboard URL's display
         identity: repository (full slug or trailing segment), commit_sha (full
@@ -1221,6 +1223,7 @@ paths:
       tags: [artifacts]
       responses:
         '302': { description: Redirect to presigned S3 URL }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 

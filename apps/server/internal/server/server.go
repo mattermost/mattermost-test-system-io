@@ -113,7 +113,6 @@ func Build(d Deps) chi.Router {
 	if authzMode == "" {
 		authzMode = authapi.AuthzLogOnly
 	}
-	root := r
 
 	reportsH := &reports.Handlers{
 		Pool:             d.Pool,
@@ -216,7 +215,7 @@ func Build(d Deps) chi.Router {
 		// --- Protected: writes + admin-ish reads ---
 		r.Group(func(r chi.Router) {
 			r.Use(authapi.RequireAuth(d.APIKeys, d.Sessions, d.OIDC, d.Policy))
-			r.Use(authapi.RequireAuthz(authzMode, d.Logger, root))
+			r.Use(authapi.RequireAuthz(authzMode, d.Logger))
 
 			// Stateless upload lifecycle: each shard authenticates and registers
 			// itself independently; no controller-side coordination is required.

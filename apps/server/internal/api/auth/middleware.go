@@ -111,11 +111,7 @@ func resolve(
 	if c, err := r.Cookie(session.CookieName); err == nil && sessions != nil {
 		sess, err := sessions.Verify(r.Context(), c.Value)
 		if err == nil {
-			role := policy.Role(sess.UserRole)
-			if role == "" {
-				role = policy.RoleViewer
-			}
-			return Subject{Kind: "session", UserID: sess.UserID, Role: role}, true
+			return Subject{Kind: "session", UserID: sess.UserID, Role: policy.Role(sess.UserRole)}, true
 		}
 	}
 

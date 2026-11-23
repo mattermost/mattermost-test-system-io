@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"testing"
 	"time"
@@ -268,6 +269,31 @@ func TestEnforce(t *testing.T) {
 			code, body = do(t, env, b, http.MethodPost, "/api/v1/orchestration/"+path, req)
 			expect(t, "orchestration "+path+" as repo-y", code, body, http.StatusForbidden)
 		}
+
+		// Screenshots is multipart; the file part is checked after authz.
+		buf := &bytes.Buffer{}
+		mw := multipart.NewWriter(buf)
+		for k, v := range map[string]string{
+			"repository": "mattermost/repo-x", "commit_sha": commit, "gh_run_id": "run-1", "gh_run_attempt": "1",
+			"name": "default", "branch": "main", "framework": "playwright",
+			"gh_job_name": "w", "gh_job_id": "j1", "spec_path": "a.spec.ts", "relative_path": "a.png",
+		} {
+			_ = mw.WriteField(k, v)
+		}
+		_ = mw.Close()
+		req, err := http.NewRequest(http.MethodPost, env.ServerURL+"/api/v1/orchestration/screenshots", buf)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.Header.Set("Authorization", "Bearer "+b.bearer)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("screenshots: %v", err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		expect(t, "orchestration screenshots as repo-y", resp.StatusCode, raw, http.StatusForbidden)
 	})
 
 	t.Run("admin oidc bypasses repo binding", func(t *testing.T) {

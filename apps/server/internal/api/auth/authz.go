@@ -56,9 +56,9 @@ func MinRoleForRoute(method, pattern string) (policy.Role, bool) {
 }
 
 // RequireAuthz checks the subject's role against MinRoleForRoute. Mount it
-// right after RequireAuth. routes is the root router: group middleware runs
-// before the leaf match, so the pattern is resolved with routes.Match.
-func RequireAuthz(mode AuthzMode, logger *slog.Logger, routes chi.Routes) func(http.Handler) http.Handler {
+// right after RequireAuth on an r.Group: group middleware wraps the matched
+// endpoint, so chi's route context already holds the full pattern.
+func RequireAuthz(mode AuthzMode, logger *slog.Logger) func(http.Handler) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -69,9 +69,8 @@ func RequireAuthz(mode AuthzMode, logger *slog.Logger, routes chi.Routes) func(h
 				return
 			}
 			var pattern string
-			tctx := chi.NewRouteContext()
-			if routes.Match(tctx, r.Method, r.URL.Path) {
-				pattern = tctx.RoutePattern()
+			if rctx := chi.RouteContext(r.Context()); rctx != nil {
+				pattern = rctx.RoutePattern()
 			}
 			need, _ := MinRoleForRoute(r.Method, pattern)
 			sub, _ := SubjectFromContext(r.Context())
@@ -92,15 +91,14 @@ func RequireAuthz(mode AuthzMode, logger *slog.Logger, routes chi.Routes) func(h
 	}
 }
 
-// CheckRepoAccess binds OIDC tokens (and API keys carrying a repository) to
-// their repository. Admins and AuthzOff bypass. A mismatch is logged and, in
-// AuthzEnforce, returns apiroot.ErrForbidden. Call it before any DB write.
+// CheckRepoAccess binds OIDC tokens to their repository. Admins and AuthzOff
+// bypass. A mismatch is logged and, in AuthzEnforce, returns
+// apiroot.ErrForbidden. Call it before any DB write.
 func CheckRepoAccess(mode AuthzMode, logger *slog.Logger, sub Subject, targetRepo string) error {
-	if mode == AuthzOff || sub.Role == policy.RoleAdmin {
+	if mode == AuthzOff || sub.Role == policy.RoleAdmin || sub.Kind != "oidc" {
 		return nil
 	}
-	bound := sub.Kind == "oidc" || (sub.Kind == "apikey" && sub.Repository != "")
-	if !bound || (sub.Repository != "" && strings.EqualFold(sub.Repository, strings.TrimSpace(targetRepo))) {
+	if sub.Repository != "" && strings.EqualFold(sub.Repository, strings.TrimSpace(targetRepo)) {
 		return nil
 	}
 	if logger == nil {

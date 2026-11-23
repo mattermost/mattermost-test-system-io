@@ -65,3 +65,29 @@ func TestRequireAuthzUnlistedWriteVerbsAdminOnly(t *testing.T) {
 		}
 	}
 }
+
+// A nil logger must not panic when a check fails: server.Build tolerates a nil
+// Deps.Logger elsewhere, so the authz path has to as well.
+func TestRequireAuthzNilLoggerDoesNotPanic(t *testing.T) {
+	for _, mode := range []AuthzMode{AuthzEnforce, AuthzLogOnly} {
+		root := newAuthzRouterWithLogger(mode, policy.RoleViewer, nil)
+		rec := httptest.NewRecorder()
+		root.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/reports/r1", nil))
+		want := http.StatusNoContent
+		if mode == AuthzEnforce {
+			want = http.StatusForbidden
+		}
+		if rec.Code != want {
+			t.Errorf("%s: status = %d, want %d", mode, rec.Code, want)
+		}
+	}
+}
+
+func TestCheckRepoAccessNilLoggerDoesNotPanic(t *testing.T) {
+	sub := Subject{Kind: "oidc", Role: policy.RoleUploader, Repository: "org/a"}
+	for _, mode := range []AuthzMode{AuthzEnforce, AuthzLogOnly} {
+		if err := CheckRepoAccess(mode, nil, sub, "org/b"); (mode == AuthzEnforce) != (err != nil) {
+			t.Errorf("%s: err = %v", mode, err)
+		}
+	}
+}

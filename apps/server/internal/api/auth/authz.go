@@ -59,6 +59,9 @@ func MinRoleForRoute(method, pattern string) (policy.Role, bool) {
 // right after RequireAuth. routes is the root router: group middleware runs
 // before the leaf match, so the pattern is resolved with routes.Match.
 func RequireAuthz(mode AuthzMode, logger *slog.Logger, routes chi.Routes) func(http.Handler) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if mode == AuthzOff {
@@ -99,6 +102,9 @@ func CheckRepoAccess(mode AuthzMode, logger *slog.Logger, sub Subject, targetRep
 	bound := sub.Kind == "oidc" || (sub.Kind == "apikey" && sub.Repository != "")
 	if !bound || (sub.Repository != "" && strings.EqualFold(sub.Repository, strings.TrimSpace(targetRepo))) {
 		return nil
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 	logger.Warn("authz: token repository mismatch",
 		slog.String("mode", string(mode)),

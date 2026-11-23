@@ -16,6 +16,16 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 )
 
+// bodyUnvalidated lists operations ("METHOD /spec/path") whose request body is
+// streamed by the handler: kin-openapi would buffer a multipart upload in memory,
+// and the retired legacy upload never reads its body. Parameters are still validated.
+var bodyUnvalidated = map[string]bool{
+	"POST /api/v1/reports":                                true,
+	"POST /api/v1/reports/upload/{rid}/{uid}/json":        true,
+	"POST /api/v1/reports/upload/{rid}/{uid}/screenshots": true,
+	"POST /api/v1/orchestration/screenshots":              true,
+}
+
 // OpenAPIValidator validates every request against the supplied OpenAPI 3.1 spec
 // and rejects violations as 400 with RFC 7807 problem+json.
 type OpenAPIValidator struct {
@@ -56,6 +66,7 @@ func (v *OpenAPIValidator) Middleware(next http.Handler) http.Handler {
 			Route:      route,
 			Options: &openapi3filter.Options{
 				AuthenticationFunc: noopAuth,
+				ExcludeRequestBody: bodyUnvalidated[r.Method+" "+route.Path],
 			},
 		}
 		if err := openapi3filter.ValidateRequest(r.Context(), input); err != nil {

@@ -18,7 +18,6 @@ servers:
 tags:
   - name: auth
   - name: reports
-  - name: report-groups
   - name: orchestration
     description: |
       Test shard orchestration. CI controllers register a run with an ordered
@@ -32,7 +31,6 @@ tags:
       their GitHub Actions environment; no server-issued run_id is shared
       between the controller and worker jobs.
   - name: artifacts
-  - name: admin
   - name: health
   - name: system
 
@@ -268,85 +266,141 @@ paths:
 
     post:
       tags: [reports]
-      summary: Upload a test report bundle
-      parameters:
-        - in: header
-          name: X-Report-Idempotency-Key
-          schema: { type: string, minLength: 16, maxLength: 128 }
-          required: false
-        - in: header
-          name: X-Report-Source
-          schema: { type: string }
-          required: false
-        - in: header
-          name: X-Report-Framework
-          schema: { type: string, enum: [playwright, cypress, detox, maestro] }
-          required: false
-        - in: header
-          name: X-Report-Repository
-          schema: { type: string }
-          required: false
-          description: "GitHub 'owner/repo' slug."
-        - in: header
-          name: X-Report-Branch
-          schema: { type: string }
-          required: false
-        - in: header
-          name: X-Report-Commit
-          schema: { type: string }
-          required: false
-        - in: header
-          name: X-Report-GH-Run-ID
-          schema: { type: string }
-          required: false
-        - in: header
-          name: X-Report-GH-Run-Number
-          schema: { type: string }
-          required: false
-        - in: header
-          name: X-Report-GH-Run-Attempt
-          schema: { type: string }
-          required: false
-          description: "Default '1' if omitted."
-        - in: header
-          name: X-Report-GH-PR-Number
-          schema: { type: integer }
-          required: false
-        - in: header
-          name: X-Report-GH-Job-ID
-          schema: { type: string }
-          required: false
-        - in: header
-          name: X-Report-GH-Job-Name
-          schema: { type: string }
-          required: false
+      summary: Retired single-shot bundle upload
+      deprecated: true
+      description: |
+        Always returns 410 `ENDPOINT_RETIRED`. Use the stateless flow:
+        `POST /reports/begin`, `POST /reports/register`, then
+        `POST /reports/upload/{rid}/{uid}/json` and `.../screenshots`.
+        The request body is intentionally not described or validated.
+      responses:
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '410':
+          description: Endpoint retired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/reports/begin:
+    post:
+      tags: [reports]
+      summary: Upsert a report group (idempotent)
+      description: |
+        Upserts the report group for the composite key. Returns 200 whether the
+        group already existed or was just created. `total_reports_expected`
+        (the shard count) is first-write-wins; a different value later returns
+        409 `EXPECTED_REPORTS_MISMATCH`. A different `run_group` returns 409
+        `RUN_GROUP_MISMATCH`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportBeginRequest' }
+      responses:
+        '200':
+          description: Group upserted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report_id]
+                properties:
+                  report_id:
+                    type: string
+                    format: uuid
+                    description: Report group ID; the `{rid}` of the upload routes.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: "`EXPECTED_REPORTS_MISMATCH` or `RUN_GROUP_MISMATCH`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/reports/register:
+    post:
+      tags: [reports]
+      summary: Register one shard's report under its group
+      description: |
+        Upserts the report group, then creates (or re-opens) the report row for
+        `gh_job_id`. Declared file paths are checked for traversal and size
+        caps; the response lists accepted and rejected paths.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportRegisterRequest' }
+      responses:
+        '200':
+          description: Report registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportRegisterResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: "`EXPECTED_REPORTS_MISMATCH` or `RUN_GROUP_MISMATCH`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/reports/upload/{rid}/{uid}/json:
+    parameters:
+      - $ref: '#/components/parameters/ReportGroupID'
+      - $ref: '#/components/parameters/UploadID'
+    post:
+      tags: [reports]
+      summary: Stream Playwright/Cypress/Detox result JSON files
+      description: |
+        Streaming multipart upload; every part named `files` is stored under its
+        filename. The body is streamed by the handler and is intentionally not
+        validated by the OpenAPI request validator.
       requestBody:
         required: true
         content:
           multipart/form-data:
-            schema:
-              type: object
-              required: [bundle]
-              properties:
-                bundle:
-                  type: string
-                  format: binary
-                metadata:
-                  type: string
+            schema: { $ref: '#/components/schemas/ReportFilesUpload' }
       responses:
-        '201':
-          description: Report created
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Report' }
         '200':
-          description: Idempotent replay — existing report returned
+          description: Files stored; result extraction continues in the background
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Report' }
+              schema: { $ref: '#/components/schemas/ReportFilesUploadResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+
+  /api/v1/reports/upload/{rid}/{uid}/screenshots:
+    parameters:
+      - $ref: '#/components/parameters/ReportGroupID'
+      - $ref: '#/components/parameters/UploadID'
+    post:
+      tags: [reports]
+      summary: Stream screenshots and other attachments
+      description: |
+        Streaming multipart upload; every part named `files` is stored under its
+        filename. The body is intentionally not validated by the OpenAPI request
+        validator.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/ReportFilesUpload' }
+      responses:
+        '200':
+          description: Screenshots stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportFilesUploadResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
 
   /api/v1/reports/repositories:
@@ -1170,37 +1224,6 @@ paths:
         '302': { description: Redirect to presigned S3 URL }
         '404': { $ref: '#/components/responses/NotFound' }
 
-  /api/v1/report-groups:
-    get:
-      tags: [report-groups]
-      responses:
-        '200':
-          description: Report groups list
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/ReportGroup' }
-    post:
-      tags: [report-groups]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [slug, display_name]
-              properties:
-                slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
-                display_name: { type: string }
-                description: { type: string, nullable: true }
-      responses:
-        '201':
-          description: Created report group
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ReportGroup' }
-
   /api/v1/ws:
     get:
       tags: [reports]
@@ -1212,120 +1235,6 @@ paths:
         per-type payload schemas in the `#/components/schemas` block.
       responses:
         '101': { description: Switching Protocols (WebSocket) }
-
-  /api/v1/admin/api-keys:
-    get:
-      tags: [admin]
-      responses:
-        '200':
-          description: API keys list
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/APIKeySummary' }
-    post:
-      tags: [admin]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name]
-              properties:
-                name: { type: string }
-      responses:
-        '201':
-          description: Issued; plaintext shown once
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [api_key, plaintext]
-                properties:
-                  api_key: { $ref: '#/components/schemas/APIKeySummary' }
-                  plaintext: { type: string }
-
-  /api/v1/admin/api-keys/{id}/rotate:
-    parameters:
-      - in: path
-        name: id
-        schema: { type: string, format: uuid }
-        required: true
-    post:
-      tags: [admin]
-      responses:
-        '200':
-          description: Rotated; new plaintext shown once
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [api_key, plaintext]
-                properties:
-                  api_key: { $ref: '#/components/schemas/APIKeySummary' }
-                  plaintext: { type: string }
-
-  /api/v1/admin/api-keys/{id}:
-    parameters:
-      - in: path
-        name: id
-        schema: { type: string, format: uuid }
-        required: true
-    delete:
-      tags: [admin]
-      responses:
-        '204': { description: Revoked }
-
-  /api/v1/admin/oidc-policies:
-    get:
-      tags: [admin]
-      responses:
-        '200':
-          description: OIDC policies list
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/OIDCPolicy' }
-    post:
-      tags: [admin]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/OIDCPolicyInput' }
-      responses:
-        '201':
-          description: Created OIDC policy
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/OIDCPolicy' }
-
-  /api/v1/admin/oidc-policies/{id}:
-    parameters:
-      - in: path
-        name: id
-        schema: { type: string, format: uuid }
-        required: true
-    put:
-      tags: [admin]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/OIDCPolicyInput' }
-      responses:
-        '200':
-          description: Updated OIDC policy
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/OIDCPolicy' }
-    delete:
-      tags: [admin]
-      responses:
-        '204': { description: Deleted }
 
 components:
   securitySchemes:
@@ -1344,6 +1253,20 @@ components:
       in: cookie
       name: tsio_session
       description: Opaque server-side session for human users.
+
+  parameters:
+    ReportGroupID:
+      in: path
+      name: rid
+      required: true
+      schema: { type: string, format: uuid }
+      description: Report group ID returned by `/reports/begin` or `/reports/register`.
+    UploadID:
+      in: path
+      name: uid
+      required: true
+      schema: { type: string, format: uuid }
+      description: Report ID (`upload_id`) returned by `/reports/register`.
 
   schemas:
     HealthStatus:
@@ -1809,56 +1732,82 @@ components:
           type: array
           items: { $ref: '#/components/schemas/SearchSuiteResult' }
 
-    ReportGroup:
+    ReportGroupKey:
       type: object
-      required: [id, slug, display_name]
+      required: [repository, commit, gh_run_id, framework, name]
       properties:
-        id: { type: string, format: uuid }
-        slug: { type: string }
-        display_name: { type: string }
-        description: { type: string, nullable: true }
-        created_at: { type: string, format: date-time }
-
-    APIKeySummary:
-      type: object
-      required: [id, name, key_prefix, status, created_at]
-      properties:
-        id: { type: string, format: uuid }
+        repository: { type: string, description: "GitHub 'owner/repo' slug." }
+        commit: { type: string }
+        gh_run_id: { type: string }
+        gh_run_attempt: { type: string, description: "Defaults to '1' when omitted." }
+        framework: { type: string, enum: [playwright, cypress, detox, maestro] }
         name: { type: string }
-        key_prefix: { type: string }
-        status: { type: string, enum: [active, rotating, revoked] }
-        created_at: { type: string, format: date-time }
-        last_used_at: { type: string, format: date-time, nullable: true }
-        revoked_at: { type: string, format: date-time, nullable: true }
+        run_group: { type: string }
+        branch: { type: string }
+        gh_pr_number: { type: integer }
 
-    OIDCPolicy:
-      type: object
-      required: [id, name, enabled, priority, grant_role]
-      properties:
-        id: { type: string, format: uuid }
-        name: { type: string }
-        enabled: { type: boolean }
-        priority: { type: integer }
-        match_repository: { type: string, nullable: true }
-        match_repository_owner: { type: string, nullable: true }
-        match_workflow: { type: string, nullable: true }
-        match_ref: { type: string, nullable: true }
-        match_environment: { type: string, nullable: true }
-        grant_role: { type: string, enum: [uploader, viewer, editor, admin, denied] }
+    ReportBeginRequest:
+      allOf:
+        - $ref: '#/components/schemas/ReportGroupKey'
+        - type: object
+          required: [total_reports_expected]
+          properties:
+            total_reports_expected: { type: integer, minimum: 1, description: "Shard count; the group auto-finalizes when this many reports complete." }
 
-    OIDCPolicyInput:
+    DeclaredFile:
       type: object
-      required: [name, grant_role]
       properties:
-        name: { type: string }
-        enabled: { type: boolean, default: true }
-        priority: { type: integer, default: 100 }
-        match_repository: { type: string, nullable: true }
-        match_repository_owner: { type: string, nullable: true }
-        match_workflow: { type: string, nullable: true }
-        match_ref: { type: string, nullable: true }
-        match_environment: { type: string, nullable: true }
-        grant_role: { type: string, enum: [uploader, viewer, editor, admin, denied] }
+        path: { type: string }
+        size: { type: integer, format: int64 }
+
+    ReportRegisterRequest:
+      allOf:
+        - $ref: '#/components/schemas/ReportGroupKey'
+        - type: object
+          properties:
+            total_reports_expected: { type: integer, minimum: 1 }
+            gh_job_id: { type: string }
+            gh_job_name: { type: string }
+            json_files:
+              type: array
+              items: { $ref: '#/components/schemas/DeclaredFile' }
+            screenshots:
+              type: array
+              items: { $ref: '#/components/schemas/DeclaredFile' }
+            environment_metadata: { type: object, additionalProperties: true }
+
+    RejectedFile:
+      type: object
+      required: [path, reason]
+      properties:
+        path: { type: string }
+        reason: { type: string, enum: [UNSAFE_PATH, TOO_LARGE] }
+
+    ReportRegisterResponse:
+      type: object
+      required: [report_id, upload_id, reports_in_group, accepted_json_files, rejected_json_files, accepted_screenshots, rejected_screenshots]
+      properties:
+        report_id: { type: string, format: uuid, description: "Report group ID (`{rid}`)." }
+        upload_id: { type: string, format: uuid, description: "Report ID (`{uid}`)." }
+        reports_in_group: { type: integer }
+        accepted_json_files: { type: array, items: { type: string } }
+        rejected_json_files: { type: array, items: { $ref: '#/components/schemas/RejectedFile' } }
+        accepted_screenshots: { type: array, items: { type: string } }
+        rejected_screenshots: { type: array, items: { $ref: '#/components/schemas/RejectedFile' } }
+
+    ReportFilesUpload:
+      type: object
+      properties:
+        files:
+          type: array
+          items: { type: string, format: binary }
+
+    ReportFilesUploadResult:
+      type: object
+      required: [files_uploaded, files_total]
+      properties:
+        files_uploaded: { type: integer }
+        files_total: { type: integer }
 
     # ─── Test shard orchestration ──────────────────────────────────────────────
 

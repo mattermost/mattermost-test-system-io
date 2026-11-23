@@ -52,3 +52,21 @@ func TestValidatorBodyValidation(t *testing.T) {
 		})
 	}
 }
+
+// Parameter validation survives the upload opt-out: it is per operation, and
+// kin-openapi does not enforce `format: uuid`, so the handlers still parse
+// {rid}/{uid} themselves. Query constraints are the observable proof.
+func TestValidatorParamValidation(t *testing.T) {
+	v, err := NewOpenAPIValidator(testSpecPath)
+	if err != nil {
+		t.Fatalf("NewOpenAPIValidator: %v", err)
+	}
+	h := v.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	for q, want := range map[string]int{"limit=0": http.StatusBadRequest, "limit=201": http.StatusBadRequest, "limit=5": http.StatusNoContent} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, testHost+"/api/v1/reports?"+q, nil))
+		if rec.Code != want {
+			t.Errorf("GET /api/v1/reports?%s: got %d, want %d", q, rec.Code, want)
+		}
+	}
+}

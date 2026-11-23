@@ -111,14 +111,16 @@ func Consolidate(
 				}
 			}
 			attachmentsJSON := encodeAttachments(resolved)
+			tagsJSON := encodeJSONArray(c.Tags)
+			annotationsJSON := encodeJSONArray(c.Annotations)
 			var caseID uuid.UUID
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, duration_ms,
-				                        error_message, attachments, ordinal)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+				                        error_message, error_stack, project, tags, annotations, attachments, ordinal)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 				RETURNING id
 			`, suiteID, c.Title, c.FullTitle, c.Status, c.RetryCount, c.DurationMs,
-				c.ErrorMessage, attachmentsJSON, c.Sequence).Scan(&caseID); err != nil {
+				c.ErrorMessage, c.ErrorStack, c.Project, tagsJSON, annotationsJSON, attachmentsJSON, c.Sequence).Scan(&caseID); err != nil {
 				return Totals{}, fmt.Errorf("insert test_case %q: %w", c.Title, err)
 			}
 			for _, sid := range perCaseLinks {
@@ -295,5 +297,17 @@ func encodeAttachments(atts []ExtractedAttachment) any {
 		out = append(out, m)
 	}
 	b, _ := json.Marshal(out)
+	return b
+}
+
+// encodeJSONArray returns a non-null JSON array blob for NOT NULL jsonb columns.
+func encodeJSONArray[T any](items []T) []byte {
+	if len(items) == 0 {
+		return []byte("[]")
+	}
+	b, err := json.Marshal(items)
+	if err != nil {
+		return []byte("[]")
+	}
 	return b
 }

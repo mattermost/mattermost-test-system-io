@@ -1,6 +1,9 @@
 package ingest
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestExtractPlaywright_RetryAttempts(t *testing.T) {
 	type attempt struct {
@@ -82,5 +85,98 @@ func TestCountStatuses_FlakyStatusWithoutOutcome(t *testing.T) {
 	})
 	if flaky != 1 || unique != 1 {
 		t.Fatalf("flaky=%d unique=%d, want 1 and 1", flaky, unique)
+	}
+}
+
+func TestExtractPlaywright_MetadataAndErrors(t *testing.T) {
+	body := []byte(`{
+		"suites": [{
+			"title": "auth.spec.ts",
+			"file": "auth.spec.ts",
+			"tags": ["@auth"],
+			"suites": [{
+				"title": "Login",
+				"tags": ["@smoke", "@auth"],
+				"specs": [{
+					"title": "logs in",
+					"tags": ["@fast", "@smoke"],
+					"tests": [{
+						"projectName": "chromium",
+						"tags": ["@p0", "@fast"],
+						"annotations": [
+							{"type": "issue", "description": "SEC-1"},
+							{"type": "slow"}
+						],
+						"status": "unexpected",
+						"results": [
+							{
+								"status": "failed",
+								"retry": 0,
+								"annotations": [
+									{"description": "SEC-1", "type": "issue"},
+									{"type": "retry-note", "description": "first"}
+								],
+								"errors": [{"message": "boom", "stack": "Error: boom\n    at auth.spec.ts:10:3"}]
+							},
+							{
+								"status": "failed",
+								"retry": 1,
+								"error": {"message": "singular boom", "stack": "Error: singular boom\n    at auth.spec.ts:12:3"}
+							}
+						]
+					}]
+				}]
+			}]
+		}]
+	}`)
+
+	seq := 0
+	suites := extractPlaywright(body, &seq)
+	if len(suites) != 1 || len(suites[0].Cases) != 2 {
+		t.Fatalf("got %d suites, want 1 suite with 2 cases", len(suites))
+	}
+
+	wantTags := []string{"@auth", "@smoke", "@fast", "@p0"}
+	for i, c := range suites[0].Cases {
+		if c.Project == nil || *c.Project != "chromium" {
+			t.Errorf("case %d: project = %v, want chromium", i, c.Project)
+		}
+		if !reflect.DeepEqual(c.Tags, wantTags) {
+			t.Errorf("case %d: tags = %v, want %v", i, c.Tags, wantTags)
+		}
+	}
+
+	c0 := suites[0].Cases[0]
+	if len(c0.Annotations) != 3 {
+		t.Errorf("case 0: annotations len = %d, want 3 (deduped test + result): %s", len(c0.Annotations), c0.Annotations)
+	}
+	if c0.ErrorMessage == nil || *c0.ErrorMessage != "boom" {
+		t.Errorf("case 0: error_message = %v, want boom", c0.ErrorMessage)
+	}
+	if c0.ErrorStack == nil || *c0.ErrorStack != "Error: boom\n    at auth.spec.ts:10:3" {
+		t.Errorf("case 0: error_stack = %v, want stack", c0.ErrorStack)
+	}
+
+	c1 := suites[0].Cases[1]
+	if len(c1.Annotations) != 2 {
+		t.Errorf("case 1: annotations len = %d, want 2", len(c1.Annotations))
+	}
+	if c1.ErrorMessage == nil || *c1.ErrorMessage != "singular boom" {
+		t.Errorf("case 1: error_message = %v, want singular boom", c1.ErrorMessage)
+	}
+	if c1.ErrorStack == nil || *c1.ErrorStack != "Error: singular boom\n    at auth.spec.ts:12:3" {
+		t.Errorf("case 1: error_stack = %v, want singular stack", c1.ErrorStack)
+	}
+}
+
+func TestExtractPlaywright_MinimalBackwardCompat(t *testing.T) {
+	seq := 0
+	suites := extractPlaywright([]byte(`{"suites":[{"title":"a.spec.ts","file":"a.spec.ts","specs":[{"title":"t","tests":[{"status":"expected","results":[{"status":"passed","retry":0}]}]}]}]}`), &seq)
+	if len(suites) != 1 || len(suites[0].Cases) != 1 {
+		t.Fatalf("got %d suites, want 1 suite with 1 case", len(suites))
+	}
+	c := suites[0].Cases[0]
+	if c.Project != nil || len(c.Tags) != 0 || len(c.Annotations) != 0 || c.ErrorStack != nil {
+		t.Errorf("unexpected metadata on minimal payload: %+v", c)
 	}
 }

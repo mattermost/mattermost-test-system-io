@@ -418,7 +418,7 @@ func TestEdgeCaseRegressions(t *testing.T) {
 			Status:     "timedOut",
 			ErrorStack: "    at " + testFrameA,
 		})
-		if timedOutSig.Fallback != "timeout" || timedOutSig.NormalizedMessage != "timeout" {
+		if timedOutSig.Fallback != fallbackTimeout || timedOutSig.NormalizedMessage != fallbackTimeout {
 			t.Errorf("timedOut stack-only got fallback=%q norm=%q, want timeout", timedOutSig.Fallback, timedOutSig.NormalizedMessage)
 		}
 		if timedOutSig.TopFrame != testFrameA {
@@ -485,6 +485,68 @@ func TestEdgeCaseRegressions(t *testing.T) {
 		}
 		if got := ExtractTopFrame(`    at Object.<anonymous> (C:\a\org\repo\specs\a.spec.ts:10:2)`, ""); got != "Object.<anonymous> (<repo>/specs/a.spec.ts:10:2)" {
 			t.Errorf("windows callee frame = %q", got)
+		}
+	})
+
+	t.Run("bare_absolute_frame_paths_with_spaces", func(t *testing.T) {
+		const winFrame = `C:\Users\Jane Doe\project\specs\a.spec.ts:10:2`
+		const wantWin = "C:/Users/Jane Doe/project/specs/a.spec.ts:10:2"
+		if got := ExtractTopFrame(winFrame, ""); got != wantWin {
+			t.Errorf("windows bare frame = %q, want %q", got, wantWin)
+		}
+
+		const posixFrame = "/Users/Jane Doe/project/specs/a.spec.ts:10:2"
+		if got := ExtractTopFrame(posixFrame, ""); got != posixFrame {
+			t.Errorf("posix bare frame = %q, want %q", got, posixFrame)
+		}
+
+		if got := ExtractTopFrame("file://"+posixFrame, ""); got != posixFrame {
+			t.Errorf("file URI posix frame = %q, want %q", got, posixFrame)
+		}
+		if got := ExtractTopFrame("file:///C:/Users/Jane Doe/project/specs/a.spec.ts:10:2", ""); got != "/"+wantWin {
+			t.Errorf("file URI windows frame = %q, want %q", got, "/"+wantWin)
+		}
+
+		if got := ExtractTopFrame("    at /Users/Jane Doe/actions/work/org/org/specs/a.spec.ts:10:2", ""); got != "<repo>/specs/a.spec.ts:10:2" {
+			t.Errorf("work prefix with spaces = %q, want <repo>/specs/a.spec.ts:10:2", got)
+		}
+		if got := ExtractTopFrame("    at Object.<anonymous> (/Users/Jane Doe/actions/work/org/org/specs/a.spec.ts:10:2)", ""); got != "Object.<anonymous> (<repo>/specs/a.spec.ts:10:2)" {
+			t.Errorf("callee work prefix with spaces = %q", got)
+		}
+
+		timedOutSig := Compute(Input{
+			Framework:  "playwright",
+			Status:     "timedOut",
+			ErrorStack: winFrame,
+		})
+		if timedOutSig.Fallback != fallbackTimeout || timedOutSig.NormalizedMessage != fallbackTimeout {
+			t.Errorf("timedOut bare windows frame got fallback=%q norm=%q, want timeout", timedOutSig.Fallback, timedOutSig.NormalizedMessage)
+		}
+		if timedOutSig.TopFrame != wantWin {
+			t.Errorf("timedOut TopFrame = %q, want %q", timedOutSig.TopFrame, wantWin)
+		}
+
+		headerSig := Compute(Input{
+			Framework:    "playwright",
+			Status:       "failed",
+			ErrorMessage: "Error:\n" + winFrame,
+		})
+		if headerSig.NormalizedMessage != "Error:" || headerSig.TopFrame != wantWin {
+			t.Errorf("bare header + windows frame got norm=%q frame=%q", headerSig.NormalizedMessage, headerSig.TopFrame)
+		}
+
+		for _, prose := range []string{
+			"Error: Failed to load config.ts:12",
+			"Error: " + winFrame,
+			"Failed to load specs/a.spec.ts:10:2",
+			"// Failed to load config.ts:12",
+			"/ Failed to load config.ts:12",
+			`C:\ Failed to load config.ts:12`,
+			"C: Failed to load config.ts:12",
+		} {
+			if got := ExtractTopFrame(prose, ""); got != "" {
+				t.Errorf("prose %q wrongly matched as frame %q", prose, got)
+			}
 		}
 	})
 }

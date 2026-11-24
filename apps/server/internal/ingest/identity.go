@@ -140,7 +140,10 @@ type sigUpsertRow struct {
 // deterministic sorted order, and returns one TestIdentity per input case.
 //
 // Callers (Consolidate and future backfill jobs such as SEC-11506) MUST run tx
-// at READ COMMITTED isolation: upsertFailureSignaturesTx relies on ON CONFLICT
+// at READ COMMITTED isolation and keep tx short (commit immediately after
+// ResolveCaseIdentities rather than holding it open across suite/case writes):
+// upsertTestsTx acquires row locks on existing shared `tests` rows via ON
+// CONFLICT DO UPDATE, and upsertFailureSignaturesTx relies on ON CONFLICT
 // (fingerprint) DO NOTHING followed by SELECT, which needs per-statement
 // snapshot refresh to see rows committed concurrently by other shards.
 func ResolveCaseIdentities(
@@ -204,10 +207,11 @@ func ResolveCaseIdentities(
 
 		// Per tsio-kpi-technical-spec.md, every failing attempt gets a signature;
 		// passed, skipped, and retried-and-passed (flaky) rows leave signature_id NULL.
-		if teststatus.IsFail(c.Status) {
+		status := sanitizeUTF8(c.Status)
+		if teststatus.IsFail(status) {
 			sig := errorsig.Compute(errorsig.Input{
 				Framework:    meta.Framework,
-				Status:       c.Status,
+				Status:       status,
 				ErrorMessage: c.ErrorMessage,
 				ErrorStack:   c.ErrorStack,
 			})

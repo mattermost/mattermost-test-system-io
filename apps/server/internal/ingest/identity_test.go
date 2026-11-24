@@ -203,3 +203,55 @@ func TestEncodeAnnotations_SanitizesNULPreservesEscapedBackslash(t *testing.T) {
 		t.Fatalf("encodeAnnotations did not sanitize NUL / preserve escaped backslash cleanly: %s", got)
 	}
 }
+
+func TestEncodeAnnotations_PreservesLargeNumbersAndRejectsTrailing(t *testing.T) {
+	got := string(encodeAnnotations([]json.RawMessage{
+		json.RawMessage(`{"id":9007199254740993,"note":"bad\u0000text"}`),
+	}))
+	if !strings.Contains(got, `"id":9007199254740993`) || !strings.Contains(got, `"badtext"`) {
+		t.Fatalf("encodeAnnotations lost numeric precision or failed sanitization: %s", got)
+	}
+	if trailing := string(encodeAnnotations([]json.RawMessage{
+		json.RawMessage(`{"id":1} {"extra":2}`),
+	})); trailing != "[]" {
+		t.Fatalf("encodeAnnotations accepted trailing JSON token: %s", trailing)
+	}
+}
+
+func TestEncodeAnnotations_CleanKeyBeatsDirtyCollision(t *testing.T) {
+	for range 20 {
+		raw := encodeAnnotations([]json.RawMessage{
+			json.RawMessage(`{"issue":"keep","issue\u0000":"drop","extra\u0000":"ok\u0000val"}`),
+		})
+		var anns []map[string]any
+		if err := json.Unmarshal(raw, &anns); err != nil || len(anns) != 1 {
+			t.Fatalf("unmarshal failed (%v): %s", err, raw)
+		}
+		if anns[0]["issue"] != "keep" || anns[0]["extra"] != "okval" {
+			t.Fatalf("clean/non-colliding keys not preserved: %#v", anns[0])
+		}
+
+		dirtyOnly := encodeAnnotations([]json.RawMessage{
+			json.RawMessage(`{"issue\u0000":"first","issue\u0000\u0000":"second"}`),
+		})
+		var dirtyAnns []map[string]any
+		if err := json.Unmarshal(dirtyOnly, &dirtyAnns); err != nil || len(dirtyAnns) != 1 {
+			t.Fatalf("unmarshal dirty collision failed (%v): %s", err, dirtyOnly)
+		}
+		if dirtyAnns[0]["issue"] != "first" {
+			t.Fatalf("dirty collision not deterministic: %#v", dirtyAnns[0])
+		}
+	}
+}
+
+func TestCountStatuses_SanitizesFullTitle(t *testing.T) {
+	passed, failed, skipped, flaky, unique := countStatuses([]ExtractedCase{
+		{FullTitle: "Suite > sign\x00in", Status: StatusPassed},
+		{FullTitle: "Suite > signin", Status: StatusPassed},
+		{FullTitle: "\x00", Status: StatusPassed},
+	})
+	if passed != 1 || failed != 0 || skipped != 0 || flaky != 0 || unique != 1 {
+		t.Fatalf("countStatuses = (%d,%d,%d,%d,%d), want (1,0,0,0,1)",
+			passed, failed, skipped, flaky, unique)
+	}
+}

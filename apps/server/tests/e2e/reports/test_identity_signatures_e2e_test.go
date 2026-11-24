@@ -505,6 +505,85 @@ func TestConsolidate_ConcurrentSharedTestsAndSignatures(t *testing.T) {
 		t.Fatalf("linked counts: test_id=%d (want %d), signature_id=%d (want %d)",
 			linkedTests, workers*3, linkedSigs, workers*2)
 	}
+
+	// Verify exact per-case test_id and signature_id mappings across every worker.
+	rows, err := env.Pool.Query(ctx, `
+		SELECT r.gh_job_id, tc.full_title, tc.test_id, tc.signature_id
+		FROM test_cases tc
+		JOIN suites s ON s.id = tc.suite_id
+		JOIN reports r ON r.id = s.report_id
+		WHERE r.report_group_id = $1
+	`, groupID)
+	if err != nil {
+		t.Fatalf("query concurrent case identities: %v", err)
+	}
+	defer rows.Close()
+
+	type caseIDs struct {
+		testID *uuid.UUID
+		sigID  *uuid.UUID
+	}
+	byWorker := make(map[string]map[string]caseIDs, workers)
+	for rows.Next() {
+		var jobID, fullTitle string
+		var testID, sigID *uuid.UUID
+		if err := rows.Scan(&jobID, &fullTitle, &testID, &sigID); err != nil {
+			t.Fatalf("scan concurrent case identity: %v", err)
+		}
+		if byWorker[jobID] == nil {
+			byWorker[jobID] = make(map[string]caseIDs, 3)
+		}
+		byWorker[jobID][fullTitle] = caseIDs{testID: testID, sigID: sigID}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate concurrent case identities: %v", err)
+	}
+	if len(byWorker) != workers {
+		t.Fatalf("worker count = %d, want %d", len(byWorker), workers)
+	}
+
+	wantTestIDs := make(map[string]uuid.UUID, 3)
+	wantSigIDs := make(map[string]uuid.UUID, 2)
+	for i := range workers {
+		jobID := fmt.Sprintf("job-%d", i)
+		w := byWorker[jobID]
+		if len(w) != 3 {
+			t.Fatalf("worker %s case count = %d, want 3", jobID, len(w))
+		}
+		for _, bc := range baseCases {
+			got, ok := w[bc.FullTitle]
+			if !ok || got.testID == nil {
+				t.Fatalf("worker %s missing case %q or nil test_id", jobID, bc.FullTitle)
+			}
+			if prev, seen := wantTestIDs[bc.FullTitle]; !seen {
+				wantTestIDs[bc.FullTitle] = *got.testID
+			} else if prev != *got.testID {
+				t.Fatalf("worker %s case %q test_id = %s, want %s", jobID, bc.FullTitle, *got.testID, prev)
+			}
+			if bc.Status == ingest.StatusFailed {
+				if got.sigID == nil {
+					t.Fatalf("worker %s failing case %q has nil signature_id", jobID, bc.FullTitle)
+				}
+				if prev, seen := wantSigIDs[bc.FullTitle]; !seen {
+					wantSigIDs[bc.FullTitle] = *got.sigID
+				} else if prev != *got.sigID {
+					t.Fatalf("worker %s failing case %q signature_id = %s, want %s", jobID, bc.FullTitle, *got.sigID, prev)
+				}
+			} else if got.sigID != nil {
+				t.Fatalf("worker %s passing case %q got unexpected signature_id %s", jobID, bc.FullTitle, *got.sigID)
+			}
+		}
+	}
+	distinctTests := make(map[uuid.UUID]struct{}, len(wantTestIDs))
+	for _, id := range wantTestIDs {
+		distinctTests[id] = struct{}{}
+	}
+	if len(distinctTests) != 3 {
+		t.Fatalf("distinct test_ids across base cases = %d, want 3 (%v)", len(distinctTests), wantTestIDs)
+	}
+	if wantSigIDs[baseCases[0].FullTitle] == wantSigIDs[baseCases[1].FullTitle] {
+		t.Fatalf("distinct failure fingerprints shared signature_id %s", wantSigIDs[baseCases[0].FullTitle])
+	}
 }
 
 func TestIngestTestIDsAndFailureSignatures_SanitizesNULAndInvalidUTF8(t *testing.T) {
@@ -619,7 +698,7 @@ func TestIngestTestIDsAndFailureSignatures_SanitizesNULAndInvalidUTF8(t *testing
 		}
 	}
 
-	// 3. Direct ResolveCaseIdentities with dirty Framework and empty error text (fallback path).
+	// 3. Direct ResolveCaseIdentities with dirty Framework, empty error text, and NUL in status.
 	tx, err := env.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
@@ -629,16 +708,25 @@ func TestIngestTestIDsAndFailureSignatures_SanitizesNULAndInvalidUTF8(t *testing
 		ReportGroupID: uuid.MustParse(pw.groupID),
 		Repository:    defaultRepository,
 		Framework:     "play\x00\xff\xfewright",
-	}, []ingest.CaseIdentityInput{{
-		File:      "e2e/fw-fallback.spec.ts",
-		Title:     "empty err fallback",
-		FullTitle: "Suite > empty err fallback",
-		Status:    ingest.StatusFailed,
-	}})
+	}, []ingest.CaseIdentityInput{
+		{
+			File:      "e2e/fw-fallback.spec.ts",
+			Title:     "empty err fallback",
+			FullTitle: "Suite > empty err fallback",
+			Status:    ingest.StatusFailed,
+		},
+		{
+			File:         "e2e/fw-fallback.spec.ts",
+			Title:        "nul passed status",
+			FullTitle:    "Suite > nul passed status",
+			Status:       "pas\x00sed",
+			ErrorMessage: "should-not-create-sig",
+		},
+	})
 	if err != nil {
 		t.Fatalf("ResolveCaseIdentities with dirty framework failed: %v", err)
 	}
-	if len(ids) != 1 || ids[0].SignatureID == nil {
+	if len(ids) != 2 || ids[0].SignatureID == nil || ids[1].SignatureID != nil {
 		t.Fatalf("unexpected ResolveCaseIdentities result: %+v", ids)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -653,5 +741,148 @@ func TestIngestTestIDsAndFailureSignatures_SanitizesNULAndInvalidUTF8(t *testing
 	}
 	if gotFW != "playwright" || gotNorm != "no-error:unknown:playwright" {
 		t.Fatalf("framework/fallback mismatch: got (%q, %q), want (playwright, no-error:unknown:playwright)", gotFW, gotNorm)
+	}
+
+	// 4. Sanitized attachment lookup links staged screenshot, countStatuses matches stored cases,
+	// and annotations preserve large integers + clean keys on collision.
+	var regReportID uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO reports (report_group_id, name, gh_job_id)
+		VALUES ($1, 'pw-nul-regression', 'job-nul-regression')
+		RETURNING id
+	`, pw.groupID).Scan(&regReportID); err != nil {
+		t.Fatalf("insert regression report: %v", err)
+	}
+	const wantShotKey = "reports/reg/shot.png"
+	if _, err := env.Pool.Exec(ctx, `
+		INSERT INTO report_screenshots (report_id, filename, s3_key, size_bytes, test_name)
+		VALUES ($1, 'shot.png', $2, 128, 'Suite > signin')
+	`, regReportID, wantShotKey); err != nil {
+		t.Fatalf("insert staged screenshot: %v", err)
+	}
+	totals, err := ingest.Consolidate(ctx, env.Pool, regReportID, []ingest.ExtractedSuite{{
+		Title:     "Suite",
+		StartTime: &now,
+		Cases: []ingest.ExtractedCase{
+			{
+				Title:       "sign\x00in",
+				FullTitle:   "Suite > sign\x00in",
+				Status:      ingest.StatusPassed,
+				Annotations: []json.RawMessage{json.RawMessage(`{"id":9007199254740993,"issue":"keep","issue\u0000":"drop"}`)},
+				Attachments: []ingest.ExtractedAttachment{{Path: "dir/shot\x00.png"}},
+				Sequence:    0,
+			},
+			{
+				Title:     "signin",
+				FullTitle: "Suite > signin",
+				Status:    ingest.StatusPassed,
+				Sequence:  1,
+			},
+		},
+	}}, &now, &now)
+	if err != nil {
+		t.Fatalf("Consolidate regression case failed: %v", err)
+	}
+	if totals.Cases != 1 || totals.Passed != 1 {
+		t.Fatalf("Consolidate totals = %+v, want Cases=1 Passed=1", totals)
+	}
+	var regCaseID uuid.UUID
+	var regAnnsJSON, regAttsJSON string
+	var linkedCaseID *uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT tc.id, tc.annotations::text, tc.attachments::text
+		FROM test_cases tc
+		JOIN suites s ON s.id = tc.suite_id
+		WHERE s.report_id = $1 AND tc.ordinal = 0
+	`, regReportID).Scan(&regCaseID, &regAnnsJSON, &regAttsJSON); err != nil {
+		t.Fatalf("query regression test_case: %v", err)
+	}
+	if !strings.Contains(regAnnsJSON, "9007199254740993") || !strings.Contains(regAnnsJSON, `"issue": "keep"`) && !strings.Contains(regAnnsJSON, `"issue":"keep"`) {
+		t.Fatalf("annotations lost precision or clean key: %s", regAnnsJSON)
+	}
+	if strings.Contains(regAnnsJSON, `"drop"`) {
+		t.Fatalf("dirty annotation key overwrote clean key: %s", regAnnsJSON)
+	}
+	if !strings.Contains(regAttsJSON, wantShotKey) || !strings.Contains(regAttsJSON, `"missing": false`) && !strings.Contains(regAttsJSON, `"missing":false`) {
+		t.Fatalf("sanitized attachment path did not match staged screenshot: %s", regAttsJSON)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT case_id FROM report_screenshots WHERE report_id = $1`, regReportID).Scan(&linkedCaseID); err != nil {
+		t.Fatalf("query linked screenshot: %v", err)
+	}
+	if linkedCaseID == nil || *linkedCaseID != regCaseID {
+		t.Fatalf("report_screenshots.case_id = %v, want %s", linkedCaseID, regCaseID)
+	}
+
+	// 5. Status with NUL bytes is sanitized before signature classification:
+	// "pas\x00sed" persists status='passed' with signature_id IS NULL (no bogus signature row),
+	// and "timed\x00Out" yields the "timeout" fallback signature.
+	var statusReportID uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO reports (report_group_id, name, gh_job_id)
+		VALUES ($1, 'pw-nul-status', 'job-nul-status')
+		RETURNING id
+	`, pw.groupID).Scan(&statusReportID); err != nil {
+		t.Fatalf("insert status report: %v", err)
+	}
+	var sigCountBefore int
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM failure_signatures`).Scan(&sigCountBefore); err != nil {
+		t.Fatalf("count signatures before: %v", err)
+	}
+	if _, err := ingest.Consolidate(ctx, env.Pool, statusReportID, []ingest.ExtractedSuite{{
+		Title:     "StatusSuite",
+		StartTime: &now,
+		Cases: []ingest.ExtractedCase{
+			{Title: "nul passed", FullTitle: "StatusSuite > nul passed", Status: "pas\x00sed", Sequence: 0},
+			{Title: "nul timedOut", FullTitle: "StatusSuite > nul timedOut", Status: "timed\x00Out", Sequence: 1},
+		},
+	}}, &now, &now); err != nil {
+		t.Fatalf("Consolidate NUL status cases failed: %v", err)
+	}
+	var sigCountAfter, bogusPassSigs int
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM failure_signatures`).Scan(&sigCountAfter); err != nil {
+		t.Fatalf("count signatures after: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM failure_signatures WHERE normalized_message = 'should-not-create-sig'`).Scan(&bogusPassSigs); err != nil {
+		t.Fatalf("query bogus pass signature: %v", err)
+	}
+	if sigCountAfter != sigCountBefore+1 || bogusPassSigs != 0 {
+		t.Fatalf("signature count delta = %d (want 1), bogusPassSigs = %d (want 0)", sigCountAfter-sigCountBefore, bogusPassSigs)
+	}
+	rows, err := env.Pool.Query(ctx, `
+		SELECT tc.status, tc.signature_id, fs.normalized_message
+		FROM test_cases tc
+		JOIN suites s ON s.id = tc.suite_id
+		LEFT JOIN failure_signatures fs ON fs.id = tc.signature_id
+		WHERE s.report_id = $1
+		ORDER BY tc.ordinal
+	`, statusReportID)
+	if err != nil {
+		t.Fatalf("query NUL status cases: %v", err)
+	}
+	defer rows.Close()
+	type statusRow struct {
+		status  string
+		sigID   *uuid.UUID
+		normMsg *string
+	}
+	var gotStatusRows []statusRow
+	for rows.Next() {
+		var r statusRow
+		if err := rows.Scan(&r.status, &r.sigID, &r.normMsg); err != nil {
+			t.Fatalf("scan NUL status case: %v", err)
+		}
+		gotStatusRows = append(gotStatusRows, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate NUL status cases: %v", err)
+	}
+	if len(gotStatusRows) != 2 {
+		t.Fatalf("NUL status rows len = %d, want 2", len(gotStatusRows))
+	}
+	if gotStatusRows[0].status != ingest.StatusPassed || gotStatusRows[0].sigID != nil {
+		t.Fatalf("pas\\x00sed row = %+v, want status=passed sigID=nil", gotStatusRows[0])
+	}
+	if gotStatusRows[1].status != "timedOut" || gotStatusRows[1].sigID == nil || gotStatusRows[1].normMsg == nil || *gotStatusRows[1].normMsg != "timeout" {
+		t.Fatalf("timed\\x00Out row = %+v, want status=timedOut normMsg=timeout", gotStatusRows[1])
 	}
 }

@@ -1,9 +1,12 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,7 +43,9 @@ type Totals struct {
 // basename match; successful matches update report_screenshots.case_id so
 // the per-spec screenshot lookup in SuiteSpecs is cheap.
 //
-// The write is transactional so partial failures don't leave orphan rows.
+// Test identities and failure signatures are resolved and committed first in a
+// short dedicated READ COMMITTED transaction so shared `tests` row locks are
+// released before inserting suites, test_cases, and screenshot links.
 func Consolidate(
 	ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID,
 	suites []ExtractedSuite, reportStart, reportEnd *time.Time,
@@ -54,17 +59,17 @@ func Consolidate(
 		return Totals{}, err
 	}
 
+	caseInputs, suiteOffsets := buildCaseIdentityInputs(suites)
+	identities, err := resolveCaseIdentitiesTx(ctx, pool, meta, caseInputs)
+	if err != nil {
+		return Totals{}, err
+	}
+
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Totals{}, fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	caseInputs, suiteOffsets := buildCaseIdentityInputs(suites)
-	identities, err := ResolveCaseIdentities(ctx, tx, meta, caseInputs)
-	if err != nil {
-		return Totals{}, err
-	}
 
 	totals := Totals{}
 	earliestStartTime := reportStart
@@ -226,17 +231,19 @@ func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, uniqu
 	byTitle := make(map[string]*group, len(cases))
 	order := make([]string, 0, len(cases))
 	for _, c := range cases {
-		if strings.TrimSpace(c.FullTitle) == "" || c.Status == "" {
+		fullTitle := sanitizeUTF8(c.FullTitle)
+		status := sanitizeUTF8(c.Status)
+		if strings.TrimSpace(fullTitle) == "" || status == "" {
 			continue
 		}
-		g, ok := byTitle[c.FullTitle]
+		g, ok := byTitle[fullTitle]
 		if !ok {
 			g = &group{}
-			byTitle[c.FullTitle] = g
-			order = append(order, c.FullTitle)
+			byTitle[fullTitle] = g
+			order = append(order, fullTitle)
 		}
-		g.statuses = append(g.statuses, c.Status)
-		if c.Outcome == StatusFlaky {
+		g.statuses = append(g.statuses, status)
+		if sanitizeUTF8(c.Outcome) == StatusFlaky {
 			g.frameworkFlaky = true
 		}
 	}
@@ -304,8 +311,14 @@ func encodeAnnotations(anns []json.RawMessage) []byte {
 	}
 	out := make([]any, 0, len(anns))
 	for _, raw := range anns {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
 		var v any
-		if err := json.Unmarshal(raw, &v); err != nil {
+		if err := dec.Decode(&v); err != nil {
+			return []byte("[]")
+		}
+		var trailing any
+		if err := dec.Decode(&trailing); err != io.EOF {
 			return []byte("[]")
 		}
 		out = append(out, sanitizeJSONValue(v))
@@ -324,8 +337,23 @@ func sanitizeJSONValue(v any) any {
 		return x
 	case map[string]any:
 		out := make(map[string]any, len(x))
+		var dirty []string
 		for k, val := range x {
-			out[sanitizeUTF8(k)] = sanitizeJSONValue(val)
+			if sanitizeUTF8(k) == k {
+				out[k] = sanitizeJSONValue(val)
+			} else {
+				dirty = append(dirty, k)
+			}
+		}
+		if len(dirty) > 0 {
+			// Preserve already-clean keys and resolve dirty-key collisions deterministically.
+			slices.Sort(dirty)
+			for _, k := range dirty {
+				cleanK := sanitizeUTF8(k)
+				if _, exists := out[cleanK]; !exists {
+					out[cleanK] = sanitizeJSONValue(x[k])
+				}
+			}
 		}
 		return out
 	default:
@@ -343,6 +371,31 @@ func encodeJSONArray[T any](items []T) []byte {
 		return []byte("[]")
 	}
 	return b
+}
+
+// resolveCaseIdentitiesTx commits test and signature upserts in a short
+// dedicated READ COMMITTED transaction so shared `tests` row locks are not
+// held across suite, test_case, and screenshot writes.
+func resolveCaseIdentitiesTx(
+	ctx context.Context, pool *pgxpool.Pool, meta IdentityMeta, caseInputs []CaseIdentityInput,
+) ([]TestIdentity, error) {
+	if len(caseInputs) == 0 {
+		return nil, nil
+	}
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return nil, fmt.Errorf("begin identity tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	identities, err := ResolveCaseIdentities(ctx, tx, meta, caseInputs)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit identity tx: %w", err)
+	}
+	return identities, nil
 }
 
 func loadReportMeta(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID) (IdentityMeta, error) {
@@ -375,7 +428,7 @@ func buildCaseIdentityInputs(suites []ExtractedSuite) ([]CaseIdentityInput, []in
 				Title:        c.Title,
 				FullTitle:    c.FullTitle,
 				Tags:         c.Tags,
-				Status:       c.Status,
+				Status:       sanitizeUTF8(c.Status),
 				ErrorMessage: derefString(c.ErrorMessage),
 				ErrorStack:   derefString(c.ErrorStack),
 				StartTime:    c.StartTime,
@@ -401,7 +454,8 @@ func insertSuiteCasesTx(
 		resolved := make([]ExtractedAttachment, len(c.Attachments))
 		for ai, a := range c.Attachments {
 			resolved[ai] = a
-			if sh, ok := screenshotsByBasename[basename(a.Path)]; ok {
+			cleanPath := sanitizeUTF8(a.Path)
+			if sh, ok := screenshotsByBasename[basename(cleanPath)]; ok {
 				k := sh.s3Key
 				resolved[ai].S3Key = &k
 				resolved[ai].Missing = false

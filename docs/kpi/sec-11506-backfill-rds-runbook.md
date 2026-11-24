@@ -25,18 +25,8 @@ fields) and two partial indexes that migrations deliberately do **not** create.
    before it can grow again, so do not rely on it mid-run.
 3. **Deploy migration `000033` (and `000034`) first** so the `tests` / `failure_signatures`
    tables and `test_cases.{test_id,signature_id}` columns already exist and
-   live uploads populate them. Neither staging nor production has applied
-   `000033` yet, so `#143`–`#145` deploy together cleanly onto an empty
-   `tests` / `failure_signatures` schema. If any pre-release staging DB ever
-   ran an unhardened `000033` build prior to PR #145, **pause uploaders and
-   clear or reconcile existing `test_cases.{test_id,signature_id}`, `tests`,
-   and `failure_signatures` rows before deploying PR #145 live writes**, and
-   confirm both checks return `0` before re-enabling uploads and running
-   `tsioctl backfill`:
-   ```sql
-   SELECT count(*) FROM failure_signatures WHERE algo_version = 1;
-   SELECT count(*) FROM tests WHERE test_key = 'zephyr:MM-T0';
-   ```
+   live uploads populate them. Migrations `000033` and `000034` deploy cleanly
+   together onto an unpopulated `tests` / `failure_signatures` schema.
 4. **Fresh post-`000033` snapshot** (`aws rds create-db-snapshot`) and record
    its id. Live CI uploads keep landing during the backfill, so restoring this
    snapshot loses them (see §5). For a clean restore point, briefly pause
@@ -54,16 +44,12 @@ Run from a host that can reach RDS and the report bucket, with
 tsioctl backfill --dry-run --repo mattermost/mattermost --since 2026-01-01 --format json
 
 # 2. Real run, throttled and resumable. pipefail keeps tsioctl's exit status
-#    (S3/DB failure) instead of tee's; save both stdout summary and stderr
-#    warnings for every initial and resumed invocation.
+#    (S3/DB failure) instead of tee's.
 set -o pipefail
-ts=$(date +%s)
 tsioctl backfill \
   --batch-size 50 --sleep 200ms \
   --checkpoint-file /var/tmp/sec-11506-backfill.json \
-  --format json \
-  2> >(tee "backfill-${ts}.stderr.log" >&2) \
-  | tee "backfill-${ts}.json"
+  --format json | tee backfill-$(date +%s).json
 ```
 
 - **Resume:** rerun the same command. Cursors (`last_group_id`,
@@ -100,10 +86,7 @@ tsioctl backfill \
        AND (tc.test_id IS NULL
             OR (tc.signature_id IS NULL AND tc.status NOT IN ('passed', 'flaky', 'skipped', 'pending')));
      ```
-  2. Across the JSON summaries and saved stderr logs from **every** invocation (initial and resumed), `s3_files_missing` and the `s3 json unusable` and `s3 json yielded no suites` warnings are reviewed (because missing/unusable/empty-suite S3 fallback writes DB identity columns only, and subsequent non-`--force` runs skip those reports before reading S3), and any `--skip-s3` DB-only run is accounted for:
-     - **Missing/unusable S3 object (`s3 json unusable`):** for each named `report_id`, either restore the S3 object and re-run that scope with `tsioctl backfill --force --skip-stage` (scoped with `--repo` / `--since` / `--until` and a **fresh `--checkpoint-file`**, or omitting `--checkpoint-file` / resetting `--after-report-id` prior to the affected report), or explicitly record the missing S3 enrichment as accepted.
-     - **Empty suites (`s3 json yielded no suites`):** for each named `report_id`, inspect the S3 object, or explicitly record the missing S3 enrichment as accepted.
-     - **Prior `--skip-s3` DB-only runs (`--skip-s3` fills identities without reading S3 or emitting S3 warnings):** re-run that scope with S3 enabled using `tsioctl backfill --force --skip-stage` (with a fresh `--checkpoint-file` or `--after-report-id`), or explicitly record the missing S3 enrichment as accepted.
+  2. Review `s3_files_missing` and stderr S3 warnings (`s3 json unusable`, `s3 json yielded no suites`); if restoring missing S3 objects afterward, re-run that scope with `--force --skip-stage` using a fresh `--checkpoint-file` (or accept the missing S3 enrichment).
 - **Known limitation:** `failure_signatures.first_seen_report_group_id` is set
   only when NULL, to the first report (by id, i.e. chronological) that the
   backfill touches. Signatures already attributed to a newer live group are not

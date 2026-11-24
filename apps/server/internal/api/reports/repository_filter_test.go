@@ -17,15 +17,11 @@ func TestRepositoryFilterAppendSQL(t *testing.T) {
 	args = args[:0]
 	RepositoryFilter("mattermost/mattermost.GIT").appendSQL(&b, &args, "repository")
 	got := b.String()
-	wantSQL := " AND (repository = ANY($1::text[]) OR split_part(repository, '/', 2) = ANY($1::text[]))"
+	wantSQL := " AND (repository = $1 OR split_part(repository, '/', 2) = $1)"
 	if got != wantSQL {
 		t.Fatalf("sql = %q, want %q", got, wantSQL)
 	}
-	if len(args) != 1 {
+	if len(args) != 1 || args[0] != "mattermost/mattermost" {
 		t.Fatalf("args = %v", args)
-	}
-	variants, ok := args[0].([]string)
-	if !ok || len(variants) != 9 || variants[0] != "mattermost/mattermost" || variants[1] != "mattermost/mattermost.git" || variants[2] != "mattermost/mattermost.GIT" {
-		t.Fatalf("variants = %v", args[0])
 	}
 }

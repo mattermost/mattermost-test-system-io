@@ -207,18 +207,3 @@ func TestCheckRepoAccess(t *testing.T) {
 		}
 	}
 }
-
-func TestRepositoryLookupVariants(t *testing.T) {
-	if got := RepositoryLookupVariants(""); got != nil {
-		t.Fatalf("empty = %v, want nil", got)
-	}
-	if got := RepositoryLookupVariants("   "); got != nil {
-		t.Fatalf("blank = %v, want nil", got)
-	}
-	for _, in := range []string{"Owner/Repo", " Owner/Repo.git ", "Owner/Repo.GIT", "Owner/Repo.GiT"} {
-		got := RepositoryLookupVariants(in)
-		if len(got) != 9 || got[0] != "Owner/Repo" || got[1] != "Owner/Repo.git" || got[2] != "Owner/Repo.GIT" {
-			t.Fatalf("RepositoryLookupVariants(%q) = %v", in, got)
-		}
-	}
-}

@@ -31,16 +31,25 @@ func (f RepositoryFilter) appendSQL(b *strings.Builder, args *[]any, column stri
 	if !f.Active() {
 		return
 	}
-	n := len(*args) + 1
-	ph := fmt.Sprintf("$%d", n)
+	v := f.Value()
+	ph1 := fmt.Sprintf("$%d", len(*args)+1)
+	ph2 := fmt.Sprintf("$%d", len(*args)+2)
 	b.WriteString(" AND (")
 	b.WriteString(column)
 	b.WriteString(" = ")
-	b.WriteString(ph)
+	b.WriteString(ph1)
+	b.WriteString(" OR ")
+	b.WriteString(column)
+	b.WriteString(" = ")
+	b.WriteString(ph2)
 	b.WriteString(" OR split_part(")
 	b.WriteString(column)
 	b.WriteString(", '/', 2) = ")
-	b.WriteString(ph)
+	b.WriteString(ph1)
+	b.WriteString(" OR split_part(")
+	b.WriteString(column)
+	b.WriteString(", '/', 2) = ")
+	b.WriteString(ph2)
 	b.WriteString(")")
-	*args = append(*args, f.Value())
+	*args = append(*args, v, v+".git")
 }

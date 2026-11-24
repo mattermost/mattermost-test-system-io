@@ -409,10 +409,11 @@ const runSelectByIdentity = `
 	       dispatch_units_hash, started_at, last_activity_at, terminal_at,
 	       owner_oidc_subject, owner_api_key_id, created_at, updated_at
 	  FROM orchestration_runs
-	 WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
+	 WHERE (repository IN ($1, $1 || '.git') OR split_part(repository, '/', 2) IN ($1, $1 || '.git'))
 	   AND (commit_sha = $2 OR substr(commit_sha, 1, 7) = $2)
 	   AND gh_run_id = $3
 	   AND name = $4 AND gh_run_attempt = $5
+	 ORDER BY (repository = $1) DESC, created_at DESC
 	 LIMIT 1
 `
 
@@ -432,7 +433,7 @@ const runListByDisplayIdentity = `
 	       dispatch_units_hash, started_at, last_activity_at, terminal_at,
 	       owner_oidc_subject, owner_api_key_id, created_at, updated_at
 	  FROM orchestration_runs
-	 WHERE (repository = $1 OR split_part(repository, '/', 2) = $1)
+	 WHERE (repository IN ($1, $1 || '.git') OR split_part(repository, '/', 2) IN ($1, $1 || '.git'))
 	   AND (commit_sha = $2 OR substr(commit_sha, 1, 7) = $2)
 	   AND name = $3
 	   AND ($4 = '' OR branch = $4)

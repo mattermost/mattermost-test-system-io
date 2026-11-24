@@ -14,6 +14,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 )
 
 // failResults builds a results array marking every spec as failed.
@@ -539,6 +542,95 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 		c := counts(t, statBody)
 		if c["pending"] != 0 || c["leased"] != 0 || c["completed_pass"]+c["abandoned"] != len(units) {
 			t.Fatalf("iter=%d inconsistent counts after concurrent timeout+complete: %s", iter, fmtCounts(c))
+		}
+	}
+}
+
+// TestLegacyGitSuffixBackwardCompatibility verifies that pre-existing
+// orchestration_runs and report_groups rows stored with a trailing ".git"
+// repository suffix are matched by normalized HTTP requests (/orchestration/begin
+// idempotent replay without creating a duplicate row, /checkout, /complete,
+// /status) and by reports.LoadHomePageData RepositoryFilter.
+func TestLegacyGitSuffixBackwardCompatibility(t *testing.T) {
+	env, tok := startEnv(t)
+	ctx := context.Background()
+
+	const legacyRunID = "ci-run-legacy-git-1"
+	legacyRepo := defaultRepository + ".git"
+	units := []string{"tests/legacy-git.spec.ts"}
+
+	// Seed a pre-existing run directly via Store.BeginRun with the un-trimmed ".git" repository
+	// (simulating a row created before input normalization was added).
+	sub := defaultOIDCSubject
+	legacyCI := orchestration.CompositeIdentity{
+		Repository:   legacyRepo,
+		CommitSHA:    defaultCommit,
+		GHRunID:      legacyRunID,
+		Name:         defaultName,
+		GHRunAttempt: defaultRunAttempt,
+		Branch:       defaultBranch,
+		Framework:    "playwright",
+	}
+	seededRun, created, seededGroup, err := env.Orchestrator.BeginRun(ctx, legacyCI, orchestration.BeginRunOptions{
+		LeaseTimeoutMs:       60_000,
+		IdleTimeoutMs:        60_000,
+		TotalReportsExpected: 1,
+		PlaywrightProject:    defaultPlaywrightPrj,
+		Branch:               defaultBranch,
+	}, units, orchestration.OwnerInfo{OIDCSubject: &sub})
+	if err != nil || !created || seededRun == nil || seededGroup == nil {
+		t.Fatalf("seed legacy .git run: created=%v err=%v", created, err)
+	}
+
+	// 1. Calling POST /api/v1/orchestration/begin with normalized repository (or .git)
+	// must hit the existing legacy row (200 OK idempotent replay, NOT 201 Created duplicate).
+	idMap := identity(map[string]any{"gh_run_id": legacyRunID, "repository": defaultRepository})
+	beginBody := merge(beginRunBody(units, nil), idMap)
+	replayResp := postJSON(t, env, tok, "/api/v1/orchestration/begin", beginBody)
+	expectStatus(t, replayResp, http.StatusOK)
+
+	var runCount int
+	if err := env.Pool.QueryRow(ctx, `SELECT count(*) FROM orchestration_runs WHERE gh_run_id = $1`, legacyRunID).Scan(&runCount); err != nil {
+		t.Fatalf("count runs: %v", err)
+	}
+	if runCount != 1 {
+		t.Fatalf("orchestration_runs count for %s = %d, want 1 (no duplicate)", legacyRunID, runCount)
+	}
+
+	// 2. /checkout, /complete, and /status with normalized repository find and complete the legacy run.
+	chk := merge(checkoutBody("legacy-worker", "job-legacy-git-1", 1), idMap)
+	chkBody := expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout", chk), http.StatusOK)
+	if len(chkBody["units"].([]any)) != 1 {
+		t.Fatalf("checkout units = %v, want 1", chkBody["units"])
+	}
+
+	cmp := merge(completeBody("legacy-worker", "job-legacy-git-1", passResults(units)), idMap)
+	expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete", cmp), http.StatusOK)
+
+	statBody := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)
+	if statBody["status"] != "completed" {
+		t.Fatalf("legacy run status = %v, want completed", statBody["status"])
+	}
+
+	// 3. reports.LoadHomePageData with normalized RepositoryFilter(defaultRepository)
+	// and trailing-slug filter both match the legacy ".git" report_groups row.
+	if err := reports.RefreshGroupSummary(ctx, env.Pool, seededGroup.ID); err != nil {
+		t.Fatalf("RefreshGroupSummary: %v", err)
+	}
+	for _, filter := range []string{defaultRepository, defaultRepository + ".git", "orch-e2e"} {
+		home, err := reports.LoadHomePageData(ctx, env.Pool, 50, 0, filter, "")
+		if err != nil {
+			t.Fatalf("LoadHomePageData(%q): %v", filter, err)
+		}
+		var found bool
+		for _, r := range home.Static {
+			if r.GHRunID == legacyRunID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("LoadHomePageData(%q) did not match legacy .git report_group %s", filter, legacyRunID)
 		}
 	}
 }

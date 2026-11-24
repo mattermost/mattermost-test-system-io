@@ -368,9 +368,11 @@ func (r *runner) loadCases(ctx context.Context, reportID uuid.UUID) ([]dbCase, e
 	return cases, nil
 }
 
-// loadExtracted re-parses the report's S3 JSON files. Missing (or oversized)
-// objects fall back to DB-only fields; any other store error aborts the run
-// so a transient outage never advances the checkpoint past unread reports.
+// loadExtracted re-parses the report's S3 JSON files. If any object is missing
+// (or oversized) the whole report falls back to DB-only fields, so surviving
+// files (e.g. firefox) are never matched onto rows from the lost one (e.g.
+// chromium). Any other store error aborts the run so a transient outage never
+// advances the checkpoint past unread reports.
 func (r *runner) loadExtracted(ctx context.Context, rep reportRow) ([]extCase, error) {
 	if r.opts.SkipS3 || r.store == nil {
 		return nil, nil
@@ -390,9 +392,9 @@ func (r *runner) loadExtracted(ctx context.Context, rep reportRow) ([]extCase, e
 		body, err := r.readObject(ctx, key)
 		if isObjectNotFound(err) || errors.Is(err, errTooLarge) {
 			r.sum.S3FilesMissing++
-			r.opts.Logger.Warn("s3 json unusable; using DB fields only",
+			r.opts.Logger.Warn("s3 json unusable; using DB fields only for this report",
 				"report_id", rep.ID, "object_key", key, "error", err)
-			continue
+			return nil, nil
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read s3 %s: %w", key, err)
@@ -562,11 +564,18 @@ func (r *runner) write(ctx context.Context, rep reportRow, cases []dbCase, p rep
 	assigned := make([]ingest.TestIdentity, 0, len(p.dirty))
 	for _, i := range p.dirty {
 		c := cases[i]
+		// Guarded so values another writer committed after loadCases win:
+		// identities only fill NULLs unless Force, enrichment only fills blanks.
 		batch.Queue(`
-			UPDATE test_cases
-			SET test_id = $2, signature_id = $3, error_stack = $4, project = $5, tags = $6, annotations = $7
+			UPDATE test_cases SET
+				test_id      = CASE WHEN $8::boolean THEN $2 ELSE COALESCE(test_id, $2) END,
+				signature_id = CASE WHEN $8::boolean THEN $3 ELSE COALESCE(signature_id, $3) END,
+				error_stack  = CASE WHEN NULLIF(error_stack, '') IS NULL THEN $4 ELSE error_stack END,
+				project      = CASE WHEN NULLIF(project, '') IS NULL THEN $5 ELSE project END,
+				tags         = CASE WHEN tags = '[]'::jsonb THEN $6 ELSE tags END,
+				annotations  = CASE WHEN annotations = '[]'::jsonb THEN $7 ELSE annotations END
 			WHERE id = $1
-		`, c.ID, c.TestID, c.SignatureID, c.ErrorStack, c.Project, c.Tags, c.Annotations)
+		`, c.ID, c.TestID, c.SignatureID, c.ErrorStack, c.Project, c.Tags, c.Annotations, r.opts.Force)
 		assigned = append(assigned, ingest.TestIdentity{SignatureID: c.SignatureID})
 	}
 	if err := tx.SendBatch(ctx, batch).Close(); err != nil {

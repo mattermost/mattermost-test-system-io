@@ -51,6 +51,22 @@ const bfMaestro = `<testsuites>
   </testsuite>
 </testsuites>`
 
+const bfTwoProjects = `{"suites": [{"title": "multi.spec.ts", "file": "e2e/multi.spec.ts", "specs": [
+  {"title": "renders", "tests": [
+    {"projectName": "chromium", "status": "unexpected", "results": [{"status": "failed", "duration": 1, "retry": 0,
+      "errors": [{"message": "chromium boom", "stack": "chromium boom\n    at e2e/multi.spec.ts:1:1"}]}]},
+    {"projectName": "firefox", "status": "unexpected", "results": [{"status": "failed", "duration": 1, "retry": 0,
+      "errors": [{"message": "firefox boom", "stack": "firefox boom\n    at e2e/multi.spec.ts:2:2"}]}]}
+  ]}
+]}]}`
+
+const bfFirefoxOnly = `{"suites": [{"title": "multi.spec.ts", "file": "e2e/multi.spec.ts", "specs": [
+  {"title": "renders", "tests": [
+    {"projectName": "firefox", "status": "unexpected", "results": [{"status": "failed", "duration": 1, "retry": 0,
+      "errors": [{"message": "firefox boom", "stack": "firefox boom\n    at e2e/multi.spec.ts:2:2"}]}]}
+  ]}
+]}]}`
+
 type bfCase struct {
 	id                       uuid.UUID
 	testID, sigID, sigGroup  *uuid.UUID
@@ -63,6 +79,21 @@ type errStore struct{ storage.ObjectStore }
 
 func (errStore) Get(context.Context, string) (io.ReadCloser, storage.ObjectMeta, error) {
 	return nil, storage.ObjectMeta{}, errors.New("dial tcp: connection reset by peer")
+}
+
+// hookStore runs before() ahead of the Get for key, simulating another writer
+// committing between the backfill's case snapshot and its UPDATE.
+type hookStore struct {
+	storage.ObjectStore
+	key    string
+	before func()
+}
+
+func (h hookStore) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	if key == h.key {
+		h.before()
+	}
+	return h.ObjectStore.Get(ctx, key)
 }
 
 // startBackfillEnv uploads one report per payload ([framework, run id, file,
@@ -348,5 +379,71 @@ func TestBackfill_CheckpointPauseResumeAndTransientS3Abort(t *testing.T) {
 	}
 	if unset(second) != 0 || !strings.Contains(string(bfCheckpoint(t, cpFile)), second) {
 		t.Fatalf("resume did not finish: second unset=%d", unset(second))
+	}
+}
+
+func bfJSONKey(t *testing.T, env *testenv.Env, reportID string) string {
+	t.Helper()
+	var key string
+	if err := env.Pool.QueryRow(context.Background(),
+		`SELECT object_key FROM report_json_files WHERE report_id = $1`, reportID).Scan(&key); err != nil {
+		t.Fatalf("read json key: %v", err)
+	}
+	return key
+}
+
+func TestBackfill_PartialS3FallbackAndConcurrentWritesWin(t *testing.T) {
+	env, s := startBackfillEnv(t,
+		[4]string{"playwright", "bf-multi", "results.json", bfTwoProjects},
+		[4]string{"playwright", "bf-race", "results.json", bfPlaywright},
+	)
+	multi, race := s[0], s[1]
+	ctx := context.Background()
+
+	// The report keeps its firefox file but loses its chromium one.
+	if err := env.Store.Put(ctx, bfJSONKey(t, env, multi.uploadID), strings.NewReader(bfFirefoxOnly),
+		"application/json", int64(len(bfFirefoxOnly))); err != nil {
+		t.Fatalf("rewrite firefox json: %v", err)
+	}
+	bfExec(t, env, `INSERT INTO report_json_files (report_id, object_key, size_bytes, sha256)
+		VALUES ($1, 'bf/chromium-missing.json', 1, 'gone')`, multi.uploadID)
+
+	raceCase := bfCases(t, env, race.uploadID)["MM-T101 logs in"].id
+	var liveTestID uuid.UUID
+	store := hookStore{ObjectStore: env.Store, key: bfJSONKey(t, env, race.uploadID), before: func() {
+		if err := env.Pool.QueryRow(ctx, `
+			WITH t AS (
+				INSERT INTO tests (repository, framework, test_key, file, full_title)
+				VALUES ('mattermost/test', 'playwright', 'live-key', 'e2e/login.spec.ts', 'live')
+				RETURNING id)
+			UPDATE test_cases SET test_id = (SELECT id FROM t), error_stack = 'live stack',
+				project = 'live-project', tags = '["@live"]'
+			WHERE id = $1
+			RETURNING test_id`, raceCase).Scan(&liveTestID); err != nil {
+			t.Errorf("concurrent write: %v", err)
+		}
+	}}
+
+	sum, err := backfill.Run(ctx, env.Pool, store, backfill.Options{SkipStage: true})
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if sum.S3FilesMissing != 1 || sum.ReportsUpdated != 2 {
+		t.Fatalf("summary = %+v", sum)
+	}
+
+	// Whole report fell back to DB fields: firefox data never lands on the chromium row.
+	if n := bfInt(t, env, `SELECT count(*) FROM test_cases tc JOIN suites s ON s.id = tc.suite_id
+		WHERE s.report_id = $1 AND (tc.project IS NOT NULL OR tc.error_stack IS NOT NULL OR tc.test_id IS NULL)`,
+		multi.uploadID); n != 0 {
+		t.Fatalf("%d multi-project rows were cross-enriched or left without test_id", n)
+	}
+
+	// Values committed after the snapshot win; untouched blanks are still enriched.
+	c := bfCases(t, env, race.uploadID)["MM-T101 logs in"]
+	if c.testID == nil || *c.testID != liveTestID || c.errorStack == nil || *c.errorStack != "live stack" ||
+		c.project == nil || *c.project != "live-project" || c.tags != `["@live"]` ||
+		!strings.Contains(c.annotations, "MM-1") || c.sigID == nil {
+		t.Fatalf("concurrent write not preserved: %+v (live test_id %s)", c, liveTestID)
 	}
 }

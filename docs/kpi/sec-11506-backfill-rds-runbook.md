@@ -23,7 +23,11 @@ fields) and two partial indexes that migrations deliberately do **not** create.
    If `MaxAllocatedStorage` is null, enable autoscaling (or grow storage)
    before starting. Autoscaling triggers at <10% free and then waits ≥6 h
    before it can grow again, so do not rely on it mid-run.
-3. **Fresh snapshot** (`aws rds create-db-snapshot`) and record its id.
+3. **Fresh snapshot** (`aws rds create-db-snapshot`) and record its id. Live
+   CI uploads keep landing during the backfill, so restoring this snapshot
+   loses them (see §5). For a clean restore point, briefly pause uploaders
+   while the snapshot is taken and note the time so later runs can be replayed
+   from CI / S3.
 4. Run the deploy containing migration `000033` first; the server must already
    write `test_id` / `signature_id` for new uploads.
 
@@ -37,7 +41,9 @@ Run from a host that can reach RDS and the report bucket, with
 # 1. Dry run on a slice: zero writes, no checkpoint.
 tsioctl backfill --dry-run --repo mattermost/mattermost --since 2026-01-01 --format json
 
-# 2. Real run, throttled and resumable.
+# 2. Real run, throttled and resumable. pipefail keeps tsioctl's exit status
+#    (S3/DB failure) instead of tee's.
+set -o pipefail
 tsioctl backfill \
   --batch-size 50 --sleep 200ms \
   --checkpoint-file /var/tmp/sec-11506-backfill.json \
@@ -139,10 +145,13 @@ ANALYZE test_cases;
 
 ## 5. Rollback
 
-- Prefer restoring the snapshot from §1. The backfill only fills empty
-  columns, but its `error_stack` / `project` / `tags` / `annotations`
+- Prefer a targeted undo over a snapshot restore. The backfill only fills
+  empty columns, but its `error_stack` / `project` / `tags` / `annotations`
   enrichment is indistinguishable from ingest-written values, and blanket
-  NULLing of `test_id` / `signature_id` would also wipe live-ingest rows. If a
-  targeted undo is unavoidable, scope it to reports created before the
-  `000033` deploy (and the `--repo` / `--since` slice that was run).
+  NULLing of `test_id` / `signature_id` would also wipe live-ingest rows. Scope
+  any SQL undo (or a corrective `--force` backfill pass) to reports created
+  before the `000033` deploy and to the `--repo` / `--since` slice that was run.
+- Restoring the §1 snapshot discards every upload committed after it. Only do
+  so if uploaders were quiesced for the snapshot, and replay later runs from
+  CI / S3 afterwards.
 - Drop indexes with `DROP INDEX CONCURRENTLY IF EXISTS <name>;`.

@@ -27,6 +27,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // defaultMaxSpecsPerRun caps the total spec count summed across every
@@ -86,6 +87,9 @@ type Handlers struct {
 
 	// AuthzMode governs the token-to-repository check on orchestration writes.
 	AuthzMode authapi.AuthzMode
+
+	// StatusRule controls read-time test count aggregation ("" means legacy).
+	StatusRule teststatus.Rule
 }
 
 // ---------- request/response bodies ----------
@@ -688,7 +692,7 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 	// just omits the field in that case, matching the listing endpoints'
 	// `tests` shape. A failure here doesn't fail the request: status is
 	// the load-bearing field and was already produced above.
-	if t, terr := aggregateTestCounts(r.Context(), h.Pool, snap.Run.ID); terr == nil && t != nil {
+	if t, terr := aggregateTestCounts(r.Context(), h.Pool, snap.Run.ID, h.StatusRule); terr == nil && t != nil {
 		out["tests"] = t
 	} else if terr != nil {
 		h.Logger.Warn("status: aggregateTestCounts failed",
@@ -831,12 +835,34 @@ func latestNonNil(a, b *time.Time) *time.Time {
 
 // aggregateTestCounts walks every reported test_case across all attempts of
 // every dispatch_unit on the run and rolls them up to per-test-case
-// statuses, applying the same any-passed-AND-any-failed → flaky rule the
-// listing rollup uses (see reports.aggregateOrchestrationTestCounts).
+// statuses, applying the configured read-time rule (see
+// reports.aggregateOrchestrationTestCounts).
 // Returns (nil, nil) when no attempts have yet reported test_cases.
-func aggregateTestCounts(ctx context.Context, pool *pgxpool.Pool, runID uuid.UUID) (*testCounts, error) {
-	var t testCounts
-	err := pool.QueryRow(ctx, `
+func aggregateTestCounts(ctx context.Context, pool *pgxpool.Pool, runID uuid.UUID, rule teststatus.Rule) (*testCounts, error) {
+	query := `
+		WITH per_test AS (
+			SELECT
+				a.dispatch_unit_id,
+				tc->>'full_title' AS full_title,
+				BOOL_OR(tc->>'status' IN ('passed', 'flaky')) AS ever_passed,
+				BOOL_OR(tc->>'status' IN ('failed', 'timedOut', 'interrupted')) AS ever_failed,
+				BOOL_OR(tc->>'status' = 'skipped') AS ever_skipped
+			  FROM attempts a
+			 CROSS JOIN LATERAL jsonb_array_elements(a.test_cases) AS tc
+			 WHERE a.run_id = $1
+			   AND a.test_cases IS NOT NULL
+			 GROUP BY a.dispatch_unit_id, tc->>'full_title'
+		)
+		SELECT
+			COUNT(*) FILTER (WHERE ever_passed AND NOT ever_failed) AS passed,
+			COUNT(*) FILTER (WHERE ever_failed AND NOT ever_passed) AS failed,
+			COUNT(*) FILTER (WHERE ever_passed AND ever_failed) AS flaky,
+			COUNT(*) FILTER (WHERE ever_skipped AND NOT ever_passed AND NOT ever_failed) AS skipped,
+			COUNT(*) AS total
+		  FROM per_test
+	`
+	if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
+		query = `
 		WITH per_test AS (
 			SELECT
 				a.dispatch_unit_id,
@@ -858,7 +884,10 @@ func aggregateTestCounts(ctx context.Context, pool *pgxpool.Pool, runID uuid.UUI
 			COUNT(*) FILTER (WHERE verdict = 'skipped') AS skipped,
 			COUNT(*) FILTER (WHERE verdict IS NOT NULL) AS total
 		  FROM per_test
-	`, runID).Scan(&t.Passed, &t.Failed, &t.Flaky, &t.Skipped, &t.Total)
+	`
+	}
+	var t testCounts
+	err := pool.QueryRow(ctx, query, runID).Scan(&t.Passed, &t.Failed, &t.Flaky, &t.Skipped, &t.Total)
 	if err != nil {
 		return nil, err
 	}

@@ -48,9 +48,15 @@ func containsByte(s string, c byte) bool {
 	return false
 }
 
-func passRatePercent(s *testStats) int {
-	if s == nil {
+func passRatePercent(s *testStats, rule teststatus.Rule) int {
+	if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
+		if s == nil {
+			return -1
+		}
+		return teststatus.PassRatePercent(s.Passed, s.Failed, s.Flaky)
+	}
+	if s == nil || s.Total <= 0 {
 		return -1
 	}
-	return teststatus.PassRatePercent(s.Passed, s.Failed, s.Flaky)
+	return ((s.Passed + s.Flaky) * 100) / s.Total
 }

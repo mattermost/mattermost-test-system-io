@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 func TestRunPageHref(t *testing.T) {
@@ -21,14 +23,24 @@ func TestRunPageHref(t *testing.T) {
 }
 
 func TestPassRatePercent(t *testing.T) {
-	if passRatePercent(&testStats{Passed: 9, Flaky: 1, Total: 10}) != 100 {
+	if passRatePercent(&testStats{Passed: 9, Flaky: 1, Total: 10}, teststatus.RuleLegacy) != 100 {
 		t.Fatal("expected 100%")
 	}
-	if got := passRatePercent(&testStats{Passed: 8, Flaky: 1, Failed: 1, Skipped: 5, Total: 15}); got != 90 {
-		t.Fatalf("passRatePercent with skipped = %d, want 90", got)
+	if got := passRatePercent(&testStats{Passed: 8, Flaky: 1, Failed: 1, Skipped: 5, Total: 15}, teststatus.RuleLegacy); got != 60 {
+		t.Fatalf("legacy passRatePercent with skipped = %d, want 60", got)
 	}
-	if got := passRatePercent(&testStats{Skipped: 4, Total: 4}); got != -1 {
-		t.Fatalf("passRatePercent all skipped = %d, want -1", got)
+	if got := passRatePercent(&testStats{Skipped: 4, Total: 4}, teststatus.RuleLegacy); got != 0 {
+		t.Fatalf("legacy passRatePercent all skipped = %d, want 0", got)
+	}
+
+	if passRatePercent(&testStats{Passed: 9, Flaky: 1, Total: 10}, teststatus.RuleShared) != 100 {
+		t.Fatal("shared expected 100%")
+	}
+	if got := passRatePercent(&testStats{Passed: 8, Flaky: 1, Failed: 1, Skipped: 5, Total: 15}, teststatus.RuleShared); got != 90 {
+		t.Fatalf("shared passRatePercent with skipped = %d, want 90", got)
+	}
+	if got := passRatePercent(&testStats{Skipped: 4, Total: 4}, teststatus.RuleShared); got != -1 {
+		t.Fatalf("shared passRatePercent all skipped = %d, want -1", got)
 	}
 }
 
@@ -130,7 +142,7 @@ func TestToHomeStaticRun(t *testing.T) {
 		GHRunID:    "run-1",
 		TestStats:  &testStats{Total: 5, Passed: 4, Failed: 1},
 	}
-	row := toHomeStaticRun(e)
+	row := toHomeStaticRun(e, teststatus.RuleLegacy)
 	if row.RepositoryName != "repo-name" || !row.HasFailed {
 		t.Fatalf("row=%+v", row)
 	}

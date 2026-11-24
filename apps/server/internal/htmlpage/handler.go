@@ -12,6 +12,7 @@ import (
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // Handler serves HTML report pages.
@@ -22,6 +23,8 @@ type Handler struct {
 	Logger *slog.Logger
 	// Fallback serves run paths with no dispatch record (uploaded-only reports).
 	Fallback http.Handler
+	// StatusRule selects legacy vs shared read-time semantics ("" means legacy).
+	StatusRule teststatus.Rule
 }
 
 // ServeHome serves GET / and /reports.
@@ -62,7 +65,7 @@ func (h *Handler) ServeHome(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	page, err := BuildHomePage(r.Context(), h.Pool, h.Site, limit, offset, repository, branchFilter)
+	page, err := BuildHomePageWithRule(r.Context(), h.Pool, h.Site, limit, offset, repository, branchFilter, h.StatusRule)
 	if err != nil {
 		if h.Logger != nil {
 			h.Logger.Warn("htmlpage home build failed", slog.String("error", err.Error()))
@@ -126,7 +129,7 @@ func (h *Handler) ServeRepo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	page, err := BuildRepoPage(r.Context(), h.Pool, h.Site, repo, limit, offset, branchFilter)
+	page, err := BuildRepoPageWithRule(r.Context(), h.Pool, h.Site, repo, limit, offset, branchFilter, h.StatusRule)
 	if err != nil {
 		if h.Logger != nil {
 			h.Logger.Warn("htmlpage repo build failed", slog.String("error", err.Error()))
@@ -209,6 +212,7 @@ func (h *Handler) ServeRun(w http.ResponseWriter, r *http.Request) {
 		GHRunID:      strings.TrimSpace(r.URL.Query().Get("gh_run_id")),
 		GHRunAttempt: strings.TrimSpace(r.URL.Query().Get("gh_run_attempt")),
 		Page:         pageNum,
+		StatusRule:   h.StatusRule,
 	}
 	page, redirectQ, err := BuildRunPage(r.Context(), h.Pool, h.Orch, h.Site, repo, branch, sha, name, opts)
 	if err != nil {
@@ -270,7 +274,7 @@ func (h *Handler) ServeRunDispatchLiveFragment(w http.ResponseWriter, r *http.Re
 		http.Error(w, "missing identity", http.StatusBadRequest)
 		return
 	}
-	body, total, live, err := BuildRunDispatchLive(r.Context(), h.Orch, repo, commit, ghRunID, name, attempt, pageNum)
+	body, total, live, err := BuildRunDispatchLiveWithRule(r.Context(), h.Orch, repo, commit, ghRunID, name, attempt, pageNum, h.StatusRule)
 	if err != nil {
 		if h.Logger != nil {
 			h.Logger.Warn("htmlpage run live fragment failed", slog.String("error", err.Error()))

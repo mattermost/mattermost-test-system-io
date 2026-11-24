@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // HomePage is the home page view model.
@@ -27,8 +28,13 @@ type HomePage struct {
 	Title                string
 }
 
-// BuildHomePage builds the home page view model.
+// BuildHomePage builds the home page view model using legacy rules.
 func BuildHomePage(ctx context.Context, pool *pgxpool.Pool, site SiteInfo, limit, offset int, repository, branchFilter string) (HomePage, error) {
+	return BuildHomePageWithRule(ctx, pool, site, limit, offset, repository, branchFilter, teststatus.RuleLegacy)
+}
+
+// BuildHomePageWithRule builds the home page view model using rule.
+func BuildHomePageWithRule(ctx context.Context, pool *pgxpool.Pool, site SiteInfo, limit, offset int, repository, branchFilter string, rule teststatus.Rule) (HomePage, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -41,7 +47,7 @@ func BuildHomePage(ctx context.Context, pool *pgxpool.Pool, site SiteInfo, limit
 		return HomePage{}, err
 	}
 	branchFilter = reports.ResolveBranchFilter(branchFilter, branchOptions)
-	data, err := reports.LoadHomePageData(ctx, pool, limit, offset, repository, branchFilter)
+	data, err := reports.LoadHomePageDataWithRule(ctx, pool, limit, offset, repository, branchFilter, rule)
 	if err != nil {
 		return HomePage{}, err
 	}

@@ -28,7 +28,7 @@ import (
 )
 
 func TestStatusParity_GoSQLAPISSRAndUpload(t *testing.T) {
-	env := testenv.Start(t, testenv.WithStore(testenv.NewFakeStore()), testenv.WithReaperDisabled())
+	env := testenv.Start(t, testenv.WithStore(testenv.NewFakeStore()), testenv.WithReaperDisabled(), testenv.WithStatusRule(teststatus.RuleShared))
 	env.InsertPolicy(t, "allow-status-parity", 1, string(policy.RoleUploader), map[string]string{
 		"repository_owner": defaultRepoOwner,
 	})
@@ -397,13 +397,13 @@ func TestStatusParity_GoSQLAPISSRAndUpload(t *testing.T) {
 		t.Fatalf("reports/{id} orchestration.tests = %+v, want %+v", detail.Orchestration.Tests, detail.TestStats)
 	}
 
-	// Verify Home projection (LoadHomePageData) includes PassRate = 50 (skipped excluded).
+	// Verify Home projection (LoadHomePageDataWithRule shared) includes PassRate = 50 (skipped excluded).
 	var homeRow reports.HomeStaticRun
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		homeData, err := reports.LoadHomePageData(ctx, env.Pool, 20, 0, defaultRepository, "")
+		homeData, err := reports.LoadHomePageDataWithRule(ctx, env.Pool, 20, 0, defaultRepository, "", teststatus.RuleShared)
 		if err != nil {
-			t.Fatalf("LoadHomePageData: %v", err)
+			t.Fatalf("LoadHomePageDataWithRule: %v", err)
 		}
 		if len(homeData.Static) == 1 && homeData.Static[0].Total == wantTotal {
 			homeRow = homeData.Static[0]
@@ -429,6 +429,7 @@ func TestStatusParity_GoSQLAPISSRAndUpload(t *testing.T) {
 	page, redir, err := htmlpage.BuildRunPage(ctx, env.Pool, orchStore, htmlpage.SiteInfo{}, defaultRepository, branch, commitSHA, runName, htmlpage.RunPageOpts{
 		GHRunID:      ghRunID,
 		GHRunAttempt: runAttempt,
+		StatusRule:   teststatus.RuleShared,
 	})
 	if err != nil || len(redir) != 0 {
 		t.Fatalf("BuildRunPage = (%v, %v), want nil err/redir", err, redir)
@@ -446,7 +447,7 @@ func TestStatusParity_GoSQLAPISSRAndUpload(t *testing.T) {
 		t.Fatalf("SSR RunPage TestStatus=%q UnitFail=%d, want failed and 2", page.TestStatus, page.UnitFail)
 	}
 
-	h := &htmlpage.Handler{Pool: env.Pool, Orch: orchStore}
+	h := &htmlpage.Handler{Pool: env.Pool, Orch: orchStore, StatusRule: teststatus.RuleShared}
 	r := chi.NewRouter()
 	r.Get("/reports/{repo}/{branch}/{sha}/{name}", h.ServeRun)
 	rec := httptest.NewRecorder()

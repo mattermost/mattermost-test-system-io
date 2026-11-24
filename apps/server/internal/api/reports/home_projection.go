@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // HomeLiveRun is an in-progress home row.
@@ -73,8 +75,13 @@ const runKeySQL = `CASE WHEN COALESCE(run_group, '') = '' THEN id::text
 		regexp_replace(COALESCE(branch, ''), '^refs/(heads|tags)/', ''), COALESCE(commit_sha, ''), run_group)
 	END`
 
-// LoadHomePageData loads the home page from report_groups projections.
+// LoadHomePageData loads the home page from report_groups projections using legacy rules.
 func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int, repository, branchFilter string) (HomePageData, error) {
+	return LoadHomePageDataWithRule(ctx, pool, limit, offset, repository, branchFilter, teststatus.RuleLegacy)
+}
+
+// LoadHomePageDataWithRule loads the home page from report_groups projections using rule.
+func LoadHomePageDataWithRule(ctx context.Context, pool *pgxpool.Pool, limit, offset int, repository, branchFilter string, rule teststatus.Rule) (HomePageData, error) {
 	if pool == nil {
 		return HomePageData{}, errors.New("reports: nil pool")
 	}
@@ -157,7 +164,7 @@ func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int
 
 	static := make([]HomeStaticRun, 0, len(entries))
 	for _, e := range entries {
-		static = append(static, toHomeStaticRun(e))
+		static = append(static, toHomeStaticRun(e, rule))
 	}
 
 	return HomePageData{
@@ -289,7 +296,7 @@ func homeOrchView(orch *orchestrationSummary) *HomeOrchView {
 	return v
 }
 
-func toHomeStaticRun(e runEntry) HomeStaticRun {
+func toHomeStaticRun(e runEntry, rule teststatus.Rule) HomeStaticRun {
 	stats := homeDisplayStats(e.TestStats, e.Orchestration)
 	v := HomeStaticRun{
 		GroupID:        e.ReportID,
@@ -317,7 +324,7 @@ func toHomeStaticRun(e runEntry) HomeStaticRun {
 		v.Total = stats.Total
 		v.WallClockMs = stats.WallClockMs
 		v.RetestWallMs = stats.RetestWallClockMs
-		if rate := passRatePercent(stats); rate >= 0 {
+		if rate := passRatePercent(stats, rule); rate >= 0 {
 			v.PassRate = &rate
 		}
 	}

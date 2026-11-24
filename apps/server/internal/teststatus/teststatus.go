@@ -6,6 +6,36 @@
 // package can import it without introducing dependency cycles.
 package teststatus
 
+import "fmt"
+
+// Rule selects which read-time test status and pass-rate semantics are applied.
+type Rule string
+
+const (
+	// RuleLegacy preserves the pre-SEC-11512 read-time behavior.
+	RuleLegacy Rule = "legacy"
+	// RuleShared applies the unified SEC-11512 status and pass-rate rules.
+	RuleShared Rule = "shared"
+)
+
+// ParseRule parses a TSIO_STATUS_RULE value, rejecting unknown values.
+func ParseRule(raw string) (Rule, error) {
+	switch Rule(raw) {
+	case RuleLegacy, RuleShared:
+		return Rule(raw), nil
+	default:
+		return "", fmt.Errorf("invalid status rule %q (want legacy|shared)", raw)
+	}
+}
+
+// NormalizeRule resolves an unset or empty Rule to RuleLegacy.
+func NormalizeRule(r Rule) Rule {
+	if r == RuleShared {
+		return RuleShared
+	}
+	return RuleLegacy
+}
+
 // Canonical attempt and verdict status strings.
 const (
 	Passed      = "passed"

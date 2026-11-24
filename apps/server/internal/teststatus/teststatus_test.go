@@ -121,3 +121,28 @@ func TestPassRate(t *testing.T) {
 		t.Fatalf("PassRate(3,1,0) = (%v, %v), want (75, true)", rate, ok)
 	}
 }
+
+func TestParseAndNormalizeRule(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"legacy", "shared"} {
+		r, err := ParseRule(raw)
+		if err != nil {
+			t.Fatalf("ParseRule(%q): %v", raw, err)
+		}
+		if string(r) != raw {
+			t.Fatalf("ParseRule(%q) = %q", raw, r)
+		}
+	}
+	for _, bad := range []string{"", "LEGACY", "canonical", "bogus"} {
+		if _, err := ParseRule(bad); err == nil {
+			t.Fatalf("ParseRule(%q) succeeded, want error", bad)
+		}
+	}
+	if NormalizeRule("") != RuleLegacy || NormalizeRule(RuleLegacy) != RuleLegacy || NormalizeRule("unknown") != RuleLegacy {
+		t.Fatal("expected unset/legacy/unknown rule to normalize to RuleLegacy")
+	}
+	if NormalizeRule(RuleShared) != RuleShared {
+		t.Fatal("expected RuleShared to stay RuleShared")
+	}
+}

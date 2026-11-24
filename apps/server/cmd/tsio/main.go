@@ -28,6 +28,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/server"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/telemetry"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // Build-time variables, set via -ldflags.
@@ -107,6 +108,8 @@ func run() error {
 		})
 	}
 
+	statusRule := teststatus.NormalizeRule(teststatus.Rule(cfg.StatusRule))
+
 	hub := events.NewHub()
 	publisher := &events.Publisher{Hub: hub}
 
@@ -122,7 +125,7 @@ func run() error {
 			if err != nil || groupID == uuid.Nil {
 				return
 			}
-			reports.RefreshGroupSummaryBestEffort(ctx, pool, logger, groupID)
+			reports.RefreshGroupSummaryBestEffortWithRule(ctx, pool, logger, groupID, statusRule)
 		},
 	}
 	if err := reaper.Start(ctx); err != nil {
@@ -136,7 +139,7 @@ func run() error {
 		Pool:      pool,
 		Publisher: publisher,
 		Logger:    logger,
-		Results:   &reports.Handlers{Pool: pool, Store: store, Publisher: publisher, Logger: logger},
+		Results:   &reports.Handlers{Pool: pool, Store: store, Publisher: publisher, Logger: logger, StatusRule: statusRule},
 	}
 	if err := reportsReaper.Start(ctx); err != nil {
 		logger.Error("reports reaper start", slog.String("error", err.Error()))
@@ -162,6 +165,7 @@ func run() error {
 		BuildTime:              buildTime,
 		AdminKey:               cfg.AdminKey,
 		AuthzMode:              authapi.AuthzMode(cfg.AuthzMode),
+		StatusRule:             statusRule,
 		UploadTimeoutMs:        cfg.UploadTimeoutMs,
 		HTMLViewEnabled:        cfg.HTMLViewEnabled,
 		SearchMinLength:        cfg.SearchMinLength,

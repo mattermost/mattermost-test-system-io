@@ -33,7 +33,7 @@ func (h *Handlers) refreshReportGroupProjection(ctx context.Context, identity or
 		}
 		return
 	}
-	reports.RefreshGroupSummaryBestEffort(ctx, h.Pool, h.Logger, groupID)
+	reports.RefreshGroupSummaryBestEffortWithRule(ctx, h.Pool, h.Logger, groupID, h.StatusRule)
 }
 
 func (h *Handlers) refreshReportGroupProjectionByID(ctx context.Context, groupID uuid.UUID) {
@@ -42,5 +42,5 @@ func (h *Handlers) refreshReportGroupProjectionByID(ctx context.Context, groupID
 	}
 	ctx, cancel := detachedCtx(ctx)
 	defer cancel()
-	reports.RefreshGroupSummaryBestEffort(ctx, h.Pool, h.Logger, groupID)
+	reports.RefreshGroupSummaryBestEffortWithRule(ctx, h.Pool, h.Logger, groupID, h.StatusRule)
 }

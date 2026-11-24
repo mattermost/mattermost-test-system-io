@@ -9,6 +9,7 @@ func TestValidate_defaults(t *testing.T) {
 	c := Config{
 		LogFormat:        "json",
 		AuthzMode:        "log-only",
+		StatusRule:       "legacy",
 		MaxUploadBytes:   1024,
 		MaxArtifactBytes: 512,
 	}
@@ -18,28 +19,43 @@ func TestValidate_defaults(t *testing.T) {
 }
 
 func TestValidate_rejectsBadAuthzMode(t *testing.T) {
-	c := Config{LogFormat: "json", AuthzMode: "strict", MaxUploadBytes: 1, MaxArtifactBytes: 1}
+	c := Config{LogFormat: "json", AuthzMode: "strict", StatusRule: "legacy", MaxUploadBytes: 1, MaxArtifactBytes: 1}
 	if err := c.validate(); err == nil {
 		t.Fatal("expected error for bad authz mode")
 	}
 }
 
+func TestValidate_statusRule(t *testing.T) {
+	for _, rule := range []string{"legacy", "shared"} {
+		c := Config{LogFormat: "json", AuthzMode: "log-only", StatusRule: rule, MaxUploadBytes: 1, MaxArtifactBytes: 1}
+		if err := c.validate(); err != nil {
+			t.Fatalf("validate(%q): %v", rule, err)
+		}
+	}
+	for _, bad := range []string{"", "canonical", "SHARED"} {
+		c := Config{LogFormat: "json", AuthzMode: "log-only", StatusRule: bad, MaxUploadBytes: 1, MaxArtifactBytes: 1}
+		if err := c.validate(); err == nil {
+			t.Fatalf("expected error for bad status rule %q", bad)
+		}
+	}
+}
+
 func TestValidate_rejectsBadLogFormat(t *testing.T) {
-	c := Config{LogFormat: "xml", AuthzMode: "log-only", MaxUploadBytes: 1, MaxArtifactBytes: 1}
+	c := Config{LogFormat: "xml", AuthzMode: "log-only", StatusRule: "legacy", MaxUploadBytes: 1, MaxArtifactBytes: 1}
 	if err := c.validate(); err == nil {
 		t.Fatal("expected error for bad log format")
 	}
 }
 
 func TestValidate_rejectsZeroMaxUpload(t *testing.T) {
-	c := Config{LogFormat: "json", AuthzMode: "log-only", MaxUploadBytes: 0, MaxArtifactBytes: 1}
+	c := Config{LogFormat: "json", AuthzMode: "log-only", StatusRule: "legacy", MaxUploadBytes: 0, MaxArtifactBytes: 1}
 	if err := c.validate(); err == nil {
 		t.Fatal("expected error for zero MaxUploadBytes")
 	}
 }
 
 func TestValidate_rejectsNegativeMaxArtifact(t *testing.T) {
-	c := Config{LogFormat: "json", AuthzMode: "log-only", MaxUploadBytes: 1, MaxArtifactBytes: -1}
+	c := Config{LogFormat: "json", AuthzMode: "log-only", StatusRule: "legacy", MaxUploadBytes: 1, MaxArtifactBytes: -1}
 	if err := c.validate(); err == nil {
 		t.Fatal("expected error for negative MaxArtifactBytes")
 	}
@@ -79,6 +95,29 @@ func TestLoad_readsEnv(t *testing.T) {
 	}
 	if !cfg.DBAutoMigrate {
 		t.Error("DBAutoMigrate should default to true")
+	}
+	if cfg.StatusRule != "legacy" {
+		t.Errorf("StatusRule default = %q, want legacy", cfg.StatusRule)
+	}
+}
+
+func TestLoad_statusRule(t *testing.T) {
+	t.Setenv("TSIO_DATABASE_URL", "postgres://user:pass@localhost/db?sslmode=disable")
+	t.Setenv("TSIO_S3_BUCKET", "reports")
+	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
+	t.Setenv("TSIO_STATUS_RULE", "shared")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load(shared): %v", err)
+	}
+	if cfg.StatusRule != "shared" {
+		t.Fatalf("StatusRule = %q, want shared", cfg.StatusRule)
+	}
+
+	t.Setenv("TSIO_STATUS_RULE", "invalid")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load() to fail fast on invalid TSIO_STATUS_RULE")
 	}
 }
 

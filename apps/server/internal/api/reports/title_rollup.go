@@ -24,17 +24,54 @@ func isRetestShardLabel(shardLabel string) bool {
 	return retestLabelRE.MatchString(strings.TrimSpace(shardLabel))
 }
 
-func statusIsPass(s string) bool {
-	return teststatus.IsPass(s)
+func statusIsPass(s string, rule teststatus.Rule) bool {
+	if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
+		return teststatus.IsPass(s)
+	}
+	return s == teststatus.Passed || s == teststatus.Flaky
 }
 
-func statusIsFail(s string) bool {
-	return teststatus.IsFail(s)
+func statusIsFail(s string, rule teststatus.Rule) bool {
+	if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
+		return teststatus.IsFail(s)
+	}
+	return s == teststatus.Failed || s == teststatus.TimedOut
 }
 
 // rollupAttemptStatuses collapses attempts that share a report (in-shard retries).
-func rollupAttemptStatuses(statuses []string) string {
-	return teststatus.TestVerdict(statuses, false)
+func rollupAttemptStatuses(statuses []string, rule teststatus.Rule) string {
+	if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
+		return teststatus.TestVerdict(statuses, false)
+	}
+	var hasPass, hasFail, hasSkip bool
+	for _, s := range statuses {
+		switch {
+		case statusIsPass(s, rule):
+			hasPass = true
+		case statusIsFail(s, rule):
+			hasFail = true
+		case s == teststatus.Skipped:
+			hasSkip = true
+		}
+	}
+	if hasPass && hasFail {
+		return teststatus.Flaky
+	}
+	if hasFail {
+		return teststatus.Failed
+	}
+	if hasPass {
+		for _, s := range statuses {
+			if s == teststatus.Flaky {
+				return teststatus.Flaky
+			}
+		}
+		return teststatus.Passed
+	}
+	if hasSkip {
+		return teststatus.Skipped
+	}
+	return teststatus.Passed
 }
 
 // specAttempt is one stored attempt of a spec in a suite, in ordinal order.
@@ -51,17 +88,22 @@ type specAttempt struct {
 // (retry counts rising up to it) counts: another Playwright project, or a
 // retest upload, starts again at retry 0, and its pass is not this failure's
 // retry.
-func suiteSpecOK(attempts []specAttempt) bool {
+func suiteSpecOK(attempts []specAttempt, rule teststatus.Rule) bool {
 	if len(attempts) == 0 {
 		return false
 	}
 	final := attempts[len(attempts)-1]
-	if teststatus.IsPass(final.Status) || teststatus.IsSkip(final.Status) {
+	shared := teststatus.NormalizeRule(rule) == teststatus.RuleShared
+	if shared {
+		if teststatus.IsPass(final.Status) || teststatus.IsSkip(final.Status) {
+			return true
+		}
+		// Interrupted / timedOut / unknown retries are not treated as test.fail() flaky.
+		if final.Status != teststatus.Failed {
+			return false
+		}
+	} else if statusIsPass(final.Status, rule) || final.Status == teststatus.Skipped {
 		return true
-	}
-	// Interrupted / timedOut / unknown retries are not treated as test.fail() flaky.
-	if final.Status != teststatus.Failed {
-		return false
 	}
 	start := len(attempts) - 1
 	for start > 0 && attempts[start-1].Retry < attempts[start].Retry {
@@ -71,7 +113,7 @@ func suiteSpecOK(attempts []specAttempt) bool {
 	for _, a := range attempts[start:] {
 		chain = append(chain, a.Status)
 	}
-	return rollupAttemptStatuses(chain) == teststatus.Flaky
+	return rollupAttemptStatuses(chain, rule) == teststatus.Flaky
 }
 
 // rollupTitleStatus is the consolidated verdict for one unique test title.
@@ -83,10 +125,11 @@ func suiteSpecOK(attempts []specAttempt) bool {
 //  3. A primary failure recovered by a retest shard is flaky (web
 //     Playwright/Cypress retest survivors, including Cypress's generic
 //     "run-failed-tests" job name).
-func rollupTitleStatus(cases []titleCase) string {
+func rollupTitleStatus(cases []titleCase, rule teststatus.Rule) string {
 	if len(cases) == 0 {
 		return teststatus.Passed
 	}
+	shared := teststatus.NormalizeRule(rule) == teststatus.RuleShared
 
 	byReport := map[uuid.UUID][]string{}
 	labelByReport := map[uuid.UUID]string{}
@@ -104,12 +147,12 @@ func rollupTitleStatus(cases []titleCase) string {
 	primaryCount := 0
 
 	for _, id := range order {
-		out := rollupAttemptStatuses(byReport[id])
+		out := rollupAttemptStatuses(byReport[id], rule)
 		if isRetestShardLabel(labelByReport[id]) {
 			switch {
-			case statusIsPass(out):
+			case statusIsPass(out, rule):
 				retestPass = true
-			case statusIsFail(out):
+			case statusIsFail(out, rule):
 				retestFail = true
 			}
 			continue
@@ -122,8 +165,12 @@ func rollupTitleStatus(cases []titleCase) string {
 			primaryPass = true
 		case teststatus.Skipped:
 			primarySkip = true
-		default:
+		case teststatus.Failed, teststatus.TimedOut:
 			primaryFail = true
+		default:
+			if shared {
+				primaryFail = true
+			}
 		}
 	}
 

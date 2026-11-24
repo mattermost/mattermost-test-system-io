@@ -17,7 +17,7 @@ func TestRollupTitleStatus(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
 			{ReportID: android, ShardLabel: "detox-android", Status: teststatus.Passed},
 			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Failed},
-		})
+		}, teststatus.RuleShared)
 		if got != teststatus.Failed {
 			t.Fatalf("got %q, want failed", got)
 		}
@@ -27,7 +27,7 @@ func TestRollupTitleStatus(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
 			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Failed},
 			{ReportID: retest, ShardLabel: "detox-ios-retest", Status: teststatus.Passed},
-		})
+		}, teststatus.RuleShared)
 		if got != teststatus.Flaky {
 			t.Fatalf("got %q, want flaky", got)
 		}
@@ -37,7 +37,7 @@ func TestRollupTitleStatus(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
 			{ReportID: ios, ShardLabel: "cypress-shard-A", Status: teststatus.Failed},
 			{ReportID: retest, ShardLabel: "run-failed-tests", Status: teststatus.Passed},
-		})
+		}, teststatus.RuleShared)
 		if got != teststatus.Flaky {
 			t.Fatalf("got %q, want flaky", got)
 		}
@@ -47,7 +47,7 @@ func TestRollupTitleStatus(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
 			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Failed},
 			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Passed},
-		})
+		}, teststatus.RuleShared)
 		if got != teststatus.Flaky {
 			t.Fatalf("got %q, want flaky", got)
 		}
@@ -57,7 +57,7 @@ func TestRollupTitleStatus(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
 			{ReportID: android, ShardLabel: "detox-android", Status: teststatus.Passed},
 			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Passed},
-		})
+		}, teststatus.RuleShared)
 		if got != teststatus.Passed {
 			t.Fatalf("got %q, want passed", got)
 		}
@@ -67,7 +67,7 @@ func TestRollupTitleStatus(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
 			{ReportID: android, ShardLabel: "", Status: teststatus.Passed},
 			{ReportID: ios, ShardLabel: "", Status: teststatus.Failed},
-		})
+		}, teststatus.RuleShared)
 		if got != teststatus.Failed {
 			t.Fatalf("got %q, want failed", got)
 		}
@@ -76,16 +76,19 @@ func TestRollupTitleStatus(t *testing.T) {
 	t.Run("single primary failure stays failed", func(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
 			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Failed},
-		})
+		}, teststatus.RuleShared)
 		if got != teststatus.Failed {
 			t.Fatalf("got %q, want failed", got)
 		}
 	})
 
-	t.Run("interrupted and unknown single attempts fail", func(t *testing.T) {
+	t.Run("interrupted and unknown single attempts fail under shared and pass under legacy", func(t *testing.T) {
 		for _, s := range []string{teststatus.Interrupted, "unknown"} {
-			if got := rollupTitleStatus([]titleCase{{ReportID: ios, ShardLabel: "pw", Status: s}}); got != teststatus.Failed {
-				t.Fatalf("status %q: got %q, want failed", s, got)
+			if got := rollupTitleStatus([]titleCase{{ReportID: ios, ShardLabel: "pw", Status: s}}, teststatus.RuleShared); got != teststatus.Failed {
+				t.Fatalf("shared status %q: got %q, want failed", s, got)
+			}
+			if got := rollupTitleStatus([]titleCase{{ReportID: ios, ShardLabel: "pw", Status: s}}, teststatus.RuleLegacy); got != teststatus.Passed {
+				t.Fatalf("legacy status %q: got %q, want passed", s, got)
 			}
 		}
 	})
@@ -118,9 +121,15 @@ func TestSuiteSpecOK(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := suiteSpecOK(tt.attempts); got != tt.want {
-				t.Fatalf("suiteSpecOK(%v) = %v, want %v", tt.attempts, got, tt.want)
+			if got := suiteSpecOK(tt.attempts, teststatus.RuleShared); got != tt.want {
+				t.Fatalf("suiteSpecOK(%v, shared) = %v, want %v", tt.attempts, got, tt.want)
 			}
 		})
+	}
+	if !suiteSpecOK([]specAttempt{try(teststatus.Passed, 0), try(teststatus.TimedOut, 1)}, teststatus.RuleLegacy) {
+		t.Fatal("legacy suiteSpecOK treated timedOut retry after pass as flaky")
+	}
+	if suiteSpecOK([]specAttempt{try(teststatus.Passed, 0), try(teststatus.TimedOut, 1)}, teststatus.RuleShared) {
+		t.Fatal("shared suiteSpecOK must reject timedOut retry after pass")
 	}
 }

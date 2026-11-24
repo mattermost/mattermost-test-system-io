@@ -11,6 +11,8 @@ import (
 
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // Config is the fully-resolved runtime configuration.
@@ -69,6 +71,9 @@ type Config struct {
 
 	// Route-role and token-repository checks: off | log-only | enforce.
 	AuthzMode string `env:"TSIO_AUTHZ_MODE" envDefault:"log-only"`
+
+	// Read-time test status and pass-rate rule: legacy | shared.
+	StatusRule string `env:"TSIO_STATUS_RULE" envDefault:"legacy"`
 
 	// Path the OpenAPI request validator loads at startup. Relative paths are
 	// resolved against the process cwd. Production images set this to an
@@ -188,6 +193,9 @@ func (c Config) validate() error {
 	case "off", "log-only", "enforce":
 	default:
 		return fmt.Errorf("invalid TSIO_AUTHZ_MODE %q (want off|log-only|enforce)", c.AuthzMode)
+	}
+	if _, err := teststatus.ParseRule(c.StatusRule); err != nil {
+		return fmt.Errorf("invalid TSIO_STATUS_RULE %q (want legacy|shared)", c.StatusRule)
 	}
 	if c.MaxUploadBytes <= 0 {
 		return errors.New("TSIO_MAX_UPLOAD_BYTES must be > 0")

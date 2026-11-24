@@ -477,7 +477,7 @@ func (h *Handlers) computeGrouped(ctx context.Context, limit, offset int, repoFi
 	}
 	defer rows.Close()
 
-	orchLookup := newOrchestrationLookup()
+	orchLookup := newOrchestrationLookup(h.StatusRule)
 	byRepo := map[string]*repoGroup{}
 	order := []string{}
 	for rows.Next() {
@@ -567,7 +567,7 @@ func (h *Handlers) Individual(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	orchLookup := newOrchestrationLookup()
+	orchLookup := newOrchestrationLookup(h.StatusRule)
 	out := make([]individualReportSummary, 0)
 	for rows.Next() {
 		var e reportEntryDTO
@@ -870,10 +870,10 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 				Status:     c.Status,
 			})
 		}
-		rollupStatus := rollupTitleStatus(titleCases)
-		if statusIsFail(rollupStatus) {
+		rollupStatus := rollupTitleStatus(titleCases, h.StatusRule)
+		if statusIsFail(rollupStatus, h.StatusRule) {
 			for _, c := range cases {
-				if statusIsFail(c.Status) {
+				if statusIsFail(c.Status, h.StatusRule) {
 					winner = c
 					winAttempt = atoiDefault(c.RunAttempt, 1)
 					break
@@ -909,12 +909,18 @@ func (h *Handlers) Consolidated(w http.ResponseWriter, r *http.Request) {
 		switch rollupStatus {
 		case teststatus.Passed:
 			passed++
+		case teststatus.Failed, teststatus.TimedOut:
+			failed++
 		case teststatus.Skipped:
 			skipped++
 		case teststatus.Flaky:
 			flaky++
 		default:
-			failed++
+			if teststatus.NormalizeRule(h.StatusRule) == teststatus.RuleShared {
+				failed++
+			} else {
+				passed++
+			}
 		}
 	}
 	overall := teststatus.Passed
@@ -1089,7 +1095,7 @@ func (h *Handlers) SuiteSpecs(w http.ResponseWriter, r *http.Request) {
 		for _, c := range cases {
 			attempts = append(attempts, specAttempt{Status: c.Status, Retry: c.Retry})
 		}
-		ok := suiteSpecOK(attempts)
+		ok := suiteSpecOK(attempts, h.StatusRule)
 
 		results := make([]map[string]any, 0, len(cases))
 		aggScreens := []map[string]any{}
@@ -1291,6 +1297,7 @@ type orchestrationKey struct {
 func aggregateOrchestrationSummary(
 	ctx context.Context, pool *pgxpool.Pool,
 	repository, commitSHA, ghRunID, name, ghRunAttempt string,
+	rule teststatus.Rule,
 ) (*orchestrationSummary, error) {
 	var (
 		runID     uuid.UUID
@@ -1327,7 +1334,7 @@ func aggregateOrchestrationSummary(
 	if err != nil {
 		return nil, err
 	}
-	tests, err := aggregateOrchestrationTestCounts(ctx, pool, runID)
+	tests, err := aggregateOrchestrationTestCounts(ctx, pool, runID, rule)
 	if err != nil {
 		return nil, err
 	}
@@ -1433,15 +1440,36 @@ func latestNonNilTime(a, b *time.Time) *time.Time {
 
 // aggregateOrchestrationTestCounts walks every reported test_case across
 // all attempts of every dispatch_unit on the run and rolls them up to
-// per-test-case statuses, applying the same any-passed-AND-any-failed →
-// flaky rule the OrchestrationTab uses on the client. Returns nil when
-// no attempts have yet reported test_cases (a fresh run with all units
+// per-test-case statuses, applying the configured read-time rule. Returns nil
+// when no attempts have yet reported test_cases (a fresh run with all units
 // pending), which the listing rows render as "no test stats available".
 func aggregateOrchestrationTestCounts(
-	ctx context.Context, pool *pgxpool.Pool, runID uuid.UUID,
+	ctx context.Context, pool *pgxpool.Pool, runID uuid.UUID, rule teststatus.Rule,
 ) (*orchestrationTestCounts, error) {
-	var t orchestrationTestCounts
-	err := pool.QueryRow(ctx, `
+	query := `
+		WITH per_test AS (
+			SELECT
+				a.dispatch_unit_id,
+				tc->>'full_title' AS full_title,
+				BOOL_OR(tc->>'status' IN ('passed', 'flaky')) AS ever_passed,
+				BOOL_OR(tc->>'status' IN ('failed', 'timedOut', 'interrupted')) AS ever_failed,
+				BOOL_OR(tc->>'status' = 'skipped') AS ever_skipped
+			  FROM attempts a
+			 CROSS JOIN LATERAL jsonb_array_elements(a.test_cases) AS tc
+			 WHERE a.run_id = $1
+			   AND a.test_cases IS NOT NULL
+			 GROUP BY a.dispatch_unit_id, tc->>'full_title'
+		)
+		SELECT
+			COUNT(*) FILTER (WHERE ever_passed AND NOT ever_failed) AS passed,
+			COUNT(*) FILTER (WHERE ever_failed AND NOT ever_passed) AS failed,
+			COUNT(*) FILTER (WHERE ever_passed AND ever_failed) AS flaky,
+			COUNT(*) FILTER (WHERE ever_skipped AND NOT ever_passed AND NOT ever_failed) AS skipped,
+			COUNT(*) AS total
+		  FROM per_test
+	`
+	if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
+		query = `
 		WITH per_test AS (
 			SELECT
 				a.dispatch_unit_id,
@@ -1463,7 +1491,10 @@ func aggregateOrchestrationTestCounts(
 			COUNT(*) FILTER (WHERE verdict = 'skipped') AS skipped,
 			COUNT(*) FILTER (WHERE verdict IS NOT NULL) AS total
 		  FROM per_test
-	`, runID).Scan(&t.Passed, &t.Failed, &t.Flaky, &t.Skipped, &t.Total)
+	`
+	}
+	var t orchestrationTestCounts
+	err := pool.QueryRow(ctx, query, runID).Scan(&t.Passed, &t.Failed, &t.Flaky, &t.Skipped, &t.Total)
 	if err != nil {
 		return nil, err
 	}
@@ -1477,11 +1508,15 @@ func aggregateOrchestrationTestCounts(
 // so a single Grouped or Individual response that visits the same composite
 // identity twice (rare but defensible) issues exactly one DB read per tuple.
 type orchestrationLookup struct {
+	rule  teststatus.Rule
 	cache map[orchestrationKey]*orchestrationSummary
 }
 
-func newOrchestrationLookup() *orchestrationLookup {
-	return &orchestrationLookup{cache: map[orchestrationKey]*orchestrationSummary{}}
+func newOrchestrationLookup(rule teststatus.Rule) *orchestrationLookup {
+	return &orchestrationLookup{
+		rule:  teststatus.NormalizeRule(rule),
+		cache: map[orchestrationKey]*orchestrationSummary{},
+	}
 }
 
 // getForGroup pulls the orchestration summary for a report_group's identity
@@ -1501,7 +1536,7 @@ func (o *orchestrationLookup) getForGroup(
 		return v, nil
 	}
 	v, err := aggregateOrchestrationSummary(ctx, pool,
-		key.repository, key.commitSHA, key.ghRunID, key.name, key.ghRunAttempt)
+		key.repository, key.commitSHA, key.ghRunID, key.name, key.ghRunAttempt, o.rule)
 	if err != nil {
 		return nil, err
 	}

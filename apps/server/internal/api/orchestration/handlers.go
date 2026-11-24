@@ -929,7 +929,7 @@ func aggregateTestCounts(ctx context.Context, pool *pgxpool.Pool, runID uuid.UUI
 // identity once they've picked a run.
 func (h *Handlers) ListRuns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	repository := strings.TrimSpace(q.Get("repository"))
+	repository := authapi.NormalizeRepository(q.Get("repository"))
 	commitSHA := strings.TrimSpace(q.Get("commit_sha"))
 	name := strings.TrimSpace(q.Get("name"))
 	if repository == "" || commitSHA == "" || name == "" {
@@ -1098,7 +1098,7 @@ func identityFromFields(f identityFields) (orchestration.CompositeIdentity, erro
 		attempt = "1"
 	}
 	identity := orchestration.CompositeIdentity{
-		Repository:   strings.TrimSpace(f.Repository),
+		Repository:   authapi.NormalizeRepository(f.Repository),
 		CommitSHA:    strings.TrimSpace(f.CommitSHA),
 		GHRunID:      strings.TrimSpace(f.GHRunID),
 		Name:         strings.TrimSpace(f.Name),

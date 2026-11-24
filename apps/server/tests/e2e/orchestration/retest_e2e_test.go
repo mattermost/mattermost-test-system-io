@@ -4,8 +4,11 @@
 package orchestratione2e
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -333,14 +336,16 @@ func TestRetestLeaseExpiryRestoresCompletedFailAndAllowsSecondWorkerRetest(t *te
 	}
 	beginResp := postJSON(t, env, tok, "/api/v1/orchestration/begin",
 		beginRunBody(units, map[string]any{
+			"repository":       defaultRepository + ".git",
 			"retest_on_fail":   true,
 			"retest_budget":    1,
-			"lease_timeout_ms": 1000,
+			"lease_timeout_ms": 15_000,
 			"idle_timeout_ms":  60_000,
 		}))
 	expectStatus(t, beginResp, http.StatusCreated)
 
-	// Worker A checks out fresh unit 0 and reports failed (fail_count=1 <= budget=1).
+	// Worker A checks out fresh unit 0 (using bare defaultRepository without .git)
+	// and reports failed (fail_count=1 <= budget=1).
 	checkA := postJSON(t, env, tok, "/api/v1/orchestration/checkout",
 		checkoutBody("playwright-shard-A", "job-retest-exp-A", 1))
 	expectStatus(t, checkA, http.StatusOK)
@@ -348,12 +353,22 @@ func TestRetestLeaseExpiryRestoresCompletedFailAndAllowsSecondWorkerRetest(t *te
 		completeBody("playwright-shard-A", "job-retest-exp-A", failResults(units)))
 	expectStatus(t, completeA, http.StatusOK)
 
-	// Worker B checks out the retest unit (is_retest=true), then stalls past lease_timeout_ms.
+	// Worker B checks out the retest unit (is_retest=true), then its lease expires.
 	checkB := postJSON(t, env, tok, "/api/v1/orchestration/checkout",
 		checkoutBody("playwright-shard-B", "job-retest-exp-B", 1))
 	bodyB := expectStatus(t, checkB, http.StatusOK)
 	if !bodyB["is_retest"].(bool) {
 		t.Fatalf("worker B checkout: is_retest=false, want true")
+	}
+
+	// Explicitly backdate Worker B's retest lease deadline so Workers A and C
+	// never race a 1s timeout under heavy CI load.
+	if _, err := env.Pool.Exec(context.Background(), `
+		UPDATE leases
+		   SET deadline = now() - interval '10 seconds'
+		 WHERE gh_job_id = 'job-retest-exp-B' AND released_at IS NULL
+	`); err != nil {
+		t.Fatalf("backdate worker B retest lease deadline: %v", err)
 	}
 
 	// Wait for the reaper to expire Worker B's retest lease and restore completed_fail + retest_eligible.
@@ -389,14 +404,75 @@ func TestRetestLeaseExpiryRestoresCompletedFailAndAllowsSecondWorkerRetest(t *te
 	}
 }
 
+func postJSONRaw(serverURL, token, path string, body any) (int, string, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return 0, "", err
+	}
+	req, err := http.NewRequest(http.MethodPost, serverURL+path, bytes.NewReader(raw))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b), nil
+}
+
 // TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock stresses concurrent
 // run timeout (reaper markRunTimedOut) and worker completion (RecordCompletion)
 // on the same run to verify lock ordering (leases -> dispatch_units -> orchestration_runs)
-// produces zero 40P01 deadlocks.
+// produces zero 40P01 deadlocks and that fresh completions prevent stale idle timeouts.
 func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 	env, tok := startEnv(t)
 	ctx := context.Background()
 
+	// 1. Verify idle-deadline recheck under lock: if a run was idle when scanned
+	// by the reaper, but a worker completion lands and refreshes last_activity_at
+	// before markRunTimedOut locks orchestration_runs, the run must remain in_progress.
+	{
+		const idleRecheckRun = "ci-run-idle-recheck"
+		idMap := identity(map[string]any{"gh_run_id": idleRecheckRun})
+		units := []string{"tests/ir-0.spec.ts", "tests/ir-1.spec.ts"}
+		beginBody := merge(beginRunBody(units, map[string]any{
+			"lease_timeout_ms": 60_000,
+			"idle_timeout_ms":  60_000,
+		}), idMap)
+		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/begin", beginBody), http.StatusCreated)
+		for w := range len(units) {
+			chk := merge(checkoutBody(fmt.Sprintf("ir-w-%d", w), fmt.Sprintf("job-ir-%d", w), 1), idMap)
+			expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout", chk), http.StatusOK)
+		}
+		// Backdate last_activity_at so it would have been idle, then immediately
+		// complete worker 0 (which refreshes last_activity_at = now() with idle_timeout_ms = 60_000).
+		if _, err := env.Pool.Exec(ctx, `
+			UPDATE orchestration_runs
+			   SET last_activity_at = now() - interval '10 minutes'
+			 WHERE gh_run_id = $1
+		`, idleRecheckRun); err != nil {
+			t.Fatalf("backdate idleRecheckRun: %v", err)
+		}
+		cmp0 := merge(completeBody("ir-w-0", "job-ir-0", passResults([]string{units[0]})), idMap)
+		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete", cmp0), http.StatusOK)
+
+		// Wait past a reaper tick (500ms); run must stay in_progress, NOT timed_out.
+		time.Sleep(700 * time.Millisecond)
+		midBody := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)
+		if midBody["status"] != "in_progress" {
+			t.Fatalf("run status after activity refresh = %v, want in_progress", midBody["status"])
+		}
+		cmp1 := merge(completeBody("ir-w-1", "job-ir-1", passResults([]string{units[1]})), idMap)
+		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete", cmp1), http.StatusOK)
+	}
+
+	// 2. Concurrent race between reaper timeout and worker completions across 10 runs.
 	for iter := range 10 {
 		runIDStr := fmt.Sprintf("ci-run-deadlock-%d", iter)
 		idMap := identity(map[string]any{"gh_run_id": runIDStr})
@@ -413,8 +489,8 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 			expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout", chk), http.StatusOK)
 		}
 
-		// Force the run's last_activity_at into the past so the reaper's markTimedOutRuns picks it up
-		// concurrently with workers calling /complete.
+		// Force the run's last_activity_at into the past so the reaper's markTimedOutRuns
+		// picks it up concurrently with workers released from startCh calling /complete.
 		if _, err := env.Pool.Exec(ctx, `
 			UPDATE orchestration_runs
 			   SET last_activity_at = now() - interval '10 minutes',
@@ -424,30 +500,45 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 			t.Fatalf("backdate last_activity_at: %v", err)
 		}
 
+		startCh := make(chan struct{})
 		var wg sync.WaitGroup
 		errCh := make(chan string, len(units))
 		for w := range len(units) {
 			wg.Add(1)
 			go func(w int) {
 				defer wg.Done()
+				<-startCh
 				cmp := merge(completeBody(
 					fmt.Sprintf("worker-%d", w),
 					fmt.Sprintf("job-dl-%d-%d", iter, w),
 					passResults([]string{units[w]}),
 				), idMap)
-				resp := postJSON(t, env, tok, "/api/v1/orchestration/complete", cmp)
-				if resp.StatusCode != http.StatusOK {
-					body := readBodyString(resp)
-					if strings.Contains(body, "40P01") || resp.StatusCode >= 500 {
-						errCh <- fmt.Sprintf("iter=%d worker=%d status=%d body=%s", iter, w, resp.StatusCode, body)
-					}
+				code, body, err := postJSONRaw(env.ServerURL, tok, "/api/v1/orchestration/complete", cmp)
+				if err != nil {
+					errCh <- fmt.Sprintf("iter=%d worker=%d request err=%v", iter, w, err)
+					return
+				}
+				if code != http.StatusOK || strings.Contains(body, "40P01") {
+					errCh <- fmt.Sprintf("iter=%d worker=%d status=%d body=%s", iter, w, code, body)
 				}
 			}(w)
 		}
+		close(startCh)
 		wg.Wait()
 		close(errCh)
 		for e := range errCh {
 			t.Fatalf("unexpected error/deadlock during concurrent timeout+complete: %s", e)
+		}
+
+		// Verify run reached a valid terminal state with consistent unit counters.
+		statBody := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)
+		st := statBody["status"]
+		if st != "completed" && st != "timed_out" {
+			t.Fatalf("iter=%d terminal status = %v, want completed or timed_out", iter, st)
+		}
+		c := counts(t, statBody)
+		if c["pending"] != 0 || c["leased"] != 0 || c["completed_pass"]+c["abandoned"] != len(units) {
+			t.Fatalf("iter=%d inconsistent counts after concurrent timeout+complete: %s", iter, fmtCounts(c))
 		}
 	}
 }

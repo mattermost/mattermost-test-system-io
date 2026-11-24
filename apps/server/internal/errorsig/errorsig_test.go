@@ -118,9 +118,9 @@ func TestGoldenCorpus(t *testing.T) {
 	}
 }
 
-func TestVersion1FingerprintEncodingPinned(t *testing.T) {
-	// Pinned SHA-256 of "1|TimeoutError|TimeoutError: waiting for #submit-1 after <dur>|specs/login.spec.ts"
-	const wantFingerprint = "b40662b5bbf8eb260bfe0d6e2925ef05d92457a239ab69368f32d76cca9b428f"
+func TestVersion2FingerprintEncodingPinned(t *testing.T) {
+	// Pinned SHA-256 of "2|TimeoutError|TimeoutError: waiting for #submit-1 after <dur>|specs/login.spec.ts"
+	const wantFingerprint = "0cd85473d914edeb96a6476beeb8179f7b831db581496e8ab2911cfd1a8eab03"
 
 	sig := Compute(Input{
 		Framework:    "playwright",
@@ -129,8 +129,8 @@ func TestVersion1FingerprintEncodingPinned(t *testing.T) {
 		ErrorStack:   "    at specs/login.spec.ts:10:2",
 	})
 
-	if sig.AlgoVersion != 1 {
-		t.Fatalf("AlgoVersion = %d, want 1", sig.AlgoVersion)
+	if sig.AlgoVersion != 2 {
+		t.Fatalf("AlgoVersion = %d, want 2", sig.AlgoVersion)
 	}
 	if sig.ErrorClass != "TimeoutError" {
 		t.Fatalf("ErrorClass = %q, want TimeoutError", sig.ErrorClass)
@@ -701,6 +701,31 @@ func TestEdgeCaseRegressions(t *testing.T) {
 		}
 		if s1.Fingerprint == s3.Fingerprint {
 			t.Errorf("different spec files merged generic assertion: %s", s1.Fingerprint)
+		}
+
+		// Wrapper callee prefix (e.g. Context.eval (...)) hashes the same frame file
+		// as a bare frame under Compute, while ComputeWithOptions(in, true) distinguishes them.
+		bareIn := Input{
+			Framework:    "playwright",
+			Status:       "failed",
+			ErrorMessage: "Error: expect(locator).toBeVisible() failed",
+			ErrorStack:   "    at specs/a.spec.ts:10:2",
+		}
+		wrappedIn := Input{
+			Framework:    "playwright",
+			Status:       "failed",
+			ErrorMessage: "Error: expect(locator).toBeVisible() failed",
+			ErrorStack:   "    at Context.eval (specs/a.spec.ts:99:5)",
+		}
+		bareSig, wrappedSig := Compute(bareIn), Compute(wrappedIn)
+		if bareSig.Fingerprint != wrappedSig.Fingerprint {
+			t.Errorf("callee wrapper changed default fingerprint: %s vs %s", bareSig.Fingerprint, wrappedSig.Fingerprint)
+		}
+		if wrappedSig.TopFrame != "Context.eval (specs/a.spec.ts:99:5)" {
+			t.Errorf("TopFrame mutated: %q", wrappedSig.TopFrame)
+		}
+		if ComputeWithOptions(bareIn, true).Fingerprint == ComputeWithOptions(wrappedIn, true).Fingerprint {
+			t.Errorf("expected full top_frame mode to distinguish bare vs wrapped frame")
 		}
 	})
 }

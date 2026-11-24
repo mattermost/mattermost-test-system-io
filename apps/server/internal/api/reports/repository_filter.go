@@ -3,6 +3,8 @@ package reports
 import (
 	"fmt"
 	"strings"
+
+	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 )
 
 // RepositoryOption is a home repo filter option.
@@ -16,12 +18,12 @@ type RepositoryFilter string
 
 // Active reports whether a filter is set.
 func (f RepositoryFilter) Active() bool {
-	return strings.TrimSpace(string(f)) != ""
+	return authapi.NormalizeRepository(string(f)) != ""
 }
 
 // Value returns the raw filter value.
 func (f RepositoryFilter) Value() string {
-	return strings.TrimSpace(string(f))
+	return authapi.NormalizeRepository(string(f))
 }
 
 // SQL AND clause for repository filter.

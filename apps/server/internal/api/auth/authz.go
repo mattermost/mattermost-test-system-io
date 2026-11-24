@@ -91,10 +91,12 @@ func RequireAuthz(mode AuthzMode, logger *slog.Logger) func(http.Handler) http.H
 	}
 }
 
-func trimGitSuffix(repo string) string {
+// NormalizeRepository trims surrounding whitespace and an optional trailing
+// case-insensitive ".git" suffix from a repository slug.
+func NormalizeRepository(repo string) string {
 	repo = strings.TrimSpace(repo)
 	if len(repo) > 4 && strings.EqualFold(repo[len(repo)-4:], ".git") {
-		return repo[:len(repo)-4]
+		return strings.TrimSpace(repo[:len(repo)-4])
 	}
 	return repo
 }
@@ -106,8 +108,8 @@ func CheckRepoAccess(mode AuthzMode, logger *slog.Logger, sub Subject, targetRep
 	if mode == AuthzOff || sub.Role == policy.RoleAdmin || sub.Kind != "oidc" {
 		return nil
 	}
-	subRepo := trimGitSuffix(sub.Repository)
-	target := trimGitSuffix(targetRepo)
+	subRepo := NormalizeRepository(sub.Repository)
+	target := NormalizeRepository(targetRepo)
 	if subRepo != "" && strings.EqualFold(subRepo, target) {
 		return nil
 	}

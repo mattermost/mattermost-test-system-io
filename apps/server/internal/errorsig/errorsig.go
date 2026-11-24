@@ -17,7 +17,7 @@ import (
 )
 
 // AlgoVersion is the frozen error signature algorithm version for SEC-11524 / SEC-11519.
-const AlgoVersion int16 = 1
+const AlgoVersion int16 = 2
 
 const (
 	maxNormalizedRunes = 500
@@ -117,7 +117,7 @@ var runtimeFrameSubstrings = []string{
 	"okhttp3.",
 }
 
-// Compute returns the frozen algo_version=1 failure signature.
+// Compute returns the frozen algo_version=2 failure signature.
 // TopFrame is always extracted and populated on the returned Signature,
 // while Fingerprint hashes (AlgoVersion, ErrorClass, NormalizedMessage, frameFile(TopFrame)).
 func Compute(in Input) Signature {
@@ -464,7 +464,8 @@ func fallbackForEmpty(status, framework string) string {
 }
 
 func frameFile(topFrame string) string {
-	return frameLineColRE.ReplaceAllString(topFrame, "$1")
+	_, loc, _ := splitFrame(topFrame)
+	return frameLineColRE.ReplaceAllString(loc, "$1")
 }
 
 func hashSignature(sig Signature, includeTopFrame bool) string {

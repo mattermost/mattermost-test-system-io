@@ -181,7 +181,7 @@ type sigUpsertRow struct {
 	firstSeen time.Time
 }
 
-// ResolveCaseIdentities derives test_key and algo_version=1 failure signatures
+// ResolveCaseIdentities derives test_key and algo_version=2 failure signatures
 // for each case, bulk-upserts unique tests and failure_signatures inside tx in
 // deterministic sorted order, and returns one TestIdentity per input case.
 //

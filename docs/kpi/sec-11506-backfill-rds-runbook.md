@@ -23,9 +23,12 @@ fields) and two partial indexes that migrations deliberately do **not** create.
    If `MaxAllocatedStorage` is null, enable autoscaling (or grow storage)
    before starting. Autoscaling triggers at <10% free and then waits ≥6 h
    before it can grow again, so do not rely on it mid-run.
-3. **Deploy migration `000033` first** so the `tests` / `failure_signatures`
+3. **Deploy migration `000033` (and `000034`) first** so the `tests` / `failure_signatures`
    tables and `test_cases.{test_id,signature_id}` columns already exist and
-   live uploads populate them.
+   live uploads populate them. Note: `000033` + PR #145 deploy together cleanly
+   onto an unpopulated `tests` / `failure_signatures` schema; if an unhardened
+   `000033` pre-release ever ran in staging, clear or reconcile pre-existing
+   `zephyr:` / `algo_version=1` rows before running `tsioctl backfill`.
 4. **Fresh post-`000033` snapshot** (`aws rds create-db-snapshot`) and record
    its id. Live CI uploads keep landing during the backfill, so restoring this
    snapshot loses them (see §5). For a clean restore point, briefly pause

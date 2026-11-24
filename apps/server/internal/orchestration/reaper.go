@@ -416,6 +416,15 @@ func (s *Store) markRunTimedOut(ctx context.Context, runID uuid.UUID) (*runTimed
 		if err != nil {
 			return fmt.Errorf("lock active leases: %w", err)
 		}
+		lockedLeaseIDs := []uuid.UUID{}
+		for lockRows.Next() {
+			var id uuid.UUID
+			if err := lockRows.Scan(&id); err != nil {
+				lockRows.Close()
+				return fmt.Errorf("lock active leases: %w", err)
+			}
+			lockedLeaseIDs = append(lockedLeaseIDs, id)
+		}
 		lockRows.Close()
 		if err := lockRows.Err(); err != nil {
 			return fmt.Errorf("lock active leases: %w", err)
@@ -435,45 +444,69 @@ func (s *Store) markRunTimedOut(ctx context.Context, runID uuid.UUID) (*runTimed
 			return fmt.Errorf("lock open dispatch_units: %w", err)
 		}
 
-		var status string
+		// If a concurrent checkout committed a new active lease while we were locking,
+		// abort this tick rather than touching an unlocked lease or timing out an active run.
+		var hasNewActiveLease bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM leases
+				 WHERE run_id = $1 AND released_at IS NULL AND id <> ALL($2::uuid[])
+			)
+		`, runID, lockedLeaseIDs).Scan(&hasNewActiveLease); err != nil {
+			return fmt.Errorf("recheck active leases: %w", err)
+		}
+		if hasNewActiveLease {
+			return nil
+		}
+
+		var (
+			status    string
+			stillIdle bool
+		)
 		err = tx.QueryRow(ctx, `
-			SELECT status FROM orchestration_runs WHERE id = $1 FOR UPDATE
-		`, runID).Scan(&status)
+			SELECT status,
+			       (last_activity_at + (idle_timeout_ms || ' milliseconds')::interval < now())
+			  FROM orchestration_runs
+			 WHERE id = $1
+			 FOR UPDATE
+		`, runID).Scan(&status, &stillIdle)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
 			return fmt.Errorf("lock run: %w", err)
 		}
-		if status != RunStatusInProgress {
+		if status != RunStatusInProgress || !stillIdle {
 			return nil
 		}
 
 		now := time.Now().UTC()
 
-		// Release all still-active leases on this run as 'run_timed_out' and
-		// flag their attempts as expired.
-		leaseRows, err := tx.Query(ctx, `
-			UPDATE leases
-			   SET released_at = $2, release_reason = 'run_timed_out'
-			 WHERE run_id = $1 AND released_at IS NULL
-			RETURNING id
-		`, runID, now)
-		if err != nil {
-			return fmt.Errorf("release run leases: %w", err)
-		}
+		// Release only the locked active leases on this run as 'run_timed_out'
+		// and flag their attempts as expired.
 		var leaseIDs []uuid.UUID
-		for leaseRows.Next() {
-			var id uuid.UUID
-			if err := leaseRows.Scan(&id); err != nil {
-				leaseRows.Close()
+		if len(lockedLeaseIDs) > 0 {
+			leaseRows, err := tx.Query(ctx, `
+				UPDATE leases
+				   SET released_at = $1, release_reason = 'run_timed_out'
+				 WHERE id = ANY($2::uuid[]) AND released_at IS NULL
+				RETURNING id
+			`, now, lockedLeaseIDs)
+			if err != nil {
+				return fmt.Errorf("release run leases: %w", err)
+			}
+			for leaseRows.Next() {
+				var id uuid.UUID
+				if err := leaseRows.Scan(&id); err != nil {
+					leaseRows.Close()
+					return err
+				}
+				leaseIDs = append(leaseIDs, id)
+			}
+			leaseRows.Close()
+			if err := leaseRows.Err(); err != nil {
 				return err
 			}
-			leaseIDs = append(leaseIDs, id)
-		}
-		leaseRows.Close()
-		if err := leaseRows.Err(); err != nil {
-			return err
 		}
 		for _, lid := range leaseIDs {
 			if _, err := tx.Exec(ctx, `

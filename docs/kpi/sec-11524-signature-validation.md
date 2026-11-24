@@ -1,22 +1,22 @@
 # SEC-11524: Error Signature Normalizer & Top-50 Validation Report
 
 **Ticket:** `SEC-11524` (Phase 1)  
-**Package:** `apps/server/internal/errorsig` (`AlgoVersion = 1`)  
+**Package:** `apps/server/internal/errorsig` (`AlgoVersion = 2`)  
 **Corpus:** `apps/server/internal/errorsig/testdata/golden_corpus.json`  
-**Status:** `algo_version = 1` frozen for `SEC-11519`
+**Status:** `algo_version = 2` frozen for `SEC-11519`
 
 ---
 
-## 1. Frozen `algo_version = 1` Decision
+## 1. Frozen `algo_version = 2` Decision
 
-**Decision:** **`frame_file(top_frame)` (with `:line[:col]` stripped) is INCLUDED in the `fingerprint` SHA-256 hash in `algo_version = 1`**, and **`top_frame` (including `:line[:col]`) is ALWAYS extracted and stored unhashed** on `failure_signatures.top_frame`.
+**Decision:** **`frame_file(top_frame)` (with `:line[:col]` stripped) is INCLUDED in the `fingerprint` SHA-256 hash in `algo_version = 2`**, and **`top_frame` (including `:line[:col]`) is ALWAYS extracted and stored unhashed** on `failure_signatures.top_frame`.
 
 ```text
 fingerprint = sha256(algo_version + "|" + error_class + "|" + normalized_message + "|" + frame_file(top_frame))
 ```
 
 ### Live-Prod 592-Failure Validation Findings & Rationale
-1. **Prevents over-merging of generic Playwright assertions (live prod finding):** Against 592 live production failures, excluding `top_frame` completely merged **19 unrelated specs** onto a single signature for generic assertions (`Error: expect(locator).toBeVisible() failed`, `TimeoutError: locator.click: Timeout <dur> exceeded.`). Including normalized `frame_file(top_frame)` separates distinct failing spec files while keeping `AlgoVersion = 1` stable across `:line[:col]` shifts inside the same spec file.
+1. **Prevents over-merging of generic Playwright assertions (live prod finding):** Against 592 live production failures, excluding `top_frame` completely merged **19 unrelated specs** onto a single signature for generic assertions (`Error: expect(locator).toBeVisible() failed`, `TimeoutError: locator.click: Timeout <dur> exceeded.`). Including normalized `frame_file(top_frame)` separates distinct failing spec files while keeping `AlgoVersion = 2` stable across `:line[:col]` shifts inside the same spec file.
 2. **Eliminates separator-prefixed short hex over-splitting (live prod finding):** Dynamic 6–15 char hex suffixes preceded by `-`, `_`, or `.` containing both a digit and a hex letter (such as `ABAC-RemoveRule-a1b2c3d` — which previously split 18 ways — and `@test-user_name.3295f9`) are normalized to `<sep><hex>` without altering CSS selectors or normal English words.
 3. **Keeps call-site line context without line-shift fragmentation:** `ExtractTopFrame` always scans `ErrorStack` first and falls back to `ErrorMessage` lines after line 1 (critical for Detox and Maestro where `ingest` stores `ErrorStack = nil`), skipping runtime frames (`node_modules/`, `node:internal/`, `playwright-core/`, `__cypress/runner/`, `maestro.orchestra.*`, `java.lang.*`, `io.grpc.*`) and storing the full normalized app frame (with `:line[:col]`) in `failure_signatures.top_frame`.
 
@@ -37,7 +37,7 @@ fingerprint = sha256(algo_version + "|" + error_class + "|" + normalized_message
 
 Measured by `TestTop50ValidationComparison` (`go test -race -v ./internal/errorsig/...`):
 
-| Metric | `frame_file` (`algo_version=1`) | `with_top_frame` (full `:line:col`) |
+| Metric | `frame_file` (`algo_version=2`) | `with_top_frame` (full `:line:col`) |
 |---|---:|---:|
 | Validation samples | 54 | 54 |
 | Ground-truth root-cause clusters | 25 | 25 |

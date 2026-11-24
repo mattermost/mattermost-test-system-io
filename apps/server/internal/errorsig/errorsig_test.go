@@ -552,6 +552,21 @@ func TestEdgeCaseRegressions(t *testing.T) {
 			"file://request failed in config.ts:12",
 			`C:\Users\foo failed to load config.ts:12`,
 			`C:\Users\Jane Doe\failed in config.ts:12`,
+			"/api/v1/users failed in src/config.ts:12",
+			"/api/v1/users failed while loading ./config.ts:12",
+			"/foo/bar failed in baz/config.ts:12",
+			"/var/log/test failed to import apps/server/config.go:42",
+			"/GET /api/v1/users -> 500 in apps/api/handler.ts:42",
+			`C:\Users\foo failed to load src\config.ts:12`,
+			`C:\a (b failed in c\config.ts:12`,
+			`C:\a (b failed in c)\d\config.ts:12`,
+			`C:\Users\Jane Doe\something failed in src/config.ts:12`,
+			"file://foo/bar failed in baz/config.ts:12",
+			"file:///api/v1/users failed in src/config.ts:12",
+			"/* see /foo/bar/config.ts:12",
+			"// see /foo/bar/config.ts:12",
+			"/ see /foo/bar/config.ts:12",
+			`C:\Program Files (x86)\App\specs\a (1).spec.ts:10:2`,
 		} {
 			if got := ExtractTopFrame(prose, ""); got != "" {
 				t.Errorf("prose %q wrongly matched as frame %q", prose, got)
@@ -569,12 +584,26 @@ func TestEdgeCaseRegressions(t *testing.T) {
 			want string
 		}{
 			{"win_x86", `C:\Program Files (x86)\App\specs\a.spec.ts:10:2`, "C:/Program Files (x86)/App/specs/a.spec.ts:10:2"},
+			{"win_leading_paren_dir", `C:\(x86)\App\specs\a.spec.ts:10:2`, "C:/(x86)/App/specs/a.spec.ts:10:2"},
 			{"win_x86_cy", `C:\Program Files (x86)\App\test.cy.ts:1`, "C:/Program Files (x86)/App/test.cy.ts:1"},
 			{"posix_paren", "/Users/Jane (test)/project/specs/a.spec.ts:10:2", "/Users/Jane (test)/project/specs/a.spec.ts:10:2"},
 			{"win_x86_work", `C:\Program Files (x86)\actions\work\org\org\specs\a.spec.ts:10:2`, "<repo>/specs/a.spec.ts:10:2"},
 			{"win_x86_callee_work", `    at Object.<anonymous> (C:\Program Files (x86)\actions\work\org\org\specs\a.spec.ts:10:2)`, "Object.<anonymous> (<repo>/specs/a.spec.ts:10:2)"},
 			{"win_unparen_callee_work", `    at myFunc C:\Users\Jane Doe\actions\work\org\org\specs\a.spec.ts:10:2`, "myFunc <repo>/specs/a.spec.ts:10:2"},
 			{"uri_unparen_callee_work", "    at myFunc file:///Users/Jane Doe/actions/work/org/org/specs/a.spec.ts:10:2", "myFunc <repo>/specs/a.spec.ts:10:2"},
+			{"win_root_work_paren", `    at myFunc (C:\work\org\org\specs\a.spec.ts:10:2)`, "myFunc (<repo>/specs/a.spec.ts:10:2)"},
+			{"posix_root_work_paren", "    at myFunc (/work/org/org/specs/a.spec.ts:10:2)", "myFunc (<repo>/specs/a.spec.ts:10:2)"},
+			{"win_root_work_unparen", `    at myFunc C:\work\org\org\specs\a.spec.ts:10:2`, "myFunc <repo>/specs/a.spec.ts:10:2"},
+			{"posix_root_work_unparen", "    at myFunc /work/org/org/specs/a.spec.ts:10:2", "myFunc <repo>/specs/a.spec.ts:10:2"},
+			{"mixed_root_work_unparen", `    at myFunc /work/org/org\specs\a.spec.ts:10:2`, "myFunc <repo>/specs/a.spec.ts:10:2"},
+			{"uri_win_runner_work", "    at myFunc (file:///C:/Users/runner/work/org/org/specs/a.spec.ts:10:2)", "myFunc (<repo>/specs/a.spec.ts:10:2)"},
+			{"uri_posix_runner_work", "    at myFunc (file:///Users/runner/work/org/org/specs/a.spec.ts:10:2)", "myFunc (<repo>/specs/a.spec.ts:10:2)"},
+			{"bracket_slash_callee_paren", "    at Object.fn [as /bar] (/Users/Jane/work/org/org/specs/a.spec.ts:10:2)", "Object.fn [as /bar] (<repo>/specs/a.spec.ts:10:2)"},
+			{"bracket_slash_callee_unparen", "    at Object.fn [as /bar] /Users/Jane/work/org/org/specs/a.spec.ts:10:2", "Object.fn [as /bar] <repo>/specs/a.spec.ts:10:2"},
+			{"nested_gh_work_not_rechopped", "    at myFunc (/home/runner/work/org/repo/packages/work/a/a/b.ts:10:2)", "myFunc (<repo>/packages/work/a/a/b.ts:10:2)"},
+			{"nested_win_work_not_rechopped", `    at myFunc (C:\a\org\repo\packages\work\a\a\b.ts:10:2)`, "myFunc (<repo>/packages/work/a/a/b.ts:10:2)"},
+			{"nested_custom_work_not_rechopped", "    at myFunc (/opt/actions/work/mattermost/mattermost/apps/work/a/a/b.ts:10:2)", "myFunc (<repo>/apps/work/a/a/b.ts:10:2)"},
+			{"unrooted_relative_work_untouched", "    at myFunc (src/work/a/a/b.ts:10:2)", "myFunc (src/work/a/a/b.ts:10:2)"},
 		} {
 			if got := ExtractTopFrame(tc.in, ""); got != tc.want {
 				t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)

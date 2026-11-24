@@ -88,10 +88,12 @@ var (
 	nthSelectorRE   = regexp.MustCompile(`(?::nth-(?:child|of-type)|\.nth)\(\d+\)`)
 	cssIdentTokenRE = regexp.MustCompile(`(^|[\s(,:'">\x00])((?:[#.][A-Za-z_-][A-Za-z0-9_-]*)+)`)
 
-	bareFrameRE     = regexp.MustCompile(`^(?:(?:[A-Za-z]:[\\/]|/|file://(?:/?[A-Za-z]:[\\/]|/|[A-Za-z0-9.-]+/))(?:[^\s\\/:*(][^\t\r\n:]*[\\/])?[^\s\\/:*(][^\s\\/:(]*|(?:webpack://[^/\s]*/|https?://[^\s/]+/)?[^/\\\s(:][^\s(:]*)\.(?:[cm]?[jt]sx?|cy\.[jt]s|ya?ml|kt|java|go):\d+(?::\d+)?$`)
-	workRootStartRE = regexp.MustCompile(`[( "'](?:file://|[A-Za-z]:/|/)`)
-	webpackPrefixRE = regexp.MustCompile(`webpack://[^/]*/(?:\./)?`)
-	cypressProxyRE  = regexp.MustCompile(`https?://[^/]+/__cypress/tests\?p=`)
+	frameSuffixRE     = regexp.MustCompile(`\.(?:[cm]?[jt]sx?|cy\.[jt]s|ya?ml|kt|java|go):\d+(?::\d+)?$`)
+	bareSimpleFrameRE = regexp.MustCompile(`^(?:webpack://[^/\s]*/|https?://[^\s/]+/)?[^/\\\s(:*][^\s(:]*$`)
+	frameWorkRE       = regexp.MustCompile(`^(?:(?:/?[A-Za-z]:)?(?:/home/runner|/Users/runner)/work/[^/\s]+/[^/\s]+/|/?[A-Za-z]:/a/[^/\s]+/[^/\s]+/|/github/workspace/)`)
+	unparenRootRE     = regexp.MustCompile(` (?:file://|[A-Za-z]:/|/|webpack://|https?://)`)
+	webpackPrefixRE   = regexp.MustCompile(`webpack://[^/]*/(?:\./)?`)
+	cypressProxyRE    = regexp.MustCompile(`https?://[^/]+/__cypress/tests\?p=`)
 )
 
 var runtimeFrameSubstrings = []string{
@@ -275,7 +277,97 @@ func scanLinesForFrame(raw string, skipFirst bool) string {
 }
 
 func isFrameLine(line string) bool {
-	return strings.HasPrefix(line, "at ") || bareFrameRE.MatchString(line)
+	return strings.HasPrefix(line, "at ") || isBareFrame(line)
+}
+
+func isBareFrame(line string) bool {
+	loc := frameSuffixRE.FindStringIndex(line)
+	if loc == nil {
+		return false
+	}
+	colon := strings.IndexByte(line[loc[0]:], ':')
+	pathPart := line[:loc[0]+colon]
+	return isBareOSPath(pathPart) || bareSimpleFrameRE.MatchString(pathPart)
+}
+
+func isBareOSPath(p string) bool {
+	if strings.HasPrefix(p, "file://") {
+		if !strings.HasPrefix(p, "file:///") {
+			return false
+		}
+		p = p[len("file://"):]
+		if len(p) >= 4 && hasWinDrivePrefix(p[1:]) {
+			p = p[1:]
+		}
+	}
+	var sep byte
+	var rest string
+	switch {
+	case len(p) >= 4 && isASCIIAlpha(p[0]) && p[1] == ':' && (p[2] == '\\' || p[2] == '/'):
+		sep, rest = p[2], p[3:]
+	case len(p) >= 2 && p[0] == '/' && p[1] != '/' && p[1] != '*':
+		sep, rest = '/', p[1:]
+	default:
+		return false
+	}
+	otherSep := byte('\\')
+	if sep == '\\' {
+		otherSep = '/'
+	}
+	if strings.IndexByte(rest, otherSep) >= 0 || strings.ContainsAny(rest, "\t\r\n:*") {
+		return false
+	}
+	hasSpace := strings.IndexByte(rest, ' ') >= 0
+	parts := strings.Split(rest, string(sep))
+	base := parts[len(parts)-1]
+	if base == "" || strings.ContainsAny(base, " ()") {
+		return false
+	}
+	for _, seg := range parts[:len(parts)-1] {
+		if !isValidDirSegment(seg, hasSpace) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidDirSegment(seg string, pathHasSpace bool) bool {
+	if seg == "" || seg[0] == ' ' || seg[len(seg)-1] == ' ' ||
+		(pathHasSpace && (seg == "." || seg == "..")) ||
+		strings.Contains(seg, "  ") || strings.Contains(seg, "->") {
+		return false
+	}
+	depth, parenStart, outWords, inWords, inWord := 0, -1, 0, 0, false
+	for i := 0; i < len(seg); i++ {
+		switch seg[i] {
+		case '(':
+			if depth > 0 {
+				return false
+			}
+			depth, parenStart, inWord = 1, i, false
+		case ')':
+			if depth == 0 || i == parenStart+1 {
+				return false
+			}
+			depth, inWord = 0, false
+		case ' ':
+			inWord = false
+		default:
+			if !inWord {
+				inWord = true
+				if depth == 0 {
+					outWords++
+				} else {
+					inWords++
+				}
+			}
+		}
+	}
+	return depth == 0 && (strings.IndexByte(seg, ' ') < 0 || (outWords <= 2 && inWords <= 2))
+}
+
+func isASCIIAlpha(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func isRuntimeFrame(line string) bool {
@@ -293,27 +385,62 @@ func isRuntimeFrame(line string) bool {
 
 func normalizeFrame(line string) string {
 	f := strings.TrimSpace(strings.TrimPrefix(line, "at "))
-	f = winWorkRE.ReplaceAllString(f, phRepo)
-	f = strings.ReplaceAll(f, `\`, "/")
-	f = strings.TrimPrefix(f, "file://")
-	f = cypressProxyRE.ReplaceAllString(f, "")
-	f = webpackPrefixRE.ReplaceAllString(f, "")
-	f = ghWorkRE.ReplaceAllString(f, phRepo)
-	if idx := strings.Index(f, "/work/"); idx >= 0 {
-		rest := f[idx+len("/work/"):]
-		parts := strings.SplitN(rest, "/", 3)
-		if len(parts) == 3 && parts[0] == parts[1] && parts[2] != "" {
-			start := 0
-			isRooted := strings.HasPrefix(f, "/") || (len(f) >= 3 && f[1] == ':' && f[2] == '/')
-			if !isRooted {
-				if loc := workRootStartRE.FindStringIndex(f[:idx]); loc != nil {
-					start = loc[0] + 1
-				}
+	prefix, loc, suffix := splitFrame(f)
+	loc = strings.ReplaceAll(loc, `\`, "/")
+	hadFileURI := strings.HasPrefix(loc, "file://")
+	loc = strings.TrimPrefix(loc, "file://")
+	loc = cypressProxyRE.ReplaceAllString(loc, "")
+	loc = webpackPrefixRE.ReplaceAllString(loc, "")
+	if frameWorkRE.MatchString(loc) {
+		loc = frameWorkRE.ReplaceAllString(loc, phRepo)
+	} else if hadFileURI || strings.HasPrefix(loc, "/") || hasWinDrivePrefix(loc) {
+		if idx := strings.Index(loc, "/work/"); idx >= 0 {
+			rest := loc[idx+len("/work/"):]
+			parts := strings.SplitN(rest, "/", 3)
+			if len(parts) == 3 && parts[0] == parts[1] && parts[2] != "" {
+				loc = phRepo + parts[2]
 			}
-			f = f[:start] + phRepo + parts[2]
 		}
 	}
-	return truncateRunes(strings.TrimSpace(wsRE.ReplaceAllString(f, " ")), maxNormalizedRunes)
+	return truncateRunes(strings.TrimSpace(wsRE.ReplaceAllString(prefix+loc+suffix, " ")), maxNormalizedRunes)
+}
+
+func splitFrame(f string) (prefix, loc, suffix string) {
+	if strings.HasSuffix(f, ")") {
+		depth := 0
+		for i := len(f) - 1; i >= 0; i-- {
+			switch f[i] {
+			case ')':
+				depth++
+			case '(':
+				depth--
+				if depth == 0 {
+					return f[:i+1], f[i+1 : len(f)-1], ")"
+				}
+			}
+		}
+	}
+	norm := strings.ReplaceAll(f, `\`, "/")
+	if !isFrameRoot(norm) {
+		if matches := unparenRootRE.FindAllStringIndex(norm, -1); len(matches) > 0 {
+			start := matches[len(matches)-1][0] + 1
+			return f[:start], f[start:], ""
+		}
+	}
+	return "", f, ""
+}
+
+func isFrameRoot(s string) bool {
+	return strings.HasPrefix(s, "/") ||
+		hasWinDrivePrefix(s) ||
+		strings.HasPrefix(s, "file://") ||
+		strings.HasPrefix(s, "webpack://") ||
+		strings.HasPrefix(s, "http://") ||
+		strings.HasPrefix(s, "https://")
+}
+
+func hasWinDrivePrefix(s string) bool {
+	return len(s) >= 3 && isASCIIAlpha(s[0]) && s[1] == ':' && s[2] == '/'
 }
 
 func fallbackForEmpty(status, framework string) string {

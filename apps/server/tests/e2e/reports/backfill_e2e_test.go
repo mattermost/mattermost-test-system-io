@@ -409,17 +409,21 @@ func TestBackfill_PartialS3FallbackAndConcurrentWritesWin(t *testing.T) {
 		VALUES ($1, 'bf/chromium-missing.json', 1, 'gone')`, multi.uploadID)
 
 	raceCase := bfCases(t, env, race.uploadID)["MM-T101 logs in"].id
-	var liveTestID uuid.UUID
+	var liveTestID, liveSigID uuid.UUID
 	store := hookStore{ObjectStore: env.Store, key: bfJSONKey(t, env, race.uploadID), before: func() {
 		if err := env.Pool.QueryRow(ctx, `
 			WITH t AS (
 				INSERT INTO tests (repository, framework, test_key, file, full_title)
 				VALUES ('mattermost/test', 'playwright', 'live-key', 'e2e/login.spec.ts', 'live')
+				RETURNING id),
+			s AS (
+				INSERT INTO failure_signatures (fingerprint, algo_version, normalized_message, first_seen_at)
+				VALUES ('live-sig-fp', 1, 'live concurrent error', now())
 				RETURNING id)
-			UPDATE test_cases SET test_id = (SELECT id FROM t), error_stack = 'live stack',
-				project = 'live-project', tags = '["@live"]'
+			UPDATE test_cases SET test_id = (SELECT id FROM t), signature_id = (SELECT id FROM s),
+				error_stack = 'live stack', project = 'live-project', tags = '["@live"]'
 			WHERE id = $1
-			RETURNING test_id`, raceCase).Scan(&liveTestID); err != nil {
+			RETURNING test_id, signature_id`, raceCase).Scan(&liveTestID, &liveSigID); err != nil {
 			t.Errorf("concurrent write: %v", err)
 		}
 	}}
@@ -440,10 +444,18 @@ func TestBackfill_PartialS3FallbackAndConcurrentWritesWin(t *testing.T) {
 	}
 
 	// Values committed after the snapshot win; untouched blanks are still enriched.
+	// Attribution must target the returned liveSigID rather than the unstored snapshot signature.
 	c := bfCases(t, env, race.uploadID)["MM-T101 logs in"]
-	if c.testID == nil || *c.testID != liveTestID || c.errorStack == nil || *c.errorStack != "live stack" ||
+	if c.testID == nil || *c.testID != liveTestID || c.sigID == nil || *c.sigID != liveSigID ||
+		c.sigGroup == nil || c.sigGroup.String() != race.groupID ||
+		c.errorStack == nil || *c.errorStack != "live stack" ||
 		c.project == nil || *c.project != "live-project" || c.tags != `["@live"]` ||
-		!strings.Contains(c.annotations, "MM-1") || c.sigID == nil {
-		t.Fatalf("concurrent write not preserved: %+v (live test_id %s)", c, liveTestID)
+		!strings.Contains(c.annotations, "MM-1") {
+		t.Fatalf("concurrent write not preserved: %+v (live test_id %s, sig_id %s)", c, liveTestID, liveSigID)
+	}
+	if n := bfInt(t, env, `SELECT count(*) FROM failure_signatures
+		WHERE id <> $1 AND first_seen_report_group_id = $2 AND normalized_message LIKE 'TimeoutError:%'`,
+		liveSigID, race.groupID); n != 0 {
+		t.Fatalf("stale snapshot signature was falsely attributed (%d rows)", n)
 	}
 }

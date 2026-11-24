@@ -145,12 +145,20 @@ ANALYZE test_cases;
 
 ## 5. Rollback
 
-- Prefer a targeted undo over a snapshot restore. The backfill only fills
-  empty columns, but its `error_stack` / `project` / `tags` / `annotations`
-  enrichment is indistinguishable from ingest-written values, and blanket
-  NULLing of `test_id` / `signature_id` would also wipe live-ingest rows. Scope
-  any SQL undo (or a corrective `--force` backfill pass) to reports created
-  before the `000033` deploy and to the `--repo` / `--since` slice that was run.
+- **Default runs (without `--force`):** backfill only fills empty columns,
+  so a targeted undo is valid for runs without `--force`. Scope any SQL undo
+  to reports created before the `000033` deploy and to the `--repo` / `--since`
+  slice that was run — blanket NULLing of `test_id` / `signature_id` would
+  also wipe live-ingest rows, and `error_stack` / `project` / `tags` /
+  `annotations` enrichment is indistinguishable from ingest-written values.
+- **`--force` runs:** `--force` overwrites existing `test_cases.test_id` and
+  `signature_id` values; targeted NULLing cannot restore previous identities,
+  and re-running `--force` will re-resolve the same values. Before running with
+  `--force`, require either:
+  1. Taking the quiesced pre-run RDS snapshot (§1 step 3) as the rollback path
+     (and replaying later CI runs from CI / S3 after restore), **or**
+  2. Recording/exporting the previous `(id, test_id, signature_id)` values for
+     the affected rows before starting `--force`.
 - Restoring the §1 snapshot discards every upload committed after it. Only do
   so if uploaders were quiesced for the snapshot, and replay later runs from
   CI / S3 afterwards.

@@ -561,11 +561,11 @@ func (r *runner) write(ctx context.Context, rep reportRow, cases []dbCase, p rep
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	batch := &pgx.Batch{}
-	assigned := make([]ingest.TestIdentity, 0, len(p.dirty))
 	for _, i := range p.dirty {
 		c := cases[i]
 		// Guarded so values another writer committed after loadCases win:
 		// identities only fill NULLs unless Force, enrichment only fills blanks.
+		// RETURNING feeds AttributeFailureSignaturesTx the stored signature_id.
 		batch.Queue(`
 			UPDATE test_cases SET
 				test_id      = CASE WHEN $8::boolean THEN $2 ELSE COALESCE(test_id, $2) END,
@@ -575,10 +575,22 @@ func (r *runner) write(ctx context.Context, rep reportRow, cases []dbCase, p rep
 				tags         = CASE WHEN tags = '[]'::jsonb THEN $6 ELSE tags END,
 				annotations  = CASE WHEN annotations = '[]'::jsonb THEN $7 ELSE annotations END
 			WHERE id = $1
+			RETURNING signature_id
 		`, c.ID, c.TestID, c.SignatureID, c.ErrorStack, c.Project, c.Tags, c.Annotations, r.opts.Force)
-		assigned = append(assigned, ingest.TestIdentity{SignatureID: c.SignatureID})
 	}
-	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+	br := tx.SendBatch(ctx, batch)
+	assigned := make([]ingest.TestIdentity, 0, len(p.dirty))
+	for range p.dirty {
+		var sigID *uuid.UUID
+		if err := br.QueryRow().Scan(&sigID); err != nil {
+			_ = br.Close()
+			return fmt.Errorf("update test_cases: %w", err)
+		}
+		if sigID != nil {
+			assigned = append(assigned, ingest.TestIdentity{SignatureID: sigID})
+		}
+	}
+	if err := br.Close(); err != nil {
 		return fmt.Errorf("update test_cases: %w", err)
 	}
 	if err := ingest.AttributeFailureSignaturesTx(ctx, tx, rep.GroupID, assigned); err != nil {

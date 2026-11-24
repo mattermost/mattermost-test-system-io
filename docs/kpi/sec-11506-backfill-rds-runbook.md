@@ -23,13 +23,14 @@ fields) and two partial indexes that migrations deliberately do **not** create.
    If `MaxAllocatedStorage` is null, enable autoscaling (or grow storage)
    before starting. Autoscaling triggers at <10% free and then waits ≥6 h
    before it can grow again, so do not rely on it mid-run.
-3. **Fresh snapshot** (`aws rds create-db-snapshot`) and record its id. Live
-   CI uploads keep landing during the backfill, so restoring this snapshot
-   loses them (see §5). For a clean restore point, briefly pause uploaders
-   while the snapshot is taken and note the time so later runs can be replayed
-   from CI / S3.
-4. Run the deploy containing migration `000033` first; the server must already
-   write `test_id` / `signature_id` for new uploads.
+3. **Deploy migration `000033` first** so the `tests` / `failure_signatures`
+   tables and `test_cases.{test_id,signature_id}` columns already exist and
+   live uploads populate them.
+4. **Fresh post-`000033` snapshot** (`aws rds create-db-snapshot`) and record
+   its id. Live CI uploads keep landing during the backfill, so restoring this
+   snapshot loses them (see §5). For a clean restore point, briefly pause
+   uploaders **after** migration `000033` lands while the snapshot is taken and
+   note the time so later runs can be replayed from CI / S3.
 
 ## 2. Backfill
 
@@ -154,9 +155,11 @@ ANALYZE test_cases;
 - **`--force` runs:** `--force` overwrites existing `test_cases.test_id` and
   `signature_id` values; targeted NULLing cannot restore previous identities,
   and re-running `--force` will re-resolve the same values. Use the quiesced
-  pre-run RDS snapshot (§1 step 3) as the **only** rollback path before any
-  `--force` run, and replay later CI runs from CI / S3 after restore.
+  post-`000033` pre-backfill RDS snapshot (§1 step 4) as the **only** rollback
+  path before any `--force` run. If an older pre-`000033` snapshot is ever
+  restored, apply deployment migrations (`tsioctl db migrate` / server boot)
+  before reconnecting uploaders or replaying later CI runs from CI / S3.
 - Restoring the §1 snapshot discards every upload committed after it. Only do
   so if uploaders were quiesced for the snapshot, and replay later runs from
-  CI / S3 afterwards.
+  CI / S3 after confirming migration `000033` is active.
 - Drop indexes with `DROP INDEX CONCURRENTLY IF EXISTS <name>;`.

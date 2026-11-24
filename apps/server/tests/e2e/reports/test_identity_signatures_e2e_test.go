@@ -640,7 +640,7 @@ func TestConsolidate_ConcurrentSignatureAttributionNoDeadlock(t *testing.T) {
 	}
 
 	// Stall after each case insert so every shard holds the FK KEY SHARE lock on
-	// both new signatures before any shard reaches attributeFailureSignaturesTx.
+	// both new signatures before any shard reaches AttributeFailureSignaturesTx.
 	if _, err := env.Pool.Exec(ctx, `
 		CREATE FUNCTION stall_case_insert() RETURNS trigger AS $$
 		BEGIN

@@ -65,7 +65,7 @@ func Consolidate(
 	// report group with zero linked cases.
 	identityMeta := meta
 	identityMeta.ReportGroupID = uuid.Nil
-	identities, err := resolveCaseIdentitiesTx(ctx, pool, identityMeta, caseInputs)
+	identities, err := ResolveCaseIdentitiesTx(ctx, pool, identityMeta, caseInputs)
 	if err != nil {
 		return Totals{}, err
 	}
@@ -107,7 +107,7 @@ func Consolidate(
 			                    start_time, ordinal)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 			RETURNING id
-		`, reportID, sanitizeUTF8(s.Title), sanitizeUTF8Ptr(s.FilePath), suiteDuration,
+		`, reportID, sanitizeUTF8(s.Title), SanitizeUTF8Ptr(s.FilePath), suiteDuration,
 			suiteUnique, suitePassed, suiteFailed, suiteSkipped, suiteFlaky,
 			s.StartTime, i).Scan(&suiteID)
 		if err != nil {
@@ -169,7 +169,7 @@ func Consolidate(
 		}
 	}
 
-	if err := attributeFailureSignaturesTx(ctx, tx, meta.ReportGroupID, identities); err != nil {
+	if err := AttributeFailureSignaturesTx(ctx, tx, meta.ReportGroupID, identities); err != nil {
 		return Totals{}, err
 	}
 
@@ -303,7 +303,8 @@ func encodeAttachments(atts []ExtractedAttachment) any {
 	return b
 }
 
-func encodeTags(tags []string) []byte {
+// EncodeTags returns the sanitized JSON array written to test_cases.tags.
+func EncodeTags(tags []string) []byte {
 	if len(tags) == 0 {
 		return []byte("[]")
 	}
@@ -314,7 +315,9 @@ func encodeTags(tags []string) []byte {
 	return encodeJSONArray(clean)
 }
 
-func encodeAnnotations(anns []json.RawMessage) []byte {
+// EncodeAnnotations returns the sanitized JSON array written to
+// test_cases.annotations, dropping values PostgreSQL numeric cannot hold.
+func EncodeAnnotations(anns []json.RawMessage) []byte {
 	if len(anns) == 0 {
 		return []byte("[]")
 	}
@@ -385,10 +388,10 @@ func encodeJSONArray[T any](items []T) []byte {
 	return b
 }
 
-// resolveCaseIdentitiesTx commits test and signature upserts in a short
+// ResolveCaseIdentitiesTx commits test and signature upserts in a short
 // dedicated READ COMMITTED transaction so shared `tests` row locks are not
 // held across suite, test_case, and screenshot writes.
-func resolveCaseIdentitiesTx(
+func ResolveCaseIdentitiesTx(
 	ctx context.Context, pool *pgxpool.Pool, meta IdentityMeta, caseInputs []CaseIdentityInput,
 ) ([]TestIdentity, error) {
 	if len(caseInputs) == 0 {
@@ -485,8 +488,8 @@ func insertSuiteCasesTx(
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 			RETURNING id
 		`, suiteID, sanitizeUTF8(c.Title), sanitizeUTF8(c.FullTitle), sanitizeUTF8(c.Status), c.RetryCount, c.DurationMs,
-			sanitizeUTF8Ptr(c.ErrorMessage), sanitizeUTF8Ptr(c.ErrorStack), sanitizeUTF8Ptr(c.Project),
-			encodeTags(c.Tags), encodeAnnotations(c.Annotations), encodeAttachments(resolved),
+			SanitizeUTF8Ptr(c.ErrorMessage), SanitizeUTF8Ptr(c.ErrorStack), SanitizeUTF8Ptr(c.Project),
+			EncodeTags(c.Tags), EncodeAnnotations(c.Annotations), encodeAttachments(resolved),
 			c.Sequence, identities[ci].TestID, identities[ci].SignatureID)
 	}
 	br := tx.SendBatch(ctx, batch)
@@ -506,7 +509,10 @@ func insertSuiteCasesTx(
 	return nil
 }
 
-func attributeFailureSignaturesTx(
+// AttributeFailureSignaturesTx sets first_seen_report_group_id on the
+// still-unattributed signatures in identities. Run it in the transaction that
+// commits the test_cases rows referencing those signatures.
+func AttributeFailureSignaturesTx(
 	ctx context.Context, tx pgx.Tx, reportGroupID uuid.UUID, identities []TestIdentity,
 ) error {
 	if reportGroupID == uuid.Nil || len(identities) == 0 {

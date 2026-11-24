@@ -41,7 +41,8 @@ func sanitizeUTF8(s string) string {
 	return strings.ReplaceAll(strings.ToValidUTF8(s, ""), "\x00", "")
 }
 
-func sanitizeUTF8Ptr(p *string) *string {
+// SanitizeUTF8Ptr strips invalid UTF-8 and NUL bytes PostgreSQL text rejects.
+func SanitizeUTF8Ptr(p *string) *string {
 	if p == nil {
 		return nil
 	}

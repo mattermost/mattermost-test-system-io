@@ -82,7 +82,7 @@ tsioctl backfill \
   and the report falls back to DB fields. Any other S3 error aborts the run
   without advancing the checkpoint; rerun once S3 is healthy.
 - **Done when** both of the following hold:
-  1. A dry-run DB check reports `reports_updated: 0` and `cases_updated: 0` (the partial indexes `WHERE test_id IS NOT NULL` / `WHERE signature_id IS NOT NULL` cannot answer full-table `IS NULL` counts without a sequential scan):
+  1. A dry-run DB check reports `stage_groups_updated: 0`, `reports_updated: 0`, and `cases_updated: 0` (the partial indexes `WHERE test_id IS NOT NULL` / `WHERE signature_id IS NOT NULL` cannot answer full-table `IS NULL` counts without a sequential scan):
      ```bash
      tsioctl backfill --dry-run --skip-s3 --format json
      ```
@@ -96,7 +96,7 @@ tsioctl backfill \
        AND (tc.test_id IS NULL
             OR (tc.signature_id IS NULL AND tc.status NOT IN ('passed', 'flaky', 'skipped', 'pending')));
      ```
-  2. The real run's `s3_files_missing` summary counter and `s3 json unusable` log warnings are reviewed (because missing/unusable-S3 fallback writes DB identity columns only, and subsequent non-`--force` runs skip those reports before reading S3). For each named `report_id`, either restore the S3 object and re-run that report's scope with `tsioctl backfill --force`, or explicitly record the missing S3 enrichment as accepted.
+  2. The real run's `s3_files_missing` summary counter and `s3 json unusable` log warnings are reviewed (because missing/unusable-S3 fallback writes DB identity columns only, and subsequent non-`--force` runs skip those reports before reading S3). For each named `report_id`, either restore the S3 object and re-run that report's scope with `tsioctl backfill --force --skip-stage` (scoped with `--repo` / `--since` / `--until`) using a **fresh `--checkpoint-file`** (or omitting `--checkpoint-file` / resetting `--after-report-id` prior to the affected report so an already-advanced checkpoint does not skip it), or explicitly record the missing S3 enrichment as accepted.
 - **Known limitation:** `failure_signatures.first_seen_report_group_id` is set
   only when NULL, to the first report (by id, i.e. chronological) that the
   backfill touches. Signatures already attributed to a newer live group are not

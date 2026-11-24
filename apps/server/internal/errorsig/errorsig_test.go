@@ -118,6 +118,34 @@ func TestGoldenCorpus(t *testing.T) {
 	}
 }
 
+func TestVersion1FingerprintEncodingPinned(t *testing.T) {
+	// Pinned SHA-256 of "1|TimeoutError|TimeoutError: waiting for #submit-1 after <dur>"
+	const wantFingerprint = "c2eb0c2f07af26d8414e9c5252f5795fb8063a86d3e6d5564d60795ec568d474"
+
+	sig := Compute(Input{
+		Framework:    "playwright",
+		Status:       "failed",
+		ErrorMessage: "TimeoutError: waiting for #submit-1 after 3000ms",
+		ErrorStack:   "    at specs/login.spec.ts:10:2",
+	})
+
+	if sig.AlgoVersion != 1 {
+		t.Fatalf("AlgoVersion = %d, want 1", sig.AlgoVersion)
+	}
+	if sig.ErrorClass != "TimeoutError" {
+		t.Fatalf("ErrorClass = %q, want TimeoutError", sig.ErrorClass)
+	}
+	if sig.NormalizedMessage != "TimeoutError: waiting for #submit-1 after <dur>" {
+		t.Fatalf("NormalizedMessage = %q", sig.NormalizedMessage)
+	}
+	if sig.TopFrame != "specs/login.spec.ts:10:2" {
+		t.Fatalf("TopFrame = %q, want specs/login.spec.ts:10:2", sig.TopFrame)
+	}
+	if sig.Fingerprint != wantFingerprint {
+		t.Fatalf("Fingerprint = %s, want pinned %s", sig.Fingerprint, wantFingerprint)
+	}
+}
+
 func TestNormalizeMessageUTF8TruncationAndDeterminism(t *testing.T) {
 	prefix := "Error: " + strings.Repeat("界", 520)
 	got := NormalizeMessage(prefix)
@@ -236,6 +264,12 @@ func evaluateCorpus(samples []validationSample, includeTopFrame bool) validation
 }
 
 func TestEdgeCaseRegressions(t *testing.T) {
+	const (
+		errClassError   = "Error"
+		testFrameA      = "specs/a.spec.ts:10:2"
+		noErrPlaywright = "no-error:unknown:playwright"
+	)
+
 	t.Run("non_selector_brackets_and_unpaired_bracket", func(t *testing.T) {
 		got := NormalizeMessage("Error: [worker 3] expected [10, 20] got [10, 30]")
 		want := "Error: [worker <num>] expected [<num>, <num>] got [<num>, <num>]"
@@ -320,10 +354,10 @@ func TestEdgeCaseRegressions(t *testing.T) {
 			Status:       "failed",
 			ErrorMessage: "Error:\nTimeout after 3000ms\n    at specs/b.spec.ts:20:3",
 		})
-		if s1.ErrorClass != "Error" || s1.NormalizedMessage != "Error: Connection refused to <url>" {
+		if s1.ErrorClass != errClassError || s1.NormalizedMessage != "Error: Connection refused to <url>" {
 			t.Errorf("unexpected s1: class=%q norm=%q", s1.ErrorClass, s1.NormalizedMessage)
 		}
-		if s1.TopFrame != "specs/a.spec.ts:10:2" {
+		if s1.TopFrame != testFrameA {
 			t.Errorf("unexpected s1.TopFrame = %q", s1.TopFrame)
 		}
 		if s1.Fingerprint == s2.Fingerprint {
@@ -335,16 +369,16 @@ func TestEdgeCaseRegressions(t *testing.T) {
 			Status:       "failed",
 			ErrorMessage: "Error\nExpected true, got false",
 		})
-		if s3.ErrorClass != "Error" || s3.NormalizedMessage != "Error: Expected true, got false" {
+		if s3.ErrorClass != errClassError || s3.NormalizedMessage != "Error: Expected true, got false" {
 			t.Errorf("unexpected s3: class=%q norm=%q", s3.ErrorClass, s3.NormalizedMessage)
 		}
 
 		s4 := Compute(Input{
 			Framework:    "playwright",
 			Status:       "failed",
-			ErrorMessage: "Error:\n    at specs/a.spec.ts:10:2",
+			ErrorMessage: "Error:\n    at " + testFrameA,
 		})
-		if s4.NormalizedMessage != "Error:" || s4.TopFrame != "specs/a.spec.ts:10:2" {
+		if s4.NormalizedMessage != "Error:" || s4.TopFrame != testFrameA {
 			t.Errorf("unexpected s4: norm=%q frame=%q", s4.NormalizedMessage, s4.TopFrame)
 		}
 	})
@@ -373,8 +407,84 @@ func TestEdgeCaseRegressions(t *testing.T) {
 			Status:       "failed",
 			ErrorMessage: "\xff\xfe",
 		})
-		if emptyInvalid.Fallback != "no-error:unknown:playwright" {
-			t.Errorf("Fallback = %q, want no-error:unknown:playwright", emptyInvalid.Fallback)
+		if emptyInvalid.Fallback != noErrPlaywright {
+			t.Errorf("Fallback = %q, want %s", emptyInvalid.Fallback, noErrPlaywright)
+		}
+	})
+
+	t.Run("stack_only_uses_fallback_while_preserving_header_and_top_frame", func(t *testing.T) {
+		timedOutSig := Compute(Input{
+			Framework:  "playwright",
+			Status:     "timedOut",
+			ErrorStack: "    at " + testFrameA,
+		})
+		if timedOutSig.Fallback != "timeout" || timedOutSig.NormalizedMessage != "timeout" {
+			t.Errorf("timedOut stack-only got fallback=%q norm=%q, want timeout", timedOutSig.Fallback, timedOutSig.NormalizedMessage)
+		}
+		if timedOutSig.TopFrame != testFrameA {
+			t.Errorf("timedOut TopFrame = %q, want %s", timedOutSig.TopFrame, testFrameA)
+		}
+
+		interruptedSig := Compute(Input{
+			Framework:  "cypress",
+			Status:     "interrupted",
+			ErrorStack: "    at " + testFrameA,
+		})
+		if interruptedSig.Fallback != "interrupted" || interruptedSig.NormalizedMessage != "interrupted" {
+			t.Errorf("interrupted stack-only got fallback=%q norm=%q, want interrupted", interruptedSig.Fallback, interruptedSig.NormalizedMessage)
+		}
+
+		noErrA := Compute(Input{
+			Framework:  "playwright",
+			Status:     "failed",
+			ErrorStack: "    at " + testFrameA,
+		})
+		noErrB := Compute(Input{
+			Framework:  "playwright",
+			Status:     "failed",
+			ErrorStack: "specs/b.spec.ts:99:1",
+		})
+		if noErrA.Fallback != noErrPlaywright || noErrB.Fallback != noErrPlaywright {
+			t.Errorf("unexpected fallbacks: %q, %q", noErrA.Fallback, noErrB.Fallback)
+		}
+		if noErrA.Fingerprint != noErrB.Fingerprint {
+			t.Errorf("stack-only default fingerprint differed across filenames: %s vs %s", noErrA.Fingerprint, noErrB.Fingerprint)
+		}
+		if noErrA.TopFrame != testFrameA || noErrB.TopFrame != "specs/b.spec.ts:99:1" {
+			t.Errorf("unexpected top frames: %q, %q", noErrA.TopFrame, noErrB.TopFrame)
+		}
+
+		withHeader := Compute(Input{
+			Framework:  "playwright",
+			Status:     "failed",
+			ErrorStack: "Error: boom\n    at " + testFrameA,
+		})
+		if withHeader.ErrorClass != errClassError || withHeader.NormalizedMessage != "Error: boom" || withHeader.Fallback != "" {
+			t.Errorf("stack header not preserved: class=%q norm=%q fallback=%q", withHeader.ErrorClass, withHeader.NormalizedMessage, withHeader.Fallback)
+		}
+		if withHeader.TopFrame != testFrameA {
+			t.Errorf("TopFrame = %q, want %s", withHeader.TopFrame, testFrameA)
+		}
+	})
+
+	t.Run("error_header_excluded_from_top_frame", func(t *testing.T) {
+		if got := ExtractTopFrame("Error: Failed to load config.ts:12\n    at "+testFrameA, ""); got != testFrameA {
+			t.Errorf("got %q, want %s", got, testFrameA)
+		}
+		if got := ExtractTopFrame("Error: Failed to load config.ts:12\nsrc/foo.ts:12:3", ""); got != "src/foo.ts:12:3" {
+			t.Errorf("bare frame got %q, want src/foo.ts:12:3", got)
+		}
+		if got := ExtractTopFrame("Error: Failed to load config.ts:12", ""); got != "" {
+			t.Errorf("header-only stack got %q, want empty", got)
+		}
+	})
+
+	t.Run("windows_workspace_prefix_normalized_before_slashes", func(t *testing.T) {
+		if got := ExtractTopFrame(`    at C:\a\repo\repo\specs\a.spec.ts:10:2`, ""); got != "<repo>/specs/a.spec.ts:10:2" {
+			t.Errorf("windows frame = %q, want <repo>/specs/a.spec.ts:10:2", got)
+		}
+		if got := ExtractTopFrame(`    at Object.<anonymous> (C:\a\org\repo\specs\a.spec.ts:10:2)`, ""); got != "Object.<anonymous> (<repo>/specs/a.spec.ts:10:2)" {
+			t.Errorf("windows callee frame = %q", got)
 		}
 	})
 }

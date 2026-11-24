@@ -88,7 +88,7 @@ var (
 	nthSelectorRE   = regexp.MustCompile(`(?::nth-(?:child|of-type)|\.nth)\(\d+\)`)
 	cssIdentTokenRE = regexp.MustCompile(`(^|[\s(,:'">\x00])((?:[#.][A-Za-z_-][A-Za-z0-9_-]*)+)`)
 
-	frameFileLineRE = regexp.MustCompile(`[^\s(:]+\.(?:[cm]?[jt]sx?|cy\.[jt]s|ya?ml|kt|java|go):\d+(?::\d+)?`)
+	bareFrameRE     = regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|file://|webpack://[^/\s]*/|https?://[^\s/]+/)?[^\s(:]+\.(?:[cm]?[jt]sx?|cy\.[jt]s|ya?ml|kt|java|go):\d+(?::\d+)?$`)
 	webpackPrefixRE = regexp.MustCompile(`webpack://[^/]*/(?:\./)?`)
 	cypressProxyRE  = regexp.MustCompile(`https?://[^/]+/__cypress/tests\?p=`)
 )
@@ -122,9 +122,9 @@ func Compute(in Input) Signature {
 // TopFrame inside the SHA-256 fingerprint for split/merge evaluation.
 func ComputeWithOptions(in Input, includeTopFrame bool) Signature {
 	topFrame := ExtractTopFrame(in.ErrorStack, in.ErrorMessage)
-	firstLine := firstMeaningfulLine(in.ErrorMessage)
+	firstLine := firstMeaningfulLine(in.ErrorMessage, false)
 	if firstLine == "" {
-		firstLine = firstMeaningfulLine(in.ErrorStack)
+		firstLine = firstMeaningfulLine(in.ErrorStack, true)
 	}
 
 	if strings.EqualFold(firstLine, fallbackSpecDidNotRun) {
@@ -169,7 +169,7 @@ func ComputeWithOptions(in Input, includeTopFrame bool) Signature {
 // normalizes dynamic tokens while keeping stable selectors, collapses
 // whitespace, and truncates to 500 UTF-8 runes.
 func NormalizeMessage(raw string) string {
-	line := firstMeaningfulLine(raw)
+	line := firstMeaningfulLine(raw, false)
 	if line == "" {
 		return ""
 	}
@@ -266,11 +266,15 @@ func scanLinesForFrame(raw string, skipFirst bool) string {
 		if line == "" || isRuntimeFrame(line) {
 			continue
 		}
-		if strings.HasPrefix(line, "at ") || frameFileLineRE.MatchString(line) {
+		if isFrameLine(line) {
 			return normalizeFrame(line)
 		}
 	}
 	return ""
+}
+
+func isFrameLine(line string) bool {
+	return strings.HasPrefix(line, "at ") || bareFrameRE.MatchString(line)
 }
 
 func isRuntimeFrame(line string) bool {
@@ -288,12 +292,12 @@ func isRuntimeFrame(line string) bool {
 
 func normalizeFrame(line string) string {
 	f := strings.TrimSpace(strings.TrimPrefix(line, "at "))
+	f = winWorkRE.ReplaceAllString(f, phRepo)
 	f = strings.ReplaceAll(f, `\`, "/")
 	f = strings.TrimPrefix(f, "file://")
 	f = cypressProxyRE.ReplaceAllString(f, "")
 	f = webpackPrefixRE.ReplaceAllString(f, "")
 	f = ghWorkRE.ReplaceAllString(f, phRepo)
-	f = winWorkRE.ReplaceAllString(f, phRepo)
 	if idx := strings.Index(f, "/work/"); idx >= 0 {
 		rest := f[idx+len("/work/"):]
 		parts := strings.SplitN(rest, "/", 3)
@@ -339,7 +343,7 @@ func stripANSI(s string) string {
 	return s
 }
 
-func firstMeaningfulLine(raw string) string {
+func firstMeaningfulLine(raw string, skipFrames bool) string {
 	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
@@ -350,13 +354,16 @@ func firstMeaningfulLine(raw string) string {
 		if trimmed == "" || decorLineRE.MatchString(trimmed) {
 			continue
 		}
+		if skipFrames && isFrameLine(trimmed) {
+			continue
+		}
 		if isBareErrorHeader(trimmed) {
 			for j := i + 1; j < len(lines); j++ {
 				next := strings.TrimSpace(lines[j])
 				if next == "" || decorLineRE.MatchString(next) {
 					continue
 				}
-				if strings.HasPrefix(next, "at ") || isRuntimeFrame(next) {
+				if isFrameLine(next) || isRuntimeFrame(next) {
 					break
 				}
 				return strings.TrimSuffix(trimmed, ":") + ": " + next

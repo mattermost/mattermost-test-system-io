@@ -330,11 +330,20 @@ func parsePRBranch(branch string) (int, bool) {
 	if !strings.HasPrefix(strings.ToLower(branch), "pr-") {
 		return 0, false
 	}
-	n, err := strconv.Atoi(branch[3:])
+	digits := branch[3:]
+	if digits == "" {
+		return 0, false
+	}
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseInt(digits, 10, 32)
 	if err != nil || n <= 0 {
 		return 0, false
 	}
-	return n, true
+	return int(n), true
 }
 
 func toIndividualSummary(g groupDTO, e reportEntryDTO, stats groupStats) individualReportSummary {

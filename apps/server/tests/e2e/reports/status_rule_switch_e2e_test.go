@@ -360,6 +360,7 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 	}
 
 	// Assert SSR Run Page default (legacy) vs shared.
+	// Both exclude skipped from SSR pass rate: legacy 2/(2+5)=28.5%, shared (1+1)/(1+1+2)=50%.
 	orchStore := &orchestration.Store{Pool: env.Pool}
 	legacyPage, _, err := htmlpage.BuildRunPage(ctx, env.Pool, orchStore, htmlpage.SiteInfo{}, defaultRepository, branch, commitSHA, orchRunName, htmlpage.RunPageOpts{
 		GHRunID: orchRunID, GHRunAttempt: runAttempt,
@@ -368,8 +369,8 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 		t.Fatalf("BuildRunPage legacy: %v", err)
 	}
 	if legacyPage.TestPassed != 2 || legacyPage.TestFailed != 5 || legacyPage.TestFlaky != 0 ||
-		legacyPage.TestSkipped != 1 || legacyPage.TestTotal != 8 || legacyPage.PassRate != "25" {
-		t.Fatalf("legacy SSR counts = %d/%d/%d/%d/%d rate=%q, want 2/5/0/1/8 rate=25",
+		legacyPage.TestSkipped != 1 || legacyPage.TestTotal != 8 || legacyPage.PassRate != "28.5" {
+		t.Fatalf("legacy SSR counts = %d/%d/%d/%d/%d rate=%q, want 2/5/0/1/8 rate=28.5",
 			legacyPage.TestPassed, legacyPage.TestFailed, legacyPage.TestFlaky, legacyPage.TestSkipped, legacyPage.TestTotal, legacyPage.PassRate)
 	}
 
@@ -414,8 +415,8 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 		}
 		return rec.Body.String()
 	}
-	if body := serveHTML(teststatus.RuleLegacy); !strings.Contains(body, ">8</span> total") || !strings.Contains(body, "25%") {
-		t.Fatalf("legacy ServeRun missing total=8 or 25%%")
+	if body := serveHTML(teststatus.RuleLegacy); !strings.Contains(body, ">8</span> total") || !strings.Contains(body, "28.5%") {
+		t.Fatalf("legacy ServeRun missing total=8 or 28.5%%")
 	}
 	if body := serveHTML(teststatus.RuleShared); !strings.Contains(body, ">6</span> total") || !strings.Contains(body, "50%") {
 		t.Fatalf("shared ServeRun missing total=6 or 50%%")
@@ -450,7 +451,35 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 		t.Fatalf("shared orch home static = (%+v, %v), want 1/2/1/2/6 rate=50", r, ok)
 	}
 
-	// Verify HTML Home/Repo page builders and HTTP handlers apply rule to both uploaded and orch rows.
+	// Seed live-prod Row 1 shape (1483 passed, 0 failed, 2 flaky, 65 skipped) and all-skipped (0/0/0/4)
+	// to verify SSR excludes skipped and hides 0/0 under BOTH legacy and shared rules.
+	const (
+		prodRow1RunID = "run-switch-prod-row1"
+		prodRow1Name  = "pw-prod-row1"
+		allSkipRunID  = "run-switch-all-skipped"
+		allSkipName   = "pw-all-skipped"
+	)
+	for _, seed := range []struct {
+		runID, name                         string
+		passed, failed, flaky, skipped, tot int
+	}{
+		{prodRow1RunID, prodRow1Name, 1483, 0, 2, 65, 1550},
+		{allSkipRunID, allSkipName, 0, 0, 0, 4, 4},
+	} {
+		statsJSON, _ := json.Marshal(map[string]int{
+			"TotalCases": seed.tot, "Passed": seed.passed, "Failed": seed.failed, "Flaky": seed.flaky, "Skipped": seed.skipped,
+		})
+		if _, err := env.Pool.Exec(ctx, `
+			INSERT INTO report_groups (
+				framework, name, status, repository, branch, commit_sha,
+				gh_run_id, gh_run_attempt, total_reports_expected, test_stats_json
+			) VALUES ('playwright', $1, 'completed', $2, $3, $4, $5, $6, 1, $7::jsonb)
+		`, seed.name, defaultRepository, branch, commitSHA, seed.runID, runAttempt, statsJSON); err != nil {
+			t.Fatalf("seed %s insert projection: %v", seed.runID, err)
+		}
+	}
+
+	// Verify HTML Home/Repo page builders and HTTP handlers apply rule and exclude skipped from SSR pass rate.
 	homeHTMLLeg, err := htmlpage.BuildHomePageWithRule(ctx, env.Pool, htmlpage.SiteInfo{}, 50, 0, defaultRepository, "", teststatus.RuleLegacy)
 	if err != nil {
 		t.Fatalf("BuildHomePageWithRule(legacy): %v", err)
@@ -467,14 +496,28 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 		}
 		return htmlpage.HomeRunRow{}, false
 	}
-	if r, ok := findRow(homeHTMLLeg.StaticRuns, uploadRunID); !ok || r.PassRate != "60" {
-		t.Fatalf("legacy html home upload row = (%+v, %v), want rate=60", r, ok)
+	if r, ok := findRow(homeHTMLLeg.StaticRuns, uploadRunID); !ok || r.PassRate != "90" {
+		t.Fatalf("legacy html home upload row = (%+v, %v), want rate=90 (skipped excluded)", r, ok)
 	}
 	if r, ok := findRow(homeHTMLShr.StaticRuns, uploadRunID); !ok || r.PassRate != "90" {
 		t.Fatalf("shared html home upload row = (%+v, %v), want rate=90", r, ok)
 	}
-	if r, ok := findRow(homeHTMLLeg.StaticRuns, orchRunID); !ok || r.Total != 8 || r.PassRate != "25" {
-		t.Fatalf("legacy html home orch row = (%+v, %v), want total=8 rate=25", r, ok)
+	for _, page := range []struct {
+		name string
+		rows []htmlpage.HomeRunRow
+	}{
+		{"legacy", homeHTMLLeg.StaticRuns},
+		{"shared", homeHTMLShr.StaticRuns},
+	} {
+		if r, ok := findRow(page.rows, prodRow1RunID); !ok || r.PassRate != "100" || r.PassRateClass != "rate-perfect" {
+			t.Fatalf("%s html home prodRow1 = (%+v, %v), want PassRate=100 PassRateClass=rate-perfect", page.name, r, ok)
+		}
+		if r, ok := findRow(page.rows, allSkipRunID); !ok || r.PassRate != "" {
+			t.Fatalf("%s html home allSkipped = (%+v, %v), want empty PassRate", page.name, r, ok)
+		}
+	}
+	if r, ok := findRow(homeHTMLLeg.StaticRuns, orchRunID); !ok || r.Total != 8 || r.PassRate != "50" {
+		t.Fatalf("legacy html home orch row = (%+v, %v), want total=8 rate=50", r, ok)
 	}
 	if r, ok := findRow(homeHTMLShr.StaticRuns, orchRunID); !ok || r.Total != 6 || r.PassRate != "50" {
 		t.Fatalf("shared html home orch row = (%+v, %v), want total=6 rate=50", r, ok)
@@ -521,6 +564,7 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 				{"title": "f", "full_title": "live > f", "status": "failed", "retry_count": 0, "duration_ms": 10, "ordinal": 1},
 				{"title": "s1", "full_title": "live > s1", "status": "skipped", "retry_count": 0, "duration_ms": 0, "ordinal": 2},
 				{"title": "s2", "full_title": "live > s2", "status": "skipped", "retry_count": 0, "duration_ms": 0, "ordinal": 3},
+				{"title": "unk", "full_title": "live > unk", "status": "unknown", "retry_count": 0, "duration_ms": 5, "ordinal": 4},
 			},
 		}},
 	}); c != http.StatusOK {
@@ -553,11 +597,12 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildHomeLiveRowsWithRule(shared): %v", err)
 	}
-	if r, ok := findRow(liveRowsLeg, liveRunID); !ok || r.PassRate != "25" {
-		t.Fatalf("legacy live row = (%+v, %v), want rate=25", r, ok)
+	// Under legacy, "unknown" is unclassified (Failed=1, Passed=1 -> 50%); under shared, "unknown" is failed (Failed=2, Passed=1 -> 33.3%).
+	if r, ok := findRow(liveRowsLeg, liveRunID); !ok || r.PassRate != "50" {
+		t.Fatalf("legacy live row = (%+v, %v), want rate=50", r, ok)
 	}
-	if r, ok := findRow(liveRowsShr, liveRunID); !ok || r.PassRate != "50" {
-		t.Fatalf("shared live row = (%+v, %v), want rate=50", r, ok)
+	if r, ok := findRow(liveRowsShr, liveRunID); !ok || r.PassRate != "33.3" {
+		t.Fatalf("shared live row = (%+v, %v), want rate=33.3", r, ok)
 	}
 
 	serveLiveFragment := func(rule teststatus.Rule) string {
@@ -575,10 +620,10 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 		}
 		return payload.HTML
 	}
-	if frag := serveLiveFragment(teststatus.RuleLegacy); !strings.Contains(frag, "25%") {
-		t.Fatalf("legacy live fragment missing 25%%: %s", frag)
+	if frag := serveLiveFragment(teststatus.RuleLegacy); !strings.Contains(frag, "50%") {
+		t.Fatalf("legacy live fragment missing 50%%: %s", frag)
 	}
-	if frag := serveLiveFragment(teststatus.RuleShared); !strings.Contains(frag, "50%") {
-		t.Fatalf("shared live fragment missing 50%%: %s", frag)
+	if frag := serveLiveFragment(teststatus.RuleShared); !strings.Contains(frag, "33.3%") {
+		t.Fatalf("shared live fragment missing 33.3%%: %s", frag)
 	}
 }

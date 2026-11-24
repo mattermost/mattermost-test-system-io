@@ -5,8 +5,12 @@ package orchestratione2e
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // failResults builds a results array marking every spec as failed.
@@ -312,6 +316,138 @@ func TestRetestDisabledNoSecondAttempt(t *testing.T) {
 		if extra.StatusCode != http.StatusConflict {
 			t.Fatalf("post-completion checkout: status = %d, want 409; body=%s",
 				extra.StatusCode, readBodyString(extra))
+		}
+	}
+}
+
+// TestRetestLeaseExpiryRestoresCompletedFailAndAllowsSecondWorkerRetest verifies
+// that when a worker leases a retest unit and lets the lease expire, the reaper
+// restores the unit to state='completed_fail' (NOT 'pending'), increments
+// completed_fail_count and retest_eligible_count while keeping pending_count==0,
+// and a second worker can subsequently check out the retest unit and complete the run.
+func TestRetestLeaseExpiryRestoresCompletedFailAndAllowsSecondWorkerRetest(t *testing.T) {
+	env, tok := startEnv(t)
+
+	units := []string{
+		"tests/retest-expire.spec.ts",
+	}
+	beginResp := postJSON(t, env, tok, "/api/v1/orchestration/begin",
+		beginRunBody(units, map[string]any{
+			"retest_on_fail":   true,
+			"retest_budget":    1,
+			"lease_timeout_ms": 1000,
+			"idle_timeout_ms":  60_000,
+		}))
+	expectStatus(t, beginResp, http.StatusCreated)
+
+	// Worker A checks out fresh unit 0 and reports failed (fail_count=1 <= budget=1).
+	checkA := postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+		checkoutBody("playwright-shard-A", "job-retest-exp-A", 1))
+	expectStatus(t, checkA, http.StatusOK)
+	completeA := postJSON(t, env, tok, "/api/v1/orchestration/complete",
+		completeBody("playwright-shard-A", "job-retest-exp-A", failResults(units)))
+	expectStatus(t, completeA, http.StatusOK)
+
+	// Worker B checks out the retest unit (is_retest=true), then stalls past lease_timeout_ms.
+	checkB := postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+		checkoutBody("playwright-shard-B", "job-retest-exp-B", 1))
+	bodyB := expectStatus(t, checkB, http.StatusOK)
+	if !bodyB["is_retest"].(bool) {
+		t.Fatalf("worker B checkout: is_retest=false, want true")
+	}
+
+	// Wait for the reaper to expire Worker B's retest lease and restore completed_fail + retest_eligible.
+	pollUntil(t, 5*time.Second, 100*time.Millisecond, "retest lease to expire back to completed_fail", func() bool {
+		stat := getJSON(t, env, tok, statusURL(identity(nil)))
+		if stat.StatusCode != http.StatusOK {
+			return false
+		}
+		b := decodeJSON(t, stat)
+		c := counts(t, b)
+		return c["leased"] == 0 && c["completed_fail"] == 1 && c["retest_eligible"] == 1 && c["pending"] == 0
+	})
+
+	// Worker C checks out the restored retest unit (is_retest=true) and passes it.
+	checkC := postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+		checkoutBody("playwright-shard-C", "job-retest-exp-C", 1))
+	bodyC := expectStatus(t, checkC, http.StatusOK)
+	if !bodyC["is_retest"].(bool) || len(bodyC["units"].([]any)) != 1 {
+		t.Fatalf("worker C checkout: is_retest=%v units=%v, want true and 1 unit", bodyC["is_retest"], bodyC["units"])
+	}
+
+	completeC := postJSON(t, env, tok, "/api/v1/orchestration/complete",
+		completeBody("playwright-shard-C", "job-retest-exp-C", passResults(units)))
+	expectStatus(t, completeC, http.StatusOK)
+
+	finalBody := expectStatus(t, getJSON(t, env, tok, statusURL(identity(nil))), http.StatusOK)
+	if finalBody["status"] != "completed" {
+		t.Fatalf("final status = %v, want completed", finalBody["status"])
+	}
+	fc := counts(t, finalBody)
+	if fc["completed_pass"] != 1 || fc["completed_fail"] != 0 || fc["retest_eligible"] != 0 || fc["pending"] != 0 {
+		t.Fatalf("final counts = %s, want pass=1 all others 0", fmtCounts(fc))
+	}
+}
+
+// TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock stresses concurrent
+// run timeout (reaper markRunTimedOut) and worker completion (RecordCompletion)
+// on the same run to verify lock ordering (leases -> dispatch_units -> orchestration_runs)
+// produces zero 40P01 deadlocks.
+func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
+	env, tok := startEnv(t)
+	ctx := context.Background()
+
+	for iter := range 10 {
+		runIDStr := fmt.Sprintf("ci-run-deadlock-%d", iter)
+		idMap := identity(map[string]any{"gh_run_id": runIDStr})
+		units := []string{"tests/dl-0.spec.ts", "tests/dl-1.spec.ts", "tests/dl-2.spec.ts", "tests/dl-3.spec.ts"}
+
+		beginBody := merge(beginRunBody(units, map[string]any{
+			"lease_timeout_ms": 60_000,
+			"idle_timeout_ms":  60_000,
+		}), idMap)
+		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/begin", beginBody), http.StatusCreated)
+
+		for w := range len(units) {
+			chk := merge(checkoutBody(fmt.Sprintf("worker-%d", w), fmt.Sprintf("job-dl-%d-%d", iter, w), 1), idMap)
+			expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout", chk), http.StatusOK)
+		}
+
+		// Force the run's last_activity_at into the past so the reaper's markTimedOutRuns picks it up
+		// concurrently with workers calling /complete.
+		if _, err := env.Pool.Exec(ctx, `
+			UPDATE orchestration_runs
+			   SET last_activity_at = now() - interval '10 minutes',
+			       idle_timeout_ms = 1000
+			 WHERE gh_run_id = $1
+		`, runIDStr); err != nil {
+			t.Fatalf("backdate last_activity_at: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		errCh := make(chan string, len(units))
+		for w := range len(units) {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				cmp := merge(completeBody(
+					fmt.Sprintf("worker-%d", w),
+					fmt.Sprintf("job-dl-%d-%d", iter, w),
+					passResults([]string{units[w]}),
+				), idMap)
+				resp := postJSON(t, env, tok, "/api/v1/orchestration/complete", cmp)
+				if resp.StatusCode != http.StatusOK {
+					body := readBodyString(resp)
+					if strings.Contains(body, "40P01") || resp.StatusCode >= 500 {
+						errCh <- fmt.Sprintf("iter=%d worker=%d status=%d body=%s", iter, w, resp.StatusCode, body)
+					}
+				}
+			}(w)
+		}
+		wg.Wait()
+		close(errCh)
+		for e := range errCh {
+			t.Fatalf("unexpected error/deadlock during concurrent timeout+complete: %s", e)
 		}
 	}
 }

@@ -139,14 +139,21 @@ func TestPassRateDisplayRun(t *testing.T) {
 	if got := passRateDisplay(10, 0, 0); got != "100" {
 		t.Fatalf("got %q", got)
 	}
-	if got := passRateDisplayWithRule(8, 1, 1, 5, teststatus.RuleLegacy); got != "60" {
-		t.Fatalf("legacy passRateDisplayWithRule = %q, want 60", got)
+	if got := passRateDisplayWithRule(8, 1, 1, 5, teststatus.RuleLegacy); got != "90" {
+		t.Fatalf("legacy passRateDisplayWithRule = %q, want 90", got)
 	}
 	if got := passRateDisplayWithRule(8, 1, 1, 5, teststatus.RuleShared); got != "90" {
 		t.Fatalf("shared passRateDisplayWithRule = %q, want 90", got)
 	}
-	if got := passRateDisplayWithRule(0, 0, 0, 4, teststatus.RuleLegacy); got != "0" {
-		t.Fatalf("legacy all-skipped = %q, want 0", got)
+	// Live prod Row 1 regression: 1483 passed, 0 failed, 2 flaky, 65 skipped -> "100" / rate-perfect under both rules.
+	for _, rule := range []teststatus.Rule{teststatus.RuleLegacy, teststatus.RuleShared} {
+		got := passRateDisplayWithRule(1483, 0, 2, 65, rule)
+		if got != "100" || passRateColorClass(got) != "rate-perfect" {
+			t.Fatalf("rule=%s live prod Row 1 = (%q, %q), want (100, rate-perfect)", rule, got, passRateColorClass(got))
+		}
+	}
+	if got := passRateDisplayWithRule(0, 0, 0, 4, teststatus.RuleLegacy); got != "" {
+		t.Fatalf("legacy all-skipped = %q, want empty", got)
 	}
 	if got := passRateDisplayWithRule(0, 0, 0, 4, teststatus.RuleShared); got != "" {
 		t.Fatalf("shared all-skipped = %q, want empty", got)
@@ -214,7 +221,7 @@ func TestApplyRunSummaryAndAggregateUnitTests_CanonicalRules(t *testing.T) {
 		t.Fatalf("legacy pending attempt icon = %q, want fail", legacyPendingAttempt.StatusIcon)
 	}
 
-	// Verify applyRunSummary pass rate switches between legacy (includes skipped) and shared (excludes skipped).
+	// Verify applyRunSummary pass rate excludes skipped under both legacy and shared rules.
 	skippedRaw, err := json.Marshal([]orchTestCase{
 		{FullTitle: "s > p", Title: "p", Status: "passed"},
 		{FullTitle: "s > f", Title: "f", Status: "failed"},
@@ -239,7 +246,7 @@ func TestApplyRunSummaryAndAggregateUnitTests_CanonicalRules(t *testing.T) {
 	var legSum, shrSum RunPage
 	applyRunSummary(&legSum, skippedSnap, teststatus.RuleLegacy)
 	applyRunSummary(&shrSum, skippedSnap, teststatus.RuleShared)
-	if legSum.PassRate != "25" || shrSum.PassRate != "50" {
-		t.Fatalf("applyRunSummary PassRate legacy=%q shared=%q, want 25 / 50", legSum.PassRate, shrSum.PassRate)
+	if legSum.PassRate != "50" || shrSum.PassRate != "50" {
+		t.Fatalf("applyRunSummary PassRate legacy=%q shared=%q, want 50 / 50", legSum.PassRate, shrSum.PassRate)
 	}
 }

@@ -284,41 +284,88 @@ func (s *Store) expireOneLease(ctx context.Context, leaseID uuid.UUID) (*expireL
 		}
 
 		// Reset only units still pointing at THIS lease — a previously-
-		// re-leased unit must not be disturbed.
-		resetRows, err := tx.Query(ctx, `
-			UPDATE dispatch_units
-			   SET state = 'pending',
-			       current_lease_id = NULL,
-			       updated_at = now()
-			 WHERE current_lease_id = $1
-			RETURNING id
-		`, leaseID)
-		if err != nil {
-			return fmt.Errorf("reset reclaimed units: %w", err)
-		}
+		// re-leased unit must not be disturbed. Retest leases restore
+		// completed_fail (and retest_eligible_count if still within budget)
+		// rather than returning the unit to the fresh pending pool.
 		var reclaimed []uuid.UUID
-		for resetRows.Next() {
-			var id uuid.UUID
-			if err := resetRows.Scan(&id); err != nil {
-				resetRows.Close()
+		if lease.Kind == LeaseKindRetest {
+			resetRows, err := tx.Query(ctx, `
+				UPDATE dispatch_units du
+				   SET state = 'completed_fail',
+				       outcome_set_at = $2,
+				       current_lease_id = NULL,
+				       updated_at = now()
+				 WHERE du.current_lease_id = $1
+				RETURNING du.id,
+				          (SELECT r.retest_on_fail AND du.fail_count <= r.retest_budget
+				             FROM orchestration_runs r WHERE r.id = du.run_id)
+			`, leaseID, now)
+			if err != nil {
+				return fmt.Errorf("restore retest units: %w", err)
+			}
+			var eligibleN int
+			for resetRows.Next() {
+				var id uuid.UUID
+				var eligible bool
+				if err := resetRows.Scan(&id, &eligible); err != nil {
+					resetRows.Close()
+					return err
+				}
+				reclaimed = append(reclaimed, id)
+				if eligible {
+					eligibleN++
+				}
+			}
+			resetRows.Close()
+			if err := resetRows.Err(); err != nil {
 				return err
 			}
-			reclaimed = append(reclaimed, id)
-		}
-		resetRows.Close()
-		if err := resetRows.Err(); err != nil {
-			return err
-		}
-
-		if n := len(reclaimed); n > 0 {
-			if _, err := tx.Exec(ctx, `
-				UPDATE orchestration_runs
-				   SET pending_count = pending_count + $2,
-				       leased_count = leased_count - $2,
+			if n := len(reclaimed); n > 0 {
+				if _, err := tx.Exec(ctx, `
+					UPDATE orchestration_runs
+					   SET completed_fail_count = completed_fail_count + $2,
+					       leased_count = leased_count - $2,
+					       retest_eligible_count = retest_eligible_count + $3,
+					       updated_at = now()
+					 WHERE id = $1
+				`, lease.RunID, n, eligibleN); err != nil {
+					return fmt.Errorf("update run counters on retest lease expire: %w", err)
+				}
+			}
+		} else {
+			resetRows, err := tx.Query(ctx, `
+				UPDATE dispatch_units
+				   SET state = 'pending',
+				       current_lease_id = NULL,
 				       updated_at = now()
-				 WHERE id = $1
-			`, lease.RunID, n); err != nil {
-				return fmt.Errorf("update run counters on lease expire: %w", err)
+				 WHERE current_lease_id = $1
+				RETURNING id
+			`, leaseID)
+			if err != nil {
+				return fmt.Errorf("reset reclaimed units: %w", err)
+			}
+			for resetRows.Next() {
+				var id uuid.UUID
+				if err := resetRows.Scan(&id); err != nil {
+					resetRows.Close()
+					return err
+				}
+				reclaimed = append(reclaimed, id)
+			}
+			resetRows.Close()
+			if err := resetRows.Err(); err != nil {
+				return err
+			}
+			if n := len(reclaimed); n > 0 {
+				if _, err := tx.Exec(ctx, `
+					UPDATE orchestration_runs
+					   SET pending_count = pending_count + $2,
+					       leased_count = leased_count - $2,
+					       updated_at = now()
+					 WHERE id = $1
+				`, lease.RunID, n); err != nil {
+					return fmt.Errorf("update run counters on lease expire: %w", err)
+				}
 			}
 		}
 
@@ -361,8 +408,35 @@ func (s *Store) markRunTimedOut(ctx context.Context, runID uuid.UUID) (*runTimed
 	var outcome *runTimedOutOutcome
 
 	txErr := s.inTx(ctx, func(tx pgx.Tx) error {
+		// Lock active leases and open dispatch_units before locking orchestration_runs
+		// so lock order strictly matches RecordCompletion (leases -> dispatch_units -> orchestration_runs).
+		lockRows, err := tx.Query(ctx, `
+			SELECT id FROM leases WHERE run_id = $1 AND released_at IS NULL ORDER BY id FOR UPDATE
+		`, runID)
+		if err != nil {
+			return fmt.Errorf("lock active leases: %w", err)
+		}
+		lockRows.Close()
+		if err := lockRows.Err(); err != nil {
+			return fmt.Errorf("lock active leases: %w", err)
+		}
+
+		unitRows, err := tx.Query(ctx, `
+			SELECT id FROM dispatch_units
+			 WHERE run_id = $1 AND state IN ('pending', 'leased')
+			 ORDER BY dispatch_seq
+			 FOR UPDATE
+		`, runID)
+		if err != nil {
+			return fmt.Errorf("lock open dispatch_units: %w", err)
+		}
+		unitRows.Close()
+		if err := unitRows.Err(); err != nil {
+			return fmt.Errorf("lock open dispatch_units: %w", err)
+		}
+
 		var status string
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			SELECT status FROM orchestration_runs WHERE id = $1 FOR UPDATE
 		`, runID).Scan(&status)
 		if errors.Is(err, pgx.ErrNoRows) {

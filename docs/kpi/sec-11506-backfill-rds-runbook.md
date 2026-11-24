@@ -70,11 +70,19 @@ tsioctl backfill \
 - **S3 errors:** a missing object is logged, counted in `s3_files_missing`,
   and the report falls back to DB fields. Any other S3 error aborts the run
   without advancing the checkpoint; rerun once S3 is healthy.
-- **Done when** these return 0 (a checkpointed rerun trivially scans nothing):
+- **Done when** a dry-run DB check reports `reports_updated: 0` and `cases_updated: 0` (the partial indexes `WHERE test_id IS NOT NULL` / `WHERE signature_id IS NOT NULL` cannot answer full-table `IS NULL` counts without a sequential scan):
+  ```bash
+  tsioctl backfill --dry-run --skip-s3 --format json
+  ```
+  For a bounded SQL spot-check over a specific report window (joined through `reports` / `suites` so PostgreSQL uses `reports(created_at)` + `suites(report_id)` instead of scanning `test_cases`):
   ```sql
-  SELECT count(*) FROM test_cases WHERE test_id IS NULL;
-  SELECT count(*) FROM test_cases
-  WHERE signature_id IS NULL AND status NOT IN ('passed', 'flaky', 'skipped', 'pending');
+  SELECT count(*)
+  FROM reports r
+  JOIN suites s ON s.report_id = r.id
+  JOIN test_cases tc ON tc.suite_id = s.id
+  WHERE r.created_at >= '<window_start>' AND r.created_at < '<window_end>'
+    AND (tc.test_id IS NULL
+         OR (tc.signature_id IS NULL AND tc.status NOT IN ('passed', 'flaky', 'skipped', 'pending')));
   ```
 - **Known limitation:** `failure_signatures.first_seen_report_group_id` is set
   only when NULL, to the first report (by id, i.e. chronological) that the
@@ -126,7 +134,9 @@ still maintained on every write but never used for reads, and
 SELECT c.relname, i.indisvalid, i.indisready
 FROM pg_index i
 JOIN pg_class c ON c.oid = i.indexrelid
-WHERE c.relname IN ('test_cases_test_id_idx', 'test_cases_signature_id_idx');
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = current_schema()
+  AND c.relname IN ('test_cases_test_id_idx', 'test_cases_signature_id_idx');
 ```
 
 Both rows must show `indisvalid = t`. For any invalid index, rebuild it:

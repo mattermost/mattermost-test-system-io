@@ -1,0 +1,1 @@
+-- Validation state has no independent rollback; 000033 drops the FKs and columns.

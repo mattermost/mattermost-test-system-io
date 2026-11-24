@@ -153,6 +153,17 @@
       "want_normalized": "no-error:unknown:maestro",
       "want_top_frame": "",
       "want_fallback": "no-error:unknown:maestro"
+    },
+    {
+      "name": "playwright_sep_prefixed_short_hex_normalized",
+      "framework": "playwright",
+      "status": "failed",
+      "error_message": "Error: failed for ABAC-RemoveRule-a1b2c3d and @test-user_name.3295f9",
+      "error_stack": "    at e2e-tests/playwright/specs/abac.spec.ts:12:4",
+      "want_error_class": "Error",
+      "want_normalized": "Error: failed for ABAC-RemoveRule-<hex> and @test-user_name.<hex>",
+      "want_top_frame": "e2e-tests/playwright/specs/abac.spec.ts:12:4",
+      "want_fallback": ""
     }
   ],
   "validation_samples": [

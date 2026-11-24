@@ -1722,7 +1722,7 @@ components:
       properties:
         stage:
           type: string
-          enum: [pr, main, release, nightly, manual, other]
+          enum: ["", pr, main, release, nightly, manual, other]
           nullable: true
         event_name: { type: string, nullable: true }
         base_ref: { type: string, nullable: true }

@@ -251,3 +251,61 @@ func TestReportsHistoryContract(t *testing.T) {
 		})
 	}
 }
+
+func TestRunContextEmptyStageContract(t *testing.T) {
+	env := testenv.Start(t)
+	apiKey := env.IssueAPIKey(t, "ci")
+	doc, opts := loadSpec(t)
+
+	payload := map[string]any{
+		"repository":             "mattermost/contract",
+		"commit":                 "1234567890abcdef1234567890abcdef12345678",
+		"gh_run_id":              "run-empty-stage-1",
+		"framework":              "playwright",
+		"name":                   "pw-empty-stage",
+		"branch":                 "main",
+		"stage":                  "",
+		"total_reports_expected": 1,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, env.ServerURL+"/api/v1/reports/begin", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("new req: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, body)
+	}
+	validatePostResponse(t, doc, opts, "/api/v1/reports/begin", payload, resp.StatusCode, resp.Header, body)
+
+	var beginResp struct {
+		ReportID string `json:"report_id"`
+	}
+	if err := json.Unmarshal(body, &beginResp); err != nil {
+		t.Fatalf("decode begin response: %v", err)
+	}
+	dStatus, dHdr, dBody := mustRecordedResponse(t, env, http.MethodGet, "/api/v1/reports/"+beginResp.ReportID, nil)
+	if dStatus != http.StatusOK {
+		t.Fatalf("GET /reports/{id} = %d; body=%s", dStatus, dBody)
+	}
+	validateResponse(t, doc, opts, http.MethodGet, "/api/v1/reports/"+beginResp.ReportID, dStatus, dHdr, dBody)
+	var detail struct {
+		Stage string `json:"stage"`
+	}
+	if err := json.Unmarshal(dBody, &detail); err != nil {
+		t.Fatalf("decode report detail: %v", err)
+	}
+	if detail.Stage != "main" {
+		t.Fatalf("resolved stage = %q, want main", detail.Stage)
+	}
+}

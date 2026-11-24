@@ -1,0 +1,2 @@
+ALTER TABLE test_cases VALIDATE CONSTRAINT test_cases_test_id_fkey;
+ALTER TABLE test_cases VALIDATE CONSTRAINT test_cases_signature_id_fkey;

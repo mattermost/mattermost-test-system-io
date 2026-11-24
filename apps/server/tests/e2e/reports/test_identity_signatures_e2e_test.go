@@ -506,12 +506,14 @@ func TestConsolidate_ConcurrentSharedTestsAndSignatures(t *testing.T) {
 			linkedTests, workers*3, linkedSigs, workers*2)
 	}
 
-	// Verify exact per-case test_id and signature_id mappings across every worker.
+	// Verify exact per-case test_id, test_key, signature_id, and fingerprint mappings across every worker.
 	rows, err := env.Pool.Query(ctx, `
-		SELECT r.gh_job_id, tc.full_title, tc.test_id, tc.signature_id
+		SELECT r.gh_job_id, tc.full_title, tc.test_id, t.test_key, tc.signature_id, fs.fingerprint
 		FROM test_cases tc
 		JOIN suites s ON s.id = tc.suite_id
 		JOIN reports r ON r.id = s.report_id
+		LEFT JOIN tests t ON t.id = tc.test_id
+		LEFT JOIN failure_signatures fs ON fs.id = tc.signature_id
 		WHERE r.report_group_id = $1
 	`, groupID)
 	if err != nil {
@@ -520,26 +522,47 @@ func TestConsolidate_ConcurrentSharedTestsAndSignatures(t *testing.T) {
 	defer rows.Close()
 
 	type caseIDs struct {
-		testID *uuid.UUID
-		sigID  *uuid.UUID
+		testID      *uuid.UUID
+		testKey     *string
+		sigID       *uuid.UUID
+		fingerprint *string
 	}
 	byWorker := make(map[string]map[string]caseIDs, workers)
 	for rows.Next() {
 		var jobID, fullTitle string
 		var testID, sigID *uuid.UUID
-		if err := rows.Scan(&jobID, &fullTitle, &testID, &sigID); err != nil {
+		var testKey, fp *string
+		if err := rows.Scan(&jobID, &fullTitle, &testID, &testKey, &sigID, &fp); err != nil {
 			t.Fatalf("scan concurrent case identity: %v", err)
 		}
 		if byWorker[jobID] == nil {
 			byWorker[jobID] = make(map[string]caseIDs, 3)
 		}
-		byWorker[jobID][fullTitle] = caseIDs{testID: testID, sigID: sigID}
+		if _, dup := byWorker[jobID][fullTitle]; dup {
+			t.Fatalf("duplicate case (%s, %q) returned for worker", jobID, fullTitle)
+		}
+		byWorker[jobID][fullTitle] = caseIDs{testID: testID, testKey: testKey, sigID: sigID, fingerprint: fp}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate concurrent case identities: %v", err)
 	}
 	if len(byWorker) != workers {
 		t.Fatalf("worker count = %d, want %d", len(byWorker), workers)
+	}
+
+	wantKeyByTitle := make(map[string]string, len(baseCases))
+	wantFPByTitle := make(map[string]string, 2)
+	for _, bc := range baseCases {
+		k, _ := ingest.DeriveTestKey("mattermost/concurrent-test", file, bc.FullTitle, bc.Title, bc.Tags)
+		wantKeyByTitle[bc.FullTitle] = k
+		if bc.Status == ingest.StatusFailed {
+			sig := errorsig.Compute(errorsig.Input{
+				Framework:    "playwright",
+				Status:       bc.Status,
+				ErrorMessage: *bc.ErrorMessage,
+			})
+			wantFPByTitle[bc.FullTitle] = sig.Fingerprint
+		}
 	}
 
 	wantTestIDs := make(map[string]uuid.UUID, 3)
@@ -552,8 +575,11 @@ func TestConsolidate_ConcurrentSharedTestsAndSignatures(t *testing.T) {
 		}
 		for _, bc := range baseCases {
 			got, ok := w[bc.FullTitle]
-			if !ok || got.testID == nil {
-				t.Fatalf("worker %s missing case %q or nil test_id", jobID, bc.FullTitle)
+			if !ok || got.testID == nil || got.testKey == nil {
+				t.Fatalf("worker %s missing case %q or nil test_id/test_key", jobID, bc.FullTitle)
+			}
+			if *got.testKey != wantKeyByTitle[bc.FullTitle] {
+				t.Fatalf("worker %s case %q test_key = %q, want %q", jobID, bc.FullTitle, *got.testKey, wantKeyByTitle[bc.FullTitle])
 			}
 			if prev, seen := wantTestIDs[bc.FullTitle]; !seen {
 				wantTestIDs[bc.FullTitle] = *got.testID
@@ -561,16 +587,19 @@ func TestConsolidate_ConcurrentSharedTestsAndSignatures(t *testing.T) {
 				t.Fatalf("worker %s case %q test_id = %s, want %s", jobID, bc.FullTitle, *got.testID, prev)
 			}
 			if bc.Status == ingest.StatusFailed {
-				if got.sigID == nil {
-					t.Fatalf("worker %s failing case %q has nil signature_id", jobID, bc.FullTitle)
+				if got.sigID == nil || got.fingerprint == nil {
+					t.Fatalf("worker %s failing case %q has nil signature_id/fingerprint", jobID, bc.FullTitle)
+				}
+				if *got.fingerprint != wantFPByTitle[bc.FullTitle] {
+					t.Fatalf("worker %s failing case %q fingerprint = %q, want %q", jobID, bc.FullTitle, *got.fingerprint, wantFPByTitle[bc.FullTitle])
 				}
 				if prev, seen := wantSigIDs[bc.FullTitle]; !seen {
 					wantSigIDs[bc.FullTitle] = *got.sigID
 				} else if prev != *got.sigID {
 					t.Fatalf("worker %s failing case %q signature_id = %s, want %s", jobID, bc.FullTitle, *got.sigID, prev)
 				}
-			} else if got.sigID != nil {
-				t.Fatalf("worker %s passing case %q got unexpected signature_id %s", jobID, bc.FullTitle, *got.sigID)
+			} else if got.sigID != nil || got.fingerprint != nil {
+				t.Fatalf("worker %s passing case %q got unexpected signature_id=%v fingerprint=%v", jobID, bc.FullTitle, got.sigID, got.fingerprint)
 			}
 		}
 	}
@@ -611,7 +640,7 @@ func TestIngestTestIDsAndFailureSignatures_SanitizesNULAndInvalidUTF8(t *testing
 	      "tests": [{
 	        "projectName": "chrom\u0000ium",
 	        "status": "unexpected",
-	        "annotations": [{"type": "issue", "description": "bad\u0000desc", "escaped": "keep\\u0000literal"}],
+	        "annotations": [{"type": "issue", "id": 9007199254740993, "description": "bad\u0000desc", "escaped": "keep\\u0000literal"}],
 	        "results": [{
 	          "status": "failed",
 	          "duration": 42,
@@ -646,7 +675,7 @@ func TestIngestTestIDsAndFailureSignatures_SanitizesNULAndInvalidUTF8(t *testing
 		t.Fatalf("unexpected sanitized values: title=%q fullTitle=%q file=%q errMsg=%q normMsg=%q testTitle=%q",
 			title, fullTitle, testFile, errMsg, normMsg, testTitle)
 	}
-	if !strings.Contains(tagsJSON, "@tagbad") || !strings.Contains(annsJSON, "baddesc") || !strings.Contains(annsJSON, `keep\\u0000literal`) || !strings.Contains(attsJSON, "shot.png") {
+	if !strings.Contains(tagsJSON, "@tagbad") || !strings.Contains(annsJSON, "baddesc") || !strings.Contains(annsJSON, `keep\\u0000literal`) || !strings.Contains(annsJSON, "9007199254740993") || !strings.Contains(attsJSON, "shot.png") {
 		t.Fatalf("unexpected sanitized jsonb values: tags=%s anns=%s atts=%s", tagsJSON, annsJSON, attsJSON)
 	}
 
@@ -884,5 +913,138 @@ func TestIngestTestIDsAndFailureSignatures_SanitizesNULAndInvalidUTF8(t *testing
 	}
 	if gotStatusRows[1].status != "timedOut" || gotStatusRows[1].sigID == nil || gotStatusRows[1].normMsg == nil || *gotStatusRows[1].normMsg != "timeout" {
 		t.Fatalf("timed\\x00Out row = %+v, want status=timedOut normMsg=timeout", gotStatusRows[1])
+	}
+}
+
+func TestConsolidate_DeferredSignatureAttributionOnPhase2Failure(t *testing.T) {
+	env := testenv.Start(t, testenv.WithReaperDisabled())
+	ctx := t.Context()
+
+	insertReport := func(runID, jobID string) (uuid.UUID, uuid.UUID) {
+		t.Helper()
+		var groupID, reportID uuid.UUID
+		if err := env.Pool.QueryRow(ctx, `
+			INSERT INTO report_groups (framework, name, repository, branch, commit_sha, gh_run_id, gh_run_attempt)
+			VALUES ('playwright', 'pw-phase2-attr', 'mattermost/phase2-attr', 'main', 'deadbeef', $1, '1')
+			RETURNING id
+		`, runID).Scan(&groupID); err != nil {
+			t.Fatalf("insert report_group %s: %v", runID, err)
+		}
+		if err := env.Pool.QueryRow(ctx, `
+			INSERT INTO reports (report_group_id, name, gh_job_id)
+			VALUES ($1, 'pw-phase2-attr', $2)
+			RETURNING id
+		`, groupID, jobID).Scan(&reportID); err != nil {
+			t.Fatalf("insert report %s: %v", jobID, err)
+		}
+		return groupID, reportID
+	}
+
+	group1, report1 := insertReport("run-attr-1", "job-attr-1")
+	group2, report2 := insertReport("run-attr-2", "job-attr-2")
+	_, report3 := insertReport("run-attr-3", "job-attr-3")
+
+	file := "e2e/phase2_fail.spec.ts"
+	errMsg := "Error: phase2 attribution failure sentinel"
+	now := time.Now().UTC()
+	suites := []ingest.ExtractedSuite{{
+		Title:     "Phase2Fail",
+		FilePath:  &file,
+		StartTime: &now,
+		Cases: []ingest.ExtractedCase{{
+			Title:        "fails in phase 2",
+			FullTitle:    "Phase2Fail > fails in phase 2",
+			Status:       ingest.StatusFailed,
+			ErrorMessage: &errMsg,
+			Sequence:     0,
+		}},
+	}}
+	wantSig := errorsig.Compute(errorsig.Input{
+		Framework:    "playwright",
+		Status:       ingest.StatusFailed,
+		ErrorMessage: errMsg,
+	})
+
+	// Force a Phase-2 failure after resolveCaseIdentitiesTx has committed.
+	if _, err := env.Pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION fail_phase2_case_insert() RETURNS trigger AS $$
+		BEGIN
+			RAISE EXCEPTION 'simulated phase-2 insert failure';
+		END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER trg_fail_phase2_case_insert
+		BEFORE INSERT ON test_cases
+		FOR EACH ROW EXECUTE FUNCTION fail_phase2_case_insert();
+	`); err != nil {
+		t.Fatalf("install phase-2 failure trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = env.Pool.Exec(context.Background(), `
+			DROP TRIGGER IF EXISTS trg_fail_phase2_case_insert ON test_cases;
+			DROP FUNCTION IF EXISTS fail_phase2_case_insert();
+		`)
+	})
+
+	if _, err := ingest.Consolidate(ctx, env.Pool, report1, suites, &now, &now); err == nil {
+		t.Fatalf("expected Consolidate to fail in Phase 2, got nil")
+	}
+
+	var firstGroupID *uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT first_seen_report_group_id
+		FROM failure_signatures
+		WHERE fingerprint = $1
+	`, wantSig.Fingerprint).Scan(&firstGroupID); err != nil {
+		t.Fatalf("query signature after Phase-2 failure: %v", err)
+	}
+	if firstGroupID != nil {
+		t.Fatalf("first_seen_report_group_id after Phase-2 failure = %v (group1=%s), want nil", firstGroupID, group1)
+	}
+
+	var group1Cases int
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM test_cases tc
+		JOIN suites s ON s.id = tc.suite_id
+		JOIN reports r ON r.id = s.report_id
+		WHERE r.report_group_id = $1
+	`, group1).Scan(&group1Cases); err != nil {
+		t.Fatalf("count group1 test_cases: %v", err)
+	}
+	if group1Cases != 0 {
+		t.Fatalf("group1 test_cases count = %d, want 0", group1Cases)
+	}
+
+	// Remove the failure trigger and retry on report2 (in group2); attribution must stick to group2.
+	if _, err := env.Pool.Exec(ctx, `DROP TRIGGER trg_fail_phase2_case_insert ON test_cases`); err != nil {
+		t.Fatalf("drop phase-2 failure trigger: %v", err)
+	}
+	if _, err := ingest.Consolidate(ctx, env.Pool, report2, suites, &now, &now); err != nil {
+		t.Fatalf("retry Consolidate on report2 failed: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT first_seen_report_group_id
+		FROM failure_signatures
+		WHERE fingerprint = $1
+	`, wantSig.Fingerprint).Scan(&firstGroupID); err != nil {
+		t.Fatalf("query signature after retry: %v", err)
+	}
+	if firstGroupID == nil || *firstGroupID != group2 {
+		t.Fatalf("first_seen_report_group_id after retry = %v, want %s", firstGroupID, group2)
+	}
+
+	// A subsequent group hitting the same signature must not overwrite first_seen_report_group_id.
+	if _, err := ingest.Consolidate(ctx, env.Pool, report3, suites, &now, &now); err != nil {
+		t.Fatalf("Consolidate on report3 failed: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT first_seen_report_group_id
+		FROM failure_signatures
+		WHERE fingerprint = $1
+	`, wantSig.Fingerprint).Scan(&firstGroupID); err != nil {
+		t.Fatalf("query signature after report3: %v", err)
+	}
+	if firstGroupID == nil || *firstGroupID != group2 {
+		t.Fatalf("first_seen_report_group_id after report3 = %v, want %s", firstGroupID, group2)
 	}
 }

@@ -1,7 +1,9 @@
 package ingest
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"time"
 )
 
@@ -196,8 +198,14 @@ func mergeAnnotations(groups ...[]json.RawMessage) []json.RawMessage {
 	seen := map[string]struct{}{}
 	for _, g := range groups {
 		for _, raw := range g {
+			dec := json.NewDecoder(bytes.NewReader(raw))
+			dec.UseNumber()
 			var v map[string]any
-			if err := json.Unmarshal(raw, &v); err != nil || v == nil {
+			if err := dec.Decode(&v); err != nil || v == nil {
+				continue
+			}
+			var trailing any
+			if err := dec.Decode(&trailing); err != io.EOF {
 				continue
 			}
 			canon, err := json.Marshal(v)

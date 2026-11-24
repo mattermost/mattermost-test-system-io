@@ -60,7 +60,12 @@ func Consolidate(
 	}
 
 	caseInputs, suiteOffsets := buildCaseIdentityInputs(suites)
-	identities, err := resolveCaseIdentitiesTx(ctx, pool, meta, caseInputs)
+	// Defer first_seen_report_group_id until the main transaction commits
+	// test_cases so a Phase-2 failure never leaves attribution pointing to a
+	// report group with zero linked cases.
+	identityMeta := meta
+	identityMeta.ReportGroupID = uuid.Nil
+	identities, err := resolveCaseIdentitiesTx(ctx, pool, identityMeta, caseInputs)
 	if err != nil {
 		return Totals{}, err
 	}
@@ -162,6 +167,10 @@ func Consolidate(
 			caseID, screenshotID); err != nil {
 			return Totals{}, fmt.Errorf("link screenshot %s: %w", screenshotID, err)
 		}
+	}
+
+	if err := attributeFailureSignaturesTx(ctx, tx, meta.ReportGroupID, identities); err != nil {
+		return Totals{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -490,6 +499,40 @@ func insertSuiteCasesTx(
 	}
 	if err := br.Close(); err != nil {
 		return fmt.Errorf("close test_cases batch: %w", err)
+	}
+	return nil
+}
+
+func attributeFailureSignaturesTx(
+	ctx context.Context, tx pgx.Tx, reportGroupID uuid.UUID, identities []TestIdentity,
+) error {
+	if reportGroupID == uuid.Nil || len(identities) == 0 {
+		return nil
+	}
+	seen := make(map[uuid.UUID]struct{})
+	sigIDs := make([]uuid.UUID, 0)
+	for _, id := range identities {
+		if id.SignatureID == nil || *id.SignatureID == uuid.Nil {
+			continue
+		}
+		if _, ok := seen[*id.SignatureID]; ok {
+			continue
+		}
+		seen[*id.SignatureID] = struct{}{}
+		sigIDs = append(sigIDs, *id.SignatureID)
+	}
+	if len(sigIDs) == 0 {
+		return nil
+	}
+	slices.SortFunc(sigIDs, func(a, b uuid.UUID) int {
+		return bytes.Compare(a[:], b[:])
+	})
+	if _, err := tx.Exec(ctx, `
+		UPDATE failure_signatures
+		SET first_seen_report_group_id = $1
+		WHERE id = ANY($2::uuid[]) AND first_seen_report_group_id IS NULL
+	`, reportGroupID, sigIDs); err != nil {
+		return fmt.Errorf("attribute failure_signatures: %w", err)
 	}
 	return nil
 }

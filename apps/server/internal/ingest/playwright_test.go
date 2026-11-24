@@ -219,15 +219,16 @@ func TestMergeAnnotations_SkipsNonObjects(t *testing.T) {
 			json.RawMessage(`true`),
 			json.RawMessage(`["arr"]`),
 			json.RawMessage(`{invalid`),
-			json.RawMessage(`{"type":"issue","description":"SEC-1"}`),
+			json.RawMessage(`{"type":"trailing"}{"extra":1}`),
+			json.RawMessage(`{"type":"issue","description":"SEC-1","id":9007199254740993}`),
 		},
 		[]json.RawMessage{
-			json.RawMessage(`{"description":"SEC-1","type":"issue"}`),
+			json.RawMessage(`{"description":"SEC-1","id":9007199254740993,"type":"issue"}`),
 			json.RawMessage(`{"type":"slow"}`),
 		},
 	)
 	want := []string{
-		`{"description":"SEC-1","type":"issue"}`,
+		`{"description":"SEC-1","id":9007199254740993,"type":"issue"}`,
 		`{"type":"slow"}`,
 	}
 	if len(got) != len(want) {

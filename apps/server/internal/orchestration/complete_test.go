@@ -61,6 +61,21 @@ func TestUnitOutcomeFromSpecStatuses(t *testing.T) {
 			statuses: []string{AttemptStatusFlaky, AttemptStatusFailed},
 			want:     UnitStateCompletedFail,
 		},
+		{
+			name:     "pending counts as skipped",
+			statuses: []string{"pending", AttemptStatusSkipped},
+			want:     UnitStateCompletedSkipped,
+		},
+		{
+			name:     "unknown fails unit",
+			statuses: []string{AttemptStatusPassed, "unknown"},
+			want:     UnitStateCompletedFail,
+		},
+		{
+			name:     "empty statuses fail-closed",
+			statuses: nil,
+			want:     UnitStateCompletedFail,
+		},
 	}
 
 	for _, tc := range cases {

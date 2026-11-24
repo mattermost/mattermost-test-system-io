@@ -129,10 +129,16 @@ func detoxStatus(s string) string {
 		return StatusPassed
 	case StatusFailed:
 		return StatusFailed
+	case StatusFlaky:
+		return StatusFlaky
+	case StatusTimedOut:
+		return StatusTimedOut
+	case StatusInterrupted:
+		return StatusInterrupted
 	case cypressStatePending, StatusSkipped, "todo":
 		return StatusSkipped
 	default:
-		return s
+		return StatusFailed
 	}
 }
 

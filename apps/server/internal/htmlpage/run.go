@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // RunPageOpts holds run page query options.
@@ -358,7 +359,7 @@ func applyRunSummary(base *RunPage, snap *orchestration.RunWithUnits) {
 		base.ProgressLabel = "Timed Out"
 	default:
 		base.HasTestStatus = true
-		if tcFailed > 0 {
+		if tcFailed > 0 || run.Counts.CompletedFail > 0 || run.Counts.Abandoned > 0 {
 			base.TestStatus = statusFailed
 			base.TestStatusClass = "test-status-fail"
 		} else {
@@ -538,44 +539,23 @@ func parseAttemptTests(raw json.RawMessage) []orchTestCase {
 }
 
 func aggregateUnitTests(u orchestration.UnitView) map[string]string {
-	byTitle := map[string][]orchTestCase{}
+	byTitle := map[string][]string{}
 	order := []string{}
 	for _, a := range u.Attempts {
 		for _, tc := range parseAttemptTests(a.TestCases) {
-			if tc.FullTitle == "" {
+			if strings.TrimSpace(tc.FullTitle) == "" || tc.Status == "" {
 				continue
 			}
 			if _, ok := byTitle[tc.FullTitle]; !ok {
 				order = append(order, tc.FullTitle)
 			}
-			byTitle[tc.FullTitle] = append(byTitle[tc.FullTitle], tc)
+			byTitle[tc.FullTitle] = append(byTitle[tc.FullTitle], tc.Status)
 		}
 	}
 	out := make(map[string]string, len(byTitle))
 	for _, title := range order {
-		entries := byTitle[title]
-		everPassed, everFailed, everSkipped := false, false, false
-		for _, e := range entries {
-			switch e.Status {
-			case statusPassed, statusFlaky:
-				everPassed = true
-			case statusFailed, statusTimedOutPW, statusInterrupted:
-				everFailed = true
-			case statusSkipped:
-				everSkipped = true
-			}
-		}
-		switch {
-		case everPassed && everFailed:
-			out[title] = statusFlaky
-		case everPassed:
-			out[title] = statusPassed
-		case everFailed:
-			out[title] = statusFailed
-		case everSkipped:
-			out[title] = statusSkipped
-		default:
-			out[title] = statusFailed
+		if v := teststatus.TestVerdict(byTitle[title], false); v != "" {
+			out[title] = v
 		}
 	}
 	return out
@@ -733,7 +713,7 @@ func buildUnitTestRows(u orchestration.UnitView, parentNum int) []RunTestRow {
 	order := []string{}
 	for attemptIdx, a := range u.Attempts {
 		for _, tc := range parseAttemptTests(a.TestCases) {
-			if tc.FullTitle == "" {
+			if strings.TrimSpace(tc.FullTitle) == "" || tc.Status == "" {
 				continue
 			}
 			if _, ok := byTitle[tc.FullTitle]; !ok {
@@ -782,29 +762,11 @@ func buildUnitTestRows(u orchestration.UnitView, parentNum int) []RunTestRow {
 }
 
 func aggregateTestEntries(entries []testCaseEntry) string {
-	everPassed, everFailed, everSkipped := false, false, false
+	statuses := make([]string, 0, len(entries))
 	for _, e := range entries {
-		switch e.tc.Status {
-		case statusPassed, statusFlaky:
-			everPassed = true
-		case statusFailed, statusTimedOutPW, statusInterrupted:
-			everFailed = true
-		case statusSkipped:
-			everSkipped = true
-		}
+		statuses = append(statuses, e.tc.Status)
 	}
-	switch {
-	case everPassed && everFailed:
-		return statusFlaky
-	case everPassed:
-		return statusPassed
-	case everFailed:
-		return statusFailed
-	case everSkipped:
-		return statusSkipped
-	default:
-		return statusFailed
-	}
+	return teststatus.TestVerdict(statuses, false)
 }
 
 func testStatusIcon(status string) string {
@@ -839,17 +801,14 @@ func testStatusClass(status string) string {
 
 func buildTestAttempt(e testCaseEntry, n int) RunTestAttempt {
 	tc := e.tc
-	isFail := tc.Status == statusFailed || tc.Status == statusTimedOutPW || tc.Status == statusInterrupted
-	isSkip := tc.Status == statusSkipped
-	isPass := tc.Status == statusPassed || tc.Status == statusFlaky
+	clsAttempt := teststatus.ClassifyAttempt(tc.Status)
+	isFail := clsAttempt == teststatus.ClassFail
 	icon, cls := iconFail, clsUnitFail
-	switch {
-	case isSkip:
+	switch clsAttempt {
+	case teststatus.ClassSkip:
 		icon, cls = statusSkipped, clsUnitSkipped
-	case isPass:
+	case teststatus.ClassPass:
 		icon, cls = iconPass, clsUnitPass
-	case isFail:
-		icon, cls = iconFail, clsUnitFail
 	}
 	att := RunTestAttempt{
 		Label:       fmt.Sprintf("Attempt %d", n),
@@ -924,8 +883,8 @@ func buildWorkerSlots(u orchestration.UnitView, allJobNames []string) []WorkerSl
 	for i, a := range u.Attempts {
 		slot := workerSlotLabel(a.GHJobName, i+1, allJobNames)
 		inFlight := a.Status == nil && !a.Expired
-		passed := a.Status != nil && (*a.Status == statusPassed || *a.Status == statusFlaky)
-		failed := a.Expired || (a.Status != nil && (*a.Status == statusFailed || *a.Status == statusTimedOutPW || *a.Status == statusInterrupted))
+		passed := a.Status != nil && teststatus.IsPass(*a.Status)
+		failed := a.Expired || (a.Status != nil && teststatus.IsFail(*a.Status))
 		cls := "slot-neutral"
 		switch {
 		case inFlight:

@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // retestLabelRE matches shard labels that are retest workers (Playwright
@@ -23,44 +25,16 @@ func isRetestShardLabel(shardLabel string) bool {
 }
 
 func statusIsPass(s string) bool {
-	return s == statusPassed || s == statusFlaky
+	return teststatus.IsPass(s)
 }
 
 func statusIsFail(s string) bool {
-	return s == statusFailed || s == statusTimedOut
+	return teststatus.IsFail(s)
 }
 
 // rollupAttemptStatuses collapses attempts that share a report (in-shard retries).
 func rollupAttemptStatuses(statuses []string) string {
-	var hasPass, hasFail, hasSkip bool
-	for _, s := range statuses {
-		switch {
-		case statusIsPass(s):
-			hasPass = true
-		case statusIsFail(s):
-			hasFail = true
-		case s == statusSkipped:
-			hasSkip = true
-		}
-	}
-	if hasPass && hasFail {
-		return statusFlaky
-	}
-	if hasFail {
-		return statusFailed
-	}
-	if hasPass {
-		for _, s := range statuses {
-			if s == statusFlaky {
-				return statusFlaky
-			}
-		}
-		return statusPassed
-	}
-	if hasSkip {
-		return statusSkipped
-	}
-	return statusPassed
+	return teststatus.TestVerdict(statuses, false)
 }
 
 // specAttempt is one stored attempt of a spec in a suite, in ordinal order.
@@ -82,8 +56,12 @@ func suiteSpecOK(attempts []specAttempt) bool {
 		return false
 	}
 	final := attempts[len(attempts)-1]
-	if statusIsPass(final.Status) || final.Status == statusSkipped {
+	if teststatus.IsPass(final.Status) || teststatus.IsSkip(final.Status) {
 		return true
+	}
+	// Interrupted / timedOut / unknown retries are not treated as test.fail() flaky.
+	if final.Status != teststatus.Failed {
+		return false
 	}
 	start := len(attempts) - 1
 	for start > 0 && attempts[start-1].Retry < attempts[start].Retry {
@@ -93,7 +71,7 @@ func suiteSpecOK(attempts []specAttempt) bool {
 	for _, a := range attempts[start:] {
 		chain = append(chain, a.Status)
 	}
-	return rollupAttemptStatuses(chain) == statusFlaky
+	return rollupAttemptStatuses(chain) == teststatus.Flaky
 }
 
 // rollupTitleStatus is the consolidated verdict for one unique test title.
@@ -107,7 +85,7 @@ func suiteSpecOK(attempts []specAttempt) bool {
 //     "run-failed-tests" job name).
 func rollupTitleStatus(cases []titleCase) string {
 	if len(cases) == 0 {
-		return statusPassed
+		return teststatus.Passed
 	}
 
 	byReport := map[uuid.UUID][]string{}
@@ -138,14 +116,14 @@ func rollupTitleStatus(cases []titleCase) string {
 		}
 		primaryCount++
 		switch out {
-		case statusFailed, statusTimedOut:
-			primaryFail = true
-		case statusFlaky:
+		case teststatus.Flaky:
 			primaryFlaky = true
-		case statusPassed:
+		case teststatus.Passed:
 			primaryPass = true
-		case statusSkipped:
+		case teststatus.Skipped:
 			primarySkip = true
+		default:
+			primaryFail = true
 		}
 	}
 
@@ -154,24 +132,24 @@ func rollupTitleStatus(cases []titleCase) string {
 	// when there is no surviving peer-platform success alongside a failure.
 	if primaryFail {
 		if primaryCount > 1 && (primaryPass || primaryFlaky) {
-			return statusFailed
+			return teststatus.Failed
 		}
 		if retestPass {
-			return statusFlaky
+			return teststatus.Flaky
 		}
-		return statusFailed
+		return teststatus.Failed
 	}
 	if retestFail && !retestPass {
-		return statusFailed
+		return teststatus.Failed
 	}
 	if primaryFlaky {
-		return statusFlaky
+		return teststatus.Flaky
 	}
 	if primaryPass || retestPass {
-		return statusPassed
+		return teststatus.Passed
 	}
 	if primarySkip {
-		return statusSkipped
+		return teststatus.Skipped
 	}
-	return statusPassed
+	return teststatus.Passed
 }

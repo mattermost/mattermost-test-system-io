@@ -841,21 +841,22 @@ func aggregateTestCounts(ctx context.Context, pool *pgxpool.Pool, runID uuid.UUI
 			SELECT
 				a.dispatch_unit_id,
 				tc->>'full_title' AS full_title,
-				BOOL_OR(tc->>'status' IN ('passed', 'flaky')) AS ever_passed,
-				BOOL_OR(tc->>'status' IN ('failed', 'timedOut', 'interrupted')) AS ever_failed,
-				BOOL_OR(tc->>'status' = 'skipped') AS ever_skipped
+				tsio_test_verdict(ARRAY_AGG(tc->>'status')) AS verdict
 			  FROM attempts a
 			 CROSS JOIN LATERAL jsonb_array_elements(a.test_cases) AS tc
 			 WHERE a.run_id = $1
 			   AND a.test_cases IS NOT NULL
+			   AND jsonb_typeof(a.test_cases) = 'array'
+			   AND BTRIM(COALESCE(tc->>'full_title', ''), E' \t\n\r\v\f\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000') <> ''
+			   AND COALESCE(tc->>'status', '') <> ''
 			 GROUP BY a.dispatch_unit_id, tc->>'full_title'
 		)
 		SELECT
-			COUNT(*) FILTER (WHERE ever_passed AND NOT ever_failed) AS passed,
-			COUNT(*) FILTER (WHERE ever_failed AND NOT ever_passed) AS failed,
-			COUNT(*) FILTER (WHERE ever_passed AND ever_failed) AS flaky,
-			COUNT(*) FILTER (WHERE ever_skipped AND NOT ever_passed AND NOT ever_failed) AS skipped,
-			COUNT(*) AS total
+			COUNT(*) FILTER (WHERE verdict = 'passed') AS passed,
+			COUNT(*) FILTER (WHERE verdict = 'failed') AS failed,
+			COUNT(*) FILTER (WHERE verdict = 'flaky') AS flaky,
+			COUNT(*) FILTER (WHERE verdict = 'skipped') AS skipped,
+			COUNT(*) FILTER (WHERE verdict IS NOT NULL) AS total
 		  FROM per_test
 	`, runID).Scan(&t.Passed, &t.Failed, &t.Flaky, &t.Skipped, &t.Total)
 	if err != nil {

@@ -220,12 +220,16 @@ func cypressStatus(t cypressTest) string {
 		return StatusPassed
 	case StatusFailed:
 		return StatusFailed
+	case StatusTimedOut:
+		return StatusTimedOut
+	case StatusInterrupted:
+		return StatusInterrupted
 	case StatusFlaky:
 		return StatusFlaky
 	case cypressStatePending, StatusSkipped:
 		return StatusSkipped
 	default:
-		return StatusPassed
+		return StatusFailed
 	}
 }
 

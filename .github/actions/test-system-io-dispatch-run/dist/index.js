@@ -5,8 +5,15 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -19501,6 +19508,111 @@ var require_fast_content_type_parse = __commonJS({
   }
 });
 
+// src/spawn.ts
+var spawn_exports = {};
+__export(spawn_exports, {
+  DEADLINE_MESSAGE: () => DEADLINE_MESSAGE,
+  deadlineInterruptedResults: () => deadlineInterruptedResults,
+  deadlineLease: () => deadlineLease,
+  spawnWithDeadline: () => spawnWithDeadline,
+  writeDeadlineReport: () => writeDeadlineReport
+});
+function spawnWithDeadline(command, args, opts) {
+  return new Promise((resolve3) => {
+    const child = (0, import_node_child_process.spawn)(command, args, {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: "inherit",
+      detached: opts.timeoutMs !== void 0 && process.platform !== "win32"
+    });
+    let settled = false;
+    let timedOut = false;
+    let timer;
+    const finish = (outcome) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve3(outcome);
+    };
+    const killGroup = () => {
+      if (child.pid == null) return;
+      try {
+        if (process.platform === "win32") {
+          child.kill("SIGKILL");
+        } else {
+          process.kill(-child.pid, "SIGKILL");
+        }
+      } catch {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
+      }
+    };
+    if (opts.timeoutMs !== void 0) {
+      timer = setTimeout(
+        () => {
+          timedOut = true;
+          killGroup();
+        },
+        Math.max(0, opts.timeoutMs)
+      );
+    }
+    child.on("error", (error2) => finish({ status: null, signal: null, error: error2, timedOut }));
+    child.on("close", (status, signal) => finish({ status, signal, timedOut }));
+  });
+}
+function deadlineInterruptedResults(specPaths, durationMs) {
+  return specPaths.map((spec_path) => ({
+    spec_path,
+    status: "interrupted",
+    actual_duration_ms: durationMs,
+    test_cases: [],
+    error_message: DEADLINE_MESSAGE
+  }));
+}
+function writeDeadlineReport(opts) {
+  const start = new Date(opts.startedAt).toISOString();
+  const end = new Date(opts.endedAt).toISOString();
+  const duration = Math.max(0, opts.endedAt - opts.startedAt);
+  const killedAtDeadline = { reason: DEADLINE_MESSAGE, specs: opts.specPaths };
+  const report = opts.framework === "playwright" ? {
+    config: {},
+    suites: [],
+    errors: [],
+    stats: { startTime: start, duration, expected: 0, unexpected: 0, flaky: 0, skipped: 0 },
+    killedAtDeadline
+  } : {
+    stats: { suites: 0, tests: 0, passes: 0, pending: 0, failures: 0, start, end, duration },
+    results: [],
+    killedAtDeadline
+  };
+  fs2.mkdirSync(path.dirname(opts.jsonPath), { recursive: true });
+  fs2.writeFileSync(opts.jsonPath, JSON.stringify(report));
+}
+function deadlineLease(opts) {
+  const jsonPath = opts.framework === "playwright" ? path.join(opts.iterDir, "results", "reporter", "results.json") : path.join(opts.iterDir, "killed-at-deadline.json");
+  writeDeadlineReport({ ...opts, jsonPath });
+  return {
+    invocation: {
+      specPath: opts.specPaths[0],
+      iterDir: opts.iterDir,
+      playwrightJsonPath: jsonPath
+    },
+    results: deadlineInterruptedResults(opts.specPaths, Math.max(0, opts.endedAt - opts.startedAt))
+  };
+}
+var import_node_child_process, fs2, path, DEADLINE_MESSAGE;
+var init_spawn = __esm({
+  "src/spawn.ts"() {
+    "use strict";
+    import_node_child_process = require("child_process");
+    fs2 = __toESM(require("fs"));
+    path = __toESM(require("path"));
+    DEADLINE_MESSAGE = "killed at worker deadline (deadline-minutes); spec did not finish in this worker";
+  }
+});
+
 // node_modules/@actions/core/lib/command.js
 var os = __toESM(require("os"), 1);
 
@@ -24670,107 +24782,15 @@ async function fetchWithAuthRetry(makeRequest) {
 // src/playwright.ts
 var fs3 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
-
-// src/spawn.ts
-var import_node_child_process = require("child_process");
-var fs2 = __toESM(require("fs"));
-var path = __toESM(require("path"));
-function spawnWithDeadline(command, args, opts) {
-  return new Promise((resolve3) => {
-    const child = (0, import_node_child_process.spawn)(command, args, {
-      cwd: opts.cwd,
-      env: opts.env,
-      stdio: "inherit",
-      detached: opts.timeoutMs !== void 0 && process.platform !== "win32"
-    });
-    let settled = false;
-    let timedOut = false;
-    let timer;
-    const finish = (outcome) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      resolve3(outcome);
-    };
-    const killGroup = () => {
-      if (child.pid == null) return;
-      try {
-        if (process.platform === "win32") {
-          child.kill("SIGKILL");
-        } else {
-          process.kill(-child.pid, "SIGKILL");
-        }
-      } catch {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-        }
-      }
-    };
-    if (opts.timeoutMs !== void 0) {
-      timer = setTimeout(
-        () => {
-          timedOut = true;
-          killGroup();
-        },
-        Math.max(0, opts.timeoutMs)
-      );
-    }
-    child.on("error", (error2) => finish({ status: null, signal: null, error: error2, timedOut }));
-    child.on("close", (status, signal) => finish({ status, signal, timedOut }));
-  });
-}
-var DEADLINE_MESSAGE = "killed at worker deadline (deadline-minutes); spec did not finish in this worker";
-function deadlineInterruptedResults(specPaths, durationMs) {
-  return specPaths.map((spec_path) => ({
-    spec_path,
-    status: "interrupted",
-    actual_duration_ms: durationMs,
-    test_cases: [],
-    error_message: DEADLINE_MESSAGE
-  }));
-}
-function writeDeadlineReport(opts) {
-  const start = new Date(opts.startedAt).toISOString();
-  const end = new Date(opts.endedAt).toISOString();
-  const duration = Math.max(0, opts.endedAt - opts.startedAt);
-  const killedAtDeadline = { reason: DEADLINE_MESSAGE, specs: opts.specPaths };
-  const report = opts.framework === "playwright" ? {
-    config: {},
-    suites: [],
-    errors: [],
-    stats: { startTime: start, duration, expected: 0, unexpected: 0, flaky: 0, skipped: 0 },
-    killedAtDeadline
-  } : {
-    stats: { suites: 0, tests: 0, passes: 0, pending: 0, failures: 0, start, end, duration },
-    results: [],
-    killedAtDeadline
-  };
-  fs2.mkdirSync(path.dirname(opts.jsonPath), { recursive: true });
-  fs2.writeFileSync(opts.jsonPath, JSON.stringify(report));
-}
-function deadlineLease(opts) {
-  const jsonPath = opts.framework === "playwright" ? path.join(opts.iterDir, "results", "reporter", "results.json") : path.join(opts.iterDir, "killed-at-deadline.json");
-  writeDeadlineReport({ ...opts, jsonPath });
-  return {
-    invocation: {
-      specPath: opts.specPaths[0],
-      iterDir: opts.iterDir,
-      playwrightJsonPath: jsonPath
-    },
-    results: deadlineInterruptedResults(opts.specPaths, Math.max(0, opts.endedAt - opts.startedAt))
-  };
-}
-
-// src/playwright.ts
 async function runUnit(cfg, iterationSeq, specPaths) {
   const iterDir = path2.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs3.mkdirSync(iterDir, { recursive: true });
   const args = ["playwright", "test", `--project=${cfg.playwrightProject}`, "--no-deps"];
   if (cfg.playwrightRetries > 0) args.push(`--retries=${cfg.playwrightRetries}`);
   args.push(...specPaths);
+  const { deadlineLease: deadlineLease2, spawnWithDeadline: spawnWithDeadline2 } = await Promise.resolve().then(() => (init_spawn(), spawn_exports));
   const startedAt = Date.now();
-  const child = await spawnWithDeadline("npx", args, {
+  const child = await spawnWithDeadline2("npx", args, {
     cwd: cfg.playwrightDir,
     env: { ...process.env, PW_SNAPSHOT_ENABLE: "true" },
     timeoutMs: cfg.timeoutMs
@@ -24784,7 +24804,7 @@ async function runUnit(cfg, iterationSeq, specPaths) {
       `playwright killed at worker deadline; reporting interrupted for ${specPaths.join(", ")}`
     );
     return {
-      ...deadlineLease({
+      ...deadlineLease2({
         framework: "playwright",
         iterDir,
         specPaths,
@@ -24845,13 +24865,19 @@ function aggregateSpec(json, specPath, fallbackDurationMs) {
         const specTitle = [...here, s.title];
         for (const t of s.tests || []) {
           let everPassed = false;
+          let everFlaky = false;
           let everFailed = false;
           let everTimedOut = false;
           let everInterrupted = false;
           let everSkipped = false;
-          for (const r of t.results || []) {
+          const results = t.results || [];
+          if (results.length > 0 && t.status === "flaky") everFlaky = true;
+          for (const r of results) {
             const status = mapStatus(r.status);
-            if (status === "passed" || status === "flaky") everPassed = true;
+            if (status === "flaky") {
+              everFlaky = true;
+              everPassed = true;
+            } else if (status === "passed") everPassed = true;
             else if (status === "failed") everFailed = true;
             else if (status === "timedOut") everTimedOut = true;
             else if (status === "interrupted") everInterrupted = true;
@@ -24876,11 +24902,12 @@ function aggregateSpec(json, specPath, fallbackDurationMs) {
             totalMs += tc.duration_ms;
           }
           let testOutcome = null;
-          if (everPassed && (everFailed || everTimedOut || everInterrupted)) testOutcome = "flaky";
-          else if (everPassed) testOutcome = "passed";
+          if (everFlaky || everPassed && (everFailed || everTimedOut || everInterrupted))
+            testOutcome = "flaky";
           else if (everInterrupted) testOutcome = "interrupted";
           else if (everTimedOut) testOutcome = "timedOut";
           else if (everFailed) testOutcome = "failed";
+          else if (everPassed) testOutcome = "passed";
           else if (everSkipped) testOutcome = "skipped";
           if (testOutcome == null) continue;
           if (RANKS[testOutcome] > RANKS[worst]) worst = testOutcome;
@@ -24892,7 +24919,13 @@ function aggregateSpec(json, specPath, fallbackDurationMs) {
   for (const s of json.suites || []) visit(s, [], "");
   if (cases.length === 0) {
     return {
-      result: { spec_path: specPath, status: "skipped", actual_duration_ms: 0, test_cases: [] },
+      result: {
+        spec_path: specPath,
+        status: "failed",
+        actual_duration_ms: 0,
+        error_message: "spec-did-not-run",
+        test_cases: []
+      },
       screenshots: []
     };
   }
@@ -24920,6 +24953,7 @@ function mapStatus(s) {
     case "flaky":
       return "flaky";
     case "skipped":
+    case "pending":
       return "skipped";
     case "timedOut":
       return "timedOut";
@@ -24933,6 +24967,7 @@ function mapStatus(s) {
 // src/cypress.ts
 var fs4 = __toESM(require("fs"));
 var path3 = __toESM(require("path"));
+init_spawn();
 async function runUnit2(cfg, iterationSeq, specPaths) {
   const iterDir = path3.join(cfg.workerArtifacts, `iter-${iterationSeq}`);
   fs4.mkdirSync(iterDir, { recursive: true });

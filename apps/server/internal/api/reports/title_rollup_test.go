@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 func TestRollupTitleStatus(t *testing.T) {
@@ -13,70 +15,78 @@ func TestRollupTitleStatus(t *testing.T) {
 
 	t.Run("ios fail android pass is failed not flaky", func(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
-			{ReportID: android, ShardLabel: "detox-android", Status: statusPassed},
-			{ReportID: ios, ShardLabel: "detox-ios", Status: statusFailed},
+			{ReportID: android, ShardLabel: "detox-android", Status: teststatus.Passed},
+			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Failed},
 		})
-		if got != statusFailed {
+		if got != teststatus.Failed {
 			t.Fatalf("got %q, want failed", got)
 		}
 	})
 
 	t.Run("primary fail then named retest pass is flaky", func(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
-			{ReportID: ios, ShardLabel: "detox-ios", Status: statusFailed},
-			{ReportID: retest, ShardLabel: "detox-ios-retest", Status: statusPassed},
+			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Failed},
+			{ReportID: retest, ShardLabel: "detox-ios-retest", Status: teststatus.Passed},
 		})
-		if got != statusFlaky {
+		if got != teststatus.Flaky {
 			t.Fatalf("got %q, want flaky", got)
 		}
 	})
 
 	t.Run("primary fail then cypress run-failed-tests pass is flaky", func(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
-			{ReportID: ios, ShardLabel: "cypress-shard-A", Status: statusFailed},
-			{ReportID: retest, ShardLabel: "run-failed-tests", Status: statusPassed},
+			{ReportID: ios, ShardLabel: "cypress-shard-A", Status: teststatus.Failed},
+			{ReportID: retest, ShardLabel: "run-failed-tests", Status: teststatus.Passed},
 		})
-		if got != statusFlaky {
+		if got != teststatus.Flaky {
 			t.Fatalf("got %q, want flaky", got)
 		}
 	})
 
 	t.Run("in-shard retries on one report is flaky", func(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
-			{ReportID: ios, ShardLabel: "detox-ios", Status: statusFailed},
-			{ReportID: ios, ShardLabel: "detox-ios", Status: statusPassed},
+			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Failed},
+			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Passed},
 		})
-		if got != statusFlaky {
+		if got != teststatus.Flaky {
 			t.Fatalf("got %q, want flaky", got)
 		}
 	})
 
 	t.Run("both platforms passed", func(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
-			{ReportID: android, ShardLabel: "detox-android", Status: statusPassed},
-			{ReportID: ios, ShardLabel: "detox-ios", Status: statusPassed},
+			{ReportID: android, ShardLabel: "detox-android", Status: teststatus.Passed},
+			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Passed},
 		})
-		if got != statusPassed {
+		if got != teststatus.Passed {
 			t.Fatalf("got %q, want passed", got)
 		}
 	})
 
 	t.Run("empty shard labels treat each report as primary peer", func(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
-			{ReportID: android, ShardLabel: "", Status: statusPassed},
-			{ReportID: ios, ShardLabel: "", Status: statusFailed},
+			{ReportID: android, ShardLabel: "", Status: teststatus.Passed},
+			{ReportID: ios, ShardLabel: "", Status: teststatus.Failed},
 		})
-		if got != statusFailed {
+		if got != teststatus.Failed {
 			t.Fatalf("got %q, want failed", got)
 		}
 	})
 
 	t.Run("single primary failure stays failed", func(t *testing.T) {
 		got := rollupTitleStatus([]titleCase{
-			{ReportID: ios, ShardLabel: "detox-ios", Status: statusFailed},
+			{ReportID: ios, ShardLabel: "detox-ios", Status: teststatus.Failed},
 		})
-		if got != statusFailed {
+		if got != teststatus.Failed {
 			t.Fatalf("got %q, want failed", got)
+		}
+	})
+
+	t.Run("interrupted and unknown single attempts fail", func(t *testing.T) {
+		for _, s := range []string{teststatus.Interrupted, "unknown"} {
+			if got := rollupTitleStatus([]titleCase{{ReportID: ios, ShardLabel: "pw", Status: s}}); got != teststatus.Failed {
+				t.Fatalf("status %q: got %q, want failed", s, got)
+			}
 		}
 	})
 }
@@ -88,20 +98,22 @@ func TestSuiteSpecOK(t *testing.T) {
 		attempts []specAttempt
 		want     bool
 	}{
-		{"passed", []specAttempt{try(statusPassed, 0)}, true},
-		{"skipped", []specAttempt{try(statusSkipped, 0)}, true},
-		{"failed then passed on retry", []specAttempt{try(statusFailed, 0), try(statusPassed, 1)}, true},
-		{"legacy rows all flaky", []specAttempt{try(statusFlaky, 0), try(statusFlaky, 1)}, true},
+		{"passed", []specAttempt{try(teststatus.Passed, 0)}, true},
+		{"skipped", []specAttempt{try(teststatus.Skipped, 0)}, true},
+		{"pending", []specAttempt{try(teststatus.Pending, 0)}, true},
+		{"failed then passed on retry", []specAttempt{try(teststatus.Failed, 0), try(teststatus.Passed, 1)}, true},
+		{"legacy rows all flaky", []specAttempt{try(teststatus.Flaky, 0), try(teststatus.Flaky, 1)}, true},
 		// A Playwright test.fail() test that passed, then failed on retry: Playwright and countStatuses call it flaky.
-		{"passed then failed on retry", []specAttempt{try(statusPassed, 0), try(statusFailed, 1)}, true},
+		{"passed then failed on retry", []specAttempt{try(teststatus.Passed, 0), try(teststatus.Failed, 1)}, true},
 		// A retest upload merged into the suite starts again at retry 0; the later pass decides, as before.
-		{"failed, then passed in a retest", []specAttempt{try(statusFailed, 0), try(statusFailed, 1), try(statusPassed, 0)}, true},
+		{"failed, then passed in a retest", []specAttempt{try(teststatus.Failed, 0), try(teststatus.Failed, 1), try(teststatus.Passed, 0)}, true},
 		// Two Playwright projects share a full title: a pass in one is not a retry of a failure in the next.
-		{"one project passed, the next failed", []specAttempt{try(statusPassed, 0), try(statusFailed, 0)}, false},
-		{"one project flaky, the next failed", []specAttempt{try(statusFailed, 0), try(statusPassed, 1), try(statusFailed, 0), try(statusFailed, 1)}, false},
-		{"failed on every attempt", []specAttempt{try(statusFailed, 0), try(statusFailed, 1)}, false},
-		{"timed out", []specAttempt{try(statusTimedOut, 0)}, false},
-		{"interrupted after a pass", []specAttempt{try(statusPassed, 0), try("interrupted", 1)}, false},
+		{"one project passed, the next failed", []specAttempt{try(teststatus.Passed, 0), try(teststatus.Failed, 0)}, false},
+		{"one project flaky, the next failed", []specAttempt{try(teststatus.Failed, 0), try(teststatus.Passed, 1), try(teststatus.Failed, 0), try(teststatus.Failed, 1)}, false},
+		{"failed on every attempt", []specAttempt{try(teststatus.Failed, 0), try(teststatus.Failed, 1)}, false},
+		{"timed out", []specAttempt{try(teststatus.TimedOut, 0)}, false},
+		{"interrupted after a pass", []specAttempt{try(teststatus.Passed, 0), try(teststatus.Interrupted, 1)}, false},
+		{"unknown", []specAttempt{try("unknown", 0)}, false},
 		{"no attempts", nil, false},
 	}
 	for _, tt := range tests {

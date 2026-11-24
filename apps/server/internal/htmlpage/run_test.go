@@ -1,8 +1,11 @@
 package htmlpage
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 )
 
 func TestRenderRunDispatch(t *testing.T) {
@@ -134,5 +137,45 @@ func TestPassRateDisplayRun(t *testing.T) {
 	}
 	if got := passRateDisplay(10, 0, 0); got != "100" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestApplyRunSummaryAndAggregateUnitTests_CanonicalRules(t *testing.T) {
+	raw, err := json.Marshal([]orchTestCase{
+		{FullTitle: "spec > pass", Title: "pass", Status: "passed"},
+		{FullTitle: "spec > flaky", Title: "flaky", Status: "flaky"},
+		{FullTitle: "spec > pend", Title: "pend", Status: "pending"},
+		{FullTitle: "spec > unk", Title: "unk", Status: "unknown"},
+		{FullTitle: "   ", Title: "empty", Status: "passed"},
+		{FullTitle: "spec > nostatus", Title: "nostatus", Status: ""},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := orchestration.UnitView{
+		DispatchUnit: orchestration.DispatchUnit{State: orchestration.UnitStateCompletedFail},
+		Attempts: []orchestration.AttemptView{
+			{Attempt: orchestration.Attempt{TestCases: raw}},
+		},
+	}
+	got := aggregateUnitTests(unit)
+	if got["spec > pass"] != statusPassed || got["spec > flaky"] != statusFlaky ||
+		got["spec > pend"] != statusSkipped || got["spec > unk"] != statusFailed || len(got) != 4 {
+		t.Fatalf("aggregateUnitTests = %v", got)
+	}
+
+	// Empty-spec failure (spec-did-not-run) has zero test cases but CompletedFail > 0.
+	page := RunPage{}
+	applyRunSummary(&page, &orchestration.RunWithUnits{
+		Run: &orchestration.Run{
+			Status: orchestration.RunStatusCompleted,
+			Counts: orchestration.RunCounts{Total: 1, CompletedFail: 1},
+		},
+		Units: []orchestration.UnitView{
+			{DispatchUnit: orchestration.DispatchUnit{State: orchestration.UnitStateCompletedFail}},
+		},
+	})
+	if page.TestStatus != statusFailed {
+		t.Fatalf("empty-spec failed run TestStatus = %q, want failed", page.TestStatus)
 	}
 }

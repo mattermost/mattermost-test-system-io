@@ -157,8 +157,8 @@ ANALYZE test_cases;
   `--force`, require either:
   1. Taking the quiesced pre-run RDS snapshot (§1 step 3) as the rollback path
      (and replaying later CI runs from CI / S3 after restore), **or**
-  2. Recording/exporting the previous `(id, test_id, signature_id)` values for
-     the affected rows before starting `--force`.
+  2. Exporting the pre-run rows for the targeted slice before starting
+     `--force` — either **all** mutable fields (`test_cases (id, test_id, signature_id, error_stack, project, tags, annotations)` and `report_groups (id, stage)`) for a full rollback, or `(id, test_id, signature_id)` alone if you only need to restore the overwritten identity columns (an identity-only export does not revert newly filled `error_stack` / `project` / `tags` / `annotations` values or `report_groups.stage` updates).
 - Restoring the §1 snapshot discards every upload committed after it. Only do
   so if uploaders were quiesced for the snapshot, and replay later runs from
   CI / S3 afterwards.

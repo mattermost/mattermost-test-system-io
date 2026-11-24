@@ -25,10 +25,18 @@ fields) and two partial indexes that migrations deliberately do **not** create.
    before it can grow again, so do not rely on it mid-run.
 3. **Deploy migration `000033` (and `000034`) first** so the `tests` / `failure_signatures`
    tables and `test_cases.{test_id,signature_id}` columns already exist and
-   live uploads populate them. Note: `000033` + PR #145 deploy together cleanly
-   onto an unpopulated `tests` / `failure_signatures` schema; if an unhardened
-   `000033` pre-release ever ran in staging, clear or reconcile pre-existing
-   `zephyr:` / `algo_version=1` rows before running `tsioctl backfill`.
+   live uploads populate them. Neither staging nor production has applied
+   `000033` yet, so `#143`–`#145` deploy together cleanly onto an empty
+   `tests` / `failure_signatures` schema. If any pre-release staging DB ever
+   ran an unhardened `000033` build prior to PR #145, **pause uploaders and
+   clear or reconcile existing `test_cases.{test_id,signature_id}`, `tests`,
+   and `failure_signatures` rows before deploying PR #145 live writes**, and
+   confirm both checks return `0` before re-enabling uploads and running
+   `tsioctl backfill`:
+   ```sql
+   SELECT count(*) FROM failure_signatures WHERE algo_version = 1;
+   SELECT count(*) FROM tests WHERE test_key = 'zephyr:MM-T0';
+   ```
 4. **Fresh post-`000033` snapshot** (`aws rds create-db-snapshot`) and record
    its id. Live CI uploads keep landing during the backfill, so restoring this
    snapshot loses them (see §5). For a clean restore point, briefly pause

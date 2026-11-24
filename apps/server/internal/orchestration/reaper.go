@@ -400,6 +400,13 @@ type runTimedOutOutcome struct {
 	AbandonedAdded int
 }
 
+// MarkRunTimedOut executes the single-run idle-timeout transaction directly.
+// Returns true when the run transitioned to timed_out.
+func (s *Store) MarkRunTimedOut(ctx context.Context, runID uuid.UUID) (bool, error) {
+	out, err := s.markRunTimedOut(ctx, runID)
+	return out != nil && out.TerminalAt != nil, err
+}
+
 // markRunTimedOut flips remaining pending and leased units to 'abandoned',
 // releases all open leases on the run with release_reason='run_timed_out',
 // and transitions the run's status to 'timed_out'. No-op when already

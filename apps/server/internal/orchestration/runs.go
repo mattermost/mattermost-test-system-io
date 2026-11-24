@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 )
 
 // BeginRunOptions captures the configurable knobs supplied (or defaulted) by
@@ -103,7 +105,8 @@ func (s *Store) BeginRun(
 	txErr := s.inTx(ctx, func(tx pgx.Tx) error {
 		row, err := scanRunRow(tx.QueryRow(ctx, runSelectByIdentity,
 			identity.Repository, identity.CommitSHA, identity.GHRunID,
-			identity.Name, identity.GHRunAttempt))
+			identity.Name, identity.GHRunAttempt,
+			authapi.RepositoryLookupVariants(identity.Repository)))
 		switch {
 		case err == nil:
 			if !bytes.Equal(row.DispatchUnitsHash, hash) {
@@ -219,7 +222,8 @@ func seedReportGroupTx(ctx context.Context, tx pgx.Tx, identity CompositeIdentit
 // row when only one repo with that trailing segment exists in the table.
 func (s *Store) GetRunSnapshot(ctx context.Context, ci CompositeIdentity) (*Run, error) {
 	row := s.Pool.QueryRow(ctx, runSelectByIdentity,
-		ci.Repository, ci.CommitSHA, ci.GHRunID, ci.Name, ci.GHRunAttempt)
+		ci.Repository, ci.CommitSHA, ci.GHRunID, ci.Name, ci.GHRunAttempt,
+		authapi.RepositoryLookupVariants(ci.Repository))
 	run, err := scanRunRow(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -267,7 +271,8 @@ func (s *Store) GetRunWithUnits(ctx context.Context, ci CompositeIdentity) (*Run
 // param — auto-selecting when exactly one match exists, surfacing a picker
 // when multiple do.
 func (s *Store) ListRunsByDisplayIdentity(ctx context.Context, repository, commitSHA, name, branch string) ([]*Run, error) {
-	rows, err := s.Pool.Query(ctx, runListByDisplayIdentity, repository, commitSHA, name, branch)
+	rows, err := s.Pool.Query(ctx, runListByDisplayIdentity,
+		authapi.RepositoryLookupVariants(repository), commitSHA, name, branch)
 	if err != nil {
 		return nil, fmt.Errorf("list runs by display identity: %w", err)
 	}
@@ -409,7 +414,7 @@ const runSelectByIdentity = `
 	       dispatch_units_hash, started_at, last_activity_at, terminal_at,
 	       owner_oidc_subject, owner_api_key_id, created_at, updated_at
 	  FROM orchestration_runs
-	 WHERE (repository IN ($1, $1 || '.git') OR split_part(repository, '/', 2) IN ($1, $1 || '.git'))
+	 WHERE (repository = ANY($6::text[]) OR split_part(repository, '/', 2) = ANY($6::text[]))
 	   AND (commit_sha = $2 OR substr(commit_sha, 1, 7) = $2)
 	   AND gh_run_id = $3
 	   AND name = $4 AND gh_run_attempt = $5
@@ -433,7 +438,7 @@ const runListByDisplayIdentity = `
 	       dispatch_units_hash, started_at, last_activity_at, terminal_at,
 	       owner_oidc_subject, owner_api_key_id, created_at, updated_at
 	  FROM orchestration_runs
-	 WHERE (repository IN ($1, $1 || '.git') OR split_part(repository, '/', 2) IN ($1, $1 || '.git'))
+	 WHERE (repository = ANY($1::text[]) OR split_part(repository, '/', 2) = ANY($1::text[]))
 	   AND (commit_sha = $2 OR substr(commit_sha, 1, 7) = $2)
 	   AND name = $3
 	   AND ($4 = '' OR branch = $4)

@@ -101,6 +101,27 @@ func NormalizeRepository(repo string) string {
 	return repo
 }
 
+var gitSuffixVariants = [...]string{
+	".git", ".GIT", ".Git", ".gIt", ".giT", ".GIt", ".gIT", ".GiT",
+}
+
+// RepositoryLookupVariants returns the normalized repository slug followed by
+// all 8 case permutations of the ".git" suffix so B-tree indexed ANY($N::text[])
+// predicates match legacy un-normalized rows case-insensitively on the suffix
+// while keeping owner/repository comparison case-sensitive.
+func RepositoryLookupVariants(repo string) []string {
+	base := NormalizeRepository(repo)
+	if base == "" {
+		return nil
+	}
+	out := make([]string, 0, 1+len(gitSuffixVariants))
+	out = append(out, base)
+	for _, sfx := range gitSuffixVariants {
+		out = append(out, base+sfx)
+	}
+	return out
+}
+
 // CheckRepoAccess binds OIDC tokens to their repository. Admins and AuthzOff
 // bypass. A mismatch is logged and, in AuthzEnforce, returns
 // apiroot.ErrForbidden. Call it before any DB write.

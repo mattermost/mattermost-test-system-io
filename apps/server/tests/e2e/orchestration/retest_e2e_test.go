@@ -15,8 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/tests/e2e/testenv"
 )
 
 // failResults builds a results array marking every spec as failed.
@@ -430,16 +434,30 @@ func postJSONRaw(serverURL, token, path string, body any) (int, string, error) {
 }
 
 // TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock stresses concurrent
-// run timeout (reaper markRunTimedOut) and worker completion (RecordCompletion)
-// on the same run to verify lock ordering (leases -> dispatch_units -> orchestration_runs)
-// produces zero 40P01 deadlocks and that fresh completions prevent stale idle timeouts.
+// run timeout (Store.MarkRunTimedOut) and worker completion (RecordCompletion)
+// synchronized at the leases FOR UPDATE lock boundary to verify lock ordering
+// (leases -> dispatch_units -> orchestration_runs) produces zero 40P01 deadlocks,
+// exercises both terminal outcomes (completed and timed_out), and verifies that
+// activity refreshed after the reaper's initial scan aborts the timeout under lock.
 func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
-	env, tok := startEnv(t)
+	env, tok := startEnv(t, testenv.WithReaperDisabled())
 	ctx := context.Background()
 
-	// 1. Verify idle-deadline recheck under lock: if a run was idle when scanned
-	// by the reaper, but a worker completion lands and refreshes last_activity_at
-	// before markRunTimedOut locks orchestration_runs, the run must remain in_progress.
+	countLeaseLockWaiters := func() int {
+		var waiters int
+		_ = env.Pool.QueryRow(ctx, `
+			SELECT count(*) FROM pg_stat_activity
+			 WHERE datname = current_database()
+			   AND wait_event_type = 'Lock'
+			   AND query LIKE '%FROM leases%'
+		`).Scan(&waiters)
+		return waiters
+	}
+
+	// 1. Verify idle-deadline recheck under lock: MarkRunTimedOut enters its tx
+	// and blocks on leases FOR UPDATE while the run is idle; activity is then
+	// refreshed before holdTx releases the lock, and MarkRunTimedOut must abort
+	// without timing out the run.
 	{
 		const idleRecheckRun = "ci-run-idle-recheck"
 		idMap := identity(map[string]any{"gh_run_id": idleRecheckRun})
@@ -453,33 +471,84 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 			chk := merge(checkoutBody(fmt.Sprintf("ir-w-%d", w), fmt.Sprintf("job-ir-%d", w), 1), idMap)
 			expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout", chk), http.StatusOK)
 		}
-		// Backdate last_activity_at so it would have been idle, then immediately
-		// complete worker 0 (which refreshes last_activity_at = now() with idle_timeout_ms = 60_000).
+		irRunID := runUUID(t, env, idMap)
 		if _, err := env.Pool.Exec(ctx, `
 			UPDATE orchestration_runs
 			   SET last_activity_at = now() - interval '10 minutes'
-			 WHERE gh_run_id = $1
-		`, idleRecheckRun); err != nil {
+			 WHERE id = $1
+		`, irRunID); err != nil {
 			t.Fatalf("backdate idleRecheckRun: %v", err)
 		}
-		cmp0 := merge(completeBody("ir-w-0", "job-ir-0", passResults([]string{units[0]})), idMap)
-		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete", cmp0), http.StatusOK)
 
-		// Wait past a reaper tick (500ms); run must stay in_progress, NOT timed_out.
-		time.Sleep(700 * time.Millisecond)
+		holdTx, err := env.Pool.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			t.Fatalf("begin holdTx: %v", err)
+		}
+		var lockedLeaseID uuid.UUID
+		if err := holdTx.QueryRow(ctx, `
+			SELECT id FROM leases
+			 WHERE run_id = $1 AND released_at IS NULL
+			 ORDER BY id LIMIT 1
+			 FOR UPDATE
+		`, irRunID).Scan(&lockedLeaseID); err != nil {
+			_ = holdTx.Rollback(ctx)
+			t.Fatalf("lock lease in holdTx: %v", err)
+		}
+
+		type timeoutRes struct {
+			timedOut bool
+			err      error
+		}
+		resCh := make(chan timeoutRes, 1)
+		go func() {
+			to, err := env.Orchestrator.MarkRunTimedOut(ctx, irRunID)
+			resCh <- timeoutRes{timedOut: to, err: err}
+		}()
+
+		// Wait until MarkRunTimedOut is blocked inside its transaction on leases FOR UPDATE.
+		pollUntil(t, 3*time.Second, 20*time.Millisecond, "MarkRunTimedOut to block on leases FOR UPDATE", func() bool {
+			return countLeaseLockWaiters() >= 1
+		})
+
+		// Refresh last_activity_at inside holdTx (leases -> orchestration_runs lock order) and commit.
+		if _, err := holdTx.Exec(ctx, `
+			UPDATE orchestration_runs SET last_activity_at = now() WHERE id = $1
+		`, irRunID); err != nil {
+			_ = holdTx.Rollback(ctx)
+			t.Fatalf("refresh last_activity_at in holdTx: %v", err)
+		}
+		if err := holdTx.Commit(ctx); err != nil {
+			t.Fatalf("commit holdTx: %v", err)
+		}
+
+		tr := <-resCh
+		if tr.err != nil || tr.timedOut {
+			t.Fatalf("MarkRunTimedOut after activity refresh = (timedOut=%v, err=%v), want (false, nil)", tr.timedOut, tr.err)
+		}
+
 		midBody := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)
 		if midBody["status"] != "in_progress" {
 			t.Fatalf("run status after activity refresh = %v, want in_progress", midBody["status"])
 		}
-		cmp1 := merge(completeBody("ir-w-1", "job-ir-1", passResults([]string{units[1]})), idMap)
-		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete", cmp1), http.StatusOK)
+		for w := range len(units) {
+			cmp := merge(completeBody(fmt.Sprintf("ir-w-%d", w), fmt.Sprintf("job-ir-%d", w), passResults([]string{units[w]})), idMap)
+			expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete", cmp), http.StatusOK)
+		}
+		doneBody := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)
+		if doneBody["status"] != "completed" {
+			t.Fatalf("idleRecheckRun final status = %v, want completed", doneBody["status"])
+		}
 	}
 
-	// 2. Concurrent race between reaper timeout and worker completions across 10 runs.
-	for iter := range 10 {
+	// 2. Synchronize MarkRunTimedOut and RecordCompletion at the leases row-lock
+	// boundary and verify both terminal outcomes ("completed" when completion
+	// queues first, and "timed_out" when MarkRunTimedOut queues first) with zero
+	// 40P01 deadlocks and direct error checking on MarkRunTimedOut.
+	var sawCompleted, sawTimedOut bool
+	for iter := range 6 {
 		runIDStr := fmt.Sprintf("ci-run-deadlock-%d", iter)
 		idMap := identity(map[string]any{"gh_run_id": runIDStr})
-		units := []string{"tests/dl-0.spec.ts", "tests/dl-1.spec.ts", "tests/dl-2.spec.ts", "tests/dl-3.spec.ts"}
+		units := []string{"tests/dl-0.spec.ts", "tests/dl-1.spec.ts"}
 
 		beginBody := merge(beginRunBody(units, map[string]any{
 			"lease_timeout_ms": 60_000,
@@ -491,26 +560,68 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 			chk := merge(checkoutBody(fmt.Sprintf("worker-%d", w), fmt.Sprintf("job-dl-%d-%d", iter, w), 1), idMap)
 			expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout", chk), http.StatusOK)
 		}
+		curRunID := runUUID(t, env, idMap)
 
-		// Force the run's last_activity_at into the past so the reaper's markTimedOutRuns
-		// picks it up concurrently with workers released from startCh calling /complete.
 		if _, err := env.Pool.Exec(ctx, `
 			UPDATE orchestration_runs
 			   SET last_activity_at = now() - interval '10 minutes',
 			       idle_timeout_ms = 1000
-			 WHERE gh_run_id = $1
-		`, runIDStr); err != nil {
+			 WHERE id = $1
+		`, curRunID); err != nil {
 			t.Fatalf("backdate last_activity_at: %v", err)
 		}
 
-		startCh := make(chan struct{})
+		// Hold FOR UPDATE on the lowest-id active lease of this run so both
+		// RecordCompletion (worker 0) and MarkRunTimedOut block on the same row lock.
+		holdTx, err := env.Pool.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			t.Fatalf("begin holdTx: %v", err)
+		}
+		var firstLeaseJobID string
+		if err := holdTx.QueryRow(ctx, `
+			SELECT gh_job_id FROM leases
+			 WHERE run_id = $1 AND released_at IS NULL
+			 ORDER BY id LIMIT 1
+			 FOR UPDATE
+		`, curRunID).Scan(&firstLeaseJobID); err != nil {
+			_ = holdTx.Rollback(ctx)
+			t.Fatalf("lock lease in holdTx: %v", err)
+		}
+		firstWorker := 0
+		if strings.HasSuffix(firstLeaseJobID, "-1") {
+			firstWorker = 1
+		}
+		otherWorker := 1 - firstWorker
+
+		// On even iterations, complete the non-blocked worker first so that when
+		// firstWorker wins the lease lock ahead of MarkRunTimedOut, the run
+		// transitions immediately to "completed".
+		if iter%2 == 0 {
+			cmpOther := merge(completeBody(
+				fmt.Sprintf("worker-%d", otherWorker),
+				fmt.Sprintf("job-dl-%d-%d", iter, otherWorker),
+				passResults([]string{units[otherWorker]}),
+			), idMap)
+			expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete", cmpOther), http.StatusOK)
+			// Re-backdate last_activity_at so the run is idle when MarkRunTimedOut starts.
+			if _, err := env.Pool.Exec(ctx, `
+				UPDATE orchestration_runs
+				   SET last_activity_at = now() - interval '10 minutes',
+				       idle_timeout_ms = 1000
+				 WHERE id = $1
+			`, curRunID); err != nil {
+				_ = holdTx.Rollback(ctx)
+				t.Fatalf("re-backdate last_activity_at: %v", err)
+			}
+		}
+
 		var wg sync.WaitGroup
-		errCh := make(chan string, len(units))
-		for w := range len(units) {
+		errCh := make(chan string, 3)
+
+		startWorker := func(w int) {
 			wg.Add(1)
 			go func(w int) {
 				defer wg.Done()
-				<-startCh
 				cmp := merge(completeBody(
 					fmt.Sprintf("worker-%d", w),
 					fmt.Sprintf("job-dl-%d-%d", iter, w),
@@ -526,17 +637,59 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 				}
 			}(w)
 		}
-		close(startCh)
+
+		startTimeout := func() {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, err := env.Orchestrator.MarkRunTimedOut(ctx, curRunID)
+				if err != nil {
+					errCh <- fmt.Sprintf("iter=%d MarkRunTimedOut err=%v", iter, err)
+				}
+			}()
+		}
+
+		if iter%2 == 0 {
+			// Queue firstWorker on the lease lock first, then queue MarkRunTimedOut second.
+			startWorker(firstWorker)
+			pollUntil(t, 3*time.Second, 20*time.Millisecond, "worker to queue on lease lock", func() bool {
+				return countLeaseLockWaiters() >= 1
+			})
+			startTimeout()
+			pollUntil(t, 3*time.Second, 20*time.Millisecond, "MarkRunTimedOut to queue behind worker on lease lock", func() bool {
+				return countLeaseLockWaiters() >= 2
+			})
+		} else {
+			// Queue MarkRunTimedOut on the lease lock first, then queue firstWorker second.
+			startTimeout()
+			pollUntil(t, 3*time.Second, 20*time.Millisecond, "MarkRunTimedOut to queue on lease lock", func() bool {
+				return countLeaseLockWaiters() >= 1
+			})
+			startWorker(firstWorker)
+			pollUntil(t, 3*time.Second, 20*time.Millisecond, "worker to queue behind MarkRunTimedOut on lease lock", func() bool {
+				return countLeaseLockWaiters() >= 2
+			})
+			startWorker(otherWorker)
+		}
+
+		if err := holdTx.Rollback(ctx); err != nil {
+			t.Fatalf("rollback holdTx: %v", err)
+		}
+
 		wg.Wait()
 		close(errCh)
 		for e := range errCh {
 			t.Fatalf("unexpected error/deadlock during concurrent timeout+complete: %s", e)
 		}
 
-		// Verify run reached a valid terminal state with consistent unit counters.
 		statBody := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)
-		st := statBody["status"]
-		if st != "completed" && st != "timed_out" {
+		st, _ := statBody["status"].(string)
+		switch st {
+		case "completed":
+			sawCompleted = true
+		case "timed_out":
+			sawTimedOut = true
+		default:
 			t.Fatalf("iter=%d terminal status = %v, want completed or timed_out", iter, st)
 		}
 		c := counts(t, statBody)
@@ -544,93 +697,188 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 			t.Fatalf("iter=%d inconsistent counts after concurrent timeout+complete: %s", iter, fmtCounts(c))
 		}
 	}
+	if !sawCompleted || !sawTimedOut {
+		t.Fatalf("expected both terminal outcomes across iterations, got sawCompleted=%v sawTimedOut=%v", sawCompleted, sawTimedOut)
+	}
 }
 
 // TestLegacyGitSuffixBackwardCompatibility verifies that pre-existing
-// orchestration_runs and report_groups rows stored with a trailing ".git"
+// orchestration_runs and report_groups rows stored with a trailing ".git" or ".GIT"
 // repository suffix are matched by normalized HTTP requests (/orchestration/begin
 // idempotent replay without creating a duplicate row, /checkout, /complete,
-// /status) and by reports.LoadHomePageData RepositoryFilter.
+// /status), ListRunsByDisplayIdentity, and reports.LoadHomePageData RepositoryFilter,
+// while owner/repository comparison stays case-sensitive.
 func TestLegacyGitSuffixBackwardCompatibility(t *testing.T) {
 	env, tok := startEnv(t)
 	ctx := context.Background()
 
-	const legacyRunID = "ci-run-legacy-git-1"
-	legacyRepo := defaultRepository + ".git"
-	units := []string{"tests/legacy-git.spec.ts"}
+	for idx, suffix := range []string{".git", ".GIT"} {
+		legacyRunID := fmt.Sprintf("ci-run-legacy-git-%d", idx+1)
+		legacyRepo := defaultRepository + suffix
+		units := []string{"tests/legacy-git.spec.ts"}
 
-	// Seed a pre-existing run directly via Store.BeginRun with the un-trimmed ".git" repository
-	// (simulating a row created before input normalization was added).
-	sub := defaultOIDCSubject
-	legacyCI := orchestration.CompositeIdentity{
-		Repository:   legacyRepo,
-		CommitSHA:    defaultCommit,
-		GHRunID:      legacyRunID,
-		Name:         defaultName,
-		GHRunAttempt: defaultRunAttempt,
-		Branch:       defaultBranch,
-		Framework:    "playwright",
-	}
-	seededRun, created, seededGroup, err := env.Orchestrator.BeginRun(ctx, legacyCI, orchestration.BeginRunOptions{
-		LeaseTimeoutMs:       60_000,
-		IdleTimeoutMs:        60_000,
-		TotalReportsExpected: 1,
-		PlaywrightProject:    defaultPlaywrightPrj,
-		Branch:               defaultBranch,
-	}, units, orchestration.OwnerInfo{OIDCSubject: &sub})
-	if err != nil || !created || seededRun == nil || seededGroup == nil {
-		t.Fatalf("seed legacy .git run: created=%v err=%v", created, err)
-	}
-
-	// 1. Calling POST /api/v1/orchestration/begin with normalized repository (or .git)
-	// must hit the existing legacy row (200 OK idempotent replay, NOT 201 Created duplicate).
-	idMap := identity(map[string]any{"gh_run_id": legacyRunID, "repository": defaultRepository})
-	beginBody := merge(beginRunBody(units, nil), idMap)
-	replayResp := postJSON(t, env, tok, "/api/v1/orchestration/begin", beginBody)
-	expectStatus(t, replayResp, http.StatusOK)
-
-	var runCount int
-	if err := env.Pool.QueryRow(ctx, `SELECT count(*) FROM orchestration_runs WHERE gh_run_id = $1`, legacyRunID).Scan(&runCount); err != nil {
-		t.Fatalf("count runs: %v", err)
-	}
-	if runCount != 1 {
-		t.Fatalf("orchestration_runs count for %s = %d, want 1 (no duplicate)", legacyRunID, runCount)
-	}
-
-	// 2. /checkout, /complete, and /status with normalized repository find and complete the legacy run.
-	chk := merge(checkoutBody("legacy-worker", "job-legacy-git-1", 1), idMap)
-	chkBody := expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout", chk), http.StatusOK)
-	if len(chkBody["units"].([]any)) != 1 {
-		t.Fatalf("checkout units = %v, want 1", chkBody["units"])
-	}
-
-	cmp := merge(completeBody("legacy-worker", "job-legacy-git-1", passResults(units)), idMap)
-	expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete", cmp), http.StatusOK)
-
-	statBody := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)
-	if statBody["status"] != "completed" {
-		t.Fatalf("legacy run status = %v, want completed", statBody["status"])
-	}
-
-	// 3. reports.LoadHomePageData with normalized RepositoryFilter(defaultRepository)
-	// and trailing-slug filter both match the legacy ".git" report_groups row.
-	if err := reports.RefreshGroupSummary(ctx, env.Pool, seededGroup.ID); err != nil {
-		t.Fatalf("RefreshGroupSummary: %v", err)
-	}
-	for _, filter := range []string{defaultRepository, defaultRepository + ".git", "orch-e2e"} {
-		home, err := reports.LoadHomePageData(ctx, env.Pool, 50, 0, filter, "")
-		if err != nil {
-			t.Fatalf("LoadHomePageData(%q): %v", filter, err)
+		// Seed a pre-existing run directly via Store.BeginRun with the un-trimmed suffix
+		// (simulating a row created before input normalization was added).
+		sub := defaultOIDCSubject
+		legacyCI := orchestration.CompositeIdentity{
+			Repository:   legacyRepo,
+			CommitSHA:    defaultCommit,
+			GHRunID:      legacyRunID,
+			Name:         defaultName,
+			GHRunAttempt: defaultRunAttempt,
+			Branch:       defaultBranch,
+			Framework:    "playwright",
 		}
-		var found bool
-		for _, r := range home.Static {
-			if r.GHRunID == legacyRunID {
-				found = true
-				break
+		seededRun, created, seededGroup, err := env.Orchestrator.BeginRun(ctx, legacyCI, orchestration.BeginRunOptions{
+			LeaseTimeoutMs:       60_000,
+			IdleTimeoutMs:        60_000,
+			TotalReportsExpected: 1,
+			PlaywrightProject:    defaultPlaywrightPrj,
+			Branch:               defaultBranch,
+		}, units, orchestration.OwnerInfo{OIDCSubject: &sub})
+		if err != nil || !created || seededRun == nil || seededGroup == nil {
+			t.Fatalf("seed legacy %s run: created=%v err=%v", suffix, created, err)
+		}
+
+		// 1. Calling POST /api/v1/orchestration/begin with normalized repository
+		// must hit the existing legacy row (200 OK idempotent replay, NOT 201 Created duplicate).
+		idMap := identity(map[string]any{"gh_run_id": legacyRunID, "repository": defaultRepository})
+		beginBody := merge(beginRunBody(units, nil), idMap)
+		replayResp := postJSON(t, env, tok, "/api/v1/orchestration/begin", beginBody)
+		expectStatus(t, replayResp, http.StatusOK)
+
+		var runCount int
+		if err := env.Pool.QueryRow(ctx, `SELECT count(*) FROM orchestration_runs WHERE gh_run_id = $1`, legacyRunID).Scan(&runCount); err != nil {
+			t.Fatalf("count runs: %v", err)
+		}
+		if runCount != 1 {
+			t.Fatalf("orchestration_runs count for %s = %d, want 1 (no duplicate)", legacyRunID, runCount)
+		}
+
+		// 2. /checkout, /complete, and /status with normalized repository find and complete the legacy run.
+		jobID := fmt.Sprintf("job-legacy-git-%d", idx+1)
+		chk := merge(checkoutBody("legacy-worker", jobID, 1), idMap)
+		chkBody := expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout", chk), http.StatusOK)
+		if len(chkBody["units"].([]any)) != 1 {
+			t.Fatalf("checkout units = %v, want 1", chkBody["units"])
+		}
+
+		cmp := merge(completeBody("legacy-worker", jobID, passResults(units)), idMap)
+		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete", cmp), http.StatusOK)
+
+		statBody := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)
+		if statBody["status"] != "completed" {
+			t.Fatalf("legacy run status = %v, want completed", statBody["status"])
+		}
+
+		// 3. ListRunsByDisplayIdentity matches both full slug and trailing segment,
+		// while different owner/repository casing does NOT falsely match.
+		for _, lookupRepo := range []string{defaultRepository, "orch-e2e"} {
+			listed, err := env.Orchestrator.ListRunsByDisplayIdentity(ctx, lookupRepo, defaultCommit, defaultName, defaultBranch)
+			if err != nil {
+				t.Fatalf("ListRunsByDisplayIdentity(%q): %v", lookupRepo, err)
+			}
+			var foundRun bool
+			for _, r := range listed {
+				if r.Identity.GHRunID == legacyRunID {
+					foundRun = true
+					break
+				}
+			}
+			if !foundRun {
+				t.Fatalf("ListRunsByDisplayIdentity(%q) did not find %s", lookupRepo, legacyRunID)
 			}
 		}
-		if !found {
-			t.Fatalf("LoadHomePageData(%q) did not match legacy .git report_group %s", filter, legacyRunID)
+		upperRuns, err := env.Orchestrator.ListRunsByDisplayIdentity(ctx, strings.ToUpper(defaultRepository), defaultCommit, defaultName, defaultBranch)
+		if err != nil {
+			t.Fatalf("ListRunsByDisplayIdentity(upper): %v", err)
+		}
+		if len(upperRuns) != 0 {
+			t.Fatalf("expected case-sensitive owner/repo mismatch for %q, got %d runs", strings.ToUpper(defaultRepository), len(upperRuns))
+		}
+
+		// 4. reports.LoadHomePageData with normalized RepositoryFilter(defaultRepository),
+		// .git/.GIT suffix, and trailing-slug filter all match the legacy report_groups row,
+		// while upper-cased owner/repo does not.
+		if err := reports.RefreshGroupSummary(ctx, env.Pool, seededGroup.ID); err != nil {
+			t.Fatalf("RefreshGroupSummary: %v", err)
+		}
+		for _, filter := range []string{defaultRepository, defaultRepository + ".git", defaultRepository + ".GIT", "orch-e2e"} {
+			home, err := reports.LoadHomePageData(ctx, env.Pool, 50, 0, filter, "")
+			if err != nil {
+				t.Fatalf("LoadHomePageData(%q): %v", filter, err)
+			}
+			var found bool
+			for _, r := range home.Static {
+				if r.GHRunID == legacyRunID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("LoadHomePageData(%q) did not match legacy %s report_group %s", filter, suffix, legacyRunID)
+			}
+		}
+		upperHome, err := reports.LoadHomePageData(ctx, env.Pool, 50, 0, strings.ToUpper(defaultRepository), "")
+		if err != nil {
+			t.Fatalf("LoadHomePageData(upper): %v", err)
+		}
+		if len(upperHome.Static) != 0 {
+			t.Fatalf("expected 0 rows for case-mismatched repo filter %q, got %d", strings.ToUpper(defaultRepository), len(upperHome.Static))
+		}
+	}
+
+	// 5. Verify B-tree index usage (Index Scan / Bitmap Index Scan, zero Seq Scan)
+	// for ANY($N::text[]) repository lookup predicates on orchestration_runs and report_groups.
+	planTx, err := env.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin planTx: %v", err)
+	}
+	defer func() { _ = planTx.Rollback(ctx) }()
+	if _, err := planTx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("disable seqscan: %v", err)
+	}
+	variants := []string{defaultRepository, defaultRepository + ".git", defaultRepository + ".GIT"}
+	for _, q := range []struct {
+		name string
+		sql  string
+		args []any
+	}{
+		{
+			name: "orchestration_runs lookup",
+			sql: `EXPLAIN (COSTS OFF) SELECT id FROM orchestration_runs
+				WHERE (repository = ANY($1::text[]) OR split_part(repository, '/', 2) = ANY($1::text[]))
+				  AND commit_sha = $2 AND gh_run_id = $3 AND name = $4 AND gh_run_attempt = $5`,
+			args: []any{variants, defaultCommit, "ci-run-legacy-git-1", defaultName, defaultRunAttempt},
+		},
+		{
+			name: "report_groups repository filter",
+			sql: `EXPLAIN (COSTS OFF) SELECT id FROM report_groups
+				WHERE (repository = ANY($1::text[]) OR split_part(repository, '/', 2) = ANY($1::text[]))`,
+			args: []any{variants},
+		},
+	} {
+		rows, err := planTx.Query(ctx, q.sql, q.args...)
+		if err != nil {
+			t.Fatalf("explain %s: %v", q.name, err)
+		}
+		var plan strings.Builder
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				rows.Close()
+				t.Fatalf("scan explain %s: %v", q.name, err)
+			}
+			plan.WriteString(line)
+			plan.WriteByte('\n')
+		}
+		rows.Close()
+		planText := plan.String()
+		if !strings.Contains(planText, "Index Scan") && !strings.Contains(planText, "Bitmap Index Scan") {
+			t.Fatalf("%s did not use B-tree index scan:\n%s", q.name, planText)
+		}
+		if strings.Contains(planText, "Seq Scan") {
+			t.Fatalf("%s fell back to Seq Scan:\n%s", q.name, planText)
 		}
 	}
 }

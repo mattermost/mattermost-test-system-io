@@ -330,6 +330,9 @@ func encodeAnnotations(anns []json.RawMessage) []byte {
 		if err := dec.Decode(&trailing); err != io.EOF {
 			return []byte("[]")
 		}
+		if _, ok := canonicalJSONValue(v); !ok {
+			continue // a number outside PostgreSQL numeric range would abort the jsonb insert
+		}
 		out = append(out, sanitizeJSONValue(v))
 	}
 	return encodeJSONArray(out)
@@ -524,14 +527,30 @@ func attributeFailureSignaturesTx(
 	if len(sigIDs) == 0 {
 		return nil
 	}
-	slices.SortFunc(sigIDs, func(a, b uuid.UUID) int {
-		return bytes.Compare(a[:], b[:])
-	})
+	// Lock in id order so concurrent consolidations cannot deadlock. NO KEY
+	// UPDATE, not UPDATE: it must not conflict with the FK KEY SHARE locks our
+	// own and sibling shards' test_cases inserts already hold on these rows.
+	rows, err := tx.Query(ctx, `
+		SELECT id FROM failure_signatures
+		WHERE id = ANY($1::uuid[]) AND first_seen_report_group_id IS NULL
+		ORDER BY id
+		FOR NO KEY UPDATE
+	`, sigIDs)
+	if err != nil {
+		return fmt.Errorf("lock failure_signatures: %w", err)
+	}
+	lockedIDs, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return fmt.Errorf("lock failure_signatures: %w", err)
+	}
+	if len(lockedIDs) == 0 {
+		return nil
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE failure_signatures
 		SET first_seen_report_group_id = $1
 		WHERE id = ANY($2::uuid[]) AND first_seen_report_group_id IS NULL
-	`, reportGroupID, sigIDs); err != nil {
+	`, reportGroupID, lockedIDs); err != nil {
 		return fmt.Errorf("attribute failure_signatures: %w", err)
 	}
 	return nil

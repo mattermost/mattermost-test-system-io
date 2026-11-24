@@ -615,6 +615,98 @@ func TestConsolidate_ConcurrentSharedTestsAndSignatures(t *testing.T) {
 	}
 }
 
+func TestConsolidate_ConcurrentSignatureAttributionNoDeadlock(t *testing.T) {
+	env := testenv.Start(t, testenv.WithReaperDisabled())
+	ctx := t.Context()
+
+	var groupID uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO report_groups (framework, name, repository, branch, commit_sha, gh_run_id, gh_run_attempt)
+		VALUES ('playwright', 'pw-attr-conc', 'mattermost/attr-conc', 'main', 'abc1234', 'run-attr-conc', '1')
+		RETURNING id
+	`).Scan(&groupID); err != nil {
+		t.Fatalf("insert report_group: %v", err)
+	}
+	const workers = 4
+	reportIDs := make([]uuid.UUID, workers)
+	for i := range workers {
+		if err := env.Pool.QueryRow(ctx, `
+			INSERT INTO reports (report_group_id, name, gh_job_id)
+			VALUES ($1, 'pw-attr-conc', $2)
+			RETURNING id
+		`, groupID, fmt.Sprintf("job-attr-conc-%d", i)).Scan(&reportIDs[i]); err != nil {
+			t.Fatalf("insert report %d: %v", i, err)
+		}
+	}
+
+	// Stall after each case insert so every shard holds the FK KEY SHARE lock on
+	// both new signatures before any shard reaches attributeFailureSignaturesTx.
+	if _, err := env.Pool.Exec(ctx, `
+		CREATE FUNCTION stall_case_insert() RETURNS trigger AS $$
+		BEGIN
+			PERFORM pg_sleep(0.3);
+			RETURN NULL;
+		END;
+		$$ LANGUAGE plpgsql;
+		CREATE TRIGGER trg_stall_case_insert
+		AFTER INSERT ON test_cases
+		FOR EACH STATEMENT EXECUTE FUNCTION stall_case_insert();
+	`); err != nil {
+		t.Fatalf("install stall trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = env.Pool.Exec(context.Background(), `
+			DROP TRIGGER IF EXISTS trg_stall_case_insert ON test_cases;
+			DROP FUNCTION IF EXISTS stall_case_insert();
+		`)
+	})
+
+	file := "e2e/attr_conc.spec.ts"
+	errA := "Error: attribution concurrency sentinel A"
+	errB := "Error: attribution concurrency sentinel B"
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			cases := []ingest.ExtractedCase{
+				{Title: "a", FullTitle: "AttrConc > a", Status: ingest.StatusFailed, ErrorMessage: &errA, Sequence: 0},
+				{Title: "b", FullTitle: "AttrConc > b", Status: ingest.StatusFailed, ErrorMessage: &errB, Sequence: 1},
+			}
+			if idx%2 == 1 {
+				cases[0], cases[1] = cases[1], cases[0]
+			}
+			now := time.Now().UTC()
+			<-start
+			_, err := ingest.Consolidate(ctx, env.Pool, reportIDs[idx], []ingest.ExtractedSuite{{
+				Title: "AttrConc", FilePath: &file, StartTime: &now, Cases: cases,
+			}}, &now, &now)
+			errs <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Consolidate failed: %v", err)
+		}
+	}
+
+	var sigs, attributed int
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT COUNT(*), COUNT(*) FILTER (WHERE first_seen_report_group_id = $1)
+		FROM failure_signatures
+	`, groupID).Scan(&sigs, &attributed); err != nil {
+		t.Fatalf("query signature attribution: %v", err)
+	}
+	if sigs != 2 || attributed != 2 {
+		t.Fatalf("signatures=%d attributed to group=%d, want 2 and 2", sigs, attributed)
+	}
+}
+
 func TestIngestTestIDsAndFailureSignatures_SanitizesNULAndInvalidUTF8(t *testing.T) {
 	env := testenv.Start(t, testenv.WithStore(testenv.NewFakeStore()), testenv.WithReaperDisabled())
 	env.InsertPolicy(t, "allow-nul-e2e", 1, string(policy.RoleUploader), map[string]string{
@@ -916,6 +1008,50 @@ func TestIngestTestIDsAndFailureSignatures_SanitizesNULAndInvalidUTF8(t *testing
 	}
 }
 
+func TestIngestTestIDs_AnnotationNumericRangeAndDedup(t *testing.T) {
+	env := testenv.Start(t, testenv.WithStore(testenv.NewFakeStore()), testenv.WithReaperDisabled())
+	env.InsertPolicy(t, "allow-numeric-e2e", 1, string(policy.RoleUploader), map[string]string{
+		"repository_owner": defaultRepoOwner,
+	})
+	tok := env.Mock.IssueToken(t, oidcmock.Claims{
+		Subject:         defaultOIDCSubject,
+		Audience:        "tsio",
+		Repository:      defaultRepository,
+		RepositoryOwner: defaultRepoOwner,
+		Workflow:        "ci",
+		Ref:             "refs/heads/main",
+	})
+	payload := `{"suites":[{"title":"num.spec.ts","file":"e2e/num.spec.ts","specs":[{"title":"numbers","tests":[{
+		"status":"expected",
+		"annotations":[{"type":"big","n":1e200000},{"type":"id","id":1},{"type":"id","id":1.0},
+			{"type":"exact","id":9007199254740993},{"type":"exact","id":9007199254740992}],
+		"results":[{"status":"passed","retry":0}]}]}]}]}`
+	pw := uploadReportShard(t, env, tok, "playwright", "run-id-pw-numeric", "results.json", payload)
+
+	var annsJSON string
+	if err := env.Pool.QueryRow(t.Context(), `
+		SELECT tc.annotations::text
+		FROM test_cases tc
+		JOIN suites s ON s.id = tc.suite_id
+		WHERE s.report_id = $1
+	`, pw.uploadID).Scan(&annsJSON); err != nil {
+		t.Fatalf("query numeric annotations case: %v", err)
+	}
+	dec := json.NewDecoder(strings.NewReader(annsJSON))
+	dec.UseNumber()
+	var anns []map[string]any
+	if err := dec.Decode(&anns); err != nil {
+		t.Fatalf("decode annotations %s: %v", annsJSON, err)
+	}
+	var ids []string
+	for _, a := range anns {
+		ids = append(ids, fmt.Sprint(a["id"]))
+	}
+	if got := strings.Join(ids, ","); got != "1,9007199254740993,9007199254740992" {
+		t.Fatalf("annotation ids = %s (anns=%s), want 1,9007199254740993,9007199254740992", got, annsJSON)
+	}
+}
+
 func TestConsolidate_DeferredSignatureAttributionOnPhase2Failure(t *testing.T) {
 	env := testenv.Start(t, testenv.WithReaperDisabled())
 	ctx := t.Context()
@@ -972,8 +1108,9 @@ func TestConsolidate_DeferredSignatureAttributionOnPhase2Failure(t *testing.T) {
 			RAISE EXCEPTION 'simulated phase-2 insert failure';
 		END;
 		$$ LANGUAGE plpgsql;
-		CREATE TRIGGER trg_fail_phase2_case_insert
-		BEFORE INSERT ON test_cases
+		CREATE CONSTRAINT TRIGGER trg_fail_phase2_case_insert
+		AFTER INSERT ON test_cases
+		DEFERRABLE INITIALLY DEFERRED
 		FOR EACH ROW EXECUTE FUNCTION fail_phase2_case_insert();
 	`); err != nil {
 		t.Fatalf("install phase-2 failure trigger: %v", err)
@@ -985,8 +1122,10 @@ func TestConsolidate_DeferredSignatureAttributionOnPhase2Failure(t *testing.T) {
 		`)
 	})
 
-	if _, err := ingest.Consolidate(ctx, env.Pool, report1, suites, &now, &now); err == nil {
-		t.Fatalf("expected Consolidate to fail in Phase 2, got nil")
+	// The deferred trigger fires at Commit, after case insert and attribution ran.
+	if _, err := ingest.Consolidate(ctx, env.Pool, report1, suites, &now, &now); err == nil ||
+		!strings.Contains(err.Error(), "simulated phase-2 insert failure") {
+		t.Fatalf("Consolidate err = %v, want simulated phase-2 insert failure", err)
 	}
 
 	var firstGroupID *uuid.UUID

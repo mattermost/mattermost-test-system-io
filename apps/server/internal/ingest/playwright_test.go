@@ -240,3 +240,23 @@ func TestMergeAnnotations_SkipsNonObjects(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeAnnotations_CanonicalNumberDedupAndRange(t *testing.T) {
+	got := mergeAnnotations([]json.RawMessage{
+		json.RawMessage(`{"id":1}`),
+		json.RawMessage(`{"id":1.0}`),
+		json.RawMessage(`{"id":1e0}`),
+		json.RawMessage(`{"id":9007199254740993}`),
+		json.RawMessage(`{"id":9007199254740992}`),
+		json.RawMessage(`{"id":[{"n":1e200000}]}`),
+	})
+	want := []string{`{"id":1}`, `{"id":9007199254740993}`, `{"id":9007199254740992}`}
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d (%s), want %d (%v)", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Errorf("got[%d] = %s, want %s", i, got[i], want[i])
+		}
+	}
+}

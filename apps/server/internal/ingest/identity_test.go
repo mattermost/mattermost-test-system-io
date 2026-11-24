@@ -255,3 +255,14 @@ func TestCountStatuses_SanitizesFullTitle(t *testing.T) {
 			passed, failed, skipped, flaky, unique)
 	}
 }
+
+func TestEncodeAnnotations_SkipsOutOfRangeNumbersOnly(t *testing.T) {
+	got := string(encodeAnnotations([]json.RawMessage{
+		json.RawMessage(`{"type":"big","meta":{"n":[1e200000]}}`),
+		json.RawMessage(`{"type":"tiny","n":1e-16384}`),
+		json.RawMessage(`{"type":"exact","id":9007199254740993}`),
+	}))
+	if got != `[{"id":9007199254740993,"type":"exact"}]` {
+		t.Fatalf("encodeAnnotations = %s, want only the in-range annotation", got)
+	}
+}

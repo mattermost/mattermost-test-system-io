@@ -54,12 +54,16 @@ Run from a host that can reach RDS and the report bucket, with
 tsioctl backfill --dry-run --repo mattermost/mattermost --since 2026-01-01 --format json
 
 # 2. Real run, throttled and resumable. pipefail keeps tsioctl's exit status
-#    (S3/DB failure) instead of tee's.
+#    (S3/DB failure) instead of tee's; save both stdout summary and stderr
+#    warnings for every initial and resumed invocation.
 set -o pipefail
+ts=$(date +%s)
 tsioctl backfill \
   --batch-size 50 --sleep 200ms \
   --checkpoint-file /var/tmp/sec-11506-backfill.json \
-  --format json | tee backfill-$(date +%s).json
+  --format json \
+  2> >(tee "backfill-${ts}.stderr.log" >&2) \
+  | tee "backfill-${ts}.json"
 ```
 
 - **Resume:** rerun the same command. Cursors (`last_group_id`,
@@ -96,7 +100,10 @@ tsioctl backfill \
        AND (tc.test_id IS NULL
             OR (tc.signature_id IS NULL AND tc.status NOT IN ('passed', 'flaky', 'skipped', 'pending')));
      ```
-  2. The real run's `s3_files_missing` summary counter and `s3 json unusable` log warnings are reviewed (because missing/unusable-S3 fallback writes DB identity columns only, and subsequent non-`--force` runs skip those reports before reading S3). For each named `report_id`, either restore the S3 object and re-run that report's scope with `tsioctl backfill --force --skip-stage` (scoped with `--repo` / `--since` / `--until`) using a **fresh `--checkpoint-file`** (or omitting `--checkpoint-file` / resetting `--after-report-id` prior to the affected report so an already-advanced checkpoint does not skip it), or explicitly record the missing S3 enrichment as accepted.
+  2. Across the JSON summaries and saved stderr logs from **every** invocation (initial and resumed), `s3_files_missing` and the `s3 json unusable` and `s3 json yielded no suites` warnings are reviewed (because missing/unusable/empty-suite S3 fallback writes DB identity columns only, and subsequent non-`--force` runs skip those reports before reading S3), and any `--skip-s3` DB-only run is accounted for:
+     - **Missing/unusable S3 object (`s3 json unusable`):** for each named `report_id`, either restore the S3 object and re-run that scope with `tsioctl backfill --force --skip-stage` (scoped with `--repo` / `--since` / `--until` and a **fresh `--checkpoint-file`**, or omitting `--checkpoint-file` / resetting `--after-report-id` prior to the affected report), or explicitly record the missing S3 enrichment as accepted.
+     - **Empty suites (`s3 json yielded no suites`):** for each named `report_id`, inspect the S3 object, or explicitly record the missing S3 enrichment as accepted.
+     - **Prior `--skip-s3` DB-only runs (`--skip-s3` fills identities without reading S3 or emitting S3 warnings):** re-run that scope with S3 enabled using `tsioctl backfill --force --skip-stage` (with a fresh `--checkpoint-file` or `--after-report-id`), or explicitly record the missing S3 enrichment as accepted.
 - **Known limitation:** `failure_signatures.first_seen_report_group_id` is set
   only when NULL, to the first report (by id, i.e. chronological) that the
   backfill touches. Signatures already attributed to a newer live group are not

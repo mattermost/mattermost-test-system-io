@@ -1452,7 +1452,7 @@ func aggregateOrchestrationTestCounts(
 			 WHERE a.run_id = $1
 			   AND a.test_cases IS NOT NULL
 			   AND jsonb_typeof(a.test_cases) = 'array'
-			   AND BTRIM(COALESCE(tc->>'full_title', ''), E' \t\n\r\v\f\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000') <> ''
+			   AND BTRIM(COALESCE(tc->>'full_title', ''), E' \t\n\r\u000b\f\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000') <> ''
 			   AND COALESCE(tc->>'status', '') <> ''
 			 GROUP BY a.dispatch_unit_id, tc->>'full_title'
 		)

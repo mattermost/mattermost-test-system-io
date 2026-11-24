@@ -208,7 +208,8 @@ func TestStatusParity_GoSQLAPISSRAndUpload(t *testing.T) {
 		{"title": "empty-title", "full_title": "   ", "status": "passed", "retry_count": 0, "duration_ms": 1, "ordinal": 12},
 		{"title": "tab_only", "full_title": "\t\n", "status": "failed", "retry_count": 0, "duration_ms": 1, "ordinal": 13},
 		{"title": "nbsp-title", "full_title": "\u00a0", "status": "failed", "retry_count": 0, "duration_ms": 1, "ordinal": 14},
-		{"title": "missing-status", "full_title": "parity > missing-status", "status": "", "retry_count": 0, "duration_ms": 1, "ordinal": 15},
+		{"title": "vtab-title", "full_title": "\v", "status": "failed", "retry_count": 0, "duration_ms": 1, "ordinal": 15},
+		{"title": "missing-status", "full_title": "parity > missing-status", "status": "", "retry_count": 0, "duration_ms": 1, "ordinal": 16},
 	}
 	code, raw = postAPI("/api/v1/orchestration/complete", map[string]any{
 		"repository":     defaultRepository,
@@ -458,5 +459,108 @@ func TestStatusParity_GoSQLAPISSRAndUpload(t *testing.T) {
 		if !strings.Contains(bodyStr, want) {
 			t.Fatalf("SSR ServeRun HTML missing %q", want)
 		}
+	}
+
+	// 6. Regression guard: literal "v" title must be retained while vertical tab "\v" is trimmed.
+	const vRunID = "run-status-parity-vtab"
+	if c, b := postAPI("/api/v1/orchestration/begin", map[string]any{
+		"repository":             defaultRepository,
+		"commit_sha":             commitSHA,
+		"gh_run_id":              vRunID,
+		"name":                   runName,
+		"gh_run_attempt":         runAttempt,
+		"branch":                 branch,
+		"framework":              "playwright",
+		"playwright_project":     "default",
+		"total_reports_expected": 1,
+		"dispatch_units":         []map[string]any{{"spec_path": "specs/v.spec.ts"}},
+	}); c != http.StatusCreated {
+		t.Fatalf("v-check orch begin = %d (%s)", c, b)
+	}
+	if c, b := postAPI("/api/v1/orchestration/checkout", map[string]any{
+		"repository": defaultRepository, "commit_sha": commitSHA,
+		"gh_run_id": vRunID, "name": runName, "gh_run_attempt": runAttempt,
+		"gh_job_name": jobName, "gh_job_id": jobID + "-v", "batch_size": 1,
+	}); c != http.StatusOK {
+		t.Fatalf("v-check orch checkout = %d (%s)", c, b)
+	}
+	if c, b := postAPI("/api/v1/orchestration/complete", map[string]any{
+		"repository": defaultRepository, "commit_sha": commitSHA,
+		"gh_run_id": vRunID, "name": runName, "gh_run_attempt": runAttempt,
+		"gh_job_name": jobName, "gh_job_id": jobID + "-v",
+		"results": []map[string]any{{
+			"spec_path": "specs/v.spec.ts", "status": "passed", "actual_duration_ms": 10,
+			"test_cases": []map[string]any{
+				{"title": "v", "full_title": "v", "status": "passed", "retry_count": 0, "duration_ms": 5, "ordinal": 0},
+				{"title": "vtab", "full_title": "\v", "status": "failed", "retry_count": 0, "duration_ms": 5, "ordinal": 1},
+			},
+		}},
+	}); c != http.StatusOK {
+		t.Fatalf("v-check orch complete = %d (%s)", c, b)
+	}
+	c, b := postAPI("/api/v1/reports/begin", map[string]any{
+		"repository": defaultRepository, "commit": commitSHA,
+		"gh_run_id": vRunID, "gh_run_attempt": runAttempt,
+		"framework": "playwright", "name": runName, "branch": branch,
+		"total_reports_expected": 1,
+	})
+	if c != http.StatusOK {
+		t.Fatalf("v-check reports/begin = %d (%s)", c, b)
+	}
+	var vBegin struct {
+		ReportID string `json:"report_id"`
+	}
+	if err := json.Unmarshal(b, &vBegin); err != nil {
+		t.Fatalf("unmarshal v-check begin: %v", err)
+	}
+	vStatusURL := fmt.Sprintf(
+		"%s/api/v1/orchestration/status?repository=%s&commit_sha=%s&gh_run_id=%s&name=%s&gh_run_attempt=%s",
+		env.ServerURL, url.QueryEscape(defaultRepository), commitSHA, vRunID, runName, runAttempt,
+	)
+	vStatusResp, err := http.Get(vStatusURL)
+	if err != nil {
+		t.Fatalf("get v-check orchestration/status: %v", err)
+	}
+	defer func() { _ = vStatusResp.Body.Close() }()
+	vStatusRaw, _ := io.ReadAll(vStatusResp.Body)
+	if vStatusResp.StatusCode != http.StatusOK {
+		t.Fatalf("v-check orchestration/status = %d (%s)", vStatusResp.StatusCode, vStatusRaw)
+	}
+	var vOrchStatus struct {
+		Tests struct {
+			Passed int `json:"passed"`
+			Failed int `json:"failed"`
+			Total  int `json:"total"`
+		} `json:"tests"`
+	}
+	if err := json.Unmarshal(vStatusRaw, &vOrchStatus); err != nil {
+		t.Fatalf("unmarshal v-check orchestration/status: %v", err)
+	}
+	if vOrchStatus.Tests.Passed != 1 || vOrchStatus.Tests.Failed != 0 || vOrchStatus.Tests.Total != 1 {
+		t.Fatalf("v-check orchestration/status tests = %+v, want passed=1 failed=0 total=1", vOrchStatus.Tests)
+	}
+	vDetailResp, err := http.Get(env.ServerURL + "/api/v1/reports/" + vBegin.ReportID)
+	if err != nil {
+		t.Fatalf("get v-check reports/{id}: %v", err)
+	}
+	defer func() { _ = vDetailResp.Body.Close() }()
+	vDetailRaw, _ := io.ReadAll(vDetailResp.Body)
+	if vDetailResp.StatusCode != http.StatusOK {
+		t.Fatalf("v-check reports/{id} = %d (%s)", vDetailResp.StatusCode, vDetailRaw)
+	}
+	var vDetail struct {
+		Orchestration struct {
+			Tests struct {
+				Passed int `json:"passed"`
+				Failed int `json:"failed"`
+				Total  int `json:"total"`
+			} `json:"tests"`
+		} `json:"orchestration"`
+	}
+	if err := json.Unmarshal(vDetailRaw, &vDetail); err != nil {
+		t.Fatalf("unmarshal v-check reports/{id}: %v", err)
+	}
+	if vDetail.Orchestration.Tests.Passed != 1 || vDetail.Orchestration.Tests.Failed != 0 || vDetail.Orchestration.Tests.Total != 1 {
+		t.Fatalf("v-check reports/{id} orchestration.tests = %+v, want passed=1 failed=0 total=1", vDetail.Orchestration.Tests)
 	}
 }

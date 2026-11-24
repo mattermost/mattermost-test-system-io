@@ -139,24 +139,16 @@ func TestPassRateDisplayRun(t *testing.T) {
 	if got := passRateDisplay(10, 0, 0); got != "100" {
 		t.Fatalf("got %q", got)
 	}
-	if got := passRateDisplayWithRule(8, 1, 1, 5, teststatus.RuleLegacy); got != "90" {
-		t.Fatalf("legacy passRateDisplayWithRule = %q, want 90", got)
+	if got := passRateDisplay(8, 1, 1); got != "90" {
+		t.Fatalf("passRateDisplay(8,1,1) = %q, want 90", got)
 	}
-	if got := passRateDisplayWithRule(8, 1, 1, 5, teststatus.RuleShared); got != "90" {
-		t.Fatalf("shared passRateDisplayWithRule = %q, want 90", got)
+	// Live prod Row 1 regression: 1483 passed, 0 failed, 2 flaky, 65 skipped -> "100" / rate-perfect.
+	got := passRateDisplay(1483, 0, 2)
+	if got != "100" || passRateColorClass(got) != "rate-perfect" {
+		t.Fatalf("live prod Row 1 = (%q, %q), want (100, rate-perfect)", got, passRateColorClass(got))
 	}
-	// Live prod Row 1 regression: 1483 passed, 0 failed, 2 flaky, 65 skipped -> "100" / rate-perfect under both rules.
-	for _, rule := range []teststatus.Rule{teststatus.RuleLegacy, teststatus.RuleShared} {
-		got := passRateDisplayWithRule(1483, 0, 2, 65, rule)
-		if got != "100" || passRateColorClass(got) != "rate-perfect" {
-			t.Fatalf("rule=%s live prod Row 1 = (%q, %q), want (100, rate-perfect)", rule, got, passRateColorClass(got))
-		}
-	}
-	if got := passRateDisplayWithRule(0, 0, 0, 4, teststatus.RuleLegacy); got != "" {
-		t.Fatalf("legacy all-skipped = %q, want empty", got)
-	}
-	if got := passRateDisplayWithRule(0, 0, 0, 4, teststatus.RuleShared); got != "" {
-		t.Fatalf("shared all-skipped = %q, want empty", got)
+	if got := passRateDisplay(0, 0, 0); got != "" {
+		t.Fatalf("all-skipped = %q, want empty", got)
 	}
 }
 

@@ -516,8 +516,8 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 			t.Fatalf("%s html home allSkipped = (%+v, %v), want empty PassRate", page.name, r, ok)
 		}
 	}
-	if r, ok := findRow(homeHTMLLeg.StaticRuns, orchRunID); !ok || r.Total != 8 || r.PassRate != "50" {
-		t.Fatalf("legacy html home orch row = (%+v, %v), want total=8 rate=50", r, ok)
+	if r, ok := findRow(homeHTMLLeg.StaticRuns, orchRunID); !ok || r.Total != 8 || r.PassRate != "28.5" {
+		t.Fatalf("legacy html home orch row = (%+v, %v), want total=8 rate=28.5", r, ok)
 	}
 	if r, ok := findRow(homeHTMLShr.StaticRuns, orchRunID); !ok || r.Total != 6 || r.PassRate != "50" {
 		t.Fatalf("shared html home orch row = (%+v, %v), want total=6 rate=50", r, ok)
@@ -597,9 +597,9 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildHomeLiveRowsWithRule(shared): %v", err)
 	}
-	// Under legacy, "unknown" is unclassified (Failed=1, Passed=1 -> 50%); under shared, "unknown" is failed (Failed=2, Passed=1 -> 33.3%).
-	if r, ok := findRow(liveRowsLeg, liveRunID); !ok || r.PassRate != "50" {
-		t.Fatalf("legacy live row = (%+v, %v), want rate=50", r, ok)
+	// Unclassified "unknown" counts as failed in pass rate under both rules (Failed=1+1rem / Failed=2, Passed=1 -> 33.3%).
+	if r, ok := findRow(liveRowsLeg, liveRunID); !ok || r.PassRate != "33.3" {
+		t.Fatalf("legacy live row = (%+v, %v), want rate=33.3", r, ok)
 	}
 	if r, ok := findRow(liveRowsShr, liveRunID); !ok || r.PassRate != "33.3" {
 		t.Fatalf("shared live row = (%+v, %v), want rate=33.3", r, ok)
@@ -620,8 +620,8 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 		}
 		return payload.HTML
 	}
-	if frag := serveLiveFragment(teststatus.RuleLegacy); !strings.Contains(frag, "50%") {
-		t.Fatalf("legacy live fragment missing 50%%: %s", frag)
+	if frag := serveLiveFragment(teststatus.RuleLegacy); !strings.Contains(frag, "33.3%") {
+		t.Fatalf("legacy live fragment missing 33.3%%: %s", frag)
 	}
 	if frag := serveLiveFragment(teststatus.RuleShared); !strings.Contains(frag, "33.3%") {
 		t.Fatalf("shared live fragment missing 33.3%%: %s", frag)

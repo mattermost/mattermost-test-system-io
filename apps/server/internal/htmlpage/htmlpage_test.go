@@ -285,6 +285,12 @@ func TestMapHomeRowsRespectsStatusRule(t *testing.T) {
 	if legLive.PassRate != "90" || shrLive.PassRate != "90" {
 		t.Fatalf("mapLiveRun PassRate legacy=%q shared=%q, want 90 / 90", legLive.PassRate, shrLive.PassRate)
 	}
+
+	// Unclassified remainder (Total > Passed+Failed+Flaky+Skipped) must fail closed in PassRate.
+	unclassified := reports.HomeStaticRun{Name: "unclassified", Passed: 1, Total: 4}
+	if got := mapStaticRun(unclassified, teststatus.RuleLegacy); got.PassRate != "25" || got.PassRateClass == ratePerfect {
+		t.Fatalf("unclassified remainder = (%q, %q), want (25, rate-fail)", got.PassRate, got.PassRateClass)
+	}
 }
 
 func TestRenderSignInLinkUsesBrowserOAuthRoute(t *testing.T) {

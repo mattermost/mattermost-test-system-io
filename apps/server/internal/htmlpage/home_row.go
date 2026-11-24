@@ -81,7 +81,7 @@ func mapLiveRun(r reports.HomeLiveRun, rule teststatus.Rule) HomeRunRow {
 	return row
 }
 
-func mapStaticRun(r reports.HomeStaticRun, rule teststatus.Rule) HomeRunRow {
+func mapStaticRun(r reports.HomeStaticRun, _ teststatus.Rule) HomeRunRow {
 	row := HomeRunRow{
 		Href:           r.Href,
 		Name:           r.Name,
@@ -106,7 +106,7 @@ func mapStaticRun(r reports.HomeStaticRun, rule teststatus.Rule) HomeRunRow {
 		row.Flaky = r.Flaky
 		row.Skipped = r.Skipped
 		row.Total = r.Total
-		if rate := passRateDisplayWithRule(r.Passed, r.Failed, r.Flaky, r.Skipped, rule); rate != "" {
+		if rate := passRateDisplayForTotals(r.Total, r.Passed, r.Failed, r.Flaky, r.Skipped); rate != "" {
 			row.PassRate = rate
 			row.PassRateClass = passRateColorClass(rate)
 		}
@@ -150,7 +150,7 @@ func fillSpecProgress(row *HomeRunRow, orch *reports.HomeOrchView) {
 	}
 }
 
-func fillStatsFromOrchView(row *HomeRunRow, orch *reports.HomeOrchView, rule teststatus.Rule) {
+func fillStatsFromOrchView(row *HomeRunRow, orch *reports.HomeOrchView, _ teststatus.Rule) {
 	if orch == nil || orch.Tests == nil || orch.Tests.Total <= 0 {
 		return
 	}
@@ -162,7 +162,7 @@ func fillStatsFromOrchView(row *HomeRunRow, orch *reports.HomeOrchView, rule tes
 	row.Skipped = t.Skipped
 	row.Total = t.Total
 	row.HasFailed = t.Failed > 0
-	if rate := passRateDisplayWithRule(t.Passed, t.Failed, t.Flaky, t.Skipped, rule); rate != "" {
+	if rate := passRateDisplayForTotals(t.Total, t.Passed, t.Failed, t.Flaky, t.Skipped); rate != "" {
 		row.PassRate = rate
 		row.PassRateClass = passRateColorClass(rate)
 	}
@@ -240,7 +240,11 @@ func statusIconForRun(groupStatus string, orch *reports.HomeOrchView, total int,
 	return statusPassed
 }
 
-func passRateDisplayWithRule(passed, failed, flaky, _ int, _ teststatus.Rule) string {
+func passRateDisplayForTotals(total, passed, failed, flaky, skipped int) string {
+	// Fail closed: any unclassified remainder outside known buckets counts as failed.
+	if rem := total - (passed + failed + flaky + skipped); rem > 0 {
+		failed += rem
+	}
 	return passRateDisplay(passed, failed, flaky)
 }
 

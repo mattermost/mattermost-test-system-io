@@ -490,11 +490,14 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 		startCh := make(chan struct{})
 		var wg sync.WaitGroup
 		errCh := make(chan string, len(units)+1)
+		var timedOut bool
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-startCh
-			if _, err := env.Orchestrator.MarkRunTimedOut(ctx, curRunID); err != nil {
+			var err error
+			timedOut, err = env.Orchestrator.MarkRunTimedOut(ctx, curRunID)
+			if err != nil {
 				errCh <- fmt.Sprintf("iter=%d MarkRunTimedOut err=%v", iter, err)
 			}
 		}()
@@ -522,12 +525,19 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 		}
 
 		statBody := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)
-		if st := statBody["status"]; st != "completed" && st != "timed_out" {
-			t.Fatalf("iter=%d terminal status = %v, want completed or timed_out", iter, st)
-		}
+		st := statBody["status"]
 		c := counts(t, statBody)
 		if c["pending"] != 0 || c["leased"] != 0 || c["completed_pass"]+c["abandoned"] != len(units) {
 			t.Fatalf("iter=%d inconsistent counts after concurrent timeout+complete: %s", iter, fmtCounts(c))
+		}
+		if timedOut {
+			if st != "timed_out" || c["abandoned"] < 1 {
+				t.Fatalf("iter=%d MarkRunTimedOut=true but status=%v counts=%s, want timed_out with abandoned>=1", iter, st, fmtCounts(c))
+			}
+		} else {
+			if st != "completed" || c["completed_pass"] != len(units) || c["abandoned"] != 0 {
+				t.Fatalf("iter=%d MarkRunTimedOut=false but status=%v counts=%s, want completed with pass=%d abandoned=0", iter, st, fmtCounts(c), len(units))
+			}
 		}
 	}
 }

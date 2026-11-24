@@ -36,7 +36,7 @@ and TSIO_STATUS_RULE=shared without modifying any rows or scanning suites/test_c
 			if err := validateStatusShadowFlags(flags); err != nil {
 				return err
 			}
-			dsn, err := resolveShadowDatabaseURL(flags.databaseURL, os.Getenv, config.Load)
+			dsn, err := resolveShadowDatabaseURL(flags.databaseURL, os.Getenv, config.LoadDatabaseURL)
 			if err != nil {
 				return err
 			}
@@ -80,7 +80,7 @@ func validateStatusShadowFlags(flags statusShadowFlags) error {
 func resolveShadowDatabaseURL(
 	flagDSN string,
 	getenv func(string) string,
-	loadCfg func() (config.Config, error),
+	loadDBURL func() (string, error),
 ) (string, error) {
 	if dsn := strings.TrimSpace(flagDSN); dsn != "" {
 		return dsn, nil
@@ -90,14 +90,14 @@ func resolveShadowDatabaseURL(
 			return dsn, nil
 		}
 	}
-	cfg, err := loadCfg()
+	dsn, err := loadDBURL()
 	if err != nil {
 		return "", fmt.Errorf("resolve database url (pass --database-url or set TSIO_DATABASE_URL / DATABASE_URL): %w", err)
 	}
-	if strings.TrimSpace(cfg.DatabaseURL) == "" {
+	if strings.TrimSpace(dsn) == "" {
 		return "", errors.New("resolved database URL is empty")
 	}
-	return cfg.DatabaseURL, nil
+	return dsn, nil
 }
 
 func renderStatusShadowReport(w io.Writer, report reports.StatusShadowReport, format string, showAll bool) error {

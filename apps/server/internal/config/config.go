@@ -129,6 +129,37 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// LoadDatabaseURL loads .env (best-effort) and resolves only the database
+// connection URL from TSIO_DATABASE_URL or split TSIO_DB_* variables without
+// requiring server-only settings like TSIO_S3_BUCKET or TSIO_SESSION_SECRET.
+func LoadDatabaseURL() (string, error) {
+	loadDotenv()
+
+	var dbCfg struct {
+		DatabaseURL string `env:"TSIO_DATABASE_URL"`
+		DBHost      string `env:"TSIO_DB_HOST"`
+		DBPort      string `env:"TSIO_DB_PORT" envDefault:"5432"`
+		DBUser      string `env:"TSIO_DB_USER"`
+		DBPassword  string `env:"TSIO_DB_PASSWORD,unset"`
+		DBName      string `env:"TSIO_DB_NAME"`
+		DBSSLMode   string `env:"TSIO_DB_SSLMODE" envDefault:"require"`
+	}
+	if err := env.Parse(&dbCfg); err != nil {
+		return "", fmt.Errorf("parse db env: %w", err)
+	}
+	if dbCfg.DatabaseURL != "" {
+		return dbCfg.DatabaseURL, nil
+	}
+	return assembleDatabaseURL(Config{
+		DBHost:     dbCfg.DBHost,
+		DBPort:     dbCfg.DBPort,
+		DBUser:     dbCfg.DBUser,
+		DBPassword: dbCfg.DBPassword,
+		DBName:     dbCfg.DBName,
+		DBSSLMode:  dbCfg.DBSSLMode,
+	})
+}
+
 // assembleDatabaseURL builds a postgres:// DSN from the split TSIO_DB_* fields.
 // Returns an error if any required part is missing — callers that supply
 // TSIO_DATABASE_URL directly never reach this path.

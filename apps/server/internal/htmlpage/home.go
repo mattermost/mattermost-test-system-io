@@ -54,14 +54,14 @@ func BuildHomePageWithRule(ctx context.Context, pool *pgxpool.Pool, site SiteInf
 
 	liveRuns := make([]HomeRunRow, 0, len(data.Live))
 	for i, r := range data.Live {
-		row := mapLiveRun(r)
+		row := mapLiveRun(r, rule)
 		row.RowNum = i + 1
 		liveRuns = append(liveRuns, row)
 	}
 
 	staticRuns := make([]HomeRunRow, 0, len(data.Static))
 	for i, r := range data.Static {
-		row := mapStaticRun(r)
+		row := mapStaticRun(r, rule)
 		row.RowNum = data.Offset + i + 1
 		staticRuns = append(staticRuns, row)
 	}
@@ -99,15 +99,20 @@ func BuildHomePageWithRule(ctx context.Context, pool *pgxpool.Pool, site SiteInf
 	}, nil
 }
 
-// BuildHomeLiveRows builds live row models.
+// BuildHomeLiveRows builds live row models using legacy rules.
 func BuildHomeLiveRows(ctx context.Context, pool *pgxpool.Pool, repository, branchFilter string) ([]HomeRunRow, error) {
-	live, err := reports.LoadHomeLiveRuns(ctx, pool, repository, branchFilter)
+	return BuildHomeLiveRowsWithRule(ctx, pool, repository, branchFilter, teststatus.RuleLegacy)
+}
+
+// BuildHomeLiveRowsWithRule builds live row models using rule.
+func BuildHomeLiveRowsWithRule(ctx context.Context, pool *pgxpool.Pool, repository, branchFilter string, rule teststatus.Rule) ([]HomeRunRow, error) {
+	live, err := reports.LoadHomeLiveRunsWithRule(ctx, pool, repository, branchFilter, rule)
 	if err != nil {
 		return nil, err
 	}
 	runs := make([]HomeRunRow, 0, len(live))
 	for i, r := range live {
-		row := mapLiveRun(r)
+		row := mapLiveRun(r, rule)
 		row.RowNum = i + 1
 		runs = append(runs, row)
 	}

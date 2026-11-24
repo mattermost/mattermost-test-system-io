@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
@@ -367,9 +368,9 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 		t.Fatalf("BuildRunPage legacy: %v", err)
 	}
 	if legacyPage.TestPassed != 2 || legacyPage.TestFailed != 5 || legacyPage.TestFlaky != 0 ||
-		legacyPage.TestSkipped != 1 || legacyPage.TestTotal != 8 {
-		t.Fatalf("legacy SSR counts = %d/%d/%d/%d/%d, want 2/5/0/1/8",
-			legacyPage.TestPassed, legacyPage.TestFailed, legacyPage.TestFlaky, legacyPage.TestSkipped, legacyPage.TestTotal)
+		legacyPage.TestSkipped != 1 || legacyPage.TestTotal != 8 || legacyPage.PassRate != "25" {
+		t.Fatalf("legacy SSR counts = %d/%d/%d/%d/%d rate=%q, want 2/5/0/1/8 rate=25",
+			legacyPage.TestPassed, legacyPage.TestFailed, legacyPage.TestFlaky, legacyPage.TestSkipped, legacyPage.TestTotal, legacyPage.PassRate)
 	}
 
 	sharedPage, _, err := htmlpage.BuildRunPage(ctx, env.Pool, orchStore, htmlpage.SiteInfo{}, defaultRepository, branch, commitSHA, orchRunName, htmlpage.RunPageOpts{
@@ -413,10 +414,171 @@ func TestStatusRuleSwitch_DefaultLegacyVsShared(t *testing.T) {
 		}
 		return rec.Body.String()
 	}
-	if body := serveHTML(teststatus.RuleLegacy); !strings.Contains(body, ">8</span> total") {
-		t.Fatalf("legacy ServeRun missing total=8")
+	if body := serveHTML(teststatus.RuleLegacy); !strings.Contains(body, ">8</span> total") || !strings.Contains(body, "25%") {
+		t.Fatalf("legacy ServeRun missing total=8 or 25%%")
 	}
 	if body := serveHTML(teststatus.RuleShared); !strings.Contains(body, ">6</span> total") || !strings.Contains(body, "50%") {
 		t.Fatalf("shared ServeRun missing total=6 or 50%%")
+	}
+
+	// Verify completed shardless orchestration-backed group (orchRunID, refreshed under legacy)
+	// switches counts and pass rate on Home/Repo projections and HTML handlers.
+	// First ensure orchGroup's projection is populated (refreshed under legacy).
+	if err := reports.RefreshGroupSummaryWithRule(ctx, env.Pool, uuid.MustParse(orchGroup.ReportID), teststatus.RuleLegacy); err != nil {
+		t.Fatalf("RefreshGroupSummaryWithRule(legacy): %v", err)
+	}
+	homeOrchLeg, err := reports.LoadHomePageDataWithRule(ctx, env.Pool, 50, 0, defaultRepository, "", teststatus.RuleLegacy)
+	if err != nil {
+		t.Fatalf("LoadHomePageDataWithRule(legacy): %v", err)
+	}
+	homeOrchShr, err := reports.LoadHomePageDataWithRule(ctx, env.Pool, 50, 0, defaultRepository, "", teststatus.RuleShared)
+	if err != nil {
+		t.Fatalf("LoadHomePageDataWithRule(shared): %v", err)
+	}
+	findStatic := func(rows []reports.HomeStaticRun, runID string) (reports.HomeStaticRun, bool) {
+		for _, r := range rows {
+			if r.GHRunID == runID {
+				return r, true
+			}
+		}
+		return reports.HomeStaticRun{}, false
+	}
+	if r, ok := findStatic(homeOrchLeg.Static, orchRunID); !ok || r.Total != 8 || r.Passed != 2 || r.Failed != 2 || r.Flaky != 0 || r.Skipped != 1 || r.PassRate == nil || *r.PassRate != 25 {
+		t.Fatalf("legacy orch home static = (%+v, %v), want 2/2/0/1/8 rate=25", r, ok)
+	}
+	if r, ok := findStatic(homeOrchShr.Static, orchRunID); !ok || r.Total != 6 || r.Passed != 1 || r.Failed != 2 || r.Flaky != 1 || r.Skipped != 2 || r.PassRate == nil || *r.PassRate != 50 {
+		t.Fatalf("shared orch home static = (%+v, %v), want 1/2/1/2/6 rate=50", r, ok)
+	}
+
+	// Verify HTML Home/Repo page builders and HTTP handlers apply rule to both uploaded and orch rows.
+	homeHTMLLeg, err := htmlpage.BuildHomePageWithRule(ctx, env.Pool, htmlpage.SiteInfo{}, 50, 0, defaultRepository, "", teststatus.RuleLegacy)
+	if err != nil {
+		t.Fatalf("BuildHomePageWithRule(legacy): %v", err)
+	}
+	homeHTMLShr, err := htmlpage.BuildHomePageWithRule(ctx, env.Pool, htmlpage.SiteInfo{}, 50, 0, defaultRepository, "", teststatus.RuleShared)
+	if err != nil {
+		t.Fatalf("BuildHomePageWithRule(shared): %v", err)
+	}
+	findRow := func(rows []htmlpage.HomeRunRow, runID string) (htmlpage.HomeRunRow, bool) {
+		for _, r := range rows {
+			if r.GHRunID == runID {
+				return r, true
+			}
+		}
+		return htmlpage.HomeRunRow{}, false
+	}
+	if r, ok := findRow(homeHTMLLeg.StaticRuns, uploadRunID); !ok || r.PassRate != "60" {
+		t.Fatalf("legacy html home upload row = (%+v, %v), want rate=60", r, ok)
+	}
+	if r, ok := findRow(homeHTMLShr.StaticRuns, uploadRunID); !ok || r.PassRate != "90" {
+		t.Fatalf("shared html home upload row = (%+v, %v), want rate=90", r, ok)
+	}
+	if r, ok := findRow(homeHTMLLeg.StaticRuns, orchRunID); !ok || r.Total != 8 || r.PassRate != "25" {
+		t.Fatalf("legacy html home orch row = (%+v, %v), want total=8 rate=25", r, ok)
+	}
+	if r, ok := findRow(homeHTMLShr.StaticRuns, orchRunID); !ok || r.Total != 6 || r.PassRate != "50" {
+		t.Fatalf("shared html home orch row = (%+v, %v), want total=6 rate=50", r, ok)
+	}
+
+	repoHTMLShr, err := htmlpage.BuildRepoPageWithRule(ctx, env.Pool, htmlpage.SiteInfo{}, defaultRepository, 50, 0, "", teststatus.RuleShared)
+	if err != nil {
+		t.Fatalf("BuildRepoPageWithRule(shared): %v", err)
+	}
+	if r, ok := findRow(repoHTMLShr.StaticRuns, orchRunID); !ok || r.Total != 6 || r.PassRate != "50" {
+		t.Fatalf("shared html repo orch row = (%+v, %v), want total=6 rate=50", r, ok)
+	}
+
+	// Verify live in-progress orchestration run switches counts and pass rate on BuildHomeLiveRowsWithRule & ServeHomeLiveFragment.
+	const liveRunID = "run-switch-live-1"
+	const liveRunName = "pw-live-switch"
+	if c, b := postAPI("/api/v1/orchestration/begin", map[string]any{
+		"repository": defaultRepository, "commit_sha": commitSHA,
+		"gh_run_id": liveRunID, "name": liveRunName, "gh_run_attempt": runAttempt,
+		"branch": branch, "framework": "playwright", "playwright_project": "default",
+		"total_reports_expected": 2,
+		"dispatch_units": []map[string]any{
+			{"spec_path": "specs/live-a.spec.ts"},
+			{"spec_path": "specs/live-b.spec.ts"},
+		},
+	}); c != http.StatusCreated {
+		t.Fatalf("live orch begin = %d (%s)", c, b)
+	}
+	if c, b := postAPI("/api/v1/orchestration/checkout", map[string]any{
+		"repository": defaultRepository, "commit_sha": commitSHA,
+		"gh_run_id": liveRunID, "name": liveRunName, "gh_run_attempt": runAttempt,
+		"gh_job_name": "worker-1", "gh_job_id": "job-sw-live", "batch_size": 1,
+	}); c != http.StatusOK {
+		t.Fatalf("live orch checkout = %d (%s)", c, b)
+	}
+	if c, b := postAPI("/api/v1/orchestration/complete", map[string]any{
+		"repository": defaultRepository, "commit_sha": commitSHA,
+		"gh_run_id": liveRunID, "name": liveRunName, "gh_run_attempt": runAttempt,
+		"gh_job_name": "worker-1", "gh_job_id": "job-sw-live",
+		"results": []map[string]any{{
+			"spec_path": "specs/live-a.spec.ts", "status": "failed", "actual_duration_ms": 20,
+			"test_cases": []map[string]any{
+				{"title": "p", "full_title": "live > p", "status": "passed", "retry_count": 0, "duration_ms": 10, "ordinal": 0},
+				{"title": "f", "full_title": "live > f", "status": "failed", "retry_count": 0, "duration_ms": 10, "ordinal": 1},
+				{"title": "s1", "full_title": "live > s1", "status": "skipped", "retry_count": 0, "duration_ms": 0, "ordinal": 2},
+				{"title": "s2", "full_title": "live > s2", "status": "skipped", "retry_count": 0, "duration_ms": 0, "ordinal": 3},
+			},
+		}},
+	}); c != http.StatusOK {
+		t.Fatalf("live orch complete = %d (%s)", c, b)
+	}
+	c, b = postAPI("/api/v1/reports/begin", map[string]any{
+		"repository": defaultRepository, "commit": commitSHA,
+		"gh_run_id": liveRunID, "gh_run_attempt": runAttempt,
+		"framework": "playwright", "name": liveRunName, "branch": branch,
+		"total_reports_expected": 2,
+	})
+	if c != http.StatusOK {
+		t.Fatalf("live reports/begin = %d (%s)", c, b)
+	}
+	var liveGroup struct {
+		ReportID string `json:"report_id"`
+	}
+	if err := json.Unmarshal(b, &liveGroup); err != nil {
+		t.Fatalf("unmarshal live begin: %v", err)
+	}
+	if err := reports.RefreshGroupSummaryWithRule(ctx, env.Pool, uuid.MustParse(liveGroup.ReportID), teststatus.RuleLegacy); err != nil {
+		t.Fatalf("RefreshGroupSummaryWithRule(live): %v", err)
+	}
+
+	liveRowsLeg, err := htmlpage.BuildHomeLiveRowsWithRule(ctx, env.Pool, defaultRepository, "", teststatus.RuleLegacy)
+	if err != nil {
+		t.Fatalf("BuildHomeLiveRowsWithRule(legacy): %v", err)
+	}
+	liveRowsShr, err := htmlpage.BuildHomeLiveRowsWithRule(ctx, env.Pool, defaultRepository, "", teststatus.RuleShared)
+	if err != nil {
+		t.Fatalf("BuildHomeLiveRowsWithRule(shared): %v", err)
+	}
+	if r, ok := findRow(liveRowsLeg, liveRunID); !ok || r.PassRate != "25" {
+		t.Fatalf("legacy live row = (%+v, %v), want rate=25", r, ok)
+	}
+	if r, ok := findRow(liveRowsShr, liveRunID); !ok || r.PassRate != "50" {
+		t.Fatalf("shared live row = (%+v, %v), want rate=50", r, ok)
+	}
+
+	serveLiveFragment := func(rule teststatus.Rule) string {
+		h := &htmlpage.Handler{Pool: env.Pool, Orch: orchStore, StatusRule: rule}
+		rec := httptest.NewRecorder()
+		h.ServeHomeLiveFragment(rec, httptest.NewRequest(http.MethodGet, "/reports/fragment/home-live?repository="+url.QueryEscape(defaultRepository), nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("ServeHomeLiveFragment(%q) = %d", rule, rec.Code)
+		}
+		var payload struct {
+			HTML string `json:"html"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode live fragment: %v", err)
+		}
+		return payload.HTML
+	}
+	if frag := serveLiveFragment(teststatus.RuleLegacy); !strings.Contains(frag, "25%") {
+		t.Fatalf("legacy live fragment missing 25%%: %s", frag)
+	}
+	if frag := serveLiveFragment(teststatus.RuleShared); !strings.Contains(frag, "50%") {
+		t.Fatalf("shared live fragment missing 50%%: %s", frag)
 	}
 }

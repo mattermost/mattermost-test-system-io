@@ -139,6 +139,18 @@ func TestPassRateDisplayRun(t *testing.T) {
 	if got := passRateDisplay(10, 0, 0); got != "100" {
 		t.Fatalf("got %q", got)
 	}
+	if got := passRateDisplayWithRule(8, 1, 1, 5, teststatus.RuleLegacy); got != "60" {
+		t.Fatalf("legacy passRateDisplayWithRule = %q, want 60", got)
+	}
+	if got := passRateDisplayWithRule(8, 1, 1, 5, teststatus.RuleShared); got != "90" {
+		t.Fatalf("shared passRateDisplayWithRule = %q, want 90", got)
+	}
+	if got := passRateDisplayWithRule(0, 0, 0, 4, teststatus.RuleLegacy); got != "0" {
+		t.Fatalf("legacy all-skipped = %q, want 0", got)
+	}
+	if got := passRateDisplayWithRule(0, 0, 0, 4, teststatus.RuleShared); got != "" {
+		t.Fatalf("shared all-skipped = %q, want empty", got)
+	}
 }
 
 func TestApplyRunSummaryAndAggregateUnitTests_CanonicalRules(t *testing.T) {
@@ -200,5 +212,34 @@ func TestApplyRunSummaryAndAggregateUnitTests_CanonicalRules(t *testing.T) {
 	legacyPendingAttempt := buildTestAttempt(testCaseEntry{tc: orchTestCase{Status: "pending"}}, 1, teststatus.RuleLegacy)
 	if legacyPendingAttempt.StatusIcon != iconFail {
 		t.Fatalf("legacy pending attempt icon = %q, want fail", legacyPendingAttempt.StatusIcon)
+	}
+
+	// Verify applyRunSummary pass rate switches between legacy (includes skipped) and shared (excludes skipped).
+	skippedRaw, err := json.Marshal([]orchTestCase{
+		{FullTitle: "s > p", Title: "p", Status: "passed"},
+		{FullTitle: "s > f", Title: "f", Status: "failed"},
+		{FullTitle: "s > sk1", Title: "sk1", Status: "skipped"},
+		{FullTitle: "s > sk2", Title: "sk2", Status: "skipped"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skippedSnap := &orchestration.RunWithUnits{
+		Run: &orchestration.Run{
+			Status: orchestration.RunStatusCompleted,
+			Counts: orchestration.RunCounts{Total: 1, CompletedFail: 1},
+		},
+		Units: []orchestration.UnitView{
+			{
+				DispatchUnit: orchestration.DispatchUnit{State: orchestration.UnitStateCompletedFail},
+				Attempts:     []orchestration.AttemptView{{Attempt: orchestration.Attempt{TestCases: skippedRaw}}},
+			},
+		},
+	}
+	var legSum, shrSum RunPage
+	applyRunSummary(&legSum, skippedSnap, teststatus.RuleLegacy)
+	applyRunSummary(&shrSum, skippedSnap, teststatus.RuleShared)
+	if legSum.PassRate != "25" || shrSum.PassRate != "50" {
+		t.Fatalf("applyRunSummary PassRate legacy=%q shared=%q, want 25 / 50", legSum.PassRate, shrSum.PassRate)
 	}
 }

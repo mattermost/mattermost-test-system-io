@@ -50,13 +50,13 @@ func BuildRepoPageWithRule(ctx context.Context, pool *pgxpool.Pool, site SiteInf
 
 	liveRuns := make([]HomeRunRow, 0, len(data.Live))
 	for i, r := range data.Live {
-		row := mapLiveRun(r)
+		row := mapLiveRun(r, rule)
 		row.RowNum = i + 1
 		liveRuns = append(liveRuns, row)
 	}
 	staticRuns := make([]HomeRunRow, 0, len(data.Static))
 	for i, r := range data.Static {
-		row := mapStaticRun(r)
+		row := mapStaticRun(r, rule)
 		row.RowNum = data.Offset + i + 1
 		staticRuns = append(staticRuns, row)
 	}

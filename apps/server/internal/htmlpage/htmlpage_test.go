@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 func TestRenderHomeEmpty(t *testing.T) {
@@ -223,6 +224,48 @@ func TestPassRateDisplay(t *testing.T) {
 	}
 	if passRateDisplay(10, 0, 0) != "100" {
 		t.Fatal("expected 100%")
+	}
+}
+
+func TestMapHomeRowsRespectsStatusRule(t *testing.T) {
+	staticIn := reports.HomeStaticRun{
+		Name:    "run-static",
+		Passed:  8,
+		Flaky:   1,
+		Failed:  1,
+		Skipped: 5,
+		Total:   15,
+	}
+	legStatic := mapStaticRun(staticIn, teststatus.RuleLegacy)
+	shrStatic := mapStaticRun(staticIn, teststatus.RuleShared)
+	if legStatic.PassRate != "60" || shrStatic.PassRate != "90" {
+		t.Fatalf("mapStaticRun PassRate legacy=%q shared=%q, want 60 / 90", legStatic.PassRate, shrStatic.PassRate)
+	}
+
+	// Unclassified legacy tests (Total > Passed+Failed+Flaky+Skipped) still count in legacy denominator.
+	orchStatic := reports.HomeStaticRun{
+		Name:    "run-orch-static",
+		Passed:  2,
+		Failed:  2,
+		Skipped: 1,
+		Total:   8,
+	}
+	if got := mapStaticRun(orchStatic, teststatus.RuleLegacy).PassRate; got != "25" {
+		t.Fatalf("mapStaticRun legacy with unclassified Total=8 got %q, want 25", got)
+	}
+
+	liveIn := reports.HomeLiveRun{
+		Name: "run-live",
+		Orch: &reports.HomeOrchView{
+			Status:     "in_progress",
+			TotalUnits: 1,
+			Tests:      &reports.HomeOrchTestCountsView{Passed: 8, Flaky: 1, Failed: 1, Skipped: 5, Total: 15},
+		},
+	}
+	legLive := mapLiveRun(liveIn, teststatus.RuleLegacy)
+	shrLive := mapLiveRun(liveIn, teststatus.RuleShared)
+	if legLive.PassRate != "60" || shrLive.PassRate != "90" {
+		t.Fatalf("mapLiveRun PassRate legacy=%q shared=%q, want 60 / 90", legLive.PassRate, shrLive.PassRate)
 	}
 }
 

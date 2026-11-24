@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -32,8 +33,8 @@ func TestValidateStatusShadowFlags(t *testing.T) {
 }
 
 func TestResolveShadowDatabaseURL(t *testing.T) {
-	noLoad := func() (config.Config, error) {
-		return config.Config{}, errors.New("config.Load should not be called")
+	noLoad := func() (string, error) {
+		return "", errors.New("loadDBURL should not be called")
 	}
 	envMap := func(m map[string]string) func(string) string {
 		return func(k string) string { return m[k] }
@@ -62,17 +63,32 @@ func TestResolveShadowDatabaseURL(t *testing.T) {
 		t.Fatalf("DATABASE_URL precedence got (%q, %v)", got, err)
 	}
 
-	got, err = resolveShadowDatabaseURL("", envMap(nil), func() (config.Config, error) {
-		return config.Config{DatabaseURL: "postgres://cfg@db/tsio"}, nil
+	got, err = resolveShadowDatabaseURL("", envMap(nil), func() (string, error) {
+		return "postgres://cfg@db/tsio", nil
 	})
 	if err != nil || got != "postgres://cfg@db/tsio" {
-		t.Fatalf("config.Load fallback got (%q, %v)", got, err)
+		t.Fatalf("config.LoadDatabaseURL fallback got (%q, %v)", got, err)
 	}
 
-	if _, err := resolveShadowDatabaseURL("", envMap(nil), func() (config.Config, error) {
-		return config.Config{}, errors.New("missing S3 bucket")
+	if _, err := resolveShadowDatabaseURL("", envMap(nil), func() (string, error) {
+		return "", errors.New("missing DB host")
 	}); err == nil {
-		t.Fatal("expected error when no DSN and config.Load fails")
+		t.Fatal("expected error when no DSN and loadDBURL fails")
+	}
+
+	t.Setenv("TSIO_DATABASE_URL", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("TSIO_S3_BUCKET", "")
+	t.Setenv("TSIO_SESSION_SECRET", "")
+	t.Setenv("TSIO_DB_HOST", "db.internal")
+	t.Setenv("TSIO_DB_PORT", "5432")
+	t.Setenv("TSIO_DB_USER", "tsio")
+	t.Setenv("TSIO_DB_PASSWORD", "secret")
+	t.Setenv("TSIO_DB_NAME", "tsio")
+	t.Setenv("TSIO_DB_SSLMODE", "disable")
+	got, err = resolveShadowDatabaseURL("", os.Getenv, config.LoadDatabaseURL)
+	if err != nil || got != "postgres://tsio:secret@db.internal:5432/tsio?sslmode=disable" {
+		t.Fatalf("split TSIO_DB_* without S3/session got (%q, %v)", got, err)
 	}
 }
 

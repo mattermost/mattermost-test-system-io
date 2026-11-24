@@ -100,4 +100,16 @@ func TestBuildReportGroupShadowDelta(t *testing.T) {
 	if unchanged.Changed {
 		t.Fatalf("expected Changed = false, got %+v", unchanged)
 	}
+
+	shardless := buildReportGroupShadowDeltaWithRules(
+		id, "mattermost/mattermost", "playwright", "202", "1",
+		&testStats{Passed: 2, Failed: 2, Skipped: 1, Total: 8},
+		&testStats{Passed: 1, Flaky: 1, Failed: 2, Skipped: 2, Total: 6},
+	)
+	if !shardless.Changed ||
+		shardless.LegacyPassRate == nil || *shardless.LegacyPassRate != 25 ||
+		shardless.SharedPassRate == nil || *shardless.SharedPassRate != 50 ||
+		shardless.DeltaPassRate == nil || *shardless.DeltaPassRate != 25 {
+		t.Fatalf("shardless group delta = %+v, want 25/50/+25", shardless)
+	}
 }

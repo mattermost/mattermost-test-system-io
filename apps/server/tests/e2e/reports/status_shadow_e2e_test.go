@@ -124,6 +124,21 @@ func TestStatusShadow_PostgresDeltasAndFilters(t *testing.T) {
 		t.Fatalf("insert fallback report: %v", err)
 	}
 
+	// Report group 3 (repo-a): shardless orchestration-backed group linked to runAID,
+	// with stale shared-rule counts cached in test_stats_json. Shadow comparison must
+	// compute rule-specific counts from attempts (25% legacy vs 50% shared, +25pp).
+	var groupCID uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO report_groups
+			(framework, name, status, repository, branch, commit_sha, gh_run_id, gh_run_attempt,
+			 created_at, updated_at, last_upload_at, test_stats_json)
+		VALUES ('playwright', 'run-edge', 'in_progress', $1, 'main', '0000000000000000000000000000000000000001', '101', '1',
+			$2, $2, $2, '{"TotalSuites":0,"TotalCases":6,"Passed":1,"Failed":2,"Skipped":2,"Flaky":1}'::jsonb)
+		RETURNING id
+	`, repoA, now.Add(-30*time.Second)).Scan(&groupCID); err != nil {
+		t.Fatalf("insert groupC: %v", err)
+	}
+
 	report, err := reports.CompareStatusRules(ctx, env.Pool, reports.StatusShadowOpts{Limit: 50})
 	if err != nil {
 		t.Fatalf("CompareStatusRules: %v", err)
@@ -131,8 +146,8 @@ func TestStatusShadow_PostgresDeltasAndFilters(t *testing.T) {
 	if report.OrchestrationRuns.Checked != 3 || report.OrchestrationRuns.Changed != 2 {
 		t.Fatalf("orch checked/changed = %d/%d, want 3/2", report.OrchestrationRuns.Checked, report.OrchestrationRuns.Changed)
 	}
-	if report.ReportGroups.Checked != 2 || report.ReportGroups.Changed != 2 {
-		t.Fatalf("groups checked/changed = %d/%d, want 2/2", report.ReportGroups.Checked, report.ReportGroups.Changed)
+	if report.ReportGroups.Checked != 3 || report.ReportGroups.Changed != 3 {
+		t.Fatalf("groups checked/changed = %d/%d, want 3/3", report.ReportGroups.Checked, report.ReportGroups.Changed)
 	}
 
 	byRun := map[uuid.UUID]reports.OrchRunShadowDelta{}
@@ -176,6 +191,13 @@ func TestStatusShadow_PostgresDeltasAndFilters(t *testing.T) {
 		grpB.LegacyPassRate == nil || *grpB.LegacyPassRate != 0 || grpB.SharedPassRate != nil {
 		t.Fatalf("groupB fallback = %+v", grpB)
 	}
+	grpC := byGrp[groupCID]
+	if !grpC.Changed || grpC.Stats.Total != 8 ||
+		grpC.LegacyPassRate == nil || *grpC.LegacyPassRate != 25 ||
+		grpC.SharedPassRate == nil || *grpC.SharedPassRate != 50 ||
+		grpC.DeltaPassRate == nil || *grpC.DeltaPassRate != 25 {
+		t.Fatalf("groupC shardless orch = %+v, want total=8 25/50/+25", grpC)
+	}
 
 	// Verify --repo filter and --limit bounding.
 	filtered, err := reports.CompareStatusRules(ctx, env.Pool, reports.StatusShadowOpts{Limit: 1, Repository: repoA})
@@ -185,7 +207,7 @@ func TestStatusShadow_PostgresDeltasAndFilters(t *testing.T) {
 	if filtered.OrchestrationRuns.Checked != 1 || filtered.OrchestrationRuns.Rows[0].RunID != runAID {
 		t.Fatalf("filtered orch = %+v", filtered.OrchestrationRuns)
 	}
-	if filtered.ReportGroups.Checked != 1 || filtered.ReportGroups.Rows[0].GroupID != groupAID {
+	if filtered.ReportGroups.Checked != 1 || filtered.ReportGroups.Rows[0].GroupID != groupCID {
 		t.Fatalf("filtered groups = %+v", filtered.ReportGroups)
 	}
 }

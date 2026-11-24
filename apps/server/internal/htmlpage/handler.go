@@ -161,7 +161,7 @@ func (h *Handler) ServeHomeLiveFragment(w http.ResponseWriter, r *http.Request) 
 			branchFilter = reports.ResolveBranchFilter(branchFilter, options)
 		}
 	}
-	rows, err := BuildHomeLiveRows(r.Context(), h.Pool, repository, branchFilter)
+	rows, err := BuildHomeLiveRowsWithRule(r.Context(), h.Pool, repository, branchFilter, h.StatusRule)
 	if err != nil {
 		if h.Logger != nil {
 			h.Logger.Warn("htmlpage home live fragment failed", slog.String("error", err.Error()))

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -115,9 +116,10 @@ func TestLoad_statusRule(t *testing.T) {
 		t.Fatalf("StatusRule = %q, want shared", cfg.StatusRule)
 	}
 
+	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
 	t.Setenv("TSIO_STATUS_RULE", "invalid")
-	if _, err := Load(); err == nil {
-		t.Fatal("expected Load() to fail fast on invalid TSIO_STATUS_RULE")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "TSIO_STATUS_RULE") {
+		t.Fatalf("expected Load() to fail fast on invalid TSIO_STATUS_RULE, got %v", err)
 	}
 }
 
@@ -196,5 +198,26 @@ func TestLoad_s3KeysOptional(t *testing.T) {
 	}
 	if cfg.S3AccessKey != "" || cfg.S3SecretKey != "" {
 		t.Errorf("expected empty S3 keys, got access=%q secret=%q", cfg.S3AccessKey, cfg.S3SecretKey)
+	}
+}
+
+func TestLoadDatabaseURL_splitFieldsWithoutServerSecrets(t *testing.T) {
+	t.Setenv("TSIO_DATABASE_URL", "")
+	t.Setenv("TSIO_S3_BUCKET", "")
+	t.Setenv("TSIO_SESSION_SECRET", "")
+	t.Setenv("TSIO_DB_HOST", "db.internal")
+	t.Setenv("TSIO_DB_PORT", "5433")
+	t.Setenv("TSIO_DB_USER", "tsio")
+	t.Setenv("TSIO_DB_PASSWORD", "p@ss/w:ord")
+	t.Setenv("TSIO_DB_NAME", "tsio")
+	t.Setenv("TSIO_DB_SSLMODE", "disable")
+
+	dsn, err := LoadDatabaseURL()
+	if err != nil {
+		t.Fatalf("LoadDatabaseURL: %v", err)
+	}
+	want := "postgres://tsio:p%40ss%2Fw%3Aord@db.internal:5433/tsio?sslmode=disable"
+	if dsn != want {
+		t.Errorf("LoadDatabaseURL = %q, want %q", dsn, want)
 	}
 }

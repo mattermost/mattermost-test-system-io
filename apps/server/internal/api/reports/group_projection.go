@@ -11,6 +11,7 @@ import (
 const groupProjectionSelectCols = `
 	id, repository, name, run_group, status, branch, commit_sha,
 	gh_run_id, gh_run_attempt, created_at, gh_pr_number,
+	stage, event_name, base_ref, head_ref, platform, server_version, app_version, edition,
 	test_stats_json, orchestration_json
 `
 
@@ -26,17 +27,20 @@ type groupProjectionRow struct {
 	GHRunAttempt string
 	CreatedAt    time.Time
 	GHPRNumber   *int
-	Stats        *testStats
-	Orch         *orchestrationSummary
+	RunContext
+	Stats *testStats
+	Orch  *orchestrationSummary
 }
 
 func scanGroupProjection(s interface{ Scan(dst ...any) error }) (groupProjectionRow, error) {
 	var row groupProjectionRow
 	var runGroup *string
+	var eventName, baseRef, headRef, platform, serverVersion, appVersion, edition *string
 	var statsRaw, orchRaw []byte
 	if err := s.Scan(
 		&row.ID, &row.Repository, &row.Name, &runGroup, &row.Status, &row.Branch, &row.CommitSHA,
 		&row.GHRunID, &row.GHRunAttempt, &row.CreatedAt, &row.GHPRNumber,
+		&row.Stage, &eventName, &baseRef, &headRef, &platform, &serverVersion, &appVersion, &edition,
 		&statsRaw, &orchRaw,
 	); err != nil {
 		return groupProjectionRow{}, err
@@ -44,6 +48,13 @@ func scanGroupProjection(s interface{ Scan(dst ...any) error }) (groupProjection
 	if runGroup != nil {
 		row.RunGroup = *runGroup
 	}
+	row.EventName = derefOrEmpty(eventName)
+	row.BaseRef = derefOrEmpty(baseRef)
+	row.HeadRef = derefOrEmpty(headRef)
+	row.Platform = derefOrEmpty(platform)
+	row.ServerVersion = derefOrEmpty(serverVersion)
+	row.AppVersion = derefOrEmpty(appVersion)
+	row.Edition = derefOrEmpty(edition)
 	row.Stats = parseProjectedTestStats(statsRaw)
 	row.Orch = parseProjectedOrchestration(orchRaw)
 	return row, nil
@@ -84,6 +95,7 @@ func (row groupProjectionRow) groupDTO() groupDTO {
 		GHRunAttempt: row.GHRunAttempt,
 		CreatedAt:    row.CreatedAt,
 		GHPRNumber:   row.GHPRNumber,
+		RunContext:   row.RunContext,
 	}
 }
 

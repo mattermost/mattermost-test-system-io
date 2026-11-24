@@ -76,3 +76,51 @@ func TestClassifyBranchFilterRow(t *testing.T) {
 		t.Fatalf("kind=%d sawMain=%v", kind, sawMain)
 	}
 }
+
+func TestIsValidRunStage(t *testing.T) {
+	for _, valid := range []string{RunStagePR, RunStageMain, RunStageRelease, RunStageNightly, RunStageManual, RunStageOther} {
+		if !IsValidRunStage(valid) {
+			t.Fatalf("expected stage %q to be valid", valid)
+		}
+	}
+	for _, invalid := range []string{"", "PR", "nightly ", "unknown"} {
+		if IsValidRunStage(invalid) {
+			t.Fatalf("expected stage %q to be invalid", invalid)
+		}
+	}
+}
+
+func TestResolveRunStage(t *testing.T) {
+	pr := 42
+	zero := 0
+	cases := []struct {
+		name     string
+		explicit string
+		event    string
+		branch   string
+		prNum    *int
+		want     string
+	}{
+		{"explicit overrides event and branch", "manual", "pull_request", "main", &pr, RunStageManual},
+		{"schedule event yields nightly even on main", "", "schedule", "main", nil, RunStageNightly},
+		{"workflow_dispatch yields manual even on release", "", "workflow_dispatch", "release-10.5", nil, RunStageManual},
+		{"pull_request yields pr on feature branch", "", "pull_request", "feat/run-ctx", nil, RunStagePR},
+		{"pull_request_target yields pr", "", "pull_request_target", "feat/run-ctx", nil, RunStagePR},
+		{"merge_group yields pr", "", "merge_group", "gh-readonly-queue/main/pr-1", nil, RunStagePR},
+		{"pr number fallback yields pr", "", "push", "feat/x", &pr, RunStagePR},
+		{"pr-N branch yields pr", "", "", "pr-12", nil, RunStagePR},
+		{"pr-0 branch falls back to other", "", "", "pr-0", &zero, RunStageOther},
+		{"refs/heads/master yields main", "", "push", "refs/heads/master", nil, RunStageMain},
+		{"release-10.5 yields release", "", "push", "release-10.5", nil, RunStageRelease},
+		{"bare release yields other", "", "", "release", nil, RunStageOther},
+		{"empty yields other", "", "", "", nil, RunStageOther},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveRunStage(tc.explicit, tc.event, tc.branch, tc.prNum); got != tc.want {
+				t.Fatalf("ResolveRunStage(%q, %q, %q, %v) = %q, want %q",
+					tc.explicit, tc.event, tc.branch, tc.prNum, got, tc.want)
+			}
+		})
+	}
+}

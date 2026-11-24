@@ -4,7 +4,9 @@
  * mismatches at build time instead of at orchestration time.
  */
 
-export interface CompositeIdentity {
+import type { RunContext } from "./context";
+
+export interface CompositeIdentity extends RunContext {
   repository: string;
   commit_sha: string;
   gh_run_id: string;

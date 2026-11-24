@@ -91,6 +91,14 @@ inputs:
       still stop leasing).
     required: false
     default: ""
+  platform:
+    description: >
+      Target execution platform for this shard (e.g. `linux`, `ios`, `android`).
+      When empty, falls back to `composite-identity.platform`, `maestro-platform`
+      (for `framework: maestro`), or `ios`/`android` derived from `detox-config`
+      (for `framework: detox`).
+    required: false
+    default: ""
 
   # ── Playwright-specific ──────────────────────────────────────────────
   playwright-dir:

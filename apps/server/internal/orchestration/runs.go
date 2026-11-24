@@ -30,6 +30,20 @@ type BeginRunOptions struct {
 	PlaywrightProject    string
 	Branch               string
 	GHPRNumber           *int
+	RunContext           RunContext
+}
+
+// RunContext carries optional CI run context metadata stored on report_groups.
+type RunContext struct {
+	Stage         string
+	ExplicitStage bool
+	EventName     string
+	BaseRef       string
+	HeadRef       string
+	Platform      string
+	ServerVersion string
+	AppVersion    string
+	Edition       string
 }
 
 // OwnerInfo identifies the caller that opened the run. Exactly one of the
@@ -110,7 +124,7 @@ func (s *Store) BeginRun(
 		existing = newRun
 		created = true
 
-		seedID, seedCreated, seedErr := seedReportGroupTx(ctx, tx, newRun.Identity, options.TotalReportsExpected)
+		seedID, seedCreated, seedErr := seedReportGroupTx(ctx, tx, newRun.Identity, options.TotalReportsExpected, options.RunContext)
 		if seedErr != nil {
 			return seedErr
 		}
@@ -151,20 +165,44 @@ func (s *Store) BeginRun(
 // totalReportsExpected is the controller's declared shard count, frozen on
 // insert. A subsequent /reports/begin call with a different value will
 // surface 409 EXPECTED_REPORTS_MISMATCH; matching values are no-ops.
-func seedReportGroupTx(ctx context.Context, tx pgx.Tx, identity CompositeIdentity, totalReportsExpected int) (uuid.UUID, bool, error) {
+func seedReportGroupTx(ctx context.Context, tx pgx.Tx, identity CompositeIdentity, totalReportsExpected int, runCtx RunContext) (uuid.UUID, bool, error) {
+	stage := runCtx.Stage
+	if stage == "" {
+		stage = "other"
+	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO report_groups (
 			repository, branch, commit_sha, gh_run_id, gh_run_attempt,
-			framework, name, gh_pr_number, total_reports_expected, status
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'in_progress')
+			framework, name, gh_pr_number, total_reports_expected, status,
+			stage, event_name, base_ref, head_ref, platform, server_version, app_version, edition
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, 'in_progress',
+			$10, NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, '')
+		)
 		ON CONFLICT (repository, commit_sha, gh_run_id, name, gh_run_attempt)
-		DO UPDATE SET updated_at = now()
+		DO UPDATE SET updated_at = now(),
+		              stage = CASE
+		                  WHEN ($18 AND EXCLUDED.stage <> 'other')
+		                    OR (report_groups.stage = 'other' AND EXCLUDED.stage <> 'other')
+		                  THEN EXCLUDED.stage
+		                  ELSE report_groups.stage
+		              END,
+		              event_name = COALESCE(NULLIF(report_groups.event_name, ''), EXCLUDED.event_name),
+		              base_ref = COALESCE(NULLIF(report_groups.base_ref, ''), EXCLUDED.base_ref),
+		              head_ref = COALESCE(NULLIF(report_groups.head_ref, ''), EXCLUDED.head_ref),
+		              platform = COALESCE(NULLIF(report_groups.platform, ''), EXCLUDED.platform),
+		              server_version = COALESCE(NULLIF(report_groups.server_version, ''), EXCLUDED.server_version),
+		              app_version = COALESCE(NULLIF(report_groups.app_version, ''), EXCLUDED.app_version),
+		              edition = COALESCE(NULLIF(report_groups.edition, ''), EXCLUDED.edition)
 		RETURNING id, (xmax = 0) AS created
 	`,
 		identity.Repository, identity.Branch, identity.CommitSHA,
 		identity.GHRunID, identity.GHRunAttempt,
 		identity.Framework, identity.Name, identity.GHPRNumber,
 		totalReportsExpected,
+		stage, runCtx.EventName, runCtx.BaseRef, runCtx.HeadRef,
+		runCtx.Platform, runCtx.ServerVersion, runCtx.AppVersion, runCtx.Edition,
+		runCtx.ExplicitStage,
 	)
 	var id uuid.UUID
 	var created bool

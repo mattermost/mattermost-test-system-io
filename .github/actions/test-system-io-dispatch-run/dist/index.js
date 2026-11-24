@@ -24779,6 +24779,72 @@ async function fetchWithAuthRetry(makeRequest) {
   return res;
 }
 
+// src/context.ts
+var RUN_CONTEXT_KEYS = [
+  "stage",
+  "event_name",
+  "base_ref",
+  "head_ref",
+  "platform",
+  "server_version",
+  "app_version",
+  "edition"
+];
+function nonEmpty(value) {
+  const trimmed = typeof value === "string" ? value.trim() : void 0;
+  return trimmed ? trimmed : void 0;
+}
+function stripBlankRunContext(identity) {
+  for (const key of RUN_CONTEXT_KEYS) {
+    const val = identity[key];
+    if (typeof val !== "string") {
+      delete identity[key];
+      continue;
+    }
+    const trimmed = val.trim();
+    if (!trimmed) {
+      delete identity[key];
+    } else {
+      identity[key] = trimmed;
+    }
+  }
+}
+function detoxPlatformFromConfig(detoxConfig) {
+  const lower = detoxConfig?.trim().toLowerCase();
+  if (!lower) return void 0;
+  if (lower === "ios" || lower.startsWith("ios.")) return "ios";
+  if (lower === "android" || lower.startsWith("android.")) return "android";
+  return void 0;
+}
+function resolveWorkerPlatform(inputs, identity) {
+  const explicit = nonEmpty(inputs.platform) ?? nonEmpty(identity.platform);
+  if (explicit !== void 0) return explicit;
+  if (inputs.framework === "maestro") {
+    return nonEmpty(inputs.maestroPlatform);
+  }
+  if (inputs.framework === "detox") {
+    return detoxPlatformFromConfig(inputs.detoxConfig);
+  }
+  return void 0;
+}
+function resolveRegisterContext(inputs, identity, env = process.env) {
+  const out = {};
+  const pairs = [
+    ["stage", nonEmpty(identity.stage)],
+    ["event_name", nonEmpty(identity.event_name) ?? nonEmpty(env.GITHUB_EVENT_NAME)],
+    ["base_ref", nonEmpty(identity.base_ref) ?? nonEmpty(env.GITHUB_BASE_REF)],
+    ["head_ref", nonEmpty(identity.head_ref) ?? nonEmpty(env.GITHUB_HEAD_REF)],
+    ["platform", resolveWorkerPlatform(inputs, identity)],
+    ["server_version", nonEmpty(identity.server_version)],
+    ["app_version", nonEmpty(identity.app_version)],
+    ["edition", nonEmpty(identity.edition)]
+  ];
+  for (const [key, val] of pairs) {
+    if (val !== void 0) out[key] = val;
+  }
+  return out;
+}
+
 // src/playwright.ts
 var fs3 = __toESM(require("fs"));
 var path2 = __toESM(require("path"));
@@ -29740,7 +29806,7 @@ async function uploadShard(cfg, invocations) {
     return;
   }
   const regBody = {
-    ...identityFields(cfg.compositeIdentity, cfg.framework),
+    ...identityFields(cfg.compositeIdentity, cfg.framework, cfg.runContext),
     gh_job_id: cfg.ghJobId,
     gh_job_name: cfg.ghJobName,
     json_files: jsonParts.map((p) => ({ path: p.relPath, size: p.size })),
@@ -29822,7 +29888,7 @@ function listImages(root) {
   }
   return out;
 }
-function identityFields(c, framework) {
+function identityFields(c, framework, runContext) {
   const body = {
     repository: c.repository,
     commit: c.commit_sha,
@@ -29830,7 +29896,8 @@ function identityFields(c, framework) {
     gh_run_attempt: c.gh_run_attempt,
     framework,
     name: c.name,
-    branch: c.branch
+    branch: c.branch,
+    ...runContext
   };
   if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;
   return body;
@@ -29906,6 +29973,7 @@ async function run() {
   const postFailureDelayMs = intInput("post-failure-delay-ms", 1e4);
   const deadlineMinutes = parseDeadlineMinutes(getInput("deadline-minutes"));
   const deadlineAt = deadlineAtFrom(Date.now(), deadlineMinutes);
+  const platformInput = getInput("platform");
   let compositeIdentity;
   try {
     compositeIdentity = JSON.parse(compositeIdentityRaw);
@@ -29913,6 +29981,15 @@ async function run() {
     throw new Error(`composite-identity is not valid JSON: ${e.message}`);
   }
   normalizeCompositeIdentity(compositeIdentity);
+  const runContext = resolveRegisterContext(
+    {
+      platform: platformInput,
+      framework,
+      maestroPlatform,
+      detoxConfig
+    },
+    compositeIdentity
+  );
   const resolved = await resolveJobId(githubToken, ghJobName);
   const ghJobId = resolved.id;
   const resolvedJobName = resolved.name;
@@ -29969,7 +30046,8 @@ async function run() {
       ghJobId,
       ghJobName: resolvedJobName,
       framework,
-      compositeIdentity
+      compositeIdentity,
+      runContext
     };
     try {
       await uploadShard(uploadCfg, invocations);
@@ -30390,6 +30468,7 @@ function normalizeCompositeIdentity(c) {
       delete c.gh_pr_number;
     }
   }
+  stripBlankRunContext(c);
 }
 async function retryGitHubCall(fn) {
   const delays = [500, 1500, 4e3];

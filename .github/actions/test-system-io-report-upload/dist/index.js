@@ -24534,6 +24534,38 @@ function getOctokit(token, options, ...additionalPlugins) {
   return new GitHubWithPlugins(getOctokitOptions(token, options));
 }
 
+// src/context.ts
+function nonEmpty(value) {
+  const trimmed = typeof value === "string" ? value.trim() : void 0;
+  return trimmed ? trimmed : void 0;
+}
+function resolveRunContext(inputs, identity, env = process.env) {
+  const out = {};
+  const pairs = [
+    ["stage", nonEmpty(inputs.stage) ?? nonEmpty(identity.stage)],
+    [
+      "event_name",
+      nonEmpty(inputs.eventName) ?? nonEmpty(identity.event_name) ?? nonEmpty(env.GITHUB_EVENT_NAME)
+    ],
+    [
+      "base_ref",
+      nonEmpty(inputs.baseRef) ?? nonEmpty(identity.base_ref) ?? nonEmpty(env.GITHUB_BASE_REF)
+    ],
+    [
+      "head_ref",
+      nonEmpty(inputs.headRef) ?? nonEmpty(identity.head_ref) ?? nonEmpty(env.GITHUB_HEAD_REF)
+    ],
+    ["platform", nonEmpty(inputs.platform) ?? nonEmpty(identity.platform)],
+    ["server_version", nonEmpty(inputs.serverVersion) ?? nonEmpty(identity.server_version)],
+    ["app_version", nonEmpty(inputs.appVersion) ?? nonEmpty(identity.app_version)],
+    ["edition", nonEmpty(inputs.edition) ?? nonEmpty(identity.edition)]
+  ];
+  for (const [key, val] of pairs) {
+    if (val !== void 0) out[key] = val;
+  }
+  return out;
+}
+
 // src/upload.ts
 var fs2 = __toESM(require("fs"));
 var path = __toESM(require("path"));
@@ -24629,7 +24661,8 @@ async function uploadShard(cfg, jsonPath, screenshotsDir) {
   const reportsIdent = identityForReports(
     cfg.compositeIdentity,
     cfg.framework,
-    cfg.totalReportsExpected
+    cfg.totalReportsExpected,
+    cfg.runContext
   );
   const beginRes = await postJSON(
     cfg,
@@ -24765,7 +24798,7 @@ function listImages(root) {
   }
   return out;
 }
-function identityForReports(c, framework, totalReportsExpected) {
+function identityForReports(c, framework, totalReportsExpected, runContext) {
   const body = {
     repository: c.repository,
     commit: c.commit_sha,
@@ -24774,7 +24807,8 @@ function identityForReports(c, framework, totalReportsExpected) {
     framework,
     name: c.name,
     branch: c.branch,
-    total_reports_expected: totalReportsExpected
+    total_reports_expected: totalReportsExpected,
+    ...runContext
   };
   if (c.run_group) body.run_group = c.run_group;
   if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;
@@ -24825,6 +24859,19 @@ async function run() {
     throw new Error(`composite-identity is not valid JSON: ${e.message}`);
   }
   normalizeCompositeIdentity(compositeIdentity);
+  const runContext = resolveRunContext(
+    {
+      stage: getInput("stage"),
+      eventName: getInput("event-name"),
+      baseRef: getInput("base-ref"),
+      headRef: getInput("head-ref"),
+      platform: getInput("platform"),
+      serverVersion: getInput("server-version"),
+      appVersion: getInput("app-version"),
+      edition: getInput("edition")
+    },
+    compositeIdentity
+  );
   const ghJobId = await resolveJobId(githubToken, ghJobName);
   info(`resolved gh_job_id=${ghJobId} for gh_job_name=${ghJobName}`);
   const cfg = {
@@ -24834,7 +24881,8 @@ async function run() {
     ghJobName,
     framework,
     totalReportsExpected,
-    compositeIdentity
+    compositeIdentity,
+    runContext
   };
   await uploadShard(cfg, jsonPath, screenshotsDir);
 }

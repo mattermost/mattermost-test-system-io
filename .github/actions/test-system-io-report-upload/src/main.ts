@@ -12,6 +12,7 @@
 
 import * as core from "@actions/core";
 import * as github from "@actions/github";
+import { resolveRunContext } from "./context";
 import { uploadShard, type UploadConfig } from "./upload";
 import type { CompositeIdentity } from "./types";
 
@@ -44,6 +45,19 @@ export async function run(): Promise<void> {
     throw new Error(`composite-identity is not valid JSON: ${(e as Error).message}`);
   }
   normalizeCompositeIdentity(compositeIdentity);
+  const runContext = resolveRunContext(
+    {
+      stage: core.getInput("stage"),
+      eventName: core.getInput("event-name"),
+      baseRef: core.getInput("base-ref"),
+      headRef: core.getInput("head-ref"),
+      platform: core.getInput("platform"),
+      serverVersion: core.getInput("server-version"),
+      appVersion: core.getInput("app-version"),
+      edition: core.getInput("edition"),
+    },
+    compositeIdentity,
+  );
 
   const ghJobId = await resolveJobId(githubToken, ghJobName);
   core.info(`resolved gh_job_id=${ghJobId} for gh_job_name=${ghJobName}`);
@@ -56,6 +70,7 @@ export async function run(): Promise<void> {
     framework,
     totalReportsExpected,
     compositeIdentity,
+    runContext,
   };
   await uploadShard(cfg, jsonPath, screenshotsDir);
 }

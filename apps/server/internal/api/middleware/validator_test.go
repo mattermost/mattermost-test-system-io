@@ -42,6 +42,18 @@ func TestValidatorBodyValidation(t *testing.T) {
 		{"begin accepts valid body", "/api/v1/reports/begin", "application/json",
 			`{"repository":"o/r","commit":"abc","gh_run_id":"1","framework":"playwright","name":"n","total_reports_expected":2}`,
 			http.StatusNoContent},
+		{"begin accepts valid run context", "/api/v1/reports/begin", "application/json",
+			`{"repository":"o/r","commit":"abc","gh_run_id":"1","framework":"playwright","name":"n","total_reports_expected":2,"stage":"nightly","event_name":"schedule","base_ref":"main","head_ref":"feat/x","platform":"linux","server_version":"10.5","app_version":"2.25","edition":"enterprise"}`,
+			http.StatusNoContent},
+		{"begin rejects invalid stage", "/api/v1/reports/begin", "application/json",
+			`{"repository":"o/r","commit":"abc","gh_run_id":"1","framework":"playwright","name":"n","total_reports_expected":2,"stage":"bogus"}`,
+			http.StatusBadRequest},
+		{"orchestration begin accepts run context", "/api/v1/orchestration/begin", "application/json",
+			`{"repository":"o/r","commit_sha":"abcdef1","gh_run_id":"1","gh_run_attempt":"1","framework":"playwright","name":"n","lease_timeout_ms":300000,"idle_timeout_ms":600000,"retest_on_fail":false,"retest_budget":1,"total_reports_expected":1,"dispatch_units":[{"spec_path":"a.spec.ts"}],"stage":"manual","event_name":"workflow_dispatch","platform":"ios"}`,
+			http.StatusNoContent},
+		{"orchestration begin rejects invalid stage", "/api/v1/orchestration/begin", "application/json",
+			`{"repository":"o/r","commit_sha":"abcdef1","gh_run_id":"1","name":"n","total_reports_expected":1,"dispatch_units":[{"spec_path":"a.spec.ts"}],"stage":"invalid"}`,
+			http.StatusBadRequest},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

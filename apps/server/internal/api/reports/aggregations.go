@@ -119,6 +119,7 @@ type reportSummary struct {
 	CreatedAt            string                `json:"created_at"`
 	LastUploadAt         string                `json:"last_upload_at,omitempty"`
 	TotalReportsExpected int                   `json:"total_reports_expected,omitempty"`
+	RunContext
 }
 
 type reportEntry struct {
@@ -126,6 +127,7 @@ type reportEntry struct {
 	ShortID     string  `json:"short_id"`
 	GHJobID     string  `json:"gh_job_id,omitempty"`
 	GHJobName   string  `json:"gh_job_name,omitempty"`
+	Platform    string  `json:"platform,omitempty"`
 	DisplayName string  `json:"display_name"`
 	Status      string  `json:"status"`
 	CreatedAt   *string `json:"created_at,omitempty"`
@@ -160,6 +162,7 @@ type runEntry struct {
 	TotalReportsExpected int                   `json:"total_reports_expected,omitempty"`
 	ReportsCount         int                   `json:"reports_count,omitempty"`
 	URLPath              string                `json:"url_path"`
+	RunContext
 }
 
 type repoGroup struct {
@@ -188,6 +191,7 @@ type individualReportSummary struct {
 	TestStats     *testStats            `json:"test_stats,omitempty"`
 	Orchestration *orchestrationSummary `json:"orchestration,omitempty"`
 	CreatedAt     string                `json:"created_at"`
+	RunContext
 }
 
 // ---------- shape mappers ----------
@@ -244,6 +248,7 @@ func toReportSummary(g groupDTO, s groupStats) reportSummary {
 		CreatedAt:            fmtTime(g.CreatedAt),
 		LastUploadAt:         fmtTime(g.LastUploadAt),
 		TotalReportsExpected: derefIntOrZero(g.TotalReportsExpected),
+		RunContext:           g.RunContext,
 	}
 }
 
@@ -262,6 +267,7 @@ func toReportDetail(g groupDTO, entries []reportEntryDTO, s groupStats) reportDe
 			ShortID:     shortID(e.ID.String()),
 			GHJobID:     derefOrEmpty(e.GHJobID),
 			GHJobName:   derefOrEmpty(e.GHJobName),
+			Platform:    derefOrEmpty(e.Platform),
 			DisplayName: firstNonEmptyStr(derefOrEmpty(e.GHJobName), e.Name),
 			Status:      e.Status,
 			CreatedAt:   &created,
@@ -304,6 +310,7 @@ func toRunEntry(g groupDTO, s groupStats) runEntry {
 		TotalReportsExpected: derefIntOrZero(g.TotalReportsExpected),
 		ReportsCount:         s.ReportsCount,
 		URLPath:              consolidatedRunURLPath(g),
+		RunContext:           g.RunContext,
 	}
 }
 
@@ -331,6 +338,10 @@ func parsePRBranch(branch string) (int, bool) {
 }
 
 func toIndividualSummary(g groupDTO, e reportEntryDTO, stats groupStats) individualReportSummary {
+	rc := g.RunContext
+	if p := derefOrEmpty(e.Platform); p != "" {
+		rc.Platform = p
+	}
 	return individualReportSummary{
 		ID:            e.ID.String(),
 		ShortID:       shortID(e.ID.String()),
@@ -345,6 +356,7 @@ func toIndividualSummary(g groupDTO, e reportEntryDTO, stats groupStats) individ
 		Commit:        g.CommitSHA,
 		TestStats:     statsFromAgg(stats),
 		CreatedAt:     fmtTime(e.CreatedAt),
+		RunContext:    rc,
 	}
 }
 
@@ -552,10 +564,11 @@ func (h *Handlers) Individual(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.Pool.Query(r.Context(), `
-		SELECT r.id, r.name, r.status, r.gh_job_id, r.gh_job_name, r.created_at, r.updated_at,
+		SELECT r.id, r.name, r.status, r.gh_job_id, r.gh_job_name, r.platform, r.created_at, r.updated_at,
 		       r.total_suites, r.total_cases, r.passed_cases, r.failed_cases, r.skipped_cases, r.flaky_cases, r.duration_ms,
 		       g.id, g.framework, g.name, g.status, g.repository, g.branch, g.commit_sha,
 		       g.gh_run_id, g.gh_run_attempt, g.gh_pr_number, g.environment_metadata,
+		       g.stage, g.event_name, g.base_ref, g.head_ref, g.platform, g.server_version, g.app_version, g.edition,
 		       g.created_at, g.updated_at
 		FROM reports r
 		JOIN report_groups g ON g.id = r.report_group_id
@@ -575,11 +588,13 @@ func (h *Handlers) Individual(w http.ResponseWriter, r *http.Request) {
 		var dur *int64
 		var g groupDTO
 		var env []byte
+		var eventName, baseRef, headRef, platform, serverVersion, appVersion, edition *string
 		if err := rows.Scan(
-			&e.ID, &e.Name, &e.Status, &e.GHJobID, &e.GHJobName, &e.CreatedAt, &e.UpdatedAt,
+			&e.ID, &e.Name, &e.Status, &e.GHJobID, &e.GHJobName, &e.Platform, &e.CreatedAt, &e.UpdatedAt,
 			&rs.TotalSuites, &rs.TotalCases, &rs.Passed, &rs.Failed, &rs.Skipped, &rs.Flaky, &dur,
 			&g.ID, &g.Framework, &g.Name, &g.Status, &g.Repository, &g.Branch, &g.CommitSHA,
 			&g.GHRunID, &g.GHRunAttempt, &g.GHPRNumber, &env,
+			&g.Stage, &eventName, &baseRef, &headRef, &platform, &serverVersion, &appVersion, &edition,
 			&g.CreatedAt, &g.UpdatedAt,
 		); err != nil {
 			api.WriteError(w, r, err)
@@ -587,6 +602,13 @@ func (h *Handlers) Individual(w http.ResponseWriter, r *http.Request) {
 		}
 		rs.DurationMs = dur
 		_ = env
+		g.EventName = derefOrEmpty(eventName)
+		g.BaseRef = derefOrEmpty(baseRef)
+		g.HeadRef = derefOrEmpty(headRef)
+		g.Platform = derefOrEmpty(platform)
+		g.ServerVersion = derefOrEmpty(serverVersion)
+		g.AppVersion = derefOrEmpty(appVersion)
+		g.Edition = derefOrEmpty(edition)
 		summary := toIndividualSummary(g, e, rs)
 		orch, err := orchLookup.getForGroup(r.Context(), h.Pool, g)
 		if err != nil {

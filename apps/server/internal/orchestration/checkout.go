@@ -352,6 +352,7 @@ func dispatchRetestUnitsTx(
 		      FROM dispatch_units du
 		      JOIN orchestration_runs r ON r.id = du.run_id
 		     WHERE du.run_id = $1
+		       AND r.status = 'in_progress'
 		       AND r.retest_on_fail = TRUE
 		       AND du.state = 'completed_fail'
 		       AND du.fail_count <= r.retest_budget

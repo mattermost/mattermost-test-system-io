@@ -424,7 +424,10 @@ func postJSONRaw(serverURL, token, path string, body any) (int, string, error) {
 		return 0, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, "", err
+	}
 	return resp.StatusCode, string(b), nil
 }
 

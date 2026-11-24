@@ -91,12 +91,12 @@ func RequireAuthz(mode AuthzMode, logger *slog.Logger) func(http.Handler) http.H
 	}
 }
 
-// NormalizeRepository trims surrounding whitespace and an optional trailing
-// case-insensitive ".git" suffix from a repository slug.
+// NormalizeRepository trims surrounding whitespace and repeated trailing
+// case-insensitive ".git" suffixes from a repository slug.
 func NormalizeRepository(repo string) string {
 	repo = strings.TrimSpace(repo)
-	if len(repo) > 4 && strings.EqualFold(repo[len(repo)-4:], ".git") {
-		return strings.TrimSpace(repo[:len(repo)-4])
+	for len(repo) > 4 && strings.EqualFold(repo[len(repo)-4:], ".git") {
+		repo = strings.TrimSpace(repo[:len(repo)-4])
 	}
 	return repo
 }

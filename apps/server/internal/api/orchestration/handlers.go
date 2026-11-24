@@ -377,9 +377,10 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 	if lease == nil {
 		// Re-read counts to decide whether the worker should poll again or
 		// exit cleanly. Counts loaded earlier (line ~252) are stale after
-		// AtomicCheckout / AtomicRetestCheckout. When something is still
-		// in flight (leased > 0) or queued for retest (retest_eligible > 0),
-		// the worker should sleep and re-check rather than exit.
+		// AtomicCheckout / AtomicRetestCheckout. When work is still pending
+		// (e.g. transiently locked by SKIP LOCKED), in flight (leased > 0), or
+		// queued for retest (retest_eligible > 0), the worker should sleep and
+		// re-check rather than exit.
 		resp := map[string]any{
 			"queue_empty": true,
 			"is_retest":   false,
@@ -387,7 +388,7 @@ func (h *Handlers) Checkout(w http.ResponseWriter, r *http.Request) {
 		}
 		if freshRun, ferr := h.Store.FindRunByIdentity(r.Context(), identity); ferr == nil {
 			c := freshRun.Counts
-			if c.Leased > 0 || c.RetestEligible > 0 {
+			if freshRun.Status == orchestration.RunStatusInProgress && (c.Pending > 0 || c.Leased > 0 || c.RetestEligible > 0) {
 				resp["retry_after_ms"] = checkoutRetryAfterMs()
 			}
 			// Lets a polling worker log queue depth alongside its own

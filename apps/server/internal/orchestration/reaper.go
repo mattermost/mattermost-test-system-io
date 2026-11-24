@@ -451,21 +451,6 @@ func (s *Store) markRunTimedOut(ctx context.Context, runID uuid.UUID) (*runTimed
 			return fmt.Errorf("lock open dispatch_units: %w", err)
 		}
 
-		// If a concurrent checkout committed a new active lease while we were locking,
-		// abort this tick rather than touching an unlocked lease or timing out an active run.
-		var hasNewActiveLease bool
-		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS (
-				SELECT 1 FROM leases
-				 WHERE run_id = $1 AND released_at IS NULL AND id <> ALL($2::uuid[])
-			)
-		`, runID, lockedLeaseIDs).Scan(&hasNewActiveLease); err != nil {
-			return fmt.Errorf("recheck active leases: %w", err)
-		}
-		if hasNewActiveLease {
-			return nil
-		}
-
 		var (
 			status    string
 			stillIdle bool
@@ -484,6 +469,21 @@ func (s *Store) markRunTimedOut(ctx context.Context, runID uuid.UUID) (*runTimed
 			return fmt.Errorf("lock run: %w", err)
 		}
 		if status != RunStatusInProgress || !stillIdle {
+			return nil
+		}
+
+		// Recheck after locking orchestration_runs so any lease committed
+		// (including a retest checkout) before we locked the run aborts timeout.
+		var hasNewActiveLease bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM leases
+				 WHERE run_id = $1 AND released_at IS NULL AND id <> ALL($2::uuid[])
+			)
+		`, runID, lockedLeaseIDs).Scan(&hasNewActiveLease); err != nil {
+			return fmt.Errorf("recheck active leases: %w", err)
+		}
+		if hasNewActiveLease {
 			return nil
 		}
 

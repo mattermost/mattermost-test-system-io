@@ -88,7 +88,8 @@ var (
 	nthSelectorRE   = regexp.MustCompile(`(?::nth-(?:child|of-type)|\.nth)\(\d+\)`)
 	cssIdentTokenRE = regexp.MustCompile(`(^|[\s(,:'">\x00])((?:[#.][A-Za-z_-][A-Za-z0-9_-]*)+)`)
 
-	bareFrameRE     = regexp.MustCompile(`^(?:(?:[A-Za-z]:[\\/]|/|file://(?:/?[A-Za-z]:[\\/]|/)?)[^\s\\/:(][^\t\r\n(:]*|(?:webpack://[^/\s]*/|https?://[^\s/]+/)?[^\s(:]+)\.(?:[cm]?[jt]sx?|cy\.[jt]s|ya?ml|kt|java|go):\d+(?::\d+)?$`)
+	bareFrameRE     = regexp.MustCompile(`^(?:(?:[A-Za-z]:[\\/]|/|file://(?:/?[A-Za-z]:[\\/]|/|[A-Za-z0-9.-]+/))(?:[^\s\\/:*(][^\t\r\n:]*[\\/])?[^\s\\/:*(][^\s\\/:(]*|(?:webpack://[^/\s]*/|https?://[^\s/]+/)?[^/\\\s(:][^\s(:]*)\.(?:[cm]?[jt]sx?|cy\.[jt]s|ya?ml|kt|java|go):\d+(?::\d+)?$`)
+	workRootStartRE = regexp.MustCompile(`[( "'](?:file://|[A-Za-z]:/|/)`)
 	webpackPrefixRE = regexp.MustCompile(`webpack://[^/]*/(?:\./)?`)
 	cypressProxyRE  = regexp.MustCompile(`https?://[^/]+/__cypress/tests\?p=`)
 )
@@ -302,10 +303,11 @@ func normalizeFrame(line string) string {
 		rest := f[idx+len("/work/"):]
 		parts := strings.SplitN(rest, "/", 3)
 		if len(parts) == 3 && parts[0] == parts[1] && parts[2] != "" {
-			start := strings.LastIndexAny(f[:idx], "(\"'") + 1
-			if start == 0 && !strings.HasPrefix(f, "/") && (len(f) < 3 || f[1] != ':' || f[2] != '/') {
-				if sp := strings.Index(f[:idx], " /"); sp >= 0 {
-					start = sp + 1
+			start := 0
+			isRooted := strings.HasPrefix(f, "/") || (len(f) >= 3 && f[1] == ':' && f[2] == '/')
+			if !isRooted {
+				if loc := workRootStartRE.FindStringIndex(f[:idx]); loc != nil {
+					start = loc[0] + 1
 				}
 			}
 			f = f[:start] + phRepo + parts[2]

@@ -543,10 +543,54 @@ func TestEdgeCaseRegressions(t *testing.T) {
 			"/ Failed to load config.ts:12",
 			`C:\ Failed to load config.ts:12`,
 			"C: Failed to load config.ts:12",
+			"/api/v1/users failed in config.ts:12",
+			"/health check timed out in server.go:42",
+			"/* comment mentioning config.ts:12",
+			"/* see /foo/config.ts:12",
+			"//comment/config.ts:12",
+			"file:///api/v1/users failed in config.ts:12",
+			"file://request failed in config.ts:12",
+			`C:\Users\foo failed to load config.ts:12`,
+			`C:\Users\Jane Doe\failed in config.ts:12`,
 		} {
 			if got := ExtractTopFrame(prose, ""); got != "" {
 				t.Errorf("prose %q wrongly matched as frame %q", prose, got)
 			}
+			if sig := Compute(Input{Framework: "playwright", Status: "failed", ErrorStack: prose}); sig.Fallback != "" {
+				t.Errorf("prose %q wrongly collapsed to fallback %q", prose, sig.Fallback)
+			}
+		}
+	})
+
+	t.Run("dir_parens_and_unparenthesized_work_callees", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			in   string
+			want string
+		}{
+			{"win_x86", `C:\Program Files (x86)\App\specs\a.spec.ts:10:2`, "C:/Program Files (x86)/App/specs/a.spec.ts:10:2"},
+			{"win_x86_cy", `C:\Program Files (x86)\App\test.cy.ts:1`, "C:/Program Files (x86)/App/test.cy.ts:1"},
+			{"posix_paren", "/Users/Jane (test)/project/specs/a.spec.ts:10:2", "/Users/Jane (test)/project/specs/a.spec.ts:10:2"},
+			{"win_x86_work", `C:\Program Files (x86)\actions\work\org\org\specs\a.spec.ts:10:2`, "<repo>/specs/a.spec.ts:10:2"},
+			{"win_x86_callee_work", `    at Object.<anonymous> (C:\Program Files (x86)\actions\work\org\org\specs\a.spec.ts:10:2)`, "Object.<anonymous> (<repo>/specs/a.spec.ts:10:2)"},
+			{"win_unparen_callee_work", `    at myFunc C:\Users\Jane Doe\actions\work\org\org\specs\a.spec.ts:10:2`, "myFunc <repo>/specs/a.spec.ts:10:2"},
+			{"uri_unparen_callee_work", "    at myFunc file:///Users/Jane Doe/actions/work/org/org/specs/a.spec.ts:10:2", "myFunc <repo>/specs/a.spec.ts:10:2"},
+		} {
+			if got := ExtractTopFrame(tc.in, ""); got != tc.want {
+				t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+			}
+		}
+
+		timedOutSig := Compute(Input{
+			Framework:  "playwright",
+			Status:     "timedOut",
+			ErrorStack: `C:\Program Files (x86)\App\test.cy.ts:1`,
+		})
+		if timedOutSig.Fallback != fallbackTimeout || timedOutSig.NormalizedMessage != fallbackTimeout {
+			t.Errorf("timedOut x86 frame got fallback=%q norm=%q, want timeout", timedOutSig.Fallback, timedOutSig.NormalizedMessage)
+		}
+		if timedOutSig.TopFrame != "C:/Program Files (x86)/App/test.cy.ts:1" {
+			t.Errorf("timedOut TopFrame = %q", timedOutSig.TopFrame)
 		}
 	})
 }

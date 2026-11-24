@@ -566,7 +566,9 @@ func TestEdgeCaseRegressions(t *testing.T) {
 			"/* see /foo/bar/config.ts:12",
 			"// see /foo/bar/config.ts:12",
 			"/ see /foo/bar/config.ts:12",
-			`C:\Program Files (x86)\App\specs\a (1).spec.ts:10:2`,
+			`C:\Users\foo (2) failed in config.ts:10:2`,
+			"/api/v1/users (2) failed in config.ts:10:2",
+			`C:\Users\a (b) config.ts:10:2`,
 		} {
 			if got := ExtractTopFrame(prose, ""); got != "" {
 				t.Errorf("prose %q wrongly matched as frame %q", prose, got)
@@ -584,6 +586,8 @@ func TestEdgeCaseRegressions(t *testing.T) {
 			want string
 		}{
 			{"win_x86", `C:\Program Files (x86)\App\specs\a.spec.ts:10:2`, "C:/Program Files (x86)/App/specs/a.spec.ts:10:2"},
+			{"win_x86_copy_number", `C:\Program Files (x86)\App\specs\a (1).spec.ts:10:2`, "C:/Program Files (x86)/App/specs/a (1).spec.ts:10:2"},
+			{"win_x86_copy_number_callee", `    at myFunc (C:\Program Files (x86)\App\specs\a (1).spec.ts:10:2)`, "myFunc (C:/Program Files (x86)/App/specs/a (1).spec.ts:10:2)"},
 			{"win_leading_paren_dir", `C:\(x86)\App\specs\a.spec.ts:10:2`, "C:/(x86)/App/specs/a.spec.ts:10:2"},
 			{"win_x86_cy", `C:\Program Files (x86)\App\test.cy.ts:1`, "C:/Program Files (x86)/App/test.cy.ts:1"},
 			{"posix_paren", "/Users/Jane (test)/project/specs/a.spec.ts:10:2", "/Users/Jane (test)/project/specs/a.spec.ts:10:2"},
@@ -620,6 +624,18 @@ func TestEdgeCaseRegressions(t *testing.T) {
 		}
 		if timedOutSig.TopFrame != "C:/Program Files (x86)/App/test.cy.ts:1" {
 			t.Errorf("timedOut TopFrame = %q", timedOutSig.TopFrame)
+		}
+
+		copyNumTimedOut := Compute(Input{
+			Framework:  "playwright",
+			Status:     "timedOut",
+			ErrorStack: `C:\Program Files (x86)\App\specs\a (1).spec.ts:10:2`,
+		})
+		if copyNumTimedOut.Fallback != fallbackTimeout || copyNumTimedOut.NormalizedMessage != fallbackTimeout {
+			t.Errorf("timedOut copy-number frame got fallback=%q norm=%q, want timeout", copyNumTimedOut.Fallback, copyNumTimedOut.NormalizedMessage)
+		}
+		if copyNumTimedOut.TopFrame != "C:/Program Files (x86)/App/specs/a (1).spec.ts:10:2" {
+			t.Errorf("timedOut copy-number TopFrame = %q", copyNumTimedOut.TopFrame)
 		}
 	})
 }

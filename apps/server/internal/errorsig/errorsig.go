@@ -90,6 +90,7 @@ var (
 
 	frameSuffixRE     = regexp.MustCompile(`\.(?:[cm]?[jt]sx?|cy\.[jt]s|ya?ml|kt|java|go):\d+(?::\d+)?$`)
 	bareSimpleFrameRE = regexp.MustCompile(`^(?:webpack://[^/\s]*/|https?://[^\s/]+/)?[^/\\\s(:*][^\s(:]*$`)
+	copyNumberBaseRE  = regexp.MustCompile(`^[^ ()]+ \(\d+\)(?:\.[^ ()]+)+$`)
 	frameWorkRE       = regexp.MustCompile(`^(?:(?:/?[A-Za-z]:)?(?:/home/runner|/Users/runner)/work/[^/\s]+/[^/\s]+/|/?[A-Za-z]:/a/[^/\s]+/[^/\s]+/|/github/workspace/)`)
 	unparenRootRE     = regexp.MustCompile(` (?:file://|[A-Za-z]:/|/|webpack://|https?://)`)
 	webpackPrefixRE   = regexp.MustCompile(`webpack://[^/]*/(?:\./)?`)
@@ -320,7 +321,7 @@ func isBareOSPath(p string) bool {
 	hasSpace := strings.IndexByte(rest, ' ') >= 0
 	parts := strings.Split(rest, string(sep))
 	base := parts[len(parts)-1]
-	if base == "" || strings.ContainsAny(base, " ()") {
+	if base == "" || (strings.ContainsAny(base, " ()") && !copyNumberBaseRE.MatchString(base)) {
 		return false
 	}
 	for _, seg := range parts[:len(parts)-1] {

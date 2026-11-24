@@ -81,20 +81,22 @@ tsioctl backfill \
 - **S3 errors:** a missing object is logged, counted in `s3_files_missing`,
   and the report falls back to DB fields. Any other S3 error aborts the run
   without advancing the checkpoint; rerun once S3 is healthy.
-- **Done when** a dry-run DB check reports `reports_updated: 0` and `cases_updated: 0` (the partial indexes `WHERE test_id IS NOT NULL` / `WHERE signature_id IS NOT NULL` cannot answer full-table `IS NULL` counts without a sequential scan):
-  ```bash
-  tsioctl backfill --dry-run --skip-s3 --format json
-  ```
-  For a bounded SQL spot-check over a specific report window (joined through `reports` / `suites` so PostgreSQL uses `reports(created_at)` + `suites(report_id)` instead of scanning `test_cases`):
-  ```sql
-  SELECT count(*)
-  FROM reports r
-  JOIN suites s ON s.report_id = r.id
-  JOIN test_cases tc ON tc.suite_id = s.id
-  WHERE r.created_at >= '<window_start>' AND r.created_at < '<window_end>'
-    AND (tc.test_id IS NULL
-         OR (tc.signature_id IS NULL AND tc.status NOT IN ('passed', 'flaky', 'skipped', 'pending')));
-  ```
+- **Done when** both of the following hold:
+  1. A dry-run DB check reports `reports_updated: 0` and `cases_updated: 0` (the partial indexes `WHERE test_id IS NOT NULL` / `WHERE signature_id IS NOT NULL` cannot answer full-table `IS NULL` counts without a sequential scan):
+     ```bash
+     tsioctl backfill --dry-run --skip-s3 --format json
+     ```
+     For a bounded SQL spot-check over a specific report window (joined through `reports` / `suites` so PostgreSQL uses `reports(created_at)` + `suites(report_id)` instead of scanning `test_cases`):
+     ```sql
+     SELECT count(*)
+     FROM reports r
+     JOIN suites s ON s.report_id = r.id
+     JOIN test_cases tc ON tc.suite_id = s.id
+     WHERE r.created_at >= '<window_start>' AND r.created_at < '<window_end>'
+       AND (tc.test_id IS NULL
+            OR (tc.signature_id IS NULL AND tc.status NOT IN ('passed', 'flaky', 'skipped', 'pending')));
+     ```
+  2. The real run's `s3_files_missing` summary counter and `s3 json unusable` log warnings are reviewed (because missing/unusable-S3 fallback writes DB identity columns only, and subsequent non-`--force` runs skip those reports before reading S3). For each named `report_id`, either restore the S3 object and re-run that report's scope with `tsioctl backfill --force`, or explicitly record the missing S3 enrichment as accepted.
 - **Known limitation:** `failure_signatures.first_seen_report_group_id` is set
   only when NULL, to the first report (by id, i.e. chronological) that the
   backfill touches. Signatures already attributed to a newer live group are not

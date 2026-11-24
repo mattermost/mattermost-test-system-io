@@ -484,6 +484,7 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin holdTx: %v", err)
 		}
+		t.Cleanup(func() { _ = holdTx.Rollback(context.Background()) })
 		var lockedLeaseID uuid.UUID
 		if err := holdTx.QueryRow(ctx, `
 			SELECT id FROM leases
@@ -577,6 +578,7 @@ func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin holdTx: %v", err)
 		}
+		t.Cleanup(func() { _ = holdTx.Rollback(context.Background()) })
 		var firstLeaseJobID string
 		if err := holdTx.QueryRow(ctx, `
 			SELECT gh_job_id FROM leases

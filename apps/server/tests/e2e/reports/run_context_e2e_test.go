@@ -102,29 +102,33 @@ func TestRunContext_MigrationBackfillAndAppsSeed(t *testing.T) {
 	}
 }
 
+func postJSONWithAPIKey(t *testing.T, serverURL, apiKey, path string, payload any) (int, []byte) {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal %s: %v", path, err)
+	}
+	req, err := http.NewRequest(http.MethodPost, serverURL+path, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("new req %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, out
+}
+
 func TestRunContext_PersistenceMergeAndValidation(t *testing.T) {
 	env := testenv.Start(t, testenv.WithStore(testenv.NewFakeStore()), testenv.WithReaperDisabled())
 	apiKey := env.IssueAPIKey(t, "ci")
 
 	postJSON := func(path string, payload any) (int, []byte) {
-		t.Helper()
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			t.Fatalf("marshal %s: %v", path, err)
-		}
-		req, err := http.NewRequest(http.MethodPost, env.ServerURL+path, bytes.NewReader(raw))
-		if err != nil {
-			t.Fatalf("new req %s: %v", path, err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-API-Key", apiKey)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("do %s: %v", path, err)
-		}
-		defer resp.Body.Close()
-		out, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, out
+		return postJSONWithAPIKey(t, env.ServerURL, apiKey, path, payload)
 	}
 
 	// 1. Orchestration begin resolves stage='nightly' from event_name='schedule' on branch='main'.
@@ -249,5 +253,187 @@ func TestRunContext_PersistenceMergeAndValidation(t *testing.T) {
 		if c, body := postJSON(tc.path, tc.body); c != http.StatusBadRequest {
 			t.Fatalf("%s invalid stage status=%d, want 400; body=%s", tc.path, c, body)
 		}
+	}
+}
+
+func TestRunContext_ConflictRollback(t *testing.T) {
+	env := testenv.Start(t, testenv.WithStore(testenv.NewFakeStore()), testenv.WithReaperDisabled())
+	apiKey := env.IssueAPIKey(t, "ci")
+
+	code, beginBody := postJSONWithAPIKey(t, env.ServerURL, apiKey, "/api/v1/reports/begin", map[string]any{
+		"repository": "mattermost/mattermost", "commit": "cccccccccccccccc",
+		"gh_run_id": "rc-conflict", "gh_run_attempt": "1", "framework": "playwright",
+		"name": "pw-conflict", "run_group": "rg-1", "branch": "", "total_reports_expected": 2,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("seed begin status=%d body=%s", code, beginBody)
+	}
+	var seedResp struct {
+		ReportID string `json:"report_id"`
+	}
+	if err := json.Unmarshal(beginBody, &seedResp); err != nil {
+		t.Fatalf("decode seed begin: %v", err)
+	}
+
+	assertUnchanged := func(label string) {
+		t.Helper()
+		var (
+			stage, eventName, baseRef, headRef, platform, serverVer, appVer, edition, branch, runGroup string
+			prNum, totalExpected                                                                       *int
+			envMeta                                                                                    []byte
+			reportsCount                                                                               int
+		)
+		if err := env.Pool.QueryRow(t.Context(), `
+			SELECT stage, COALESCE(event_name,''), COALESCE(base_ref,''), COALESCE(head_ref,''),
+			       COALESCE(platform,''), COALESCE(server_version,''), COALESCE(app_version,''),
+			       COALESCE(edition,''), branch, COALESCE(run_group,''), gh_pr_number,
+			       total_reports_expected, environment_metadata
+			  FROM report_groups WHERE id = $1
+		`, seedResp.ReportID).Scan(
+			&stage, &eventName, &baseRef, &headRef,
+			&platform, &serverVer, &appVer, &edition,
+			&branch, &runGroup, &prNum, &totalExpected, &envMeta,
+		); err != nil {
+			t.Fatalf("%s: query report_groups: %v", label, err)
+		}
+		if stage != "other" || eventName != "" || baseRef != "" || headRef != "" ||
+			platform != "" || serverVer != "" || appVer != "" || edition != "" ||
+			branch != "" || runGroup != "rg-1" || prNum != nil ||
+			totalExpected == nil || *totalExpected != 2 || len(envMeta) != 0 {
+			t.Fatalf("%s: report_groups mutated on 409: stage=%q event=%q base=%q head=%q plat=%q sv=%q av=%q ed=%q branch=%q rg=%q pr=%v total=%v env=%s",
+				label, stage, eventName, baseRef, headRef, platform, serverVer, appVer, edition, branch, runGroup, prNum, totalExpected, envMeta)
+		}
+		if err := env.Pool.QueryRow(t.Context(),
+			`SELECT count(*) FROM reports WHERE report_group_id = $1`, seedResp.ReportID,
+		).Scan(&reportsCount); err != nil {
+			t.Fatalf("%s: query reports count: %v", label, err)
+		}
+		if reportsCount != 0 {
+			t.Fatalf("%s: reports count = %d, want 0", label, reportsCount)
+		}
+	}
+
+	// 1. /reports/begin with mismatched total_reports_expected must 409 and roll back all context changes.
+	if c, b := postJSONWithAPIKey(t, env.ServerURL, apiKey, "/api/v1/reports/begin", map[string]any{
+		"repository": "mattermost/mattermost", "commit": "cccccccccccccccc",
+		"gh_run_id": "rc-conflict", "gh_run_attempt": "1", "framework": "playwright",
+		"name": "pw-conflict", "run_group": "rg-1", "branch": "main", "gh_pr_number": 99,
+		"total_reports_expected": 3, "stage": "nightly", "event_name": "schedule",
+		"base_ref": "main", "head_ref": "feat/x", "platform": "linux",
+		"server_version": "10.5.0", "app_version": "2.25.0", "edition": "enterprise",
+	}); c != http.StatusConflict {
+		t.Fatalf("begin total mismatch status=%d, want 409; body=%s", c, b)
+	}
+	assertUnchanged("begin total mismatch")
+
+	// 2. /reports/register with mismatched run_group must 409 and roll back context + metadata changes.
+	if c, b := postJSONWithAPIKey(t, env.ServerURL, apiKey, "/api/v1/reports/register", map[string]any{
+		"repository": "mattermost/mattermost", "commit": "cccccccccccccccc",
+		"gh_run_id": "rc-conflict", "gh_run_attempt": "1", "framework": "playwright",
+		"name": "pw-conflict", "run_group": "rg-other", "branch": "main", "gh_pr_number": 99,
+		"gh_job_id": "job-1", "gh_job_name": "shard-1",
+		"json_files": []any{}, "screenshots": []any{},
+		"environment_metadata": map[string]any{"os": "ubuntu"},
+		"stage":                "nightly", "event_name": "schedule", "platform": "linux",
+		"server_version": "10.5.0", "app_version": "2.25.0", "edition": "enterprise",
+	}); c != http.StatusConflict {
+		t.Fatalf("register run_group mismatch status=%d, want 409; body=%s", c, b)
+	}
+	assertUnchanged("register run_group mismatch")
+
+	// 3. /reports/register with mismatched total_reports_expected must 409 and roll back.
+	if c, b := postJSONWithAPIKey(t, env.ServerURL, apiKey, "/api/v1/reports/register", map[string]any{
+		"repository": "mattermost/mattermost", "commit": "cccccccccccccccc",
+		"gh_run_id": "rc-conflict", "gh_run_attempt": "1", "framework": "playwright",
+		"name": "pw-conflict", "branch": "main", "total_reports_expected": 5,
+		"gh_job_id": "job-1", "gh_job_name": "shard-1",
+		"json_files": []any{}, "screenshots": []any{},
+		"platform": "linux", "server_version": "10.5.0",
+	}); c != http.StatusConflict {
+		t.Fatalf("register total mismatch status=%d, want 409; body=%s", c, b)
+	}
+	assertUnchanged("register total mismatch")
+}
+
+func TestRunContext_OrchestrationBeginReplayMerge(t *testing.T) {
+	env := testenv.Start(t, testenv.WithStore(testenv.NewFakeStore()), testenv.WithReaperDisabled())
+	apiKey := env.IssueAPIKey(t, "ci")
+
+	// First call: 201 Created with initial server_version and empty branch (stage='other').
+	c1, b1 := postJSONWithAPIKey(t, env.ServerURL, apiKey, "/api/v1/orchestration/begin", map[string]any{
+		"repository": "mattermost/mattermost", "commit_sha": "dddddddddddddddd",
+		"gh_run_id": "rc-replay", "gh_run_attempt": "1", "framework": "playwright",
+		"name": "pw-replay", "branch": "", "total_reports_expected": 2,
+		"dispatch_units": []map[string]any{{"spec_path": "a.spec.ts"}},
+		"server_version": "10.4.0",
+	})
+	if c1 != http.StatusCreated {
+		t.Fatalf("first orchestration/begin status=%d, want 201; body=%s", c1, b1)
+	}
+	var firstResp struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(b1, &firstResp); err != nil {
+		t.Fatalf("decode first begin: %v", err)
+	}
+
+	// Idempotent replay with missing context fields + conflicting server_version:
+	// must return 200 OK, keep existing server_version='10.4.0', and merge missing fields.
+	c2, b2 := postJSONWithAPIKey(t, env.ServerURL, apiKey, "/api/v1/orchestration/begin", map[string]any{
+		"repository": "mattermost/mattermost", "commit_sha": "dddddddddddddddd",
+		"gh_run_id": "rc-replay", "gh_run_attempt": "1", "framework": "playwright",
+		"name": "pw-replay", "branch": "", "total_reports_expected": 2,
+		"dispatch_units": []map[string]any{{"spec_path": "a.spec.ts"}},
+		"event_name":     "schedule", "base_ref": "main", "head_ref": "feat/replay",
+		"platform": "linux", "server_version": "10.5.0",
+		"app_version": "2.25.0", "edition": "enterprise",
+	})
+	if c2 != http.StatusOK {
+		t.Fatalf("replay orchestration/begin status=%d, want 200; body=%s", c2, b2)
+	}
+	var secondResp struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(b2, &secondResp); err != nil {
+		t.Fatalf("decode replay begin: %v", err)
+	}
+	if secondResp.RunID != firstResp.RunID {
+		t.Fatalf("replay run_id = %q, want %q", secondResp.RunID, firstResp.RunID)
+	}
+
+	var stage, eventName, baseRef, headRef, platform, serverVer, appVer, edition string
+	if err := env.Pool.QueryRow(t.Context(), `
+		SELECT stage, COALESCE(event_name,''), COALESCE(base_ref,''), COALESCE(head_ref,''),
+		       COALESCE(platform,''), COALESCE(server_version,''), COALESCE(app_version,''),
+		       COALESCE(edition,'')
+		  FROM report_groups
+		 WHERE repository = 'mattermost/mattermost' AND commit_sha = 'dddddddddddddddd'
+		   AND gh_run_id = 'rc-replay' AND name = 'pw-replay' AND gh_run_attempt = '1'
+	`).Scan(&stage, &eventName, &baseRef, &headRef, &platform, &serverVer, &appVer, &edition); err != nil {
+		t.Fatalf("query report_groups: %v", err)
+	}
+	if stage != "nightly" || eventName != "schedule" || baseRef != "main" || headRef != "feat/replay" ||
+		platform != "linux" || serverVer != "10.4.0" || appVer != "2.25.0" || edition != "enterprise" {
+		t.Fatalf("unexpected merged context on replay: stage=%q event=%q base=%q head=%q plat=%q sv=%q av=%q ed=%q",
+			stage, eventName, baseRef, headRef, platform, serverVer, appVer, edition)
+	}
+
+	var runCount, groupCount int
+	if err := env.Pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM orchestration_runs
+		 WHERE repository = 'mattermost/mattermost' AND commit_sha = 'dddddddddddddddd'
+		   AND gh_run_id = 'rc-replay' AND name = 'pw-replay' AND gh_run_attempt = '1'
+	`).Scan(&runCount); err != nil {
+		t.Fatalf("count orchestration_runs: %v", err)
+	}
+	if err := env.Pool.QueryRow(t.Context(), `
+		SELECT count(*) FROM report_groups
+		 WHERE repository = 'mattermost/mattermost' AND commit_sha = 'dddddddddddddddd'
+		   AND gh_run_id = 'rc-replay' AND name = 'pw-replay' AND gh_run_attempt = '1'
+	`).Scan(&groupCount); err != nil {
+		t.Fatalf("count report_groups: %v", err)
+	}
+	if runCount != 1 || groupCount != 1 {
+		t.Fatalf("counts run=%d group=%d, want 1/1", runCount, groupCount)
 	}
 }

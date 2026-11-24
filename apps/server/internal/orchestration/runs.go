@@ -110,33 +110,30 @@ func (s *Store) BeginRun(
 				return ErrConflict
 			}
 			existing = row
-			return nil
 		case errors.Is(err, pgx.ErrNoRows):
-			// fall through to insert
+			newRun, insertErr := insertRunTx(ctx, tx, identity, options, specPaths, owner, hash)
+			if insertErr != nil {
+				return insertErr
+			}
+			existing = newRun
+			created = true
 		default:
 			return fmt.Errorf("lookup existing run: %w", err)
 		}
 
-		newRun, insertErr := insertRunTx(ctx, tx, identity, options, specPaths, owner, hash)
-		if insertErr != nil {
-			return insertErr
-		}
-		existing = newRun
-		created = true
-
-		seedID, seedCreated, seedErr := seedReportGroupTx(ctx, tx, newRun.Identity, options.TotalReportsExpected, options.RunContext)
+		seedID, seedCreated, seedErr := seedReportGroupTx(ctx, tx, existing.Identity, options.TotalReportsExpected, options.RunContext)
 		if seedErr != nil {
 			return seedErr
 		}
 		seeded = &SeededReportGroup{
 			ID:         seedID,
 			Created:    seedCreated,
-			Repository: newRun.Identity.Repository,
-			Branch:     newRun.Identity.Branch,
-			CommitSHA:  newRun.Identity.CommitSHA,
-			GHRunID:    newRun.Identity.GHRunID,
-			GHPRNumber: newRun.Identity.GHPRNumber,
-			Framework:  newRun.Identity.Framework,
+			Repository: existing.Identity.Repository,
+			Branch:     existing.Identity.Branch,
+			CommitSHA:  existing.Identity.CommitSHA,
+			GHRunID:    existing.Identity.GHRunID,
+			GHPRNumber: existing.Identity.GHPRNumber,
+			Framework:  existing.Identity.Framework,
 		}
 		return nil
 	})

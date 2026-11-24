@@ -153,21 +153,9 @@ ANALYZE test_cases;
   `annotations` enrichment is indistinguishable from ingest-written values.
 - **`--force` runs:** `--force` overwrites existing `test_cases.test_id` and
   `signature_id` values; targeted NULLing cannot restore previous identities,
-  and re-running `--force` will re-resolve the same values. Before running with
-  `--force`, require either:
-  1. Taking the quiesced pre-run RDS snapshot (§1 step 3) as the rollback path
-     (and replaying later CI runs from CI / S3 after restore), **or**
-  2. Exporting the pre-run rows for the targeted slice **and** bounding the
-     `--force` run with `--until <export_time>` (reports arriving after the
-     export without `--until` are not covered by the export rollback). Export
-     either **all** mutable fields (`test_cases (id, test_id, signature_id,
-     error_stack, project, tags, annotations)` and `report_groups (id, stage)`)
-     or `(id, test_id, signature_id)` alone if you only need to restore
-     overwritten identity columns (which leaves newly filled enrichment fields
-     and `stage` updates intact). Note that restoring `report_groups.stage` from
-     a pre-run export while uploaders stayed active overwrites live stage
-     updates committed after the export; pause uploaders (or pass `--skip-stage`
-     with `--force`) if live `stage` updates must not be reverted.
+  and re-running `--force` will re-resolve the same values. Use the quiesced
+  pre-run RDS snapshot (§1 step 3) as the **only** rollback path before any
+  `--force` run, and replay later CI runs from CI / S3 after restore.
 - Restoring the §1 snapshot discards every upload committed after it. Only do
   so if uploaders were quiesced for the snapshot, and replay later runs from
   CI / S3 afterwards.

@@ -1,0 +1,592 @@
+{
+  "golden_cases": [
+    {
+      "name": "playwright_ansi_timeout_preserves_selector",
+      "framework": "playwright",
+      "status": "failed",
+      "error_message": "\u001b[31mTimeoutError: locator.click: Timeout 30000ms exceeded for getByTestId('channel-header-1') at https://ci-123.mattermost.com:8065/team/channels\u001b[0m\nCall log:\n  - waiting for getByTestId('channel-header-1')",
+      "error_stack": "TimeoutError: locator.click: Timeout 30000ms exceeded\n    at PlaywrightTest.run (/app/node_modules/playwright-core/lib/worker/testInfo.js:120:5)\n    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/channels/header.spec.ts:42:15",
+      "want_error_class": "TimeoutError",
+      "want_normalized": "TimeoutError: locator.click: Timeout <dur> exceeded for getByTestId('channel-header-1') at <url>",
+      "want_top_frame": "<repo>/e2e-tests/playwright/specs/channels/header.spec.ts:42:15",
+      "want_fallback": ""
+    },
+    {
+      "name": "playwright_uuid_hex_ts_tmp_normalized",
+      "framework": "playwright",
+      "status": "failed",
+      "error_message": "Error: Failed reading /private/tmp/pw-run-98234/trace.zip for post q8x9k2m4p7n1v3b5c6d8e0f1a2 uuid 550e8400-e29b-41d4-a716-446655440000 at 2026-11-24T05:14:57.123Z code 0x7fff12ab port 8065",
+      "error_stack": "    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at /github/workspace/e2e-tests/playwright/specs/files/upload.spec.ts:88:9",
+      "want_error_class": "Error",
+      "want_normalized": "Error: Failed reading <tmp> for post <hex> uuid <uuid> at <ts> code <hex> port <num>",
+      "want_top_frame": "<repo>/e2e-tests/playwright/specs/files/upload.spec.ts:88:9",
+      "want_fallback": ""
+    },
+    {
+      "name": "playwright_preserves_css_attr_and_nth_selectors",
+      "framework": "playwright",
+      "status": "failed",
+      "error_message": "Error: [data-testid=\"post_textbox-2\"] inside #channel_1 .item-3:nth-child(2) and getByRole('button', { name: 'Send 1' }) failed after 5.5s",
+      "error_stack": "    at e2e-tests/playwright/specs/post.spec.ts:19:3",
+      "want_error_class": "Error",
+      "want_normalized": "Error: [data-testid=\"post_textbox-2\"] inside #channel_1 .item-3:nth-child(2) and getByRole('button', { name: 'Send 1' }) failed after <dur>",
+      "want_top_frame": "e2e-tests/playwright/specs/post.spec.ts:19:3",
+      "want_fallback": ""
+    },
+    {
+      "name": "cypress_assertion_webpack_frame",
+      "framework": "cypress",
+      "status": "failed",
+      "error_message": "AssertionError: Timed out retrying after 4000ms: Expected to find element: '[data-testid=\"post_textbox\"]', but never found it.",
+      "error_stack": "AssertionError: Timed out retrying after 4000ms\n    at __webpack_require__ (webpack://mattermost/webpack/bootstrap:19:0)\n    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/channels/post_spec.js:88:12)",
+      "want_error_class": "AssertionError",
+      "want_normalized": "AssertionError: Timed out retrying after <dur>: Expected to find element: '[data-testid=\"post_textbox\"]', but never found it.",
+      "want_top_frame": "Context.eval (e2e/cypress/tests/integration/channels/post_spec.js:88:12)",
+      "want_fallback": ""
+    },
+    {
+      "name": "cypress_proxy_url_frame",
+      "framework": "cypress",
+      "status": "failed",
+      "error_message": "CypressError: `cy.visit()` failed trying to load: http://127.0.0.1:8065/login (502 Bad Gateway)",
+      "error_stack": "    at Context.eval (https://localhost:8065/__cypress/tests?p=cypress/e2e/login.cy.ts:15:10)",
+      "want_error_class": "CypressError",
+      "want_normalized": "CypressError: `cy.visit()` failed trying to load: <url> (<num> Bad Gateway)",
+      "want_top_frame": "Context.eval (cypress/e2e/login.cy.ts:15:10)",
+      "want_fallback": ""
+    },
+    {
+      "name": "detox_missing_error_stack_extracts_frame_from_message",
+      "framework": "detox",
+      "status": "failed",
+      "error_message": "\u001b]8;;https://example.com\u0007\u001b[31mDetoxRuntimeError: Test Failed: View with matcher \"by.id('channel-btn-1')\" was not found\u001b[39m\u001b]8;;\u0007\n    at Object.toBeVisible (/Users/runner/work/mattermost-mobile/mattermost-mobile/node_modules/detox/src/expect.js:12:5)\n    at Object.<anonymous> (/Users/runner/work/mattermost-mobile/mattermost-mobile/detox/e2e/test/channels/create_channel.e2e.js:55:9)",
+      "error_stack": "",
+      "want_error_class": "DetoxRuntimeError",
+      "want_normalized": "DetoxRuntimeError: Test Failed: View with matcher \"by.id('channel-btn-1')\" was not found",
+      "want_top_frame": "Object.<anonymous> (<repo>/detox/e2e/test/channels/create_channel.e2e.js:55:9)",
+      "want_fallback": ""
+    },
+    {
+      "name": "maestro_junit_missing_stack_extracts_yaml_frame",
+      "framework": "maestro",
+      "status": "failed",
+      "error_message": "AssertionError: Element not found for id=\"channel_list_2\" in 15000ms\n\tat maestro.orchestra.Orchestra.executeCommand(Orchestra.kt:120)\n\tat e2e/flows/channels/create_channel.yaml:24",
+      "error_stack": "",
+      "want_error_class": "AssertionError",
+      "want_normalized": "AssertionError: Element not found for id=\"channel_list_2\" in <dur>",
+      "want_top_frame": "e2e/flows/channels/create_channel.yaml:24",
+      "want_fallback": ""
+    },
+    {
+      "name": "maestro_dotted_java_exception_class",
+      "framework": "maestro",
+      "status": "failed",
+      "error_message": "io.grpc.StatusRuntimeException: UNAVAILABLE: io exception at 2026-11-24 05:14:57",
+      "error_stack": "",
+      "want_error_class": "io.grpc.StatusRuntimeException",
+      "want_normalized": "io.grpc.StatusRuntimeException: UNAVAILABLE: io exception at <ts>",
+      "want_top_frame": "",
+      "want_fallback": ""
+    },
+    {
+      "name": "decorative_border_lines_skipped",
+      "framework": "detox",
+      "status": "failed",
+      "error_message": "\n────────────────────\nError: Network timeout after 10s\n    at detox/e2e/test/smoke.e2e.js:12:4",
+      "error_stack": "",
+      "want_error_class": "Error",
+      "want_normalized": "Error: Network timeout after <dur>",
+      "want_top_frame": "detox/e2e/test/smoke.e2e.js:12:4",
+      "want_fallback": ""
+    },
+    {
+      "name": "fallback_spec_did_not_run",
+      "framework": "playwright",
+      "status": "failed",
+      "error_message": "spec-did-not-run",
+      "error_stack": "",
+      "want_error_class": "",
+      "want_normalized": "spec-did-not-run",
+      "want_top_frame": "",
+      "want_fallback": "spec-did-not-run"
+    },
+    {
+      "name": "fallback_interrupted",
+      "framework": "playwright",
+      "status": "interrupted",
+      "error_message": "",
+      "error_stack": "",
+      "want_error_class": "",
+      "want_normalized": "interrupted",
+      "want_top_frame": "",
+      "want_fallback": "interrupted"
+    },
+    {
+      "name": "fallback_timeout",
+      "framework": "cypress",
+      "status": "timedOut",
+      "error_message": "\u001b[31m   \u001b[0m",
+      "error_stack": "",
+      "want_error_class": "",
+      "want_normalized": "timeout",
+      "want_top_frame": "",
+      "want_fallback": "timeout"
+    },
+    {
+      "name": "fallback_no_error_detox",
+      "framework": "detox",
+      "status": "failed",
+      "error_message": "",
+      "error_stack": "",
+      "want_error_class": "",
+      "want_normalized": "no-error:unknown:detox",
+      "want_top_frame": "",
+      "want_fallback": "no-error:unknown:detox"
+    },
+    {
+      "name": "fallback_no_error_maestro",
+      "framework": "maestro",
+      "status": "failed",
+      "error_message": "=====\n   ",
+      "error_stack": "",
+      "want_error_class": "",
+      "want_normalized": "no-error:unknown:maestro",
+      "want_top_frame": "",
+      "want_fallback": "no-error:unknown:maestro"
+    }
+  ],
+  "validation_samples": [
+    {
+      "id": "pw_econn_1",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "econnrefused_server",
+      "error_message": "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:8065/channels/town-square",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/channels/send_post.spec.ts:24:11"
+    },
+    {
+      "id": "pw_econn_2",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "econnrefused_server",
+      "error_message": "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:18065/channels/off-topic",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/threads/reply.spec.ts:31:9"
+    },
+    {
+      "id": "pw_econn_3",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "econnrefused_server",
+      "error_message": "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:8065/login",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/auth/login.spec.ts:14:7"
+    },
+    {
+      "id": "pw_econn_4",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "econnrefused_server",
+      "error_message": "Error: page.goto: net::ERR_CONNECTION_REFUSED at http://127.0.0.1:8065/admin_console",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/admin/system_console.spec.ts:52:13"
+    },
+    {
+      "id": "cy_502_1",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "api_502_bad_gateway",
+      "error_message": "CypressError: `cy.request()` failed on: http://localhost:8065/api/v4/posts/q8x9k2m4p7n1v3b5c6d8e0f1a2 — 502 Bad Gateway",
+      "error_stack": "    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/channels/post_spec.js:41:8)"
+    },
+    {
+      "id": "cy_502_2",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "api_502_bad_gateway",
+      "error_message": "CypressError: `cy.request()` failed on: http://localhost:8065/api/v4/channels/m1n2b3v4c5x6z7a8s9d0f1g2h3 — 502 Bad Gateway",
+      "error_stack": "    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/channels/header_spec.js:67:12)"
+    },
+    {
+      "id": "cy_502_3",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "api_502_bad_gateway",
+      "error_message": "CypressError: `cy.request()` failed on: http://127.0.0.1:8065/api/v4/users/me — 502 Bad Gateway",
+      "error_stack": "    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/auth/session_spec.js:19:5)"
+    },
+    {
+      "id": "cy_502_4",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "api_502_bad_gateway",
+      "error_message": "CypressError: `cy.request()` failed on: http://localhost:8065/api/v4/teams/members — 502 Bad Gateway",
+      "error_stack": "    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/team/invite_spec.js:93:10)"
+    },
+    {
+      "id": "ma_grpc_1",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "maestro_grpc_unavailable",
+      "error_message": "io.grpc.StatusRuntimeException: UNAVAILABLE: io exception at 2026-11-24T05:10:01Z\n\tat maestro.orchestra.Orchestra.runFlow(Orchestra.kt:88)\n\tat e2e/flows/channels/create_channel.yaml:12",
+      "error_stack": ""
+    },
+    {
+      "id": "ma_grpc_2",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "maestro_grpc_unavailable",
+      "error_message": "io.grpc.StatusRuntimeException: UNAVAILABLE: io exception at 2026-11-24T05:11:19Z\n\tat maestro.orchestra.Orchestra.runFlow(Orchestra.kt:88)\n\tat e2e/flows/threads/reply_thread.yaml:18",
+      "error_stack": ""
+    },
+    {
+      "id": "ma_grpc_3",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "maestro_grpc_unavailable",
+      "error_message": "io.grpc.StatusRuntimeException: UNAVAILABLE: io exception at 2026-11-24T05:12:44Z\n\tat e2e/flows/search/find_message.yaml:9",
+      "error_stack": ""
+    },
+    {
+      "id": "ma_grpc_4",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "maestro_grpc_unavailable",
+      "error_message": "io.grpc.StatusRuntimeException: UNAVAILABLE: io exception at 2026-11-24T05:14:02Z\n\tat e2e/flows/auth/login.yaml:22",
+      "error_stack": ""
+    },
+    {
+      "id": "dx_srv_1",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "detox_server_connect",
+      "error_message": "DetoxRuntimeError: Failed to connect to the Detox server at ws://127.0.0.1:51234\n    at Object.<anonymous> (/Users/runner/work/mattermost-mobile/mattermost-mobile/detox/e2e/test/channels/post.e2e.js:18:5)",
+      "error_stack": ""
+    },
+    {
+      "id": "dx_srv_2",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "detox_server_connect",
+      "error_message": "DetoxRuntimeError: Failed to connect to the Detox server at ws://localhost:59871\n    at Object.<anonymous> (/Users/runner/work/mattermost-mobile/mattermost-mobile/detox/e2e/test/threads/follow.e2e.js:27:9)",
+      "error_stack": ""
+    },
+    {
+      "id": "dx_srv_3",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "detox_server_connect",
+      "error_message": "DetoxRuntimeError: Failed to connect to the Detox server at ws://127.0.0.1:60112\n    at Object.<anonymous> (/Users/runner/work/mattermost-mobile/mattermost-mobile/detox/e2e/test/notifications/push.e2e.js:41:3)",
+      "error_stack": ""
+    },
+    {
+      "id": "dx_srv_4",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "detox_server_connect",
+      "error_message": "DetoxRuntimeError: Failed to connect to the Detox server at ws://127.0.0.1:49320\n    at Object.<anonymous> (/Users/runner/work/mattermost-mobile/mattermost-mobile/detox/e2e/test/smoke/launch.e2e.js:11:7)",
+      "error_stack": ""
+    },
+    {
+      "id": "pw_closed_1",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "browser_target_closed",
+      "error_message": "Error: Target page, context or browser has been closed",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/channels/mentions.spec.ts:74:12"
+    },
+    {
+      "id": "pw_closed_2",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "browser_target_closed",
+      "error_message": "Error: Target page, context or browser has been closed",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/search/filters.spec.ts:58:10"
+    },
+    {
+      "id": "pw_closed_3",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "browser_target_closed",
+      "error_message": "Error: Target page, context or browser has been closed",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/rhs/thread_view.spec.ts:103:5"
+    },
+    {
+      "id": "pw_textbox_1",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "post_textbox_timeout",
+      "error_message": "TimeoutError: locator.fill: Timeout 30000ms exceeded for getByTestId('post_textbox')",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/channels/messaging.spec.ts:39:14"
+    },
+    {
+      "id": "pw_textbox_2",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "post_textbox_timeout",
+      "error_message": "\u001b[31mTimeoutError: locator.fill: Timeout 15000ms exceeded for getByTestId('post_textbox')\u001b[0m",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/channels/messaging.spec.ts:45:14"
+    },
+    {
+      "id": "pw_textbox_3",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "post_textbox_timeout",
+      "error_message": "TimeoutError: locator.fill: Timeout 30000ms exceeded for getByTestId('post_textbox')",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/channels/markdown.spec.ts:82:18"
+    },
+    {
+      "id": "cy_login_1",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "cypress_login_input_timeout",
+      "error_message": "AssertionError: Timed out retrying after 4000ms: Expected to find element: '[data-testid=\"loginId\"]', but never found it.",
+      "error_stack": "    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/auth/login_spec.js:22:10)"
+    },
+    {
+      "id": "cy_login_2",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "cypress_login_input_timeout",
+      "error_message": "AssertionError: Timed out retrying after 10000ms: Expected to find element: '[data-testid=\"loginId\"]', but never found it.",
+      "error_stack": "    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/auth/login_spec.js:29:10)"
+    },
+    {
+      "id": "cy_login_3",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "cypress_login_input_timeout",
+      "error_message": "AssertionError: Timed out retrying after 4000ms: Expected to find element: '[data-testid=\"loginId\"]', but never found it.",
+      "error_stack": "    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/auth/mfa_spec.js:18:6)"
+    },
+    {
+      "id": "dx_clist_1",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "detox_channel_list_missing",
+      "error_message": "DetoxRuntimeError: Test Failed: View with matcher \"by.id('channel_list_screen')\" was not found\n    at Object.<anonymous> (detox/e2e/test/channels/switch_channel.e2e.js:33:5)",
+      "error_stack": ""
+    },
+    {
+      "id": "dx_clist_2",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "detox_channel_list_missing",
+      "error_message": "DetoxRuntimeError: Test Failed: View with matcher \"by.id('channel_list_screen')\" was not found\n    at Object.<anonymous> (detox/e2e/test/channels/switch_channel.e2e.js:40:5)",
+      "error_stack": ""
+    },
+    {
+      "id": "dx_clist_3",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "detox_channel_list_missing",
+      "error_message": "DetoxRuntimeError: Test Failed: View with matcher \"by.id('channel_list_screen')\" was not found\n    at Object.<anonymous> (detox/e2e/test/channels/mute_channel.e2e.js:21:9)",
+      "error_stack": ""
+    },
+    {
+      "id": "ma_signin_1",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "maestro_signin_timeout",
+      "error_message": "TimeoutError: Timed out waiting 15000ms for element \"Sign in\" on screen\n\tat e2e/flows/auth/login.yaml:14",
+      "error_stack": ""
+    },
+    {
+      "id": "ma_signin_2",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "maestro_signin_timeout",
+      "error_message": "TimeoutError: Timed out waiting 20000ms for element \"Sign in\" on screen\n\tat e2e/flows/auth/login.yaml:19",
+      "error_stack": ""
+    },
+    {
+      "id": "ma_signin_3",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "maestro_signin_timeout",
+      "error_message": "TimeoutError: Timed out waiting 15000ms for element \"Sign in\" on screen\n\tat e2e/flows/auth/sso.yaml:11",
+      "error_stack": ""
+    },
+    {
+      "id": "pw_nospec_1",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "spec_did_not_run",
+      "error_message": "spec-did-not-run",
+      "error_stack": ""
+    },
+    {
+      "id": "pw_nospec_2",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "spec_did_not_run",
+      "error_message": "spec-did-not-run",
+      "error_stack": ""
+    },
+    {
+      "id": "pw_nospec_3",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "spec_did_not_run",
+      "error_message": "spec-did-not-run",
+      "error_stack": ""
+    },
+    {
+      "id": "pw_to_1",
+      "framework": "playwright",
+      "status": "timedOut",
+      "cluster": "fallback_timeout",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "cy_to_2",
+      "framework": "cypress",
+      "status": "timedOut",
+      "cluster": "fallback_timeout",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "dx_to_3",
+      "framework": "detox",
+      "status": "timedOut",
+      "cluster": "fallback_timeout",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "pw_int_1",
+      "framework": "playwright",
+      "status": "interrupted",
+      "cluster": "fallback_interrupted",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "cy_int_2",
+      "framework": "cypress",
+      "status": "interrupted",
+      "cluster": "fallback_interrupted",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "dx_noerr_1",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "fallback_no_error_detox",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "dx_noerr_2",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "fallback_no_error_detox",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "ma_noerr_1",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "fallback_no_error_maestro",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "ma_noerr_2",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "fallback_no_error_maestro",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "cy_noerr_1",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "fallback_no_error_cypress",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "pw_noerr_1",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "fallback_no_error_playwright",
+      "error_message": "",
+      "error_stack": ""
+    },
+    {
+      "id": "pw_gen_assert_1",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "generic_assert_channels",
+      "error_message": "AssertionError: expected false to be true",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/channels/archive.spec.ts:102:9"
+    },
+    {
+      "id": "cy_gen_assert_2",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "generic_assert_threads",
+      "error_message": "AssertionError: expected false to be true",
+      "error_stack": "    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/threads/collapse_spec.js:44:7)"
+    },
+    {
+      "id": "dx_gen_expect_1",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "generic_expect_reply",
+      "error_message": "Error: expect(received).toBe(expected)\n    at Object.<anonymous> (detox/e2e/test/threads/reply_drawer.e2e.js:88:14)",
+      "error_stack": ""
+    },
+    {
+      "id": "dx_gen_expect_2",
+      "framework": "detox",
+      "status": "failed",
+      "cluster": "generic_expect_emoji",
+      "error_message": "Error: expect(received).toBe(expected)\n    at Object.<anonymous> (detox/e2e/test/reactions/emoji_picker.e2e.js:31:5)",
+      "error_stack": ""
+    },
+    {
+      "id": "pw_unique_archive",
+      "framework": "playwright",
+      "status": "failed",
+      "cluster": "unique_archive_perm",
+      "error_message": "Error: User role member lacks permission manage_public_channel_properties for channel 550e8400-e29b-41d4-a716-446655440001",
+      "error_stack": "    at /home/runner/work/mattermost/mattermost/e2e-tests/playwright/specs/channels/permissions.spec.ts:61:11"
+    },
+    {
+      "id": "cy_unique_413",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "unique_upload_413",
+      "error_message": "CypressError: Upload failed with status 413 Payload Too Large for /tmp/cypress-upload-9912/large.bin",
+      "error_stack": "    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/files/max_size_spec.js:77:9)"
+    },
+    {
+      "id": "cy_unique_webhook",
+      "framework": "cypress",
+      "status": "failed",
+      "cluster": "unique_webhook_token",
+      "error_message": "AssertionError: Incoming webhook token a1b2c3d4e5f60718293a4b5c6d7e8f90 was rejected with 401",
+      "error_stack": "    at Context.eval (webpack://mattermost/./e2e/cypress/tests/integration/integrations/webhook_spec.js:35:4)"
+    },
+    {
+      "id": "ma_unique_keyboard",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "unique_keyboard_overlap",
+      "error_message": "AssertionError: Element [data-testid=\"send_button\"] obstructed by soft keyboard at y=612\n\tat e2e/flows/channels/keyboard_layout.yaml:30",
+      "error_stack": ""
+    },
+    {
+      "id": "ma_unique_badge",
+      "framework": "maestro",
+      "status": "failed",
+      "cluster": "unique_unread_badge",
+      "error_message": "AssertionError: Expected unread badge count 3, got 1 on channel q8x9k2m4p7n1v3b5c6d8e0f1a2\n\tat e2e/flows/notifications/unread_badge.yaml:42",
+      "error_stack": ""
+    }
+  ]
+}

@@ -3,6 +3,7 @@
 package verdicts
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,12 +12,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/verdicts"
 )
 
@@ -113,6 +116,12 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 			api.WriteError(w, r, err)
 		}
 		return
+	}
+
+	if input.ReportGroupID != nil && h.Store != nil && h.Store.Pool != nil {
+		kpiCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		defer cancel()
+		kpi.RefreshGroupRollupsBestEffort(kpiCtx, h.Store.Pool, h.Logger, *input.ReportGroupID)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

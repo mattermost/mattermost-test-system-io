@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
@@ -126,6 +127,9 @@ func (r *Reaper) loop(ctx context.Context) {
 			if err := RefreshStaleGroupSummariesWithRule(ctx, r.Pool, r.Logger, reaperBatchLimit, r.statusRule()); err != nil {
 				r.Logger.Warn("reports reaper: refresh stale summaries", slog.String("error", err.Error()))
 			}
+			if err := kpi.RefreshStaleGroupRollups(ctx, r.Pool, r.Logger, reaperBatchLimit); err != nil {
+				r.Logger.Warn("reports reaper: refresh stale kpi rollups", slog.String("error", err.Error()))
+			}
 			r.RetryStalledResults(ctx)
 		}
 	}
@@ -153,6 +157,7 @@ func (r *Reaper) markIncomplete(ctx context.Context) error {
 	}
 	defer rows.Close()
 
+	var reapedIDs []uuid.UUID
 	for rows.Next() {
 		var id uuid.UUID
 		var updatedAt time.Time
@@ -166,8 +171,16 @@ func (r *Reaper) markIncomplete(ctx context.Context) error {
 		r.Logger.Info("report group reaped to incomplete",
 			slog.String("group_id", id.String()),
 			slog.Int("reports_count", reportsCount))
+		reapedIDs = append(reapedIDs, id)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	for _, id := range reapedIDs {
+		kpi.RefreshGroupRollupsBestEffort(ctx, r.Pool, r.Logger, id)
+	}
+	return nil
 }
 
 // stalledResultsAge is how long a shard whose results could not be read waits before the reaper tries again;

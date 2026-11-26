@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
@@ -117,6 +118,7 @@ func RefreshGroupSummaryWithRule(ctx context.Context, pool *pgxpool.Pool, groupI
 	if err != nil {
 		return fmt.Errorf("refresh_group_summary: update: %w", err)
 	}
+	kpi.RefreshGroupRollupsBestEffort(ctx, pool, nil, groupID)
 	return nil
 }
 

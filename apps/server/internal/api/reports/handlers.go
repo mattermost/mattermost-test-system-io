@@ -23,6 +23,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
@@ -623,9 +624,21 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrBadRequest)
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM report_groups WHERE id = $1`, id); err != nil {
+	snap, snapErr := kpi.CaptureDeletedGroupSnapshot(r.Context(), h.Pool, id)
+	if snapErr != nil && h.Logger != nil {
+		h.Logger.Warn("capture deleted group kpi snapshot failed",
+			slog.String("group_id", id.String()),
+			slog.String("error", snapErr.Error()))
+	}
+	tag, err := h.Pool.Exec(r.Context(), `DELETE FROM report_groups WHERE id = $1`, id)
+	if err != nil {
 		api.WriteError(w, r, err)
 		return
+	}
+	if tag.RowsAffected() > 0 && snap != nil {
+		kpiCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		defer cancel()
+		kpi.RecomputeAfterGroupDeleteBestEffort(kpiCtx, h.Pool, h.Logger, snap)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

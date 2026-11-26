@@ -239,7 +239,7 @@ func (r *runner) updateStages(ctx context.Context, ids []uuid.UUID, stages []str
 		return len(ids), nil
 	}
 	tag, err := r.pool.Exec(ctx, `
-		UPDATE report_groups g SET stage = u.stage
+		UPDATE report_groups g SET stage = u.stage, kpi_rollups_refreshed_at = NULL
 		FROM UNNEST($1::uuid[], $2::text[]) AS u(id, stage)
 		WHERE g.id = u.id AND g.stage = 'other'
 	`, ids, stages)
@@ -606,6 +606,11 @@ func (r *runner) write(ctx context.Context, rep reportRow, cases []dbCase, p rep
 	}
 	if err := ingest.AttributeFailureSignaturesTx(ctx, tx, rep.GroupID, assigned); err != nil {
 		return err
+	}
+	if len(p.dirty) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE report_groups SET kpi_rollups_refreshed_at = NULL WHERE id = $1`, rep.GroupID); err != nil {
+			return fmt.Errorf("reset kpi_rollups_refreshed_at: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit update tx: %w", err)

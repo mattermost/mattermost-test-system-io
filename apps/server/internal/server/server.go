@@ -18,6 +18,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/clientcfg"
 	filesapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/files"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/health"
+	kpiapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/kpi"
 	apimw "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/middleware"
 	orchapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
@@ -30,6 +31,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/session"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/htmlpage"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
@@ -139,6 +141,10 @@ func Build(d Deps) chi.Router {
 		Logger:    d.Logger,
 		AuthzMode: authzMode,
 	}
+	kpiH := &kpiapi.Handlers{
+		Store:  &kpi.Store{Pool: d.Pool},
+		Logger: d.Logger,
+	}
 	wsH := &wsapi.Handler{Hub: d.Hub}
 	authH := &authapi.Handlers{
 		Flow:              d.OAuth,
@@ -208,6 +214,10 @@ func Build(d Deps) chi.Router {
 
 		// --- Public: AI triage verdict lookup ---
 		r.Get("/verdicts/by-signature/{fingerprint}", verdictsH.BySignature)
+
+		// --- Public: KPI read endpoints ---
+		r.Get("/kpi/summary", kpiH.Summary)
+		r.Get("/kpi/flaky", kpiH.Flaky)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)

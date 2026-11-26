@@ -16,6 +16,9 @@ import (
 // ErrValidation indicates an invalid KPI query parameter.
 var ErrValidation = errors.New("invalid KPI query parameter")
 
+// ErrNotFound indicates a requested KPI resource (such as a signature ID) does not exist.
+var ErrNotFound = errors.New("kpi resource not found")
+
 const (
 	maxAppLen      = 64
 	maxRepoLen     = 256
@@ -38,6 +41,16 @@ func ParseFlakyParams(q url.Values, now time.Time) (FilterParams, error) {
 // ParsePRsRedParams parses and validates query parameters for GET /api/v1/kpi/prs/red.
 func ParsePRsRedParams(q url.Values, now time.Time) (FilterParams, error) {
 	return parseParams(q, now, Window30d, SortCreatedDesc, isValidPRRedSort, true)
+}
+
+// ParseFailuresParams parses and validates query parameters for GET /api/v1/kpi/failures.
+func ParseFailuresParams(q url.Values, now time.Time) (FilterParams, error) {
+	return parseParams(q, now, Window30d, SortOccurrencesDesc, isValidFailuresSort)
+}
+
+// ParseFailureDetailParams parses and validates query parameters for GET /api/v1/kpi/failures/{id}.
+func ParseFailureDetailParams(q url.Values, now time.Time) (FilterParams, error) {
+	return parseParams(q, now, Window30d, SortOccurrencesDesc, isValidFailuresSort)
 }
 
 func parseParams(
@@ -216,6 +229,15 @@ func isValidPRRedSort(s string) bool {
 	}
 }
 
+func isValidFailuresSort(s string) bool {
+	switch s {
+	case SortOccurrencesDesc, SortCountDesc, SortRateDesc, SortTrendDesc, SortLastSeenDesc, SortNameAsc:
+		return true
+	default:
+		return false
+	}
+}
+
 // sqlFilterBuilder helps construct parameterized WHERE clauses cleanly.
 type sqlFilterBuilder struct {
 	args []any
@@ -247,6 +269,16 @@ func (b *sqlFilterBuilder) appendCommonFilters(alias string, f FilterParams, inc
 	if f.Lane != "" {
 		ph := b.add(f.Lane)
 		fmt.Fprintf(&sb, " AND %s.lane = %s", alias, ph)
+	}
+	return sb.String()
+}
+
+func (b *sqlFilterBuilder) appendSignatureExecFilters(alias string, f FilterParams) string {
+	var sb strings.Builder
+	sb.WriteString(b.appendCommonFilters(alias, f, true))
+	if f.Platform != "" {
+		ph := b.add(f.Platform)
+		fmt.Fprintf(&sb, " AND %s.platform = %s", alias, ph)
 	}
 	return sb.String()
 }

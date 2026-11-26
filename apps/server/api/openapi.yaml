@@ -1383,6 +1383,63 @@ paths:
               schema: { $ref: '#/components/schemas/KPIPRRedResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
 
+  /api/v1/kpi/failures:
+    get:
+      tags: [kpi]
+      summary: Get recurring failure signatures with rates, 14d trends, and Active/Quiet/Resurfaced state
+      operationId: kpiFailures
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/KpiApp'
+        - $ref: '#/components/parameters/KpiRepo'
+        - $ref: '#/components/parameters/KpiStage'
+        - $ref: '#/components/parameters/KpiLane'
+        - $ref: '#/components/parameters/KpiPlatform'
+        - $ref: '#/components/parameters/KpiWindow'
+        - in: query
+          name: sort
+          required: false
+          schema:
+            type: string
+            enum: [occurrences_desc, count_desc, rate_desc, trend_desc, last_seen_desc, name_asc]
+            default: occurrences_desc
+        - $ref: '#/components/parameters/KpiPage'
+        - $ref: '#/components/parameters/KpiLimit'
+      responses:
+        '200':
+          description: Recurring failure summary and paginated signatures
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KPIFailuresResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/kpi/failures/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+        description: Failure signature UUID (canonical or merged alias; resolves lineage automatically).
+    get:
+      tags: [kpi]
+      summary: Get single recurring failure signature details, daily series, affected tests/repos, and latest verdict
+      operationId: kpiFailureDetail
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/KpiApp'
+        - $ref: '#/components/parameters/KpiRepo'
+        - $ref: '#/components/parameters/KpiStage'
+        - $ref: '#/components/parameters/KpiLane'
+        - $ref: '#/components/parameters/KpiPlatform'
+        - $ref: '#/components/parameters/KpiWindow'
+      responses:
+        '200':
+          description: Recurring failure signature details
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KPIFailureDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     apiKey:
@@ -1453,7 +1510,7 @@ components:
       schema:
         type: string
         enum: [7d, 14d, 30d, 90d]
-      description: Lookback window (`30d` default on `/summary` and `/prs/red`, `14d` default on `/flaky`).
+      description: Lookback window (`30d` default on `/summary`, `/prs/red`, and `/failures`, `14d` default on `/flaky`).
     KpiPage:
       in: query
       name: page
@@ -2888,7 +2945,7 @@ components:
 
     KPISummaryResponse:
       type: object
-      required: [filters, lane_coverage, main_pass_rate, flaky_tests, e2e_duration, weekly_series, pr_false_red]
+      required: [filters, lane_coverage, main_pass_rate, flaky_tests, e2e_duration, weekly_series, pr_false_red, recurring_failures]
       properties:
         filters: { $ref: '#/components/schemas/KPIFilters' }
         lane_coverage: { $ref: '#/components/schemas/KPILaneCoverage' }
@@ -2901,8 +2958,7 @@ components:
         pr_false_red:
           $ref: '#/components/schemas/KPIPRFalseRedSummary'
         recurring_failures:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/KPIRecurringFailuresSummary'
           nullable: true
         triage:
           type: object
@@ -3149,6 +3205,273 @@ components:
         lanes:
           type: array
           items: { $ref: '#/components/schemas/KPIRedPRLaneRow' }
+
+    KPIRecurringFailuresSummary:
+      type: object
+      required:
+        - total_signatures
+        - active_count
+        - resurfaced_count
+        - quiet_count
+        - not_enough_runs_count
+        - total_occurrences
+        - triaged_count
+      properties:
+        total_signatures: { type: integer }
+        active_count: { type: integer }
+        resurfaced_count: { type: integer }
+        quiet_count: { type: integer }
+        not_enough_runs_count: { type: integer }
+        total_occurrences: { type: integer }
+        triaged_count: { type: integer }
+
+    KPIRecurringFailureRow:
+      type: object
+      required:
+        - signature_id
+        - fingerprint
+        - algo_version
+        - error_class
+        - normalized_message
+        - top_frame
+        - merged_signature_ids
+        - state
+        - quiet_days
+        - occurrence_count
+        - raw_attempt_count
+        - group_count
+        - affected_test_count
+        - affected_test_runs
+        - rate_per_1k
+        - occurrences_14d
+        - affected_runs_14d
+        - rate_per_1k_14d
+        - prior_occurrences_14d
+        - prior_affected_runs_14d
+        - prior_rate_per_1k_14d
+        - delta_rate_per_1k
+        - occurrences_7d
+        - affected_runs_7d
+        - first_seen_at
+        - last_seen_at
+        - repositories
+        - apps
+        - lanes
+        - pr_numbers
+        - latest_verdict_label
+      properties:
+        signature_id: { type: string, format: uuid }
+        fingerprint: { type: string }
+        algo_version: { type: integer }
+        error_class: { type: string, nullable: true }
+        normalized_message: { type: string }
+        top_frame: { type: string, nullable: true }
+        merged_signature_ids:
+          type: array
+          items: { type: string, format: uuid }
+        state:
+          type: string
+          enum: [Active, Quiet, Not enough runs, Resurfaced]
+        quiet_days: { type: integer, nullable: true }
+        occurrence_count: { type: integer }
+        raw_attempt_count: { type: integer }
+        group_count: { type: integer }
+        affected_test_count: { type: integer }
+        affected_test_runs: { type: integer }
+        rate_per_1k: { type: number, nullable: true }
+        occurrences_14d: { type: integer }
+        affected_runs_14d: { type: integer }
+        rate_per_1k_14d: { type: number, nullable: true }
+        prior_occurrences_14d: { type: integer }
+        prior_affected_runs_14d: { type: integer }
+        prior_rate_per_1k_14d: { type: number, nullable: true }
+        delta_rate_per_1k: { type: number, nullable: true }
+        occurrences_7d: { type: integer }
+        affected_runs_7d: { type: integer }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        repositories:
+          type: array
+          items: { type: string }
+        apps:
+          type: array
+          items: { type: string }
+        lanes:
+          type: array
+          items: { type: string }
+        pr_numbers:
+          type: array
+          items: { type: integer }
+        latest_verdict_label: { type: string, nullable: true }
+
+    KPIFailuresResponse:
+      type: object
+      required: [filters, window_days, summary, lane_coverage, pagination, failures]
+      properties:
+        filters: { $ref: '#/components/schemas/KPIFilters' }
+        window_days: { type: integer }
+        summary: { $ref: '#/components/schemas/KPIRecurringFailuresSummary' }
+        lane_coverage: { $ref: '#/components/schemas/KPILaneCoverage' }
+        pagination: { $ref: '#/components/schemas/KPIPagination' }
+        failures:
+          type: array
+          items: { $ref: '#/components/schemas/KPIRecurringFailureRow' }
+
+    KPIFailureVerdict:
+      type: object
+      required: [id, label, decided_by, rule, confidence, summary, model, triage_url, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        decided_by: { type: string, nullable: true }
+        rule: { type: string, nullable: true }
+        confidence: { type: number, nullable: true }
+        summary: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        triage_url: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    KPIFailureFirstSeen:
+      type: object
+      required: [first_seen_at, report_group_id, repository, lane, branch, commit_sha, gh_pr_number]
+      properties:
+        first_seen_at: { type: string, format: date-time }
+        report_group_id: { type: string, format: uuid, nullable: true }
+        repository: { type: string, nullable: true }
+        lane: { type: string, nullable: true }
+        branch: { type: string, nullable: true }
+        commit_sha: { type: string, nullable: true }
+        gh_pr_number: { type: integer, nullable: true }
+
+    KPIFailureDailyPoint:
+      type: object
+      required: [date, occurrence_count, raw_attempt_count, group_count, affected_test_runs, rate_per_1k]
+      properties:
+        date: { type: string, format: date }
+        occurrence_count: { type: integer }
+        raw_attempt_count: { type: integer }
+        group_count: { type: integer }
+        affected_test_runs: { type: integer }
+        rate_per_1k: { type: number, nullable: true }
+
+    KPIFailureAffectedTest:
+      type: object
+      required: [test_id, test_key, zephyr_key, file, full_title, repository, framework, group_count, run_count, fail_count, last_seen_at]
+      properties:
+        test_id: { type: string, format: uuid }
+        test_key: { type: string }
+        zephyr_key: { type: string, nullable: true }
+        file: { type: string }
+        full_title: { type: string }
+        repository: { type: string }
+        framework: { type: string }
+        group_count: { type: integer }
+        run_count: { type: integer }
+        fail_count: { type: integer }
+        last_seen_at: { type: string, format: date-time }
+
+    KPIFailureAffectedRepo:
+      type: object
+      required: [repository, app, occurrence_count, group_count, affected_runs, rate_per_1k, lanes]
+      properties:
+        repository: { type: string }
+        app: { type: string }
+        occurrence_count: { type: integer }
+        group_count: { type: integer }
+        affected_runs: { type: integer }
+        rate_per_1k: { type: number, nullable: true }
+        lanes:
+          type: array
+          items: { type: string }
+
+    KPIFailureDetailResponse:
+      type: object
+      required:
+        - filters
+        - requested_signature_id
+        - canonical_signature_id
+        - merged_into_id
+        - merged_signature_ids
+        - fingerprint
+        - algo_version
+        - error_class
+        - normalized_message
+        - top_frame
+        - sample_message
+        - state
+        - quiet_days
+        - occurrence_count
+        - raw_attempt_count
+        - group_count
+        - affected_test_count
+        - affected_test_runs
+        - rate_per_1k
+        - occurrences_14d
+        - affected_runs_14d
+        - rate_per_1k_14d
+        - prior_occurrences_14d
+        - prior_affected_runs_14d
+        - prior_rate_per_1k_14d
+        - delta_rate_per_1k
+        - occurrences_7d
+        - affected_runs_7d
+        - last_seen_at
+        - first_seen
+        - latest_verdict
+        - daily_series
+        - affected_tests
+        - affected_repos
+        - pr_numbers
+      properties:
+        filters: { $ref: '#/components/schemas/KPIFilters' }
+        requested_signature_id: { type: string, format: uuid }
+        canonical_signature_id: { type: string, format: uuid }
+        merged_into_id: { type: string, format: uuid, nullable: true }
+        merged_signature_ids:
+          type: array
+          items: { type: string, format: uuid }
+        fingerprint: { type: string }
+        algo_version: { type: integer }
+        error_class: { type: string, nullable: true }
+        normalized_message: { type: string }
+        top_frame: { type: string, nullable: true }
+        sample_message: { type: string, nullable: true }
+        state:
+          type: string
+          enum: [Active, Quiet, Not enough runs, Resurfaced]
+        quiet_days: { type: integer, nullable: true }
+        occurrence_count: { type: integer }
+        raw_attempt_count: { type: integer }
+        group_count: { type: integer }
+        affected_test_count: { type: integer }
+        affected_test_runs: { type: integer }
+        rate_per_1k: { type: number, nullable: true }
+        occurrences_14d: { type: integer }
+        affected_runs_14d: { type: integer }
+        rate_per_1k_14d: { type: number, nullable: true }
+        prior_occurrences_14d: { type: integer }
+        prior_affected_runs_14d: { type: integer }
+        prior_rate_per_1k_14d: { type: number, nullable: true }
+        delta_rate_per_1k: { type: number, nullable: true }
+        occurrences_7d: { type: integer }
+        affected_runs_7d: { type: integer }
+        last_seen_at: { type: string, format: date-time, nullable: true }
+        first_seen: { $ref: '#/components/schemas/KPIFailureFirstSeen' }
+        latest_verdict:
+          $ref: '#/components/schemas/KPIFailureVerdict'
+          nullable: true
+        daily_series:
+          type: array
+          items: { $ref: '#/components/schemas/KPIFailureDailyPoint' }
+        affected_tests:
+          type: array
+          items: { $ref: '#/components/schemas/KPIFailureAffectedTest' }
+        affected_repos:
+          type: array
+          items: { $ref: '#/components/schemas/KPIFailureAffectedRepo' }
+        pr_numbers:
+          type: array
+          items: { type: integer }
 
     Error:
       type: object

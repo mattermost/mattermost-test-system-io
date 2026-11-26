@@ -89,16 +89,16 @@ func TestRenderKPIOverview_PopulatedAndGuardrails(t *testing.T) {
 			},
 			LaneCoverage: kpi.LaneCoverage{TotalLanes: 2, OrchestratedLanes: 1, UploadOnlyLanes: 1, TotalRuns: 25},
 		},
-		PRFalseRed: map[string]any{
-			"is_lower_bound":          true,
-			"rate_qualifier":          "at least",
-			"settled_after_hours":     24,
-			"false_red_rate":          rate,
-			"prior_false_red_rate":    priorRate,
-			"delta_pp":                deltaPP,
-			"settled_red_lanes":       200,
-			"settled_false_red_lanes": 37,
-			"unsettled_red_lanes":     5,
+		PRFalseRed: &kpi.PRFalseRedSummary{
+			IsLowerBound:         true,
+			RateQualifier:        "at least",
+			SettledAfterHours:    24,
+			FalseRedRate:         &rate,
+			PriorFalseRedRate:    &priorRate,
+			DeltaPP:              &deltaPP,
+			SettledRedLanes:      200,
+			SettledFalseRedLanes: 37,
+			UnsettledRedLanes:    5,
 		},
 		FlakyTests: kpi.FlakySummary{
 			WindowDays:      14,
@@ -271,7 +271,12 @@ func TestRenderKPIOverview_EmptyAndZeroDenominators(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page := BuildKPIOverviewPage(SiteInfo{}, kpi.FilterOptions{}, kpi.SummaryResponse{Filters: params}, kpi.FailuresResponse{Filters: params}, now)
+	page := BuildKPIOverviewPage(SiteInfo{}, kpi.FilterOptions{}, kpi.SummaryResponse{
+		Filters: params,
+		WeeklySeries: []kpi.WeeklyPoint{
+			{WeekStart: "2026-11-16", RecurringFailuresCount: intPtr(0)},
+		},
+	}, kpi.FailuresResponse{Filters: params}, now)
 	htmlBytes, err := RenderKPIOverview(page)
 	if err != nil {
 		t.Fatal(err)
@@ -292,17 +297,17 @@ func TestRenderKPIOverview_EmptyAndZeroDenominators(t *testing.T) {
 
 func TestRenderKPIPRs_PopulatedAndEmpty(t *testing.T) {
 	now := time.Date(2026, 11, 26, 15, 0, 0, 0, time.UTC)
-	params, err := ParseKPIPRsParams(url.Values{
+	params, err := kpi.ParsePRsRedParams(url.Values{
 		"app":    {"mattermost"},
 		"window": {"7d"},
-		"sort":   {kpiPRSortAgeDesc},
+		"sort":   {kpi.SortAgeDesc},
 		"page":   {"1"},
 	}, now)
 	if err != nil {
-		t.Fatalf("ParseKPIPRsParams: %v", err)
+		t.Fatalf("ParsePRsRedParams: %v", err)
 	}
 
-	input := KPIPRsInput{
+	input := kpi.PRRedResponse{
 		Filters:              params,
 		WindowDays:           7,
 		SettledAfterHours:    24,
@@ -314,16 +319,16 @@ func TestRenderKPIPRs_PopulatedAndEmpty(t *testing.T) {
 		SettledFalseRedLanes: 9,
 		UnsettledRedLanes:    3,
 		StillRedLanes:        4,
-		ReasonMix: KPIPRReasonMixInput{
+		ReasonMix: kpi.PRFalseRedReasonMix{
 			WentGreenOnRerun: 5,
 			FailingElsewhere: 4,
 			Other:            31,
 			Total:            40,
 		},
-		ConfiguredE2ELanes: []KPIConfiguredLane{{Repository: "mattermost/mattermost", Lane: "e2e-rf-pr"}},
+		ConfiguredE2ELanes: []kpi.ConfiguredE2ELane{{Repository: "mattermost/mattermost", Lane: "e2e-rf-pr"}},
 		LaneCoverage:       kpi.LaneCoverage{TotalLanes: 1, OrchestratedLanes: 1, TotalRuns: 43},
 		Pagination:         kpi.Pagination{Page: 1, Limit: 50, Total: 2, TotalPages: 1},
-		Lanes: []KPIRedLaneInput{
+		Lanes: []kpi.RedPRLaneRow{
 			{
 				ReportGroupID:        "rg-1",
 				Repository:           "mattermost/mattermost",
@@ -339,7 +344,7 @@ func TestRenderKPIPRs_PopulatedAndEmpty(t *testing.T) {
 				OtherPRsCount:        4,
 				FailedSignatureCount: 2,
 				TestsFailed:          3,
-				Reason:               kpiReasonFailingElsewhere,
+				Reason:               kpi.ReasonFailingElsewhere,
 				RunURL:               "/reports/mattermost/pr~12345/abcdef1/e2e-rf-pr",
 			},
 			{
@@ -356,7 +361,7 @@ func TestRenderKPIPRs_PopulatedAndEmpty(t *testing.T) {
 				WentGreenOnRerun:     true,
 				FailedSignatureCount: 1,
 				TestsFailed:          1,
-				Reason:               kpiReasonWentGreenOnRerun,
+				Reason:               kpi.ReasonWentGreenOnRerun,
 				RunURL:               "/reports/mattermost/pr~12346/fedcba9/e2e-rf-pr",
 			},
 		},
@@ -397,7 +402,7 @@ func TestRenderKPIPRs_PopulatedAndEmpty(t *testing.T) {
 	}
 
 	// Empty state
-	emptyPage := BuildKPIPRsPage(SiteInfo{}, kpi.FilterOptions{}, KPIPRsInput{Filters: params, SettledAfterHours: 24}, now)
+	emptyPage := BuildKPIPRsPage(SiteInfo{}, kpi.FilterOptions{}, kpi.PRRedResponse{Filters: params, SettledAfterHours: 24}, now)
 	emptyHTML, err := RenderKPIPRs(emptyPage)
 	if err != nil {
 		t.Fatal(err)
@@ -405,6 +410,136 @@ func TestRenderKPIPRs_PopulatedAndEmpty(t *testing.T) {
 	es := string(emptyHTML)
 	if !strings.Contains(es, `N/A`) || !strings.Contains(es, `No settled red PR lanes to classify`) || !strings.Contains(es, `No E2E red PR lanes`) {
 		t.Fatalf("empty PRs page missing expected empty states")
+	}
+}
+
+func TestBuildKPIOverviewAndPRs_PRFalseRedZeroSettledAndUnsettledStates(t *testing.T) {
+	now := time.Date(2026, 11, 26, 15, 0, 0, 0, time.UTC)
+	ovParams, err := kpi.ParseFailuresParams(url.Values{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Overview: zero settled red lanes + 3 unsettled (<24h) lanes -> "N/A" / "No data" + unsettled count.
+	sumWithUnsettled := kpi.SummaryResponse{
+		Filters: ovParams,
+		PRFalseRed: &kpi.PRFalseRedSummary{
+			IsLowerBound:      true,
+			RateQualifier:     "at least",
+			SettledAfterHours: 24,
+			FalseRedRate:      nil,
+			UnsettledRedLanes: 3,
+		},
+	}
+	ovPage := BuildKPIOverviewPage(SiteInfo{}, kpi.FilterOptions{}, sumWithUnsettled, kpi.FailuresResponse{Filters: ovParams}, now)
+	ovHTML, err := RenderKPIOverview(ovPage)
+	if err != nil {
+		t.Fatalf("RenderKPIOverview unsettled: %v", err)
+	}
+	ovStr := string(ovHTML)
+	for _, want := range []string{
+		`N/A`,
+		`No data`,
+		`3 unsettled (&lt;24h)`,
+		`No settled (&gt;24h) red lanes yet (3 unsettled); new-commit fixes excluded.`,
+	} {
+		if !strings.Contains(ovStr, want) {
+			t.Fatalf("unsettled overview missing %q", want)
+		}
+	}
+
+	// Overview: zero settled and zero unsettled -> explicit no-settled message.
+	sumEmptyPR := kpi.SummaryResponse{
+		Filters: ovParams,
+		PRFalseRed: &kpi.PRFalseRedSummary{
+			IsLowerBound:      true,
+			RateQualifier:     "at least",
+			SettledAfterHours: 24,
+			FalseRedRate:      nil,
+		},
+	}
+	ovEmptyHTML, err := RenderKPIOverview(BuildKPIOverviewPage(SiteInfo{}, kpi.FilterOptions{}, sumEmptyPR, kpi.FailuresResponse{Filters: ovParams}, now))
+	if err != nil {
+		t.Fatalf("RenderKPIOverview zero PR: %v", err)
+	}
+	if !strings.Contains(string(ovEmptyHTML), `No settled (&gt;24h) red PR lanes in window; new-commit fixes excluded.`) {
+		t.Fatalf("zero-PR overview missing settled note")
+	}
+
+	// PR E2E page: nil FalseRedRate + unsettled "E2E red" row failing on 3 other PRs (without main) + 2 other PRs ("Seen on 2 other PR(s)").
+	prParams, err := kpi.ParsePRsRedParams(url.Values{"repo": {"mattermost/mattermost"}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prResp := kpi.PRRedResponse{
+		Filters:           prParams,
+		WindowDays:        30,
+		SettledAfterHours: 24,
+		IsLowerBound:      true,
+		RateQualifier:     "at least",
+		FalseRedRate:      nil,
+		UnsettledRedLanes: 2,
+		StillRedLanes:     2,
+		Pagination:        kpi.Pagination{Page: 1, Limit: 50, Total: 2, TotalPages: 1},
+		Lanes: []kpi.RedPRLaneRow{
+			{
+				ReportGroupID:        "rg-3prs",
+				Repository:           "mattermost/mattermost",
+				App:                  "mattermost",
+				Lane:                 "playwright-full",
+				GHPRNumber:           701,
+				CommitSHA:            "1234567890ab",
+				CreatedAt:            now.Add(-2 * time.Hour),
+				AgeSeconds:           7200,
+				Settled:              false,
+				StillRed:             true,
+				FailingOnMain:        false,
+				OtherPRsCount:        3,
+				FailedSignatureCount: 1,
+				TestsFailed:          2,
+				Reason:               kpi.ReasonFailingElsewhere,
+				RunURL:               "/reports/mattermost/pr-701/1234567/playwright-full",
+			},
+			{
+				ReportGroupID:        "rg-2prs",
+				Repository:           "mattermost/mattermost",
+				App:                  "mattermost",
+				Lane:                 "playwright-full",
+				GHPRNumber:           702,
+				CommitSHA:            "abcdef012345",
+				CreatedAt:            now.Add(-4 * time.Hour),
+				AgeSeconds:           14400,
+				Settled:              false,
+				StillRed:             true,
+				FailingOnMain:        false,
+				OtherPRsCount:        2,
+				FailedSignatureCount: 1,
+				TestsFailed:          1,
+				Reason:               kpi.ReasonOther,
+				RunURL:               "/reports/mattermost/pr-702/abcdef0/playwright-full",
+			},
+		},
+	}
+	prHTML, err := RenderKPIPRs(BuildKPIPRsPage(SiteInfo{}, kpi.FilterOptions{}, prResp, now))
+	if err != nil {
+		t.Fatalf("RenderKPIPRs zero-settled: %v", err)
+	}
+	prStr := string(prHTML)
+	for _, want := range []string{
+		`N/A`,
+		`No data — no settled (&gt;24h) red PR lanes in this window`,
+		`E2E red`,
+		`Failing on 3 other PRs`,
+		`Seen on 2 other PR(s)`,
+		`Also failing elsewhere`,
+		`Other`,
+	} {
+		if !strings.Contains(prStr, want) {
+			t.Fatalf("PRs zero-settled missing %q", want)
+		}
+	}
+	if strings.Contains(strings.ToLower(prStr), "blocked") {
+		t.Fatal("PRs page must NEVER contain 'blocked'")
 	}
 }
 
@@ -558,7 +693,7 @@ func TestKPIHandlers_ValidationAndNilStore(t *testing.T) {
 		}
 	}
 
-	// Non-nil KPI store with nil pool still returns 503; let's test ParseKPIPRsParams validation directly.
+	// Non-nil KPI store with nil pool still returns 503; let's test ParsePRsRedParams validation directly.
 	now := time.Date(2026, 11, 26, 15, 0, 0, 0, time.UTC)
 	for _, bad := range []url.Values{
 		{"window": {"5d"}},
@@ -567,7 +702,7 @@ func TestKPIHandlers_ValidationAndNilStore(t *testing.T) {
 		{"page": {"0"}},
 		{"page": {"abc"}},
 	} {
-		if _, err := ParseKPIPRsParams(bad, now); err == nil {
+		if _, err := kpi.ParsePRsRedParams(bad, now); err == nil {
 			t.Fatalf("expected error for %v", bad)
 		}
 	}

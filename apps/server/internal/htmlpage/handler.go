@@ -367,7 +367,7 @@ func (h *Handler) ServeKPIPRs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.KPI.NowTime()
-	params, err := ParseKPIPRsParams(r.URL.Query(), now)
+	params, err := kpi.ParsePRsRedParams(r.URL.Query(), now)
 	if err != nil {
 		if errors.Is(err, kpi.ErrValidation) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -385,17 +385,16 @@ func (h *Handler) ServeKPIPRs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Phase B hook: replace with h.KPI.QueryPRsRed(r.Context(), params) after SEC-11509 rebase.
-	prInput := KPIPRsInput{
-		Filters:           params,
-		WindowDays:        params.WindowDays,
-		SettledAfterHours: 24,
-		IsLowerBound:      true,
-		RateQualifier:     "at least",
-		Pagination:        kpi.Pagination{Page: params.Page, Limit: params.Limit},
+	prResp, err := h.KPI.QueryPRsRed(r.Context(), params)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi prs failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to load pr e2e metrics", http.StatusInternalServerError)
+		return
 	}
 
-	page := BuildKPIPRsPage(h.Site, opts, prInput, now)
+	page := BuildKPIPRsPage(h.Site, opts, prResp, now)
 	html, err := RenderKPIPRs(page)
 	if err != nil {
 		if h.Logger != nil {

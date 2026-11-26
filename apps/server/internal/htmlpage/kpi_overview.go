@@ -1,34 +1,12 @@
 package htmlpage
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 )
-
-type kpiPRFalseRedMixData struct {
-	WentGreenOnRerun int `json:"went_green_on_rerun"`
-	FailingElsewhere int `json:"failing_elsewhere"`
-	Other            int `json:"other"`
-	Total            int `json:"total"`
-}
-
-type kpiPRFalseRedData struct {
-	IsLowerBound         bool                 `json:"is_lower_bound"`
-	RateQualifier        string               `json:"rate_qualifier"`
-	SettledAfterHours    int                  `json:"settled_after_hours"`
-	FalseRedRate         *float64             `json:"false_red_rate"`
-	PriorFalseRedRate    *float64             `json:"prior_false_red_rate"`
-	DeltaPP              *float64             `json:"delta_pp"`
-	SettledRedLanes      int                  `json:"settled_red_lanes"`
-	SettledFalseRedLanes int                  `json:"settled_false_red_lanes"`
-	UnsettledRedLanes    int                  `json:"unsettled_red_lanes"`
-	ReasonMix            kpiPRFalseRedMixData `json:"reason_mix"`
-	LaneCoverage         kpi.LaneCoverage     `json:"lane_coverage"`
-}
 
 // KPIMainPassCard holds KPI 1 card data.
 type KPIMainPassCard struct {
@@ -371,7 +349,7 @@ func BuildKPIOverviewPage(
 	}
 }
 
-func buildPRFalseRedCard(raw any, prsHref string) KPIPRFalseRedCard {
+func buildPRFalseRedCard(pr *kpi.PRFalseRedSummary, prsHref string) KPIPRFalseRedCard {
 	card := KPIPRFalseRedCard{
 		HeadlineRate: kpiNotAvailable,
 		Delta:        kpiNotAvailable,
@@ -379,7 +357,6 @@ func buildPRFalseRedCard(raw any, prsHref string) KPIPRFalseRedCard {
 		SettledNote:  "No data — settled (>24h) red PR lanes; new-commit fixes excluded.",
 		PRsHref:      prsHref,
 	}
-	pr := decodePRFalseRedSummary(raw)
 	if pr == nil {
 		return card
 	}
@@ -408,21 +385,6 @@ func buildPRFalseRedCard(raw any, prsHref string) KPIPRFalseRedCard {
 		card.SettledNote = fmt.Sprintf("No settled (>%dh) red PR lanes in window; new-commit fixes excluded.", settledHours)
 	}
 	return card
-}
-
-func decodePRFalseRedSummary(raw any) *kpiPRFalseRedData {
-	if raw == nil {
-		return nil
-	}
-	b, err := json.Marshal(raw)
-	if err != nil {
-		return nil
-	}
-	var out kpiPRFalseRedData
-	if err := json.Unmarshal(b, &out); err != nil {
-		return nil
-	}
-	return &out
 }
 
 func buildTriageSection(ts *kpi.TriageSummary) KPITriageSection {
@@ -465,7 +427,17 @@ func buildTriageSection(ts *kpi.TriageSummary) KPITriageSection {
 }
 
 func buildWeeklyTrendData(series []kpi.WeeklyPoint) (bars []KPIChartBar, chartWidth int, rows []KPIWeeklyRow) {
-	if len(series) == 0 {
+	hasActivity := false
+	for _, pt := range series {
+		if pt.MainTestPassRate != nil || pt.MainLanePassRate != nil || pt.PRFalseRedRate != nil ||
+			pt.MainTestsTotal > 0 || pt.MainLanesTotal > 0 || pt.FlakyTestCount > 0 ||
+			pt.E2ESampleCount > 0 || pt.E2EP50Ms != nil || pt.TriageCoverageRate != nil ||
+			(pt.RecurringFailuresCount != nil && *pt.RecurringFailuresCount > 0) {
+			hasActivity = true
+			break
+		}
+	}
+	if !hasActivity {
 		return nil, 0, nil
 	}
 	const (

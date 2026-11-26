@@ -293,7 +293,7 @@ func Build(d Deps) chi.Router {
 		htmlH := &htmlpage.Handler{
 			Pool: d.Pool,
 			Orch: d.OrchestrationStore,
-			KPI:  &kpi.Store{Pool: d.Pool},
+			KPI:  &kpi.Store{Pool: d.Pool, E2ELanes: d.KPIE2ELanes},
 			Site: htmlpage.SiteInfo{
 				ServerVersion:      d.Version,
 				CommitSHA:          d.CommitSHA,

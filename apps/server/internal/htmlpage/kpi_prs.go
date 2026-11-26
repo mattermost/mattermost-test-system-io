@@ -2,121 +2,18 @@ package htmlpage
 
 import (
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 )
 
-// PR E2E sort & attribution literals aligned with SEC-11509 (internal/kpi/types.go).
-const (
-	kpiPRSortCreatedDesc = "created_desc"
-	kpiPRSortAgeDesc     = "age_desc"
-	kpiPRSortPRDesc      = "pr_desc"
-	kpiPRSortLaneAsc     = "lane_asc"
-	kpiPRSortReasonAsc   = "reason_asc"
-
-	kpiReasonWentGreenOnRerun = "went_green_on_rerun"
-	kpiReasonFailingElsewhere = "failing_elsewhere"
-	kpiReasonOther            = "other"
-)
-
 var kpiPRSortOptions = []KPIFilterOption{
-	{Value: kpiPRSortCreatedDesc, Label: "Newest first"},
-	{Value: kpiPRSortAgeDesc, Label: "Oldest first"},
-	{Value: kpiPRSortPRDesc, Label: "PR # high to low"},
-	{Value: kpiPRSortLaneAsc, Label: "Lane A–Z"},
-	{Value: kpiPRSortReasonAsc, Label: "Reason"},
-}
-
-// ParseKPIPRsParams validates query parameters for GET /kpi/prs matching SEC-11509 ParsePRsRedParams.
-func ParseKPIPRsParams(q url.Values, now time.Time) (kpi.FilterParams, error) {
-	sortBy := strings.TrimSpace(q.Get("sort"))
-	if sortBy == "" {
-		sortBy = kpiPRSortCreatedDesc
-	}
-	switch sortBy {
-	case kpiPRSortCreatedDesc, kpiPRSortAgeDesc, kpiPRSortPRDesc, kpiPRSortLaneAsc, kpiPRSortReasonAsc:
-	default:
-		return kpi.FilterParams{}, fmt.Errorf("%w: invalid sort %q", kpi.ErrValidation, sortBy)
-	}
-
-	cleanQ := make(url.Values, len(q))
-	for k, v := range q {
-		cleanQ[k] = v
-	}
-	cleanQ.Del("sort")
-	p, err := kpi.ParseSummaryParams(cleanQ, now)
-	if err != nil {
-		return kpi.FilterParams{}, err
-	}
-	p.Sort = sortBy
-	return p, nil
-}
-
-// KPIPRReasonMixInput mirrors SEC-11509 PRFalseRedReasonMix.
-type KPIPRReasonMixInput struct {
-	WentGreenOnRerun int
-	FailingElsewhere int
-	Other            int
-	Total            int
-}
-
-// KPIConfiguredLane mirrors SEC-11509 ConfiguredE2ELane.
-type KPIConfiguredLane struct {
-	Repository string
-	Lane       string
-}
-
-// KPIRedLaneInput mirrors SEC-11509 RedPRLaneRow (no author names).
-type KPIRedLaneInput struct {
-	ReportGroupID                 string
-	Repository                    string
-	App                           string
-	Lane                          string
-	Branch                        string
-	GHPRNumber                    int
-	CommitSHA                     string
-	GHRunID                       string
-	GHRunAttempt                  string
-	Platform                      *string
-	Framework                     string
-	HasOrchestration              bool
-	OrchStatus                    *string
-	CreatedAt                     time.Time
-	AgeSeconds                    int64
-	Settled                       bool
-	StillRed                      bool
-	WentGreenOnRerun              bool
-	FailingOnMain                 bool
-	OtherPRsCount                 int
-	AllSignaturesFailingElsewhere bool
-	FailedSignatureCount          int
-	TestsFailed                   int
-	Reason                        string
-	RunURL                        string
-}
-
-// KPIPRsInput mirrors SEC-11509 PRRedResponse for Phase A/B compatibility.
-type KPIPRsInput struct {
-	Filters              kpi.FilterParams
-	WindowDays           int
-	SettledAfterHours    int
-	IsLowerBound         bool
-	RateQualifier        string
-	FalseRedRate         *float64
-	PriorFalseRedRate    *float64
-	DeltaPP              *float64
-	SettledRedLanes      int
-	SettledFalseRedLanes int
-	UnsettledRedLanes    int
-	StillRedLanes        int
-	ReasonMix            KPIPRReasonMixInput
-	ConfiguredE2ELanes   []KPIConfiguredLane
-	LaneCoverage         kpi.LaneCoverage
-	Pagination           kpi.Pagination
-	Lanes                []KPIRedLaneInput
+	{Value: kpi.SortCreatedDesc, Label: "Newest first"},
+	{Value: kpi.SortAgeDesc, Label: "Oldest first"},
+	{Value: kpi.SortPRDesc, Label: "PR # high to low"},
+	{Value: kpi.SortLaneAsc, Label: "Lane A–Z"},
+	{Value: kpi.SortReasonAsc, Label: "Reason"},
 }
 
 // KPIReasonMixSegment represents one reason category in the reason mix bar.
@@ -174,7 +71,7 @@ type KPIPRsPage struct {
 	SettledNote          string
 	ReasonMixTotal       int
 	ReasonMix            []KPIReasonMixSegment
-	ConfiguredLanes      []KPIConfiguredLane
+	ConfiguredLanes      []kpi.ConfiguredE2ELane
 	CoverageSummary      string
 	CoverageNotes        []string
 	HasLanes             bool
@@ -186,14 +83,14 @@ type KPIPRsPage struct {
 	ShowEnd              int
 }
 
-// BuildKPIPRsPage maps KPIPRsInput into KPIPRsPage.
+// BuildKPIPRsPage maps kpi.PRRedResponse into KPIPRsPage.
 func BuildKPIPRsPage(
 	site SiteInfo,
 	opts kpi.FilterOptions,
-	data KPIPRsInput,
+	data kpi.PRRedResponse,
 	now time.Time,
 ) KPIPRsPage {
-	filterBar := buildKPIFilterBar(data.Filters, opts, "/kpi/prs", kpiPRSortCreatedDesc, kpiPRSortOptions)
+	filterBar := buildKPIFilterBar(data.Filters, opts, "/kpi/prs", kpi.SortCreatedDesc, kpiPRSortOptions)
 	overviewHref := kpiHref("/kpi", filterBar.State, 1, "", false)
 	prsHref := kpiHref("/kpi/prs", filterBar.State, 1, "", false)
 
@@ -223,9 +120,9 @@ func BuildKPIPRsPage(
 		reasonTotal = data.ReasonMix.WentGreenOnRerun + data.ReasonMix.FailingElsewhere + data.ReasonMix.Other
 	}
 	reasonSegments := []KPIReasonMixSegment{
-		buildReasonSegment(kpiReasonWentGreenOnRerun, "Went green on rerun", data.ReasonMix.WentGreenOnRerun, reasonTotal, "kpi-mix-rerun"),
-		buildReasonSegment(kpiReasonFailingElsewhere, "Also failing elsewhere", data.ReasonMix.FailingElsewhere, reasonTotal, "kpi-mix-elsewhere"),
-		buildReasonSegment(kpiReasonOther, "Other", data.ReasonMix.Other, reasonTotal, "kpi-mix-other"),
+		buildReasonSegment(kpi.ReasonWentGreenOnRerun, "Went green on rerun", data.ReasonMix.WentGreenOnRerun, reasonTotal, "kpi-mix-rerun"),
+		buildReasonSegment(kpi.ReasonFailingElsewhere, "Also failing elsewhere", data.ReasonMix.FailingElsewhere, reasonTotal, "kpi-mix-elsewhere"),
+		buildReasonSegment(kpi.ReasonOther, "Other", data.ReasonMix.Other, reasonTotal, "kpi-mix-other"),
 	}
 
 	rows := make([]KPIRedPRRow, 0, len(data.Lanes))
@@ -308,7 +205,7 @@ func BuildKPIPRsPage(
 		SettledNote:          settledNote,
 		ReasonMixTotal:       reasonTotal,
 		ReasonMix:            reasonSegments,
-		ConfiguredLanes:      append([]KPIConfiguredLane(nil), data.ConfiguredE2ELanes...),
+		ConfiguredLanes:      append([]kpi.ConfiguredE2ELane(nil), data.ConfiguredE2ELanes...),
 		CoverageSummary:      formatLaneCoverageSummary(data.LaneCoverage),
 		CoverageNotes:        append([]string(nil), data.LaneCoverage.Notes...),
 		HasLanes:             len(rows) > 0,
@@ -343,9 +240,9 @@ func buildReasonSegment(key, label string, count, total int, colorClass string) 
 
 func mapPRReasonBadge(reason string) (label, cssClass string) {
 	switch reason {
-	case kpiReasonWentGreenOnRerun:
+	case kpi.ReasonWentGreenOnRerun:
 		return "Went green on rerun", "kpi-badge kpi-reason-rerun"
-	case kpiReasonFailingElsewhere:
+	case kpi.ReasonFailingElsewhere:
 		return "Also failing elsewhere", "kpi-badge kpi-reason-elsewhere"
 	default:
 		return "Other", "kpi-badge kpi-reason-other"

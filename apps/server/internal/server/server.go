@@ -21,6 +21,7 @@ import (
 	apimw "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/middleware"
 	orchapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	verdictsapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/verdicts"
 	wsapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/ws"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/apikey"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/auth/oauth"
@@ -32,6 +33,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/verdicts"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/webui"
 )
 
@@ -132,6 +134,11 @@ func Build(d Deps) chi.Router {
 		StatusRule:       statusRule,
 	}
 	artifactsH := &artifactapi.Handlers{Pool: d.Pool, Store: d.Store, PresignTTL: d.PresignTTL}
+	verdictsH := &verdictsapi.Handlers{
+		Store:     &verdicts.Store{Pool: d.Pool},
+		Logger:    d.Logger,
+		AuthzMode: authzMode,
+	}
 	wsH := &wsapi.Handler{Hub: d.Hub}
 	authH := &authapi.Handlers{
 		Flow:              d.OAuth,
@@ -198,6 +205,9 @@ func Build(d Deps) chi.Router {
 		r.Get("/reports/{id}/search", reportsH.Search)
 		r.Post("/reports/history", reportsH.History)
 
+		// --- Public: AI triage verdict lookup ---
+		r.Get("/verdicts/by-signature/{fingerprint}", verdictsH.BySignature)
+
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
 
@@ -235,6 +245,7 @@ func Build(d Deps) chi.Router {
 			r.Delete("/reports/{id}", reportsH.Delete)
 
 			r.Get("/artifacts/{id}", artifactsH.Get)
+			r.Post("/verdicts", verdictsH.Create)
 
 			// Test shard orchestration.
 			orchH := &orchapi.Handlers{

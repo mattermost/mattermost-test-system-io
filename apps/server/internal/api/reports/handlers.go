@@ -523,10 +523,12 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT tc.id, tc.suite_id, tc.title, tc.full_title, tc.status, tc.retry_count, tc.duration_ms,
-		       tc.error_message, tc.error_stack, tc.project, tc.tags, tc.annotations, tc.ordinal
+		       tc.error_message, tc.error_stack, tc.project, tc.tags, tc.annotations, tc.ordinal,
+		       tc.test_id, tc.signature_id, fs.fingerprint
 		FROM test_cases tc
 		JOIN suites s ON s.id = tc.suite_id
 		JOIN reports r ON r.id = s.report_id
+		LEFT JOIN failure_signatures fs ON fs.id = tc.signature_id
 		WHERE r.report_group_id = $1 AND ($2::text IS NULL OR tc.status = $2::text)
 		ORDER BY s.ordinal, tc.ordinal
 	`, id, sf)
@@ -542,9 +544,10 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 		var title, fullTitle, status string
 		var retry, ordinal int
 		var dur *int64
-		var em, es, project *string
+		var em, es, project, sigFP *string
+		var testID, sigID *uuid.UUID
 		var tagsRaw, annotations []byte
-		if err := rows.Scan(&cid, &sid, &title, &fullTitle, &status, &retry, &dur, &em, &es, &project, &tagsRaw, &annotations, &ordinal); err != nil {
+		if err := rows.Scan(&cid, &sid, &title, &fullTitle, &status, &retry, &dur, &em, &es, &project, &tagsRaw, &annotations, &ordinal, &testID, &sigID, &sigFP); err != nil {
 			api.WriteError(w, r, err)
 			return
 		}
@@ -566,16 +569,19 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 			"title":    title,
 			// The ancestor-prefixed path. Two suites in one file can carry the same
 			// leaf title, and a caller keyed on the leaf alone treats them as one test.
-			"full_title":    fullTitle,
-			"status":        status,
-			"retry_count":   retry,
-			"duration_ms":   dur,
-			"error_message": em,
-			"error_stack":   es,
-			"project":       project,
-			"tags":          tags,
-			"annotations":   ann,
-			"ordinal":       ordinal,
+			"full_title":            fullTitle,
+			"status":                status,
+			"retry_count":           retry,
+			"duration_ms":           dur,
+			"error_message":         em,
+			"error_stack":           es,
+			"project":               project,
+			"tags":                  tags,
+			"annotations":           ann,
+			"ordinal":               ordinal,
+			"test_id":               testID,
+			"signature_id":          sigID,
+			"signature_fingerprint": sigFP,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

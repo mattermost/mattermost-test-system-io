@@ -48,6 +48,14 @@ func TestMigration000033_UpDownAndNoTestCasesIndex(t *testing.T) {
 	}
 	rows.Close()
 
+	down35SQL, err := migrations.FS.ReadFile("000035_verdicts.down.sql")
+	if err != nil {
+		t.Fatalf("read 000035 down migration: %v", err)
+	}
+	up35SQL, err := migrations.FS.ReadFile("000035_verdicts.up.sql")
+	if err != nil {
+		t.Fatalf("read 000035 up migration: %v", err)
+	}
 	down34SQL, err := migrations.FS.ReadFile("000034_validate_test_cases_fks.down.sql")
 	if err != nil {
 		t.Fatalf("read 000034 down migration: %v", err)
@@ -65,6 +73,9 @@ func TestMigration000033_UpDownAndNoTestCasesIndex(t *testing.T) {
 		t.Fatalf("read up migration: %v", err)
 	}
 
+	if _, err := env.Pool.Exec(ctx, string(down35SQL)); err != nil {
+		t.Fatalf("exec 000035 down migration: %v", err)
+	}
 	if _, err := env.Pool.Exec(ctx, string(down34SQL)); err != nil {
 		t.Fatalf("exec 000034 down migration: %v", err)
 	}
@@ -85,6 +96,9 @@ func TestMigration000033_UpDownAndNoTestCasesIndex(t *testing.T) {
 	}
 	if _, err := env.Pool.Exec(ctx, string(up34SQL)); err != nil {
 		t.Fatalf("re-exec 000034 up migration: %v", err)
+	}
+	if _, err := env.Pool.Exec(ctx, string(up35SQL)); err != nil {
+		t.Fatalf("re-exec 000035 up migration: %v", err)
 	}
 	if err := env.Pool.QueryRow(ctx, `SELECT to_regclass('public.tests'), to_regclass('public.failure_signatures')`).Scan(&testsReg, &sigsReg); err != nil {
 		t.Fatalf("check recreated tables: %v", err)

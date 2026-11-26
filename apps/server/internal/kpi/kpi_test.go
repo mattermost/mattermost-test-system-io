@@ -801,3 +801,83 @@ func TestPaginationOverflowValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowBoundsAndZeroDenominatorGuards(t *testing.T) {
+	now := time.Date(2026, 11, 26, 23, 59, 59, 0, time.UTC)
+
+	for _, tc := range []struct {
+		window string
+		days   int
+	}{
+		{Window7d, 7},
+		{Window14d, 14},
+		{Window30d, 30},
+		{Window90d, 90},
+	} {
+		t.Run("window_"+tc.window, func(t *testing.T) {
+			gotDays, ok := WindowDays(tc.window)
+			if !ok || gotDays != tc.days {
+				t.Fatalf("WindowDays(%q) = (%d, %v), want (%d, true)", tc.window, gotDays, ok, tc.days)
+			}
+			curFrom, curTo, priorFrom, priorTo := WindowBounds(now, tc.days)
+			curSpan := int(curTo.Sub(curFrom).Hours()/24) + 1
+			priorSpan := int(priorTo.Sub(priorFrom).Hours()/24) + 1
+			if curSpan != tc.days || priorSpan != tc.days {
+				t.Fatalf("%s spans = (%d, %d), want (%d, %d)", tc.window, curSpan, priorSpan, tc.days, tc.days)
+			}
+			if !priorTo.AddDate(0, 0, 1).Equal(curFrom) {
+				t.Fatalf("%s priorTo+1d (%s) != curFrom (%s)", tc.window, priorTo.AddDate(0, 0, 1), curFrom)
+			}
+		})
+	}
+
+	if got := pctPtr(0, 0); got != nil {
+		t.Fatalf("pctPtr(0, 0) = %v, want nil", *got)
+	}
+	if got := pctPtr(5, 0); got != nil {
+		t.Fatalf("pctPtr(5, 0) = %v, want nil", *got)
+	}
+	if got := pctPtr(1, -2); got != nil {
+		t.Fatalf("pctPtr(1, -2) = %v, want nil", *got)
+	}
+	if got := pctPtr(3, 4); got == nil || *got != 75.0 {
+		t.Fatalf("pctPtr(3, 4) = %v, want 75.0", got)
+	}
+
+	// All-in-progress runs yield completion denominator = 0 -> CompletionRate must be nil.
+	allInProg := buildTriageSummary(dailyTriageAgg{
+		totalRuns:      4,
+		inProgressRuns: 4,
+	}, timedOutSplit{}, map[string]int{})
+	if allInProg.RunCompletion.CompletionRate != nil {
+		t.Fatalf("expected nil completion rate when all runs are in_progress, got %v", *allInProg.RunCompletion.CompletionRate)
+	}
+	if allInProg.RunCoverageRate != nil || allInProg.TestCoverageRate != nil || allInProg.VerdictReuseRate != nil {
+		t.Fatalf("expected nil triage rates on zero denominators, got %+v", allInProg)
+	}
+}
+
+func TestNilPoolAndStoreGuards(t *testing.T) {
+	ctx := t.Context()
+	p := FilterParams{Window: Window30d, WindowDays: 30, Page: 1, Limit: 50}
+	for _, store := range []*Store{nil, {}} {
+		if _, err := store.QuerySummary(ctx, p); err == nil {
+			t.Fatal("QuerySummary with nil store/pool should fail")
+		}
+		if _, err := store.QueryFlaky(ctx, p); err == nil {
+			t.Fatal("QueryFlaky with nil store/pool should fail")
+		}
+		if _, err := store.QueryPRsRed(ctx, p); err == nil {
+			t.Fatal("QueryPRsRed with nil store/pool should fail")
+		}
+		if _, err := store.QueryFailures(ctx, p); err == nil {
+			t.Fatal("QueryFailures with nil store/pool should fail")
+		}
+		if _, err := store.QueryFailureDetail(ctx, uuid.New(), p); err == nil {
+			t.Fatal("QueryFailureDetail with nil store/pool should fail")
+		}
+		if _, err := store.QueryTestState(ctx, uuid.New(), p); err == nil {
+			t.Fatal("QueryTestState with nil store/pool should fail")
+		}
+	}
+}

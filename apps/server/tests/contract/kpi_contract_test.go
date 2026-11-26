@@ -67,6 +67,14 @@ func TestKPIContract(t *testing.T) {
 	`, now.Add(-2*time.Hour)).Scan(&sigID); err != nil {
 		t.Fatalf("insert failure_signature: %v", err)
 	}
+	var mergedOldSigID uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO failure_signatures (fingerprint, algo_version, error_class, normalized_message, top_frame, sample_message, first_seen_at, merged_into_id)
+		VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 1, 'TimeoutError', 'old locator timeout', 'e2e/login.spec.ts:10', 'TimeoutError: old locator timeout', $1, $2)
+		RETURNING id
+	`, now.Add(-48*time.Hour), sigID).Scan(&mergedOldSigID); err != nil {
+		t.Fatalf("insert merged failure_signature: %v", err)
+	}
 
 	seedGroup := func(stage, lane, sha, runID, attempt string, prNum *int, durMs *int64, createdAt time.Time, statuses []string, withOrch bool) uuid.UUID {
 		var gid, rid, sid uuid.UUID
@@ -155,9 +163,14 @@ func TestKPIContract(t *testing.T) {
 	if summary.E2EDuration.P90Ms == nil || *summary.E2EDuration.P90Ms != 12345 {
 		t.Fatalf("e2e_duration.p90_ms = %v, want 12345", summary.E2EDuration.P90Ms)
 	}
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/summary?app=mattermost&window=7d", "", nil, nil, http.StatusOK, true)
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/summary?app=mattermost&window=90d", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/flaky?app=mattermost&window=14d&sort=flake_rate_desc&page=1&limit=10", "", nil, nil, http.StatusOK, true)
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/flaky?app=mattermost&platform=ios&window=14d", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/prs/red?app=mattermost&window=30d&sort=created_desc&page=1&limit=10", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures?app=mattermost&window=30d&sort=rate_desc&page=1&limit=10", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures/"+sigID.String()+"?app=mattermost&window=30d", "", nil, nil, http.StatusOK, true)
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures/"+mergedOldSigID.String()+"?app=mattermost&window=30d", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/tests/"+testID.String()+"/state?app=mattermost&window=30d", "", nil, nil, http.StatusOK, true)
+	exchange(t, c, http.MethodGet, "/api/v1/tests/"+testID.String()+"/state?app=mattermost&window=7d", "", nil, nil, http.StatusOK, true)
 }

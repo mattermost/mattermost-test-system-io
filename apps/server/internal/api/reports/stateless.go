@@ -445,7 +445,14 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 			return
 		}
 	}
-	defer func() { <-finalizeSlots }()
+	slotTaken := true
+	releaseSlot := func() {
+		if slotTaken {
+			slotTaken = false
+			<-finalizeSlots
+		}
+	}
+	defer releaseSlot()
 	unlock, ok := h.lockShard(ctx, reportID, wait)
 	if !ok {
 		if wait {
@@ -453,7 +460,14 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 		}
 		return
 	}
-	defer unlock()
+	shardLocked := true
+	releaseShard := func() {
+		if shardLocked {
+			shardLocked = false
+			unlock()
+		}
+	}
+	defer releaseShard()
 
 	// Fire suites_available if anything parsed; ReportEntryUpdated("processing")
 	// even on zero-suite JSON so the UI's status icon still ticks forward.
@@ -477,6 +491,8 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 				slog.String("report_id", reportID.String()),
 				slog.String("error", extractErr.Error()))
 		}
+		releaseShard()
+		releaseSlot()
 		h.resultsNotRead(groupID, reportID, extractErr.Error())
 		return
 	}
@@ -486,6 +502,10 @@ func (h *Handlers) finalizeResults(parent context.Context, groupID, reportID uui
 	if suiteCount > 0 {
 		h.Publisher.SuitesAvailable(reportID, suiteCount)
 	}
+	// Release the per-shard lock and finalization slot before refreshing group/KPI projections
+	// so reaper retries of a newly-completed/reset shard are never skipped due to projection latency.
+	releaseShard()
+	releaseSlot()
 	h.refreshGroupSummaryBestEffort(ctx, groupID)
 }
 

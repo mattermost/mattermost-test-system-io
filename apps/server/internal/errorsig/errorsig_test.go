@@ -729,3 +729,102 @@ func TestEdgeCaseRegressions(t *testing.T) {
 		}
 	})
 }
+
+func TestFallbackSignaturesAllFrameworksAndWhitespace(t *testing.T) {
+	t.Parallel()
+
+	if AlgoVersion != 2 {
+		t.Fatalf("AlgoVersion = %d, want 2", AlgoVersion)
+	}
+
+	cases := []struct {
+		name      string
+		in        Input
+		wantFB    string
+		wantNorm  string
+		wantClass string
+	}{
+		{
+			name:     "spec_did_not_run_case_and_ansi",
+			in:       Input{Framework: "playwright", Status: "failed", ErrorMessage: "\x1b[31m  SPEC-DID-NOT-RUN \x1b[0m\n"},
+			wantFB:   "spec-did-not-run",
+			wantNorm: "spec-did-not-run",
+		},
+		{
+			name:     "interrupted_empty_message",
+			in:       Input{Framework: "detox", Status: "interrupted", ErrorMessage: "\n────\n   "},
+			wantFB:   "interrupted",
+			wantNorm: "interrupted",
+		},
+		{
+			name:     "timeout_timedOut_status",
+			in:       Input{Framework: "playwright", Status: "timedOut"},
+			wantFB:   "timeout",
+			wantNorm: "timeout",
+		},
+		{
+			name:     "timeout_lowercase_status",
+			in:       Input{Framework: "cypress", Status: "timeout"},
+			wantFB:   "timeout",
+			wantNorm: "timeout",
+		},
+		{
+			name:     "no_error_playwright",
+			in:       Input{Framework: "playwright", Status: "failed", ErrorMessage: "   \n=====\n"},
+			wantFB:   "no-error:unknown:playwright",
+			wantNorm: "no-error:unknown:playwright",
+		},
+		{
+			name:     "no_error_cypress",
+			in:       Input{Framework: "cypress", Status: "failed"},
+			wantFB:   "no-error:unknown:cypress",
+			wantNorm: "no-error:unknown:cypress",
+		},
+		{
+			name:     "no_error_detox_mixed_case",
+			in:       Input{Framework: " Detox ", Status: "failed"},
+			wantFB:   "no-error:unknown:detox",
+			wantNorm: "no-error:unknown:detox",
+		},
+		{
+			name:     "no_error_maestro",
+			in:       Input{Framework: "maestro", Status: "failed"},
+			wantFB:   "no-error:unknown:maestro",
+			wantNorm: "no-error:unknown:maestro",
+		},
+		{
+			name:     "no_error_empty_framework",
+			in:       Input{Framework: "", Status: "failed"},
+			wantFB:   "no-error:unknown:unknown",
+			wantNorm: "no-error:unknown:unknown",
+		},
+	}
+
+	seenFPs := map[string]string{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sig := Compute(tc.in)
+			if sig.AlgoVersion != AlgoVersion {
+				t.Fatalf("AlgoVersion = %d, want %d", sig.AlgoVersion, AlgoVersion)
+			}
+			if sig.Fallback != tc.wantFB {
+				t.Fatalf("Fallback = %q, want %q", sig.Fallback, tc.wantFB)
+			}
+			if sig.NormalizedMessage != tc.wantNorm {
+				t.Fatalf("NormalizedMessage = %q, want %q", sig.NormalizedMessage, tc.wantNorm)
+			}
+			if sig.ErrorClass != tc.wantClass {
+				t.Fatalf("ErrorClass = %q, want %q", sig.ErrorClass, tc.wantClass)
+			}
+			if len(sig.Fingerprint) != 64 {
+				t.Fatalf("Fingerprint len = %d, want 64", len(sig.Fingerprint))
+			}
+		})
+		sig := Compute(tc.in)
+		if prev, dup := seenFPs[sig.Fingerprint]; dup && tc.wantFB != "timeout" {
+			t.Fatalf("fingerprint collision between %s and %s: %s", prev, tc.name, sig.Fingerprint)
+		}
+		seenFPs[sig.Fingerprint] = tc.name
+	}
+}

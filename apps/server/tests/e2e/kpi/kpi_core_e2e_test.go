@@ -1542,6 +1542,154 @@ func TestKPI_RecurringFailuresStatesLineageTrendRateAndVerdictRedaction(t *testi
 	}
 }
 
+func TestKPI_RecurringFailuresCrossScopeFirstSeenAndLassoCycle(t *testing.T) {
+	env := testenv.Start(t, testenv.WithReaperDisabled())
+	ctx := t.Context()
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.UTC)
+
+	tCross := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:rf-cross", "RF > cross scope")
+	tLasso := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:rf-lasso", "RF > lasso cycle")
+
+	// 1. Cross-scope first_seen_at regression:
+	//    sCross occurred on stage='main' at -25d (global first_seen_at = -25d).
+	//    On stage='pr', tCross had 600 passing runs at -20d and sCross occurred for the
+	//    very first time on stage='pr' at -1d.
+	//    Querying ?stage=pr must classify sCross as Active (not Resurfaced) on both /failures and /failures/{id}.
+	var sCross uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO failure_signatures (
+			fingerprint, algo_version, error_class, normalized_message, top_frame, sample_message, first_seen_at
+		) VALUES ($1, $2, 'TimeoutError', 'cross scope first seen', 'e2e/cross.spec.ts:10', 'TimeoutError: cross', $3)
+		RETURNING id
+	`, strings.Repeat("c", 64), errorsig.AlgoVersion, today.AddDate(0, 0, -25)).Scan(&sCross); err != nil {
+		t.Fatalf("insert sCross: %v", err)
+	}
+
+	insertMetric := func(dayOffset int, stage, lane string, sigID uuid.UUID, occ int, testID uuid.UUID) {
+		t.Helper()
+		d := today.AddDate(0, 0, dayOffset)
+		if _, err := env.Pool.Exec(ctx, `
+			INSERT INTO kpi_daily_signature_metrics (
+				metric_date, repository, app, stage, lane, platform, signature_id,
+				occurrence_count, raw_attempt_count, group_count, affected_test_ids, pr_numbers, last_seen_at
+			) VALUES ($1, 'mattermost/mattermost', 'mattermost', $2, $3, '', $4, $5, $5, 1, $6, '{}'::integer[], $7)
+		`, d, stage, lane, sigID, occ, []uuid.UUID{testID}, d.Add(time.Hour)); err != nil {
+			t.Fatalf("insert metric (%d, %s, %s): %v", dayOffset, stage, lane, err)
+		}
+	}
+	insertExec := func(dayOffset int, stage, lane string, testID uuid.UUID, runs, fails int) {
+		t.Helper()
+		d := today.AddDate(0, 0, dayOffset)
+		if _, err := env.Pool.Exec(ctx, `
+			INSERT INTO kpi_daily_test_executions (
+				metric_date, repository, app, stage, lane, platform, test_id,
+				run_count, pass_count, fail_count, flaky_count, skip_count
+			) VALUES ($1, 'mattermost/mattermost', 'mattermost', $2, $3, '', $4, $5, $6, $7, 0, 0)
+		`, d, stage, lane, testID, runs, runs-fails, fails); err != nil {
+			t.Fatalf("insert exec (%d, %s, %s): %v", dayOffset, stage, lane, err)
+		}
+	}
+
+	insertMetric(-25, "main", "e2e-cross-main", sCross, 1, tCross)
+	insertExec(-25, "main", "e2e-cross-main", tCross, 10, 1)
+	insertExec(-20, "pr", "e2e-cross-pr", tCross, 600, 0)
+	insertMetric(-1, "pr", "e2e-cross-pr", sCross, 1, tCross)
+	insertExec(-1, "pr", "e2e-cross-pr", tCross, 10, 1)
+
+	prList := getJSON[kpi.FailuresResponse](t, env.ServerURL+"/api/v1/kpi/failures?repo=mattermost/mattermost&stage=pr&window=30d")
+	if len(prList.Failures) != 1 || prList.Failures[0].SignatureID != sCross.String() {
+		t.Fatalf("prList.Failures = %+v, want 1 row for %s", prList.Failures, sCross)
+	}
+	if prList.Failures[0].State != kpi.FailureStateActive {
+		t.Fatalf("GET /kpi/failures?stage=pr state = %q, want %q", prList.Failures[0].State, kpi.FailureStateActive)
+	}
+	prDetail := getJSON[kpi.FailureDetailResponse](t, env.ServerURL+"/api/v1/kpi/failures/"+sCross.String()+"?repo=mattermost/mattermost&stage=pr&window=30d")
+	if prDetail.State != kpi.FailureStateActive {
+		t.Fatalf("GET /kpi/failures/{id}?stage=pr state = %q, want %q", prDetail.State, kpi.FailureStateActive)
+	}
+
+	// Unscoped (global across main + pr): was seen at -25d on main, had 600 runs at -20d, recurred at -1d => Resurfaced.
+	unscopedDetail := getJSON[kpi.FailureDetailResponse](t, env.ServerURL+"/api/v1/kpi/failures/"+sCross.String()+"?window=30d")
+	if unscopedDetail.State != kpi.FailureStateResurfaced {
+		t.Fatalf("unscoped GET /kpi/failures/{id} state = %q, want %q", unscopedDetail.State, kpi.FailureStateResurfaced)
+	}
+
+	// 2. Lasso cycle canonicalization regression:
+	//    L1 -> L2 -> L3 -> L2 with L1 < L2 < L3.
+	//    Minimum UUID among cycle members {L2, L3} is L2 (not L1).
+	l1 := uuid.MustParse("00000000-0000-4000-8000-000000000001")
+	l2 := uuid.MustParse("00000000-0000-4000-8000-000000000002")
+	l3 := uuid.MustParse("00000000-0000-4000-8000-000000000003")
+
+	for _, sig := range []struct {
+		id uuid.UUID
+		fp string
+	}{
+		{l1, strings.Repeat("d", 64)},
+		{l2, strings.Repeat("e", 64)},
+		{l3, strings.Repeat("f", 64)},
+	} {
+		if _, err := env.Pool.Exec(ctx, `
+			INSERT INTO failure_signatures (
+				id, fingerprint, algo_version, error_class, normalized_message, top_frame, sample_message, first_seen_at
+			) VALUES ($1, $2, $3, 'LassoError', 'lasso cycle error', 'e2e/lasso.spec.ts:1', 'LassoError', $4)
+		`, sig.id, sig.fp, errorsig.AlgoVersion, today.AddDate(0, 0, -5)); err != nil {
+			t.Fatalf("insert lasso sig %s: %v", sig.id, err)
+		}
+	}
+	for _, edge := range []struct {
+		from, to uuid.UUID
+	}{
+		{l1, l2},
+		{l2, l3},
+		{l3, l2},
+	} {
+		if _, err := env.Pool.Exec(ctx, `UPDATE failure_signatures SET merged_into_id = $1 WHERE id = $2`, edge.to, edge.from); err != nil {
+			t.Fatalf("update merged_into_id %s->%s: %v", edge.from, edge.to, err)
+		}
+	}
+
+	insertMetric(-1, "pr", "e2e-lasso", l1, 1, tLasso)
+	insertMetric(-1, "pr", "e2e-lasso", l2, 2, tLasso)
+	insertExec(-1, "pr", "e2e-lasso", tLasso, 100, 3)
+
+	lassoList := getJSON[kpi.FailuresResponse](t, env.ServerURL+"/api/v1/kpi/failures?lane=e2e-lasso&window=30d")
+	if lassoList.Summary.TotalSignatures != 1 || lassoList.Summary.TotalOccurrences != 3 || len(lassoList.Failures) != 1 {
+		t.Fatalf("lassoList summary/len = (%+v, %d), want 1 sig / 3 occ", lassoList.Summary, len(lassoList.Failures))
+	}
+	if lassoList.Failures[0].SignatureID != l2.String() || lassoList.Failures[0].OccurrenceCount != 3 || lassoList.Failures[0].AffectedTestRuns != 100 {
+		t.Fatalf("lassoList row = %+v, want sig=%s occ=3 runs=100", lassoList.Failures[0], l2)
+	}
+
+	for _, reqID := range []uuid.UUID{l1, l2, l3} {
+		d := getJSON[kpi.FailureDetailResponse](t, env.ServerURL+"/api/v1/kpi/failures/"+reqID.String()+"?lane=e2e-lasso&window=30d")
+		if d.CanonicalSignatureID != l2.String() || d.OccurrenceCount != 3 || d.AffectedTestRuns != 100 {
+			t.Fatalf("GET /kpi/failures/%s = canon:%s occ:%d runs:%d, want canon:%s occ:3 runs:100",
+				reqID, d.CanonicalSignatureID, d.OccurrenceCount, d.AffectedTestRuns, l2)
+		}
+		if len(d.MergedSignatureIDs) != 2 || d.MergedSignatureIDs[0] != l1.String() || d.MergedSignatureIDs[1] != l3.String() {
+			t.Fatalf("GET /kpi/failures/%s merged_signature_ids = %v, want [%s %s]", reqID, d.MergedSignatureIDs, l1, l3)
+		}
+	}
+
+	lassoSummary := getJSON[kpi.SummaryResponse](t, env.ServerURL+"/api/v1/kpi/summary?lane=e2e-lasso&window=30d")
+	if lassoSummary.RecurringFailures == nil ||
+		lassoSummary.RecurringFailures.TotalSignatures != 1 ||
+		lassoSummary.RecurringFailures.TotalOccurrences != 3 {
+		t.Fatalf("lassoSummary.RecurringFailures = %+v, want total_sig=1 total_occ=3", lassoSummary.RecurringFailures)
+	}
+	weeklyCountSum := 0
+	for _, wp := range lassoSummary.WeeklySeries {
+		if wp.RecurringFailuresCount != nil {
+			weeklyCountSum += *wp.RecurringFailuresCount
+		}
+	}
+	if weeklyCountSum != 1 {
+		t.Fatalf("lassoSummary weekly recurring_failures_count sum = %d, want 1", weeklyCountSum)
+	}
+}
+
 // ---- test helpers ----
 
 type groupSeed struct {

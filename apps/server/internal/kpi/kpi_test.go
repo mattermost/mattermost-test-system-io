@@ -542,3 +542,60 @@ func TestSafePageOffset(t *testing.T) {
 		t.Fatal("expected limit=0 to fail")
 	}
 }
+
+func TestHasScopeFilters(t *testing.T) {
+	if hasScopeFilters(FilterParams{Window: Window30d, Sort: SortOccurrencesDesc, Page: 1, Limit: 50}) {
+		t.Fatal("expected hasScopeFilters=false when only window/sort/pagination are set")
+	}
+	for _, tc := range []struct {
+		name string
+		f    FilterParams
+	}{
+		{"app", FilterParams{App: "mattermost"}},
+		{"repo", FilterParams{Repo: "mattermost/mattermost"}},
+		{"stage", FilterParams{Stage: "pr"}},
+		{"lane", FilterParams{Lane: "e2e-pr"}},
+		{"platform", FilterParams{Platform: "ios"}},
+	} {
+		if !hasScopeFilters(tc.f) {
+			t.Fatalf("expected hasScopeFilters=true for %s", tc.name)
+		}
+	}
+}
+
+func TestComputeWindowRates_ScopedFirstSeenBoundPreventsCrossScopeBleed(t *testing.T) {
+	today := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	todayDay := utcDayNum(today)
+	curFromDay := todayDay - 29
+
+	// First occurrence in the scoped query was at today-1, even though the test had
+	// 600 passing runs in that scope at today-20. With firstSeenBoundDay = today-1 (scoped),
+	// state must be Active, not Resurfaced.
+	acc := newSigAccum(nil)
+	acc.addMetricRow(dailySigMetricRow{
+		MetricDate:      today.AddDate(0, 0, -1),
+		OccurrenceCount: 1,
+		RawAttemptCount: 1,
+		GroupCount:      1,
+		LastSeenAt:      today.AddDate(0, 0, -1),
+	}, curFromDay, todayDay)
+
+	runsByDay := map[int64]int{
+		todayDay - 20: 600,
+		todayDay - 1:  10,
+	}
+
+	scopedBound := todayDay - 1
+	scopedRates := computeWindowRates(acc, runsByDay, curFromDay, todayDay, &scopedBound)
+	if scopedRates.state != FailureStateActive {
+		t.Fatalf("scoped state = %q, want %q", scopedRates.state, FailureStateActive)
+	}
+
+	// Conversely, if the scoped occurrence history shows an occurrence >365d ago (before historyFrom),
+	// and there were >=500 quiet runs in [-365d..-2d], state must be Resurfaced.
+	oldBound := todayDay - 400
+	resurfRates := computeWindowRates(acc, runsByDay, curFromDay, todayDay, &oldBound)
+	if resurfRates.state != FailureStateResurfaced {
+		t.Fatalf("pre-history scoped state = %q, want %q", resurfRates.state, FailureStateResurfaced)
+	}
+}

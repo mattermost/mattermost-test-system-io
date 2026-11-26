@@ -19,6 +19,21 @@ const (
 	maxSignatureMergeHops = 32
 )
 
+// canonicalRootExprSQL resolves the canonical signature UUID from a terminal sig_up row:
+// - acyclic root (merged_into_id IS NULL): cur_id
+// - cycle closed (merged_into_id = ANY(path)): minimum UUID strictly among cycle members
+// - hop-limit fallback: cur_id
+const canonicalRootExprSQL = `CASE
+	WHEN merged_into_id IS NULL THEN cur_id
+	WHEN merged_into_id = ANY(path) THEN (
+		SELECT x
+		  FROM unnest(path[array_position(path, merged_into_id):]) AS x
+		 ORDER BY x ASC
+		 LIMIT 1
+	)
+	ELSE cur_id
+END`
+
 // QueryFailures computes GET /api/v1/kpi/failures strictly from pre-aggregated rollup tables.
 func (s *Store) QueryFailures(ctx context.Context, f FilterParams) (FailuresResponse, error) {
 	if s == nil || s.Pool == nil {
@@ -121,7 +136,24 @@ func (s *Store) QueryFailureDetail(ctx context.Context, sigID uuid.UUID, f Filte
 	}
 
 	runsByDay, testWinRuns, testWinFails, repoTestWinRuns := aggregateDetailExecs(execRows, curFromDay, curToDay)
-	rates := computeWindowRates(acc, runsByDay, curFromDay, curToDay, fam.FirstSeenAt)
+	var firstSeenBoundDay *int64
+	if hasScopeFilters(f) {
+		memberToCanon := make(map[uuid.UUID]uuid.UUID, len(fam.MemberIDs))
+		for _, mid := range fam.MemberIDs {
+			memberToCanon[mid] = fam.CanonicalID
+		}
+		scopedFirst, err := s.loadScopedFirstSeenDays(ctx, memberToCanon, f.CurToDate, f)
+		if err != nil {
+			return FailureDetailResponse{}, err
+		}
+		if d, ok := scopedFirst[fam.CanonicalID]; ok {
+			firstSeenBoundDay = &d
+		}
+	} else {
+		d := utcDayNum(fam.FirstSeenAt)
+		firstSeenBoundDay = &d
+	}
+	rates := computeWindowRates(acc, runsByDay, curFromDay, curToDay, firstSeenBoundDay)
 
 	affectedTests, err := s.loadAffectedTestsMetadata(ctx, testList, testGroupCount, testWinRuns, testWinFails, testLastSeen)
 	if err != nil {
@@ -219,12 +251,19 @@ func (s *Store) queryWeeklyRecurringFailureCounts(ctx context.Context, f FilterP
 			   AND NOT (p.id = ANY(u.path))
 			   AND u.depth < `+strconv.Itoa(maxSignatureMergeHops)+`
 		),
-		sig_root AS (
+		terminal_up AS (
 			SELECT DISTINCT ON (start_id)
-			       start_id AS sig_id,
-			       cur_id AS canonical_id
+			       start_id,
+			       cur_id,
+			       merged_into_id,
+			       path
 			  FROM sig_up
-			 ORDER BY start_id, (merged_into_id IS NULL) DESC, cur_id ASC
+			 ORDER BY start_id, depth DESC
+		),
+		sig_root AS (
+			SELECT start_id AS sig_id,
+			       `+canonicalRootExprSQL+` AS canonical_id
+			  FROM terminal_up
 		),
 		weekly_distinct AS (
 			SELECT DISTINCT
@@ -403,7 +442,7 @@ func computeWindowRates(
 	acc *sigAccum,
 	runsByDay map[int64]int,
 	curFromDay, curToDay int64,
-	famFirstSeen time.Time,
+	firstSeenBoundDay *int64,
 ) windowRates {
 	trailing7dStart := curToDay - (StateWindowDays - 1)
 	trailing14dStart := curToDay - (TrendWindowDays - 1)
@@ -419,8 +458,8 @@ func computeWindowRates(
 	priorRate14d := ratePer1kPtr(acc.priorOcc14d, priorRuns14d)
 
 	firstSeenDay := acc.firstSeenDay
-	if famFirstDay := utcDayNum(famFirstSeen); acc.hasOcc && famFirstDay < firstSeenDay {
-		firstSeenDay = famFirstDay
+	if acc.hasOcc && firstSeenBoundDay != nil && *firstSeenBoundDay < firstSeenDay {
+		firstSeenDay = *firstSeenBoundDay
 	}
 	state, quietDays := computeFailureState(curToDay, acc.hasOcc, firstSeenDay, acc.occByDay, runsByDay)
 
@@ -483,6 +522,14 @@ func (s *Store) computeRecurringFailures(ctx context.Context, f FilterParams) ([
 		return nil, RecurringFailuresSummary{}, err
 	}
 
+	var scopedFirstDays map[uuid.UUID]int64
+	if hasScopeFilters(f) {
+		scopedFirstDays, err = s.loadScopedFirstSeenDays(ctx, memberToCanon, f.CurToDate, f)
+		if err != nil {
+			return nil, RecurringFailuresSummary{}, err
+		}
+	}
+
 	rows := make([]RecurringFailureRow, 0, len(accums))
 	var summary RecurringFailuresSummary
 	for cid, acc := range accums {
@@ -490,7 +537,16 @@ func (s *Store) computeRecurringFailures(ctx context.Context, f FilterParams) ([
 			continue
 		}
 		runsByDay := collectRunsForTests(acc.historyTestIDs, execByTestDay)
-		rates := computeWindowRates(acc, runsByDay, curFromDay, curToDay, acc.info.FirstSeenAt)
+		var firstSeenBoundDay *int64
+		if hasScopeFilters(f) {
+			if d, ok := scopedFirstDays[cid]; ok {
+				firstSeenBoundDay = &d
+			}
+		} else {
+			d := utcDayNum(acc.info.FirstSeenAt)
+			firstSeenBoundDay = &d
+		}
+		rates := computeWindowRates(acc, runsByDay, curFromDay, curToDay, firstSeenBoundDay)
 
 		var labelPtr *string
 		if lbl, ok := verdictLabels[cid]; ok {
@@ -731,11 +787,17 @@ func (s *Store) loadActiveCanonicalFamilies(
 			   AND NOT (p.id = ANY(u.path))
 			   AND u.depth < `+strconv.Itoa(maxSignatureMergeHops)+`
 		),
-		distinct_roots AS (
+		terminal_up AS (
 			SELECT DISTINCT ON (start_id)
-			       cur_id AS canonical_id
+			       cur_id,
+			       merged_into_id,
+			       path
 			  FROM sig_up
-			 ORDER BY start_id, (merged_into_id IS NULL) DESC, cur_id ASC
+			 ORDER BY start_id, depth DESC
+		),
+		distinct_roots AS (
+			SELECT `+canonicalRootExprSQL+` AS canonical_id
+			  FROM terminal_up
 		),
 		unique_roots AS (
 			SELECT DISTINCT canonical_id FROM distinct_roots
@@ -846,22 +908,26 @@ func (s *Store) loadSignatureFamilyByID(ctx context.Context, sigID uuid.UUID) (s
 			 WHERE id = $1
 		),
 		up AS (
-			SELECT fs.id, fs.merged_into_id, ARRAY[fs.id] AS path, 0 AS depth
+			SELECT fs.id AS cur_id, fs.merged_into_id, ARRAY[fs.id] AS path, 0 AS depth
 			  FROM failure_signatures fs
 			  JOIN seed s ON s.id = fs.id
 			UNION ALL
-			SELECT p.id, p.merged_into_id, u.path || p.id, u.depth + 1
+			SELECT p.id AS cur_id, p.merged_into_id, u.path || p.id, u.depth + 1
 			  FROM up u
 			  JOIN failure_signatures p ON p.id = u.merged_into_id
 			 WHERE u.merged_into_id IS NOT NULL
 			   AND NOT (p.id = ANY(u.path))
 			   AND u.depth < `+strconv.Itoa(maxSignatureMergeHops)+`
 		),
-		root AS (
-			SELECT id AS canonical_id
+		terminal_up AS (
+			SELECT cur_id, merged_into_id, path
 			  FROM up
-			 ORDER BY (merged_into_id IS NULL) DESC, id ASC
+			 ORDER BY depth DESC
 			 LIMIT 1
+		),
+		root AS (
+			SELECT `+canonicalRootExprSQL+` AS canonical_id
+			  FROM terminal_up
 		),
 		family AS (
 			SELECT r.canonical_id, r.canonical_id AS member_id, ARRAY[r.canonical_id] AS path, 0 AS depth
@@ -988,6 +1054,59 @@ func (s *Store) loadFailureFirstSeen(ctx context.Context, firstSeenAt time.Time,
 	fs.CommitSHA = &commitSHA
 	fs.GHPRNumber = prNum
 	return fs, nil
+}
+
+func hasScopeFilters(f FilterParams) bool {
+	return f.App != "" || f.Repo != "" || f.Stage != "" || f.Lane != "" || f.Platform != ""
+}
+
+func (s *Store) loadScopedFirstSeenDays(
+	ctx context.Context,
+	memberToCanon map[uuid.UUID]uuid.UUID,
+	toDate time.Time,
+	f FilterParams,
+) (map[uuid.UUID]int64, error) {
+	if len(memberToCanon) == 0 || !hasScopeFilters(f) {
+		return nil, nil
+	}
+	sigIDs := make([]uuid.UUID, 0, len(memberToCanon))
+	for mid := range memberToCanon {
+		sigIDs = append(sigIDs, mid)
+	}
+	b := &sqlFilterBuilder{}
+	sigPH := b.add(sigIDs)
+	toPH := b.add(toDate)
+	where := fmt.Sprintf("m.signature_id = ANY(%s) AND m.metric_date <= %s AND m.occurrence_count > 0%s",
+		sigPH, toPH, b.appendSignatureExecFilters("m", f))
+
+	rows, err := s.Pool.Query(ctx, `
+		SELECT m.signature_id, MIN(m.metric_date)
+		  FROM kpi_daily_signature_metrics m
+		 WHERE `+where+`
+		 GROUP BY m.signature_id
+	`, b.args...)
+	if err != nil {
+		return nil, fmt.Errorf("load scoped signature first seen dates: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[uuid.UUID]int64{}
+	for rows.Next() {
+		var sigID uuid.UUID
+		var minDate time.Time
+		if err := rows.Scan(&sigID, &minDate); err != nil {
+			return nil, fmt.Errorf("scan scoped signature first seen date: %w", err)
+		}
+		cid, ok := memberToCanon[sigID]
+		if !ok {
+			continue
+		}
+		d := utcDayNum(minDate)
+		if cur, exists := out[cid]; !exists || d < cur {
+			out[cid] = d
+		}
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) loadDailySignatureMetrics(

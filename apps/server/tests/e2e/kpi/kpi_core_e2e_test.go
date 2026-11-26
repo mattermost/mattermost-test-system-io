@@ -473,6 +473,17 @@ func TestKPI_IncrementalRefreshIdempotencyConcurrencySweepVerdictDeleteAndPrune(
 	if err := kpi.RefreshStaleGroupRollups(ctx, env.Pool, nil, 10); err != nil {
 		t.Fatalf("RefreshStaleGroupRollups: %v", err)
 	}
+	var sweptSampleLen int
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT COALESCE(cardinality(duration_samples_ms), 0)
+		  FROM kpi_daily_lane_metrics
+		 WHERE repository = 'mattermost/mattermost' AND stage = 'pr' AND lane = 'e2e-life' AND is_all_platforms = true
+	`).Scan(&sweptSampleLen); err != nil {
+		t.Fatalf("query duration_samples_ms after sweep: %v", err)
+	}
+	if sweptSampleLen != 1 {
+		t.Fatalf("after catch-up sweep: duration_samples_ms cardinality = %d, want 1", sweptSampleLen)
+	}
 
 	// 2. Idempotency + -race concurrent refresh stress test.
 	var wg sync.WaitGroup
@@ -593,9 +604,15 @@ func TestKPI_IncrementalRefreshIdempotencyConcurrencySweepVerdictDeleteAndPrune(
 	}
 
 	var remDaily, remCommit, remExec int
-	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_lane_metrics`).Scan(&remDaily)
-	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_test_commit_outcomes`).Scan(&remCommit)
-	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_test_executions`).Scan(&remExec)
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_lane_metrics`).Scan(&remDaily); err != nil {
+		t.Fatalf("count kpi_daily_lane_metrics: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_test_commit_outcomes`).Scan(&remCommit); err != nil {
+		t.Fatalf("count kpi_test_commit_outcomes: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_test_executions`).Scan(&remExec); err != nil {
+		t.Fatalf("count kpi_daily_test_executions: %v", err)
+	}
 	if remDaily != 0 || remCommit != 0 || remExec != 0 {
 		t.Fatalf("expected 0 remaining rollups after group delete, got daily=%d commit=%d exec=%d", remDaily, remCommit, remExec)
 	}
@@ -743,12 +760,24 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 	}
 
 	var execRows, execRuns, laneRows, commitRows, groupRows, sigRows, groupSigRows int
-	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(run_count), 0) FROM kpi_daily_test_executions`).Scan(&execRows, &execRuns)
-	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_lane_metrics`).Scan(&laneRows)
-	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_test_commit_outcomes`).Scan(&commitRows)
-	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_rollups`).Scan(&groupRows)
-	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_signature_metrics`).Scan(&sigRows)
-	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_signature_rollups`).Scan(&groupSigRows)
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(run_count), 0) FROM kpi_daily_test_executions`).Scan(&execRows, &execRuns); err != nil {
+		t.Fatalf("count kpi_daily_test_executions: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_lane_metrics`).Scan(&laneRows); err != nil {
+		t.Fatalf("count kpi_daily_lane_metrics: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_test_commit_outcomes`).Scan(&commitRows); err != nil {
+		t.Fatalf("count kpi_test_commit_outcomes: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_rollups`).Scan(&groupRows); err != nil {
+		t.Fatalf("count kpi_group_rollups: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_signature_metrics`).Scan(&sigRows); err != nil {
+		t.Fatalf("count kpi_daily_signature_metrics: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_signature_rollups`).Scan(&groupSigRows); err != nil {
+		t.Fatalf("count kpi_group_signature_rollups: %v", err)
+	}
 	if execRows != 0 || execRuns != 0 || laneRows != 0 || commitRows != 0 || groupRows != 0 || sigRows != 0 || groupSigRows != 0 {
 		t.Fatalf("leaked rollup rows after concurrent delete/refresh: execRows=%d execRuns=%d lane=%d commit=%d group=%d sig=%d groupSig=%d",
 			execRows, execRuns, laneRows, commitRows, groupRows, sigRows, groupSigRows)

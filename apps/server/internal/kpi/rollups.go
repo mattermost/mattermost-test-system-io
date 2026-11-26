@@ -449,7 +449,7 @@ func loadGroupRow(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) (groupRow, 
 		      SELECT ap.app
 		      FROM apps ap
 		      WHERE lower(ap.repository) = lower(g.repository)
-		      ORDER BY (ap.repository = g.repository) DESC
+		      ORDER BY (ap.repository = g.repository) DESC, ap.repository ASC
 		      LIMIT 1
 		  ) a ON true
 		 WHERE g.id = $1
@@ -1009,7 +1009,7 @@ func applyTestExecDeltasTx(ctx context.Context, tx pgx.Tx, deltas map[testExecKe
 	}
 	keys := make([]testExecKey, 0, len(deltas))
 	for k, c := range deltas {
-		if c.Run == 0 && c.Pass == 0 && c.Fail == 0 && c.Flaky == 0 && c.Skip == 0 {
+		if c.Run == 0 && c.Pass == 0 && c.Fail == 0 && c.Flaky == 0 && c.Skip == 0 && c.App == "" {
 			continue
 		}
 		keys = append(keys, k)
@@ -1041,6 +1041,16 @@ func applyTestExecDeltasTx(ctx context.Context, tx pgx.Tx, deltas map[testExecKe
 	batch := &pgx.Batch{}
 	for _, k := range keys {
 		c := deltas[k]
+		if c.Run == 0 && c.Pass == 0 && c.Fail == 0 && c.Flaky == 0 && c.Skip == 0 {
+			batch.Queue(`
+				UPDATE kpi_daily_test_executions
+				   SET app        = $7,
+				       updated_at = now()
+				 WHERE metric_date = $1 AND repository = $2 AND stage = $3 AND lane = $4 AND platform = $5 AND test_id = $6
+				   AND app IS DISTINCT FROM $7
+			`, k.MetricDate, k.Repository, k.Stage, k.Lane, k.Platform, k.TestID, c.App)
+			continue
+		}
 		app := c.App
 		if app == "" {
 			app = k.Repository
@@ -1048,7 +1058,8 @@ func applyTestExecDeltasTx(ctx context.Context, tx pgx.Tx, deltas map[testExecKe
 		if c.Run <= 0 && c.Pass <= 0 && c.Fail <= 0 && c.Flaky <= 0 && c.Skip <= 0 {
 			batch.Queue(`
 				UPDATE kpi_daily_test_executions
-				   SET run_count   = run_count   + $7,
+				   SET app         = COALESCE(NULLIF($12, ''), app),
+				       run_count   = run_count   + $7,
 				       pass_count  = pass_count  + $8,
 				       fail_count  = fail_count  + $9,
 				       flaky_count = flaky_count + $10,
@@ -1056,7 +1067,7 @@ func applyTestExecDeltasTx(ctx context.Context, tx pgx.Tx, deltas map[testExecKe
 				       updated_at  = now()
 				 WHERE metric_date = $1 AND repository = $2 AND stage = $3 AND lane = $4 AND platform = $5 AND test_id = $6
 			`, k.MetricDate, k.Repository, k.Stage, k.Lane, k.Platform, k.TestID,
-				c.Run, c.Pass, c.Fail, c.Flaky, c.Skip)
+				c.Run, c.Pass, c.Fail, c.Flaky, c.Skip, c.App)
 		} else {
 			batch.Queue(`
 				INSERT INTO kpi_daily_test_executions (
@@ -1066,6 +1077,7 @@ func applyTestExecDeltasTx(ctx context.Context, tx pgx.Tx, deltas map[testExecKe
 				SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now()
 				 WHERE EXISTS (SELECT 1 FROM tests WHERE id = $7)
 				ON CONFLICT (metric_date, repository, stage, lane, platform, test_id) DO UPDATE SET
+					app         = COALESCE(NULLIF($13, ''), kpi_daily_test_executions.app),
 					run_count   = kpi_daily_test_executions.run_count   + EXCLUDED.run_count,
 					pass_count  = kpi_daily_test_executions.pass_count  + EXCLUDED.pass_count,
 					fail_count  = kpi_daily_test_executions.fail_count  + EXCLUDED.fail_count,
@@ -1073,7 +1085,7 @@ func applyTestExecDeltasTx(ctx context.Context, tx pgx.Tx, deltas map[testExecKe
 					skip_count  = kpi_daily_test_executions.skip_count  + EXCLUDED.skip_count,
 					updated_at  = now()
 			`, k.MetricDate, k.Repository, app, k.Stage, k.Lane, k.Platform, k.TestID,
-				c.Run, c.Pass, c.Fail, c.Flaky, c.Skip)
+				c.Run, c.Pass, c.Fail, c.Flaky, c.Skip, c.App)
 		}
 		batch.Queue(`
 			DELETE FROM kpi_daily_test_executions

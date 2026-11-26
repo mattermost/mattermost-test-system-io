@@ -119,9 +119,13 @@ func startBackfillEnv(t *testing.T, uploads ...[4]string) (*testenv.Env, []shard
 	// refreshGroupSummaryBestEffort -> kpi.RefreshGroupRollupsBestEffort; wait
 	// for async rollup refresh to finish before stripping test_cases/signatures.
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if bfInt(t, env, `SELECT count(*) FROM report_groups WHERE kpi_rollups_refreshed_at IS NULL`) == 0 {
+	for {
+		unrefreshed := bfInt(t, env, `SELECT count(*) FROM report_groups WHERE kpi_rollups_refreshed_at IS NULL`)
+		if unrefreshed == 0 {
 			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("timed out waiting for async rollup refresh (%d report_groups still unrefreshed)", unrefreshed)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

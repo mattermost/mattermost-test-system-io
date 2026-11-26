@@ -74,7 +74,7 @@ LEFT JOIN LATERAL (
     SELECT ap.app
     FROM apps ap
     WHERE lower(ap.repository) = lower(g.repository)
-    ORDER BY (ap.repository = g.repository) DESC
+    ORDER BY (ap.repository = g.repository) DESC, ap.repository ASC
     LIMIT 1
 ) a ON true
 WHERE tc.test_id IS NOT NULL

@@ -136,6 +136,17 @@ func (s *Store) CreateBatch(ctx context.Context, in BatchInput) ([]CreatedVerdic
 
 	results := make([]CreatedVerdict, len(prepared))
 	err = db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
+		if in.ReportGroupID != nil {
+			// Acquire kpi_group:<id> before locking report_groups/verdicts to preserve
+			// the kpi_group -> report_groups -> verdicts lock ordering and prevent a
+			// concurrent KPI refresh from stamping over a newly committed verdict.
+			if _, err := tx.Exec(ctx,
+				`SELECT pg_advisory_xact_lock(hashtextextended('kpi_group:' || $1, 0))`,
+				in.ReportGroupID.String(),
+			); err != nil {
+				return fmt.Errorf("lock kpi group: %w", err)
+			}
+		}
 		if err := validateAndResolveTx(ctx, tx, repo, in.ReportGroupID, prepared); err != nil {
 			return err
 		}
@@ -144,12 +155,24 @@ func (s *Store) CreateBatch(ctx context.Context, in BatchInput) ([]CreatedVerdic
 				return err
 			}
 		}
+		mutated := false
 		for i := range prepared {
 			res, err := upsertItemTx(ctx, tx, repo, in.ReportGroupID, prepared[i])
 			if err != nil {
 				return mapPGError(err)
 			}
+			if res.Created || res.SupersededID != nil {
+				mutated = true
+			}
 			results[i] = res
+		}
+		if in.ReportGroupID != nil && mutated {
+			if _, err := tx.Exec(ctx,
+				`UPDATE report_groups SET kpi_rollups_refreshed_at = NULL WHERE id = $1`,
+				*in.ReportGroupID,
+			); err != nil {
+				return fmt.Errorf("invalidate kpi_rollups_refreshed_at: %w", err)
+			}
 		}
 		return nil
 	})

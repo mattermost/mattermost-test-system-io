@@ -206,6 +206,11 @@ func (s *Store) queryPriorFlakyCountsByApp(
 }
 
 func (s *Store) queryFlakyTestRows(ctx context.Context, f FilterParams) ([]FlakyTestRow, error) {
+	offset, ok := safePageOffset(f.Page, f.Limit)
+	if !ok {
+		return []FlakyTestRow{}, nil
+	}
+
 	b := &sqlFilterBuilder{}
 	fromPH := b.add(f.CurFromDate)
 	toPH := b.add(f.CurToDate)
@@ -215,7 +220,7 @@ func (s *Store) queryFlakyTestRows(ctx context.Context, f FilterParams) ([]Flaky
 
 	orderBy := flakyOrderByClause(f.Sort)
 	limitPH := b.add(f.Limit)
-	offsetPH := b.add((f.Page - 1) * f.Limit)
+	offsetPH := b.add(offset)
 
 	rows, err := s.Pool.Query(ctx, `
 		WITH commit_agg AS (
@@ -311,6 +316,13 @@ func (s *Store) queryFlakyTestRows(ctx context.Context, f FilterParams) ([]Flaky
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func safePageOffset(page, limit int) (int, bool) {
+	if page < 1 || limit < 1 || page-1 > math.MaxInt/limit {
+		return 0, false
+	}
+	return (page - 1) * limit, true
 }
 
 func flakyOrderByClause(sortBy string) string {

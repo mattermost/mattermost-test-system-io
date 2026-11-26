@@ -1,6 +1,7 @@
 package kpi
 
 import (
+	"math"
 	"net/url"
 	"strings"
 	"testing"
@@ -197,5 +198,25 @@ func TestTestExecKeyNetZeroDeltaWithoutApp(t *testing.T) {
 	got := deltas[k]
 	if got.Run != 0 || got.Pass != 0 || got.Fail != 0 || got.Flaky != 0 || got.Skip != 0 {
 		t.Fatalf("expected net-zero delta, got %+v", got)
+	}
+}
+
+func TestSafePageOffset(t *testing.T) {
+	if off, ok := safePageOffset(1, 50); !ok || off != 0 {
+		t.Fatalf("page=1 limit=50 got (%d, %v), want (0, true)", off, ok)
+	}
+	if off, ok := safePageOffset(3, 25); !ok || off != 50 {
+		t.Fatalf("page=3 limit=25 got (%d, %v), want (50, true)", off, ok)
+	}
+	// Overflow boundary: (page-1)*2 would overflow math.MaxInt.
+	overflowPage := math.MaxInt/2 + 2
+	if off, ok := safePageOffset(overflowPage, 2); ok || off != 0 {
+		t.Fatalf("overflow page=%d limit=2 got (%d, %v), want (0, false)", overflowPage, off, ok)
+	}
+	if _, ok := safePageOffset(0, 10); ok {
+		t.Fatal("expected page=0 to fail")
+	}
+	if _, ok := safePageOffset(1, 0); ok {
+		t.Fatal("expected limit=0 to fail")
 	}
 }

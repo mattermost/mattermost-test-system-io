@@ -644,14 +644,12 @@ func TestKPI_IncrementalRefreshIdempotencyConcurrencySweepVerdictDeleteAndPrune(
 func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 	env := testenv.Start(t, testenv.WithReaperDisabled())
 	ctx := t.Context()
-	raceCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	client := &http.Client{Timeout: 30 * time.Second}
 	now := time.Now().UTC()
 	apiKey := env.IssueAPIKey(t, "kpi-delete-race")
 
 	var sigID uuid.UUID
-	if err := env.Pool.QueryRow(raceCtx, `
+	if err := env.Pool.QueryRow(ctx, `
 		INSERT INTO failure_signatures (fingerprint, algo_version, normalized_message, first_seen_at)
 		VALUES ($1, $2, 'delete race signature', $3)
 		RETURNING id
@@ -659,19 +657,19 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 		t.Fatalf("insert signature: %v", err)
 	}
 
-	tHeavy := insertTest(t, raceCtx, env.Pool, "mattermost/mattermost", "playwright", "h:race-heavy", "Race > heavy")
+	tHeavy := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:race-heavy", "Race > heavy")
 
 	// Deterministic pre-delete supersession (200 with superseded_id != nil) and post-delete 400 checks.
-	detGID := insertGroup(t, raceCtx, env.Pool, groupSeed{
+	detGID := insertGroup(t, ctx, env.Pool, groupSeed{
 		Framework: "playwright", Name: "e2e-det", Status: "completed",
 		Repo: "mattermost/mattermost", Branch: "pr-det", Commit: "det-sha",
 		RunID: "det-1", Attempt: "1", Stage: "pr", CreatedAt: now,
 	})
-	detRID := insertReport(t, raceCtx, env.Pool, detGID, "e2e-det", "")
-	detSID := insertSuite(t, raceCtx, env.Pool, detRID, "Det")
-	insertCaseWithSig(t, raceCtx, env.Pool, detSID, tHeavy, sigID, "det", "failed", 0, 0)
+	detRID := insertReport(t, ctx, env.Pool, detGID, "e2e-det", "")
+	detSID := insertSuite(t, ctx, env.Pool, detRID, "Det")
+	insertCaseWithSig(t, ctx, env.Pool, detSID, tHeavy, sigID, "det", "failed", 0, 0)
 
-	postVerdict := func(groupID uuid.UUID, label string) (*http.Response, []byte, error) {
+	postVerdict := func(reqCtx context.Context, groupID uuid.UUID, label string) (*http.Response, []byte, error) {
 		body, _ := json.Marshal(map[string]any{
 			"repository":      "mattermost/mattermost",
 			"report_group_id": groupID.String(),
@@ -683,7 +681,7 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 				},
 			},
 		})
-		req, err := http.NewRequestWithContext(raceCtx, http.MethodPost, env.ServerURL+"/api/v1/verdicts", bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, env.ServerURL+"/api/v1/verdicts", bytes.NewReader(body))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -698,10 +696,10 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 		return resp, raw, err
 	}
 
-	if resp, _, err := postVerdict(detGID, "initial"); err != nil || resp.StatusCode != http.StatusOK {
+	if resp, _, err := postVerdict(ctx, detGID, "initial"); err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("deterministic seed verdict failed: err=%v resp=%v", err, resp)
 	}
-	supResp, supBody, err := postVerdict(detGID, "infra")
+	supResp, supBody, err := postVerdict(ctx, detGID, "infra")
 	if err != nil {
 		t.Fatalf("deterministic supersede verdict: %v", err)
 	}
@@ -719,7 +717,7 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 	if len(supParsed.Verdicts) != 1 || supParsed.Verdicts[0].SupersededID == nil {
 		t.Fatalf("expected 1 superseded verdict with superseded_id != nil, got %s", string(supBody))
 	}
-	detDelReq, _ := http.NewRequestWithContext(raceCtx, http.MethodDelete, env.ServerURL+"/api/v1/reports/"+detGID.String(), nil)
+	detDelReq, _ := http.NewRequestWithContext(ctx, http.MethodDelete, env.ServerURL+"/api/v1/reports/"+detGID.String(), nil)
 	detDelReq.Header.Set("X-API-Key", apiKey)
 	detDelResp, err := client.Do(detDelReq)
 	if err != nil {
@@ -729,7 +727,7 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 	if detDelResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("deterministic delete status = %d, want 204", detDelResp.StatusCode)
 	}
-	afterDelResp, afterDelBody, err := postVerdict(detGID, "product-bug")
+	afterDelResp, afterDelBody, err := postVerdict(ctx, detGID, "product-bug")
 	if err != nil {
 		t.Fatalf("post-delete verdict: %v", err)
 	}
@@ -740,21 +738,21 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 	const numGroups = 16
 	gids := make([]uuid.UUID, 0, numGroups)
 	for i := range numGroups {
-		gid := insertGroup(t, raceCtx, env.Pool, groupSeed{
+		gid := insertGroup(t, ctx, env.Pool, groupSeed{
 			Framework: "playwright", Name: "e2e-race", Status: "completed",
 			Repo: "mattermost/mattermost", Branch: "pr-race", Commit: fmt.Sprintf("race-sha-%d", i%4),
 			RunID: fmt.Sprintf("race-%d", i), Attempt: "1", Stage: "pr", CreatedAt: now,
 		})
-		rid := insertReport(t, raceCtx, env.Pool, gid, "e2e-race", "")
-		sid := insertSuite(t, raceCtx, env.Pool, rid, "Race")
+		rid := insertReport(t, ctx, env.Pool, gid, "e2e-race", "")
+		sid := insertSuite(t, ctx, env.Pool, rid, "Race")
 		for j := range 100 {
-			insertCaseWithSig(t, raceCtx, env.Pool, sid, tHeavy, sigID, "heavy", "failed", 0, j)
+			insertCaseWithSig(t, ctx, env.Pool, sid, tHeavy, sigID, "heavy", "failed", 0, j)
 		}
 
 		// Pre-seed an active verdict so concurrent POST /api/v1/verdicts calls
 		// execute the supersede path (FOR UPDATE + UPDATE verdicts + INSERT verdicts)
 		// while racing DELETE /api/v1/reports/{id}.
-		seedResp, _, err := postVerdict(gid, "initial")
+		seedResp, _, err := postVerdict(ctx, gid, "initial")
 		if err != nil {
 			t.Fatalf("seed verdict %s: %v", gid, err)
 		}
@@ -764,6 +762,9 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 
 		gids = append(gids, gid)
 	}
+
+	raceCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
 	supersedeLabels := []string{"infra", "product-bug"}
 	var wg sync.WaitGroup
@@ -776,7 +777,7 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 				if (idx+labelIdx)%2 == 0 {
 					time.Sleep(time.Duration((idx+labelIdx)%4) * time.Millisecond)
 				}
-				resp, _, err := postVerdict(groupID, lbl)
+				resp, _, err := postVerdict(raceCtx, groupID, lbl)
 				if err != nil {
 					errCh <- fmt.Errorf("post verdict %s (%s): %w", groupID, lbl, err)
 					return
@@ -820,22 +821,22 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 	}
 
 	var execRows, execRuns, laneRows, commitRows, groupRows, sigRows, groupSigRows int
-	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*), COALESCE(SUM(run_count), 0) FROM kpi_daily_test_executions`).Scan(&execRows, &execRuns); err != nil {
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(run_count), 0) FROM kpi_daily_test_executions`).Scan(&execRows, &execRuns); err != nil {
 		t.Fatalf("count kpi_daily_test_executions: %v", err)
 	}
-	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*) FROM kpi_daily_lane_metrics`).Scan(&laneRows); err != nil {
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_lane_metrics`).Scan(&laneRows); err != nil {
 		t.Fatalf("count kpi_daily_lane_metrics: %v", err)
 	}
-	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*) FROM kpi_test_commit_outcomes`).Scan(&commitRows); err != nil {
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_test_commit_outcomes`).Scan(&commitRows); err != nil {
 		t.Fatalf("count kpi_test_commit_outcomes: %v", err)
 	}
-	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*) FROM kpi_group_rollups`).Scan(&groupRows); err != nil {
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_rollups`).Scan(&groupRows); err != nil {
 		t.Fatalf("count kpi_group_rollups: %v", err)
 	}
-	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*) FROM kpi_daily_signature_metrics`).Scan(&sigRows); err != nil {
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_signature_metrics`).Scan(&sigRows); err != nil {
 		t.Fatalf("count kpi_daily_signature_metrics: %v", err)
 	}
-	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*) FROM kpi_group_signature_rollups`).Scan(&groupSigRows); err != nil {
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_signature_rollups`).Scan(&groupSigRows); err != nil {
 		t.Fatalf("count kpi_group_signature_rollups: %v", err)
 	}
 	if execRows != 0 || execRuns != 0 || laneRows != 0 || commitRows != 0 || groupRows != 0 || sigRows != 0 || groupSigRows != 0 {
@@ -1082,8 +1083,14 @@ func TestKPI_SummaryVersionOutOfWindowFlakyMixedLaneOldestSweepAndForShare(t *te
 	mustRefresh(t, ctx, env.Pool, gMixUp)
 
 	sum := getJSON[kpi.SummaryResponse](t, env.ServerURL+"/api/v1/kpi/summary?window=7d&lane=e2e-mixed")
-	if sum.LaneCoverage.UploadOnlyLanes != 0 || len(sum.LaneCoverage.UploadOnlyLaneNames) != 0 {
-		t.Fatalf("mixed lane coverage = %+v, want upload_only_lanes=0 and empty upload_only_lane_names", sum.LaneCoverage)
+	if sum.LaneCoverage.TotalLanes != 1 ||
+		sum.LaneCoverage.OrchestratedLanes != 1 ||
+		sum.LaneCoverage.TotalRuns != 2 ||
+		sum.LaneCoverage.OrchestratedRuns != 1 ||
+		sum.LaneCoverage.UploadOnlyRuns != 1 ||
+		sum.LaneCoverage.UploadOnlyLanes != 0 ||
+		len(sum.LaneCoverage.UploadOnlyLaneNames) != 0 {
+		t.Fatalf("mixed lane coverage = %+v, want total_lanes=1 orchestrated_lanes=1 total_runs=2 orchestrated_runs=1 upload_only_runs=1 upload_only_lanes=0 and empty upload_only_lane_names", sum.LaneCoverage)
 	}
 
 	// 3. kpi_summary_version > kpi_rollups_version triggers RefreshStaleGroupRollups even when
@@ -1153,6 +1160,11 @@ func TestKPI_SummaryVersionOutOfWindowFlakyMixedLaneOldestSweepAndForShare(t *te
 	if err != nil {
 		t.Fatalf("begin orch writer tx: %v", err)
 	}
+	var writerPID int32
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&writerPID); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("query writer pg_backend_pid: %v", err)
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE orchestration_runs
 		   SET status = 'completed', pending_count = 0, completed_pass_count = 1,
@@ -1168,11 +1180,36 @@ func TestKPI_SummaryVersionOutOfWindowFlakyMixedLaneOldestSweepAndForShare(t *te
 		refreshDone <- kpi.RefreshGroupRollups(ctx, env.Pool, gOrch)
 	}()
 
-	select {
-	case err := <-refreshDone:
-		_ = tx.Rollback(ctx)
-		t.Fatalf("RefreshGroupRollups did not block behind uncommitted orchestration_runs lock (err=%v)", err)
-	case <-time.After(150 * time.Millisecond):
+	waitDeadline := time.Now().Add(5 * time.Second)
+	for {
+		var blocked bool
+		if err := env.Pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				  FROM pg_stat_activity
+				 WHERE datname = current_database()
+				   AND pid <> $1
+				   AND wait_event_type = 'Lock'
+				   AND $1 = ANY(pg_blocking_pids(pid))
+			)
+		`, writerPID).Scan(&blocked); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("poll pg_stat_activity for lock wait: %v", err)
+		}
+		if blocked {
+			break
+		}
+		select {
+		case err := <-refreshDone:
+			_ = tx.Rollback(ctx)
+			t.Fatalf("RefreshGroupRollups did not block behind uncommitted orchestration_runs lock (err=%v)", err)
+		default:
+		}
+		if time.Now().After(waitDeadline) {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("timed out waiting for RefreshGroupRollups to block on writer pid %d", writerPID)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit orch writer tx: %v", err)

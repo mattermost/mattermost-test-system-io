@@ -21,6 +21,10 @@ func TestSummaryValidationErrors(t *testing.T) {
 		"/api/v1/kpi/summary?stage=invalid",
 		"/api/v1/kpi/summary?sort=unknown",
 		"/api/v1/kpi/summary?window=%ZZ",
+		"/api/v1/kpi/summary?lane=%00",
+		"/api/v1/kpi/summary?app=%FF",
+		"/api/v1/kpi/summary?repo=org/repo%00",
+		"/api/v1/kpi/summary?platform=ios%FF",
 	}
 	for _, u := range badURLs {
 		req := httptest.NewRequest(http.MethodGet, u, nil)
@@ -49,6 +53,10 @@ func TestFlakyValidationErrors(t *testing.T) {
 		"/api/v1/kpi/flaky?page=-1",
 		"/api/v1/kpi/flaky?limit=0",
 		"/api/v1/kpi/flaky?window=%ZZ",
+		"/api/v1/kpi/flaky?lane=%00",
+		"/api/v1/kpi/flaky?app=%FF",
+		"/api/v1/kpi/flaky?repo=org/repo%00",
+		"/api/v1/kpi/flaky?platform=ios%FF",
 	}
 	for _, u := range badURLs {
 		req := httptest.NewRequest(http.MethodGet, u, nil)

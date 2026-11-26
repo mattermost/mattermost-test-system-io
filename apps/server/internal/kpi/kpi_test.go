@@ -1,6 +1,7 @@
 package kpi
 
 import (
+	"errors"
 	"math"
 	"net/url"
 	"strings"
@@ -85,11 +86,24 @@ func TestParseSummaryParams_DefaultsAndValidation(t *testing.T) {
 		{"long_unicode_repo", url.Values{"repo": {strings.Repeat("é", 257)}}},
 		{"long_unicode_lane", url.Values{"lane": {strings.Repeat("é", 257)}}},
 		{"long_unicode_platform", url.Values{"platform": {strings.Repeat("é", 65)}}},
+		{"nul_app", url.Values{"app": {"matter\x00most"}}},
+		{"nul_repo", url.Values{"repo": {"mattermost/repo\x00"}}},
+		{"nul_lane", url.Values{"lane": {"e2e\x00-pr"}}},
+		{"nul_platform", url.Values{"platform": {"ios\x00"}}},
+		{"invalid_utf8_app", url.Values{"app": {"app\xff"}}},
+		{"invalid_utf8_repo", url.Values{"repo": {"mattermost/repo\xff"}}},
+		{"invalid_utf8_lane", url.Values{"lane": {"lane\xff"}}},
+		{"invalid_utf8_platform", url.Values{"platform": {"plat\xff"}}},
 	}
 	for _, tc := range badCases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := ParseSummaryParams(tc.q, now); err == nil {
-				t.Fatalf("expected error for %s, got nil", tc.name)
+			if _, err := ParseSummaryParams(tc.q, now); !errors.Is(err, ErrValidation) {
+				t.Fatalf("expected ErrValidation for %s, got %v", tc.name, err)
+			}
+			if tc.name != "bad_sort" {
+				if _, err := ParseFlakyParams(tc.q, now); !errors.Is(err, ErrValidation) {
+					t.Fatalf("expected ParseFlakyParams ErrValidation for %s, got %v", tc.name, err)
+				}
 			}
 		})
 	}

@@ -42,13 +42,13 @@ func parseParams(
 	withPagination bool,
 ) (FilterParams, error) {
 	app := strings.TrimSpace(q.Get("app"))
-	if utf8.RuneCountInString(app) > maxAppLen {
-		return FilterParams{}, fmt.Errorf("%w: app exceeds %d characters", ErrValidation, maxAppLen)
+	if err := validateTextFilter("app", app, maxAppLen); err != nil {
+		return FilterParams{}, err
 	}
 
 	repo := authapi.NormalizeRepository(q.Get("repo"))
-	if utf8.RuneCountInString(repo) > maxRepoLen {
-		return FilterParams{}, fmt.Errorf("%w: repo exceeds %d characters", ErrValidation, maxRepoLen)
+	if err := validateTextFilter("repo", repo, maxRepoLen); err != nil {
+		return FilterParams{}, err
 	}
 
 	stage := strings.TrimSpace(q.Get("stage"))
@@ -57,13 +57,13 @@ func parseParams(
 	}
 
 	lane := strings.TrimSpace(q.Get("lane"))
-	if utf8.RuneCountInString(lane) > maxLaneLen {
-		return FilterParams{}, fmt.Errorf("%w: lane exceeds %d characters", ErrValidation, maxLaneLen)
+	if err := validateTextFilter("lane", lane, maxLaneLen); err != nil {
+		return FilterParams{}, err
 	}
 
 	platform := strings.TrimSpace(q.Get("platform"))
-	if utf8.RuneCountInString(platform) > maxPlatformLen {
-		return FilterParams{}, fmt.Errorf("%w: platform exceeds %d characters", ErrValidation, maxPlatformLen)
+	if err := validateTextFilter("platform", platform, maxPlatformLen); err != nil {
+		return FilterParams{}, err
 	}
 
 	window := strings.TrimSpace(q.Get("window"))
@@ -152,6 +152,16 @@ func WindowBounds(now time.Time, days int) (curFrom, curTo, priorFrom, priorTo t
 	priorTo = curFrom.AddDate(0, 0, -1)
 	priorFrom = curFrom.AddDate(0, 0, -days)
 	return curFrom, curTo, priorFrom, priorTo
+}
+
+func validateTextFilter(name, val string, maxLen int) error {
+	if !utf8.ValidString(val) || strings.ContainsRune(val, 0) {
+		return fmt.Errorf("%w: %s contains invalid UTF-8 or NUL byte", ErrValidation, name)
+	}
+	if utf8.RuneCountInString(val) > maxLen {
+		return fmt.Errorf("%w: %s exceeds %d characters", ErrValidation, name, maxLen)
+	}
+	return nil
 }
 
 func isValidStage(s string) bool {

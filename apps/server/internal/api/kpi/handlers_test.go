@@ -167,9 +167,41 @@ func TestFailureDetailValidationErrors(t *testing.T) {
 	}
 }
 
+func TestTestStateValidationErrors(t *testing.T) {
+	h := &Handlers{Store: &kpi.Store{Pool: new(pgxpool.Pool)}}
+
+	withID := func(id, target string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", id)
+		return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	}
+
+	reqBadID := withID("not-a-uuid", "/api/v1/tests/not-a-uuid/state")
+	recBadID := httptest.NewRecorder()
+	h.TestState(recBadID, reqBadID)
+	if recBadID.Code != http.StatusBadRequest {
+		t.Fatalf("invalid UUID status = %d, want 400 (body=%s)", recBadID.Code, recBadID.Body.String())
+	}
+
+	validID := uuid.NewString()
+	for _, target := range []string{
+		"/api/v1/tests/" + validID + "/state?window=99d",
+		"/api/v1/tests/" + validID + "/state?stage=bogus",
+		"/api/v1/tests/" + validID + "/state?window=%ZZ",
+	} {
+		req := withID(validID, target)
+		rec := httptest.NewRecorder()
+		h.TestState(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400 (body=%s)", target, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestNilStoreReturnsInternalError(t *testing.T) {
 	h := &Handlers{}
-	for _, fn := range []http.HandlerFunc{h.Summary, h.Flaky, h.PRsRed, h.Failures, h.FailureDetail} {
+	for _, fn := range []http.HandlerFunc{h.Summary, h.Flaky, h.PRsRed, h.Failures, h.FailureDetail, h.TestState} {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/kpi/summary", nil)
 		rec := httptest.NewRecorder()
 		fn(rec, req)

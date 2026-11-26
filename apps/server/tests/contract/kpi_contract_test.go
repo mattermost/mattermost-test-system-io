@@ -31,6 +31,7 @@ func TestKPIContract(t *testing.T) {
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/prs/red", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures/"+uuid.NewString(), "", nil, nil, http.StatusNotFound, true)
+	exchange(t, c, http.MethodGet, "/api/v1/tests/"+uuid.NewString()+"/state", "", nil, nil, http.StatusNotFound, true)
 
 	// Invalid query params / UUID -> 400 conforming to OpenAPI (validateReq=false since request intentionally violates schema).
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/summary?window=99d", "", nil, nil, http.StatusBadRequest, false)
@@ -44,6 +45,8 @@ func TestKPIContract(t *testing.T) {
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures?window=2d", "", nil, nil, http.StatusBadRequest, false)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures?sort=bogus", "", nil, nil, http.StatusBadRequest, false)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures/not-a-uuid", "", nil, nil, http.StatusBadRequest, false)
+	exchange(t, c, http.MethodGet, "/api/v1/tests/not-a-uuid/state", "", nil, nil, http.StatusBadRequest, false)
+	exchange(t, c, http.MethodGet, "/api/v1/tests/"+uuid.NewString()+"/state?window=99d", "", nil, nil, http.StatusBadRequest, false)
 
 	// Seed a real flaky test across 2 commits + failure signature + verdict + PR duration + main pass rate + configured PR false-red rerun, refresh rollups, and verify 200 contract.
 	ctx := t.Context()
@@ -156,4 +159,5 @@ func TestKPIContract(t *testing.T) {
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/prs/red?app=mattermost&window=30d&sort=created_desc&page=1&limit=10", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures?app=mattermost&window=30d&sort=rate_desc&page=1&limit=10", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures/"+sigID.String()+"?app=mattermost&window=30d", "", nil, nil, http.StatusOK, true)
+	exchange(t, c, http.MethodGet, "/api/v1/tests/"+testID.String()+"/state?app=mattermost&window=30d", "", nil, nil, http.StatusOK, true)
 }

@@ -53,6 +53,11 @@ func ParseFailureDetailParams(q url.Values, now time.Time) (FilterParams, error)
 	return parseParams(q, now, Window30d, SortOccurrencesDesc, isValidFailuresSort, true)
 }
 
+// ParseTestStateParams parses and validates query parameters for GET /api/v1/tests/{id}/state.
+func ParseTestStateParams(q url.Values, now time.Time) (FilterParams, error) {
+	return parseParams(q, now, Window14d, SortLaneAsc, isValidSummarySort, false)
+}
+
 func parseParams(
 	q url.Values,
 	now time.Time,

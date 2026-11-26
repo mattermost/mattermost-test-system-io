@@ -192,6 +192,48 @@ func (h *Handlers) FailureDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// TestState serves GET /api/v1/tests/{id}/state.
+func (h *Handlers) TestState(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.Store == nil || h.Store.Pool == nil {
+		api.WriteError(w, r, api.ErrInternal)
+		return
+	}
+	idStr := chi.URLParam(r, "id")
+	testID, err := uuid.Parse(idStr)
+	if err != nil {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid test id")
+		return
+	}
+	q, err := parseRawQuery(r)
+	if err != nil {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	params, err := kpi.ParseTestStateParams(q, h.Store.NowTime())
+	if err != nil {
+		if errors.Is(err, kpi.ErrValidation) {
+			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+			return
+		}
+		api.WriteError(w, r, err)
+		return
+	}
+
+	resp, err := h.Store.QueryTestState(r.Context(), testID, params)
+	if err != nil {
+		if errors.Is(err, kpi.ErrNotFound) {
+			api.WriteError(w, r, api.ErrNotFound)
+			return
+		}
+		if h.Logger != nil {
+			h.Logger.Error("test state query failed", slog.String("error", err.Error()))
+		}
+		api.WriteError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func parseRawQuery(r *http.Request) (url.Values, error) {
 	if r.URL == nil || r.URL.RawQuery == "" {
 		return url.Values{}, nil

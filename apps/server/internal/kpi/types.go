@@ -98,6 +98,13 @@ const (
 	TrendWindowDays   = 14
 )
 
+// Computed test lifecycle/health states for GET /api/v1/tests/{id}/state.
+const (
+	TestStateFlaky = "flaky"
+	TestStateNew   = "new"
+	TestStateKnown = "known"
+)
+
 // FilterParams holds validated query filters shared across KPI endpoints.
 type FilterParams struct {
 	App        string    `json:"app"`
@@ -257,7 +264,64 @@ type SummaryResponse struct {
 	WeeklySeries      []WeeklyPoint             `json:"weekly_series"`
 	PRFalseRed        *PRFalseRedSummary        `json:"pr_false_red"`
 	RecurringFailures *RecurringFailuresSummary `json:"recurring_failures"`
-	Triage            any                       `json:"triage"`
+	Triage            *TriageSummary            `json:"triage"`
+}
+
+// TriageLabelMix describes one verdict label's count and percentage share.
+type TriageLabelMix struct {
+	Label string  `json:"label"`
+	Count int     `json:"count"`
+	Share float64 `json:"share"`
+}
+
+// RunCompletionSummary summarizes run lifecycle completion vs incomplete and timed-out runs.
+// TotalRuns == CompletedRuns + IncompleteRuns + TimedOutRuns + InProgressRuns (mutually exclusive:
+// runs with orch_status='timed_out' are counted in TimedOutRuns and subtracted from their group_status
+// bucket so timed-out runs are neither double-counted nor dropped).
+// CompletionRate = CompletedRuns / (TotalRuns - InProgressRuns) * 100 (nil when denominator is 0).
+type RunCompletionSummary struct {
+	TotalRuns      int      `json:"total_runs"`
+	CompletedRuns  int      `json:"completed_runs"`
+	IncompleteRuns int      `json:"incomplete_runs"`
+	InProgressRuns int      `json:"in_progress_runs"`
+	TimedOutRuns   int      `json:"timed_out_runs"`
+	CompletionRate *float64 `json:"completion_rate"`
+}
+
+// TriageSummary holds SEC-11520 triage coverage, verdict reuse, label mix, and run completion metrics.
+type TriageSummary struct {
+	RunCoverageRate        *float64             `json:"run_coverage_rate"`
+	TestCoverageRate       *float64             `json:"test_coverage_rate"`
+	FailedRunsCount        int                  `json:"failed_runs_count"`
+	TriagedRunsCount       int                  `json:"triaged_runs_count"`
+	FailedTestOccurrences  int                  `json:"failed_test_occurrences"`
+	TriagedTestOccurrences int                  `json:"triaged_test_occurrences"`
+	VerdictReuseRate       *float64             `json:"verdict_reuse_rate"`
+	VerdictsTotal          int                  `json:"verdicts_total"`
+	VerdictsReused         int                  `json:"verdicts_reused"`
+	LabelMix               []TriageLabelMix     `json:"label_mix"`
+	RunCompletion          RunCompletionSummary `json:"run_completion"`
+}
+
+// TestStateResponse is the wire shape for GET /api/v1/tests/{id}/state.
+// error_context is deliberately excluded and never queried.
+type TestStateResponse struct {
+	TestID              string    `json:"test_id"`
+	TestKey             string    `json:"test_key"`
+	ZephyrKey           *string   `json:"zephyr_key"`
+	File                string    `json:"file"`
+	FullTitle           string    `json:"full_title"`
+	Repository          string    `json:"repository"`
+	App                 string    `json:"app"`
+	Framework           string    `json:"framework"`
+	State               string    `json:"state"`
+	IsFlaky             bool      `json:"is_flaky"`
+	FlakyCommitCount14d int       `json:"flaky_commit_count_14d"`
+	TotalCommits        int       `json:"total_commits"`
+	TotalRuns           int       `json:"total_runs"`
+	FirstSeenAt         time.Time `json:"first_seen_at"`
+	LastSeenAt          time.Time `json:"last_seen_at"`
+	LatestVerdictLabel  *string   `json:"latest_verdict_label"`
 }
 
 // Pagination describes page metadata on list endpoints.

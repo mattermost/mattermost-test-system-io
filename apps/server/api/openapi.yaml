@@ -1440,6 +1440,35 @@ paths:
               schema: { $ref: '#/components/schemas/KPIFailureDetailResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/tests/{id}/state:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+        description: Test UUID from `tests`.
+    get:
+      tags: [kpi]
+      summary: Get deterministic test state (flaky, new, or known) and summary metadata
+      operationId: getTestState
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/KpiApp'
+        - $ref: '#/components/parameters/KpiRepo'
+        - $ref: '#/components/parameters/KpiStage'
+        - $ref: '#/components/parameters/KpiLane'
+        - $ref: '#/components/parameters/KpiPlatform'
+        - $ref: '#/components/parameters/KpiWindow'
+      responses:
+        '200':
+          description: Test state and summary metadata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestStateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     apiKey:
@@ -2961,8 +2990,7 @@ components:
           $ref: '#/components/schemas/KPIRecurringFailuresSummary'
           nullable: true
         triage:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/KPITriageSummary'
           nullable: true
 
     KPIPagination:
@@ -3472,6 +3500,96 @@ components:
         pr_numbers:
           type: array
           items: { type: integer }
+
+    KPITriageLabelMix:
+      type: object
+      required: [label, count, share]
+      properties:
+        label: { type: string }
+        count: { type: integer }
+        share: { type: number }
+
+    KPIRunCompletionSummary:
+      type: object
+      required: [total_runs, completed_runs, incomplete_runs, in_progress_runs, timed_out_runs, completion_rate]
+      properties:
+        total_runs: { type: integer }
+        completed_runs: { type: integer }
+        incomplete_runs: { type: integer }
+        in_progress_runs: { type: integer }
+        timed_out_runs: { type: integer }
+        completion_rate:
+          type: number
+          nullable: true
+          description: "Percentage completed_runs / (total_runs - in_progress_runs) * 100; null when denominator is 0. Runs with orch_status='timed_out' are counted in timed_out_runs and excluded from completed/incomplete/in_progress so they are never double-counted or dropped."
+
+    KPITriageSummary:
+      type: object
+      required:
+        - run_coverage_rate
+        - test_coverage_rate
+        - failed_runs_count
+        - triaged_runs_count
+        - failed_test_occurrences
+        - triaged_test_occurrences
+        - verdict_reuse_rate
+        - verdicts_total
+        - verdicts_reused
+        - label_mix
+        - run_completion
+      properties:
+        run_coverage_rate: { type: number, nullable: true }
+        test_coverage_rate: { type: number, nullable: true }
+        failed_runs_count: { type: integer }
+        triaged_runs_count: { type: integer }
+        failed_test_occurrences: { type: integer }
+        triaged_test_occurrences: { type: integer }
+        verdict_reuse_rate: { type: number, nullable: true }
+        verdicts_total: { type: integer }
+        verdicts_reused: { type: integer }
+        label_mix:
+          type: array
+          items: { $ref: '#/components/schemas/KPITriageLabelMix' }
+        run_completion: { $ref: '#/components/schemas/KPIRunCompletionSummary' }
+
+    TestStateResponse:
+      type: object
+      required:
+        - test_id
+        - test_key
+        - zephyr_key
+        - file
+        - full_title
+        - repository
+        - app
+        - framework
+        - state
+        - is_flaky
+        - flaky_commit_count_14d
+        - total_commits
+        - total_runs
+        - first_seen_at
+        - last_seen_at
+        - latest_verdict_label
+      properties:
+        test_id: { type: string, format: uuid }
+        test_key: { type: string }
+        zephyr_key: { type: string, nullable: true }
+        file: { type: string }
+        full_title: { type: string }
+        repository: { type: string }
+        app: { type: string }
+        framework: { type: string }
+        state:
+          type: string
+          enum: [flaky, new, known]
+        is_flaky: { type: boolean }
+        flaky_commit_count_14d: { type: integer }
+        total_commits: { type: integer }
+        total_runs: { type: integer }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        latest_verdict_label: { type: string, nullable: true }
 
     Error:
       type: object

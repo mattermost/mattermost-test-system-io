@@ -222,6 +222,7 @@ func Build(d Deps) chi.Router {
 		r.Get("/kpi/prs/red", kpiH.PRsRed)
 		r.Get("/kpi/failures", kpiH.Failures)
 		r.Get("/kpi/failures/{id}", kpiH.FailureDetail)
+		r.Get("/tests/{id}/state", kpiH.TestState)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)

@@ -293,6 +293,7 @@ func Build(d Deps) chi.Router {
 		htmlH := &htmlpage.Handler{
 			Pool: d.Pool,
 			Orch: d.OrchestrationStore,
+			KPI:  &kpi.Store{Pool: d.Pool},
 			Site: htmlpage.SiteInfo{
 				ServerVersion:      d.Version,
 				CommitSHA:          d.CommitSHA,
@@ -307,6 +308,9 @@ func Build(d Deps) chi.Router {
 		}
 		r.Get("/", htmlH.ServeHome)
 		r.Get("/reports", htmlH.ServeHome)
+		r.Get("/kpi", htmlH.ServeKPIOverview)
+		r.Get("/kpi/prs", htmlH.ServeKPIPRs)
+		r.Get("/kpi/failures/{id}", htmlH.ServeKPIFailureDetail)
 		r.Get("/reports/fragment/home-live", htmlH.ServeHomeLiveFragment)
 		r.Get("/reports/fragment/run-dispatch-live", htmlH.ServeRunDispatchLiveFragment)
 		r.Get("/reports/{repo}/{branch}/{sha}/{name}", htmlH.ServeRun)

@@ -1,0 +1,82 @@
+{{define "kpi-subnav"}}
+<nav class="kpi-subnav" aria-label="KPI sections">
+  <a href="{{.OverviewHref}}" class="kpi-subnav-link{{if eq .Active "overview"}} is-active{{end}}">Overview</a>
+  <a href="{{.PRsHref}}" class="kpi-subnav-link{{if eq .Active "prs"}} is-active{{end}}">PR E2E</a>
+</nav>
+{{end}}
+
+{{define "kpi-filter-bar"}}
+<section class="kpi-filters" aria-label="KPI filters">
+  <form method="GET" action="{{.State.ActionPath}}" id="kpi-filter-form" class="kpi-filters-form">
+    <label class="kpi-filter-field">
+      <span class="kpi-filter-label">App</span>
+      <select name="app" class="kpi-filter-select" data-kpi-filter="app" aria-label="Filter by app">
+        <option value=""{{if not .State.App}} selected{{end}}>All apps</option>
+        {{range .Apps}}
+        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="kpi-filter-field">
+      <span class="kpi-filter-label">Repository</span>
+      <select name="repo" class="kpi-filter-select" data-kpi-filter="repo" aria-label="Filter by repository">
+        <option value=""{{if not .State.Repo}} selected{{end}}>All repositories</option>
+        {{range .Repos}}
+        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="kpi-filter-field">
+      <span class="kpi-filter-label">Stage</span>
+      <select name="stage" class="kpi-filter-select" data-kpi-filter="stage" aria-label="Filter by stage">
+        <option value=""{{if not .State.Stage}} selected{{end}}>All stages</option>
+        {{range .Stages}}
+        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="kpi-filter-field">
+      <span class="kpi-filter-label">Lane</span>
+      <select name="lane" class="kpi-filter-select" data-kpi-filter="lane" aria-label="Filter by lane">
+        <option value=""{{if not .State.Lane}} selected{{end}}>All lanes</option>
+        {{range .Lanes}}
+        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="kpi-filter-field">
+      <span class="kpi-filter-label">Platform</span>
+      <select name="platform" class="kpi-filter-select" data-kpi-filter="platform" aria-label="Filter by platform">
+        <option value=""{{if not .State.Platform}} selected{{end}}>All platforms</option>
+        {{range .Platforms}}
+        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="kpi-filter-field">
+      <span class="kpi-filter-label">Window</span>
+      <select name="window" class="kpi-filter-select" data-kpi-filter="window" aria-label="Filter by time window">
+        {{range .Windows}}
+        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </label>
+    {{if .HasSorts}}
+    <label class="kpi-filter-field">
+      <span class="kpi-filter-label">Sort</span>
+      <select name="sort" class="kpi-filter-select" data-kpi-filter="sort" aria-label="Sort results">
+        {{range .Sorts}}
+        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </label>
+    {{end}}
+    <div class="kpi-filter-actions">
+      <button type="submit" class="kpi-btn kpi-btn-primary">Apply</button>
+      {{if .HasActiveFilters}}
+      <a href="{{.State.ResetHref}}" class="kpi-btn kpi-btn-ghost">Reset</a>
+      {{end}}
+    </div>
+  </form>
+</section>
+{{end}}

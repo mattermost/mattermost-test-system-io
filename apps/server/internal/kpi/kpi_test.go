@@ -763,7 +763,7 @@ func TestPaginationOverflowValidation(t *testing.T) {
 				label string
 				parse func(url.Values, time.Time) (FilterParams, error)
 			}{
-				{"summary", ParseSummaryParams},
+				{"failure_detail", ParseFailureDetailParams},
 				{"failures", ParseFailuresParams},
 				{"prs_red", ParsePRsRedParams},
 				{"flaky", ParseFlakyParams},

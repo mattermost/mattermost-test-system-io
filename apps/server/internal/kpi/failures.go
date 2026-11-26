@@ -58,12 +58,7 @@ func (s *Store) QueryFailures(ctx context.Context, f FilterParams) (FailuresResp
 		totalPages = int(math.Ceil(float64(total) / float64(f.Limit)))
 	}
 
-	start := (f.Page - 1) * f.Limit
-	pageRows := []RecurringFailureRow{}
-	if start < total {
-		end := min(total, start+f.Limit)
-		pageRows = rows[start:end]
-	}
+	pageRows := paginateRecurringFailures(rows, f.Page, f.Limit)
 
 	return FailuresResponse{
 		Filters:      f,
@@ -78,6 +73,18 @@ func (s *Store) QueryFailures(ctx context.Context, f FilterParams) (FailuresResp
 		},
 		Failures: pageRows,
 	}, nil
+}
+
+func paginateRecurringFailures(rows []RecurringFailureRow, page, limit int) []RecurringFailureRow {
+	start, ok := safePageOffset(page, limit)
+	if !ok || start >= len(rows) {
+		return []RecurringFailureRow{}
+	}
+	end := len(rows)
+	if end-start > limit {
+		end = start + limit
+	}
+	return rows[start:end]
 }
 
 // QueryFailureDetail computes GET /api/v1/kpi/failures/{id} strictly from pre-aggregated rollup tables.

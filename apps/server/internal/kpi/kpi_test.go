@@ -599,3 +599,25 @@ func TestComputeWindowRates_ScopedFirstSeenBoundPreventsCrossScopeBleed(t *testi
 		t.Fatalf("pre-history scoped state = %q, want %q", resurfRates.state, FailureStateResurfaced)
 	}
 }
+
+func TestPaginateRecurringFailures_OverflowAndBounds(t *testing.T) {
+	rows := []RecurringFailureRow{
+		{SignatureID: "s1"},
+		{SignatureID: "s2"},
+		{SignatureID: "s3"},
+	}
+
+	if got := paginateRecurringFailures(rows, 1, 2); len(got) != 2 || got[0].SignatureID != "s1" || got[1].SignatureID != "s2" {
+		t.Fatalf("page=1 limit=2 got %+v", got)
+	}
+	if got := paginateRecurringFailures(rows, 2, 2); len(got) != 1 || got[0].SignatureID != "s3" {
+		t.Fatalf("page=2 limit=2 got %+v", got)
+	}
+	if got := paginateRecurringFailures(rows, 3, 2); got == nil || len(got) != 0 {
+		t.Fatalf("page=3 limit=2 got %+v, want non-nil empty slice", got)
+	}
+	// Overflow boundary: (page-1)*limit would wrap negative in signed arithmetic without safePageOffset.
+	if got := paginateRecurringFailures(rows, math.MaxInt, 50); got == nil || len(got) != 0 {
+		t.Fatalf("overflow page=MaxInt limit=50 got %+v, want non-nil empty slice", got)
+	}
+}

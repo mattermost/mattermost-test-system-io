@@ -630,12 +630,12 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 
 	tHeavy := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:race-heavy", "Race > heavy")
 
-	const numGroups = 10
+	const numGroups = 16
 	gids := make([]uuid.UUID, 0, numGroups)
 	for i := range numGroups {
 		gid := insertGroup(t, ctx, env.Pool, groupSeed{
 			Framework: "playwright", Name: "e2e-race", Status: "completed",
-			Repo: "mattermost/mattermost", Branch: "pr-race", Commit: fmt.Sprintf("race-sha-%d", i),
+			Repo: "mattermost/mattermost", Branch: "pr-race", Commit: fmt.Sprintf("race-sha-%d", i%4),
 			RunID: fmt.Sprintf("race-%d", i), Attempt: "1", Stage: "pr", CreatedAt: now,
 		})
 		rid := insertReport(t, ctx, env.Pool, gid, "e2e-race", "")
@@ -643,43 +643,74 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 		for j := range 100 {
 			insertCaseWithSig(t, ctx, env.Pool, sid, tHeavy, sigID, "heavy", "failed", 0, j)
 		}
+
+		// Pre-seed an active verdict so concurrent POST /api/v1/verdicts calls
+		// execute the supersede path (FOR UPDATE + UPDATE verdicts + INSERT verdicts)
+		// while racing DELETE /api/v1/reports/{id}.
+		seedBody, _ := json.Marshal(map[string]any{
+			"repository":      "mattermost/mattermost",
+			"report_group_id": gid.String(),
+			"verdicts": []any{
+				map[string]any{
+					"test_id":      tHeavy.String(),
+					"signature_id": sigID.String(),
+					"label":        "initial",
+				},
+			},
+		})
+		seedReq, _ := http.NewRequest(http.MethodPost, env.ServerURL+"/api/v1/verdicts", bytes.NewReader(seedBody))
+		seedReq.Header.Set("Content-Type", "application/json")
+		seedReq.Header.Set("X-API-Key", apiKey)
+		seedResp, err := http.DefaultClient.Do(seedReq)
+		if err != nil {
+			t.Fatalf("seed verdict %s: %v", gid, err)
+		}
+		seedResp.Body.Close()
+		if seedResp.StatusCode != http.StatusOK {
+			t.Fatalf("seed verdict %s status = %d, want 200", gid, seedResp.StatusCode)
+		}
+
 		gids = append(gids, gid)
 	}
 
+	supersedeLabels := []string{"infra", "product-bug"}
 	var wg sync.WaitGroup
-	errCh := make(chan error, numGroups*3)
+	errCh := make(chan error, numGroups*4)
 	for i, gid := range gids {
-		wg.Add(3)
-		go func(idx int, groupID uuid.UUID) {
-			defer wg.Done()
-			if idx%2 == 0 {
-				time.Sleep(time.Duration(idx%5) * time.Millisecond)
-			}
-			body, _ := json.Marshal(map[string]any{
-				"repository":      "mattermost/mattermost",
-				"report_group_id": groupID.String(),
-				"verdicts": []any{
-					map[string]any{
-						"test_id":      tHeavy.String(),
-						"signature_id": sigID.String(),
-						"label":        "infra",
+		for lIdx, label := range supersedeLabels {
+			wg.Add(1)
+			go func(idx, labelIdx int, groupID uuid.UUID, lbl string) {
+				defer wg.Done()
+				if (idx+labelIdx)%2 == 0 {
+					time.Sleep(time.Duration((idx+labelIdx)%4) * time.Millisecond)
+				}
+				body, _ := json.Marshal(map[string]any{
+					"repository":      "mattermost/mattermost",
+					"report_group_id": groupID.String(),
+					"verdicts": []any{
+						map[string]any{
+							"test_id":      tHeavy.String(),
+							"signature_id": sigID.String(),
+							"label":        lbl,
+						},
 					},
-				},
-			})
-			req, _ := http.NewRequest(http.MethodPost, env.ServerURL+"/api/v1/verdicts", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-API-Key", apiKey)
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				errCh <- fmt.Errorf("post verdict %s: %w", groupID, err)
-				return
-			}
-			resp.Body.Close()
-			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadRequest {
-				errCh <- fmt.Errorf("post verdict %s status = %d", groupID, resp.StatusCode)
-			}
-		}(i, gid)
+				})
+				req, _ := http.NewRequest(http.MethodPost, env.ServerURL+"/api/v1/verdicts", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("X-API-Key", apiKey)
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					errCh <- fmt.Errorf("post verdict %s (%s): %w", groupID, lbl, err)
+					return
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadRequest {
+					errCh <- fmt.Errorf("post verdict %s (%s) status = %d", groupID, lbl, resp.StatusCode)
+				}
+			}(i, lIdx, gid, label)
+		}
 
+		wg.Add(2)
 		go func(groupID uuid.UUID) {
 			defer wg.Done()
 			if err := kpi.RefreshGroupRollups(ctx, env.Pool, groupID); err != nil {
@@ -690,7 +721,7 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 		go func(idx int, groupID uuid.UUID) {
 			defer wg.Done()
 			if idx%2 == 1 {
-				time.Sleep(time.Duration((idx%5)+1) * time.Millisecond)
+				time.Sleep(time.Duration((idx%4)+1) * time.Millisecond)
 			}
 			req, _ := http.NewRequest(http.MethodDelete, env.ServerURL+"/api/v1/reports/"+groupID.String(), nil)
 			req.Header.Set("X-API-Key", apiKey)
@@ -711,15 +742,16 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var execRuns, laneRows, commitRows, groupRows, sigRows int
-	_ = env.Pool.QueryRow(ctx, `SELECT COALESCE(SUM(run_count), 0) FROM kpi_daily_test_executions`).Scan(&execRuns)
+	var execRows, execRuns, laneRows, commitRows, groupRows, sigRows, groupSigRows int
+	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(run_count), 0) FROM kpi_daily_test_executions`).Scan(&execRows, &execRuns)
 	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_lane_metrics`).Scan(&laneRows)
 	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_test_commit_outcomes`).Scan(&commitRows)
 	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_rollups`).Scan(&groupRows)
 	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_signature_metrics`).Scan(&sigRows)
-	if execRuns != 0 || laneRows != 0 || commitRows != 0 || groupRows != 0 || sigRows != 0 {
-		t.Fatalf("leaked rollup rows after concurrent delete/refresh: execRuns=%d lane=%d commit=%d group=%d sig=%d",
-			execRuns, laneRows, commitRows, groupRows, sigRows)
+	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_signature_rollups`).Scan(&groupSigRows)
+	if execRows != 0 || execRuns != 0 || laneRows != 0 || commitRows != 0 || groupRows != 0 || sigRows != 0 || groupSigRows != 0 {
+		t.Fatalf("leaked rollup rows after concurrent delete/refresh: execRows=%d execRuns=%d lane=%d commit=%d group=%d sig=%d groupSig=%d",
+			execRows, execRuns, laneRows, commitRows, groupRows, sigRows, groupSigRows)
 	}
 }
 

@@ -333,7 +333,10 @@ func validateTriageURL(raw *string) (*string, error) {
 func validateAndResolveTx(ctx context.Context, tx pgx.Tx, repo string, reportGroupID *uuid.UUID, items []preparedItem) error {
 	if reportGroupID != nil {
 		var rgRepo string
-		err := tx.QueryRow(ctx, `SELECT repository FROM report_groups WHERE id = $1`, *reportGroupID).Scan(&rgRepo)
+		// Lock report_groups(id) with FOR KEY SHARE before locking/modifying
+		// child verdicts rows so concurrent DELETE FROM report_groups cannot
+		// invert the parent->child lock order and trigger SQLSTATE 40P01.
+		err := tx.QueryRow(ctx, `SELECT repository FROM report_groups WHERE id = $1 FOR KEY SHARE`, *reportGroupID).Scan(&rgRepo)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("%w: unknown report_group_id", ErrValidation)
 		}

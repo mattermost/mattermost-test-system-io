@@ -115,6 +115,16 @@ func startBackfillEnv(t *testing.T, uploads ...[4]string) (*testenv.Env, []shard
 	for i, u := range uploads {
 		shards[i] = uploadReportShard(t, env, tok, u[0], u[1], u[2], u[3])
 	}
+	// finalizeResults marks report_groups complete before calling
+	// refreshGroupSummaryBestEffort -> kpi.RefreshGroupRollupsBestEffort; wait
+	// for async rollup refresh to finish before stripping test_cases/signatures.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if bfInt(t, env, `SELECT count(*) FROM report_groups WHERE kpi_rollups_refreshed_at IS NULL`) == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	bfExec(t, env, `UPDATE test_cases SET test_id = NULL, signature_id = NULL, error_stack = NULL,
 		project = NULL, tags = '[]', annotations = '[]'`)
 	bfExec(t, env, `DELETE FROM failure_signatures`)

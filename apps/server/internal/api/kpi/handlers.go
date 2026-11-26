@@ -4,8 +4,10 @@ package kpi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
@@ -23,7 +25,12 @@ func (h *Handlers) Summary(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
-	params, err := kpi.ParseSummaryParams(r.URL.Query(), h.Store.NowTime())
+	q, err := parseRawQuery(r)
+	if err != nil {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	params, err := kpi.ParseSummaryParams(q, h.Store.NowTime())
 	if err != nil {
 		if errors.Is(err, kpi.ErrValidation) {
 			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
@@ -50,7 +57,12 @@ func (h *Handlers) Flaky(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrInternal)
 		return
 	}
-	params, err := kpi.ParseFlakyParams(r.URL.Query(), h.Store.NowTime())
+	q, err := parseRawQuery(r)
+	if err != nil {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	params, err := kpi.ParseFlakyParams(q, h.Store.NowTime())
 	if err != nil {
 		if errors.Is(err, kpi.ErrValidation) {
 			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
@@ -69,6 +81,17 @@ func (h *Handlers) Flaky(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func parseRawQuery(r *http.Request) (url.Values, error) {
+	if r.URL == nil || r.URL.RawQuery == "" {
+		return url.Values{}, nil
+	}
+	q, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("%w: malformed query string", kpi.ErrValidation)
+	}
+	return q, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

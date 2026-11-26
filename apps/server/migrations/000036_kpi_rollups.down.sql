@@ -27,4 +27,6 @@ DROP INDEX IF EXISTS verdicts_group_idx;
 DROP INDEX IF EXISTS report_groups_kpi_unrefreshed_idx;
 
 ALTER TABLE report_groups
+    DROP COLUMN IF EXISTS kpi_rollups_version,
+    DROP COLUMN IF EXISTS kpi_summary_version,
     DROP COLUMN IF EXISTS kpi_rollups_refreshed_at;

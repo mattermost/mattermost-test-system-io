@@ -23,8 +23,8 @@ func TestParseSummaryParams_DefaultsAndValidation(t *testing.T) {
 	if params.Sort != SortLaneAsc {
 		t.Fatalf("sort = %q, want %q", params.Sort, SortLaneAsc)
 	}
-	if params.Page != 1 || params.Limit != defaultLimit {
-		t.Fatalf("page=%d limit=%d, want 1/%d", params.Page, params.Limit, defaultLimit)
+	if params.Page != 0 || params.Limit != 0 {
+		t.Fatalf("page=%d limit=%d, want 0/0 (summary has no pagination)", params.Page, params.Limit)
 	}
 	wantCurFrom := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
 	wantCurTo := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
@@ -37,7 +37,7 @@ func TestParseSummaryParams_DefaultsAndValidation(t *testing.T) {
 		t.Fatalf("prior bounds = [%s..%s], want [%s..%s]", params.PriorFromDate, params.PriorToDate, wantPriorFrom, wantPriorTo)
 	}
 
-	// Repo normalization + valid params
+	// Repo normalization + valid params (including multi-byte Unicode rune limits)
 	q := url.Values{
 		"app":      {" mobile "},
 		"repo":     {" mattermost/mattermost-mobile.git "},
@@ -46,8 +46,8 @@ func TestParseSummaryParams_DefaultsAndValidation(t *testing.T) {
 		"platform": {" ios "},
 		"window":   {"7d"},
 		"sort":     {SortDurationDesc},
-		"page":     {"2"},
-		"limit":    {"25"},
+		"page":     {"0"},
+		"limit":    {"999"},
 	}
 	params, err = ParseSummaryParams(q, now)
 	if err != nil {
@@ -55,8 +55,19 @@ func TestParseSummaryParams_DefaultsAndValidation(t *testing.T) {
 	}
 	if params.App != "mobile" || params.Repo != "mattermost/mattermost-mobile" || params.Stage != "pr" ||
 		params.Lane != "detox-ios" || params.Platform != "ios" || params.WindowDays != 7 ||
-		params.Sort != SortDurationDesc || params.Page != 2 || params.Limit != 25 {
+		params.Sort != SortDurationDesc || params.Page != 0 || params.Limit != 0 {
 		t.Fatalf("unexpected parsed params: %+v", params)
+	}
+
+	// Multi-byte UTF-8 rune count boundary: 64 runes (128 bytes) and 256 runes (512 bytes) must be accepted.
+	okUnicode := url.Values{
+		"app":      {strings.Repeat("é", 64)},
+		"repo":     {strings.Repeat("é", 256)},
+		"lane":     {strings.Repeat("é", 256)},
+		"platform": {strings.Repeat("é", 64)},
+	}
+	if _, err := ParseSummaryParams(okUnicode, now); err != nil {
+		t.Fatalf("expected 64/256 Unicode runes to pass, got %v", err)
 	}
 
 	badCases := []struct {
@@ -66,14 +77,14 @@ func TestParseSummaryParams_DefaultsAndValidation(t *testing.T) {
 		{"bad_window", url.Values{"window": {"10d"}}},
 		{"bad_stage", url.Values{"stage": {"staging"}}},
 		{"bad_sort", url.Values{"sort": {"flaky_commits_desc"}}},
-		{"bad_page_zero", url.Values{"page": {"0"}}},
-		{"bad_page_str", url.Values{"page": {"abc"}}},
-		{"bad_limit_zero", url.Values{"limit": {"0"}}},
-		{"bad_limit_high", url.Values{"limit": {"101"}}},
 		{"long_app", url.Values{"app": {strings.Repeat("a", 65)}}},
 		{"long_repo", url.Values{"repo": {strings.Repeat("r", 257)}}},
 		{"long_lane", url.Values{"lane": {strings.Repeat("l", 257)}}},
 		{"long_platform", url.Values{"platform": {strings.Repeat("p", 65)}}},
+		{"long_unicode_app", url.Values{"app": {strings.Repeat("é", 65)}}},
+		{"long_unicode_repo", url.Values{"repo": {strings.Repeat("é", 257)}}},
+		{"long_unicode_lane", url.Values{"lane": {strings.Repeat("é", 257)}}},
+		{"long_unicode_platform", url.Values{"platform": {strings.Repeat("é", 65)}}},
 	}
 	for _, tc := range badCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -96,6 +107,25 @@ func TestParseFlakyParams_DefaultsAndSorts(t *testing.T) {
 	}
 	if params.Sort != SortFlakyCommitsDesc {
 		t.Fatalf("sort = %q, want %q", params.Sort, SortFlakyCommitsDesc)
+	}
+	if params.Page != 1 || params.Limit != defaultLimit {
+		t.Fatalf("page=%d limit=%d, want 1/%d", params.Page, params.Limit, defaultLimit)
+	}
+
+	pValid, err := ParseFlakyParams(url.Values{"page": {"2"}, "limit": {"25"}}, now)
+	if err != nil || pValid.Page != 2 || pValid.Limit != 25 {
+		t.Fatalf("flaky pagination valid failed: p=%+v err=%v", pValid, err)
+	}
+
+	for _, bad := range []url.Values{
+		{"page": {"0"}},
+		{"page": {"abc"}},
+		{"limit": {"0"}},
+		{"limit": {"101"}},
+	} {
+		if _, err := ParseFlakyParams(bad, now); err == nil {
+			t.Fatalf("expected error for %v, got nil", bad)
+		}
 	}
 
 	for _, s := range []string{SortFlakyCommitsDesc, SortFlakeRateDesc, SortTotalRunsDesc, SortLastFlakyDesc, SortNameAsc} {

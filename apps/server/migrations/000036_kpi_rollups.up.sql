@@ -5,7 +5,9 @@
 -- and all DDL is transaction-safe for golang-migrate.
 
 ALTER TABLE report_groups
-    ADD COLUMN IF NOT EXISTS kpi_rollups_refreshed_at timestamptz;
+    ADD COLUMN IF NOT EXISTS kpi_rollups_refreshed_at timestamptz,
+    ADD COLUMN IF NOT EXISTS kpi_summary_version bigint NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS kpi_rollups_version bigint NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS report_groups_kpi_unrefreshed_idx
     ON report_groups (created_at DESC)
@@ -271,7 +273,7 @@ CREATE TABLE kpi_test_commit_outcomes (
     run_count     integer     NOT NULL DEFAULT 0,
     is_mixed      boolean     GENERATED ALWAYS AS (pass_count > 0 AND fail_count > 0) STORED,
     updated_at    timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (repository, commit_sha, stage, lane, test_id, project, platform)
+    PRIMARY KEY (metric_date, repository, commit_sha, stage, lane, test_id, project, platform)
 );
 
 CREATE INDEX kpi_test_commit_outcomes_app_date_idx

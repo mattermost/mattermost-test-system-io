@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // QueryFlaky computes GET /api/v1/kpi/flaky strictly from pre-aggregated rollup tables.
@@ -16,16 +18,25 @@ func (s *Store) QueryFlaky(ctx context.Context, f FilterParams) (FlakyResponse, 
 		return FlakyResponse{}, errors.New("kpi store pool is nil")
 	}
 
-	cov, err := s.queryLaneCoverage(ctx, f, "", true, nil)
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return FlakyResponse{}, fmt.Errorf("begin flaky read tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	cov, err := s.queryLaneCoverageQ(ctx, tx, f, "", true, nil)
 	if err != nil {
 		return FlakyResponse{}, err
 	}
 
-	curTotal, curByApp, err := s.queryFlakyCountsByApp(ctx, f, f.CurFromDate, f.CurToDate)
+	curTotal, curByApp, err := s.queryFlakyCountsByAppQ(ctx, tx, f, f.CurFromDate, f.CurToDate)
 	if err != nil {
 		return FlakyResponse{}, err
 	}
-	priorHasData, _, priorByApp, priorHasDataByApp, err := s.queryPriorFlakyCountsByApp(ctx, f, f.PriorFromDate, f.PriorToDate)
+	priorHasData, _, priorByApp, priorHasDataByApp, err := s.queryPriorFlakyCountsByAppQ(ctx, tx, f, f.PriorFromDate, f.PriorToDate)
 	if err != nil {
 		return FlakyResponse{}, err
 	}
@@ -63,7 +74,7 @@ func (s *Store) QueryFlaky(ctx context.Context, f FilterParams) (FlakyResponse, 
 		return byApp[i].App < byApp[j].App
 	})
 
-	tests, err := s.queryFlakyTestRows(ctx, f)
+	tests, err := s.queryFlakyTestRows(ctx, tx, f)
 	if err != nil {
 		return FlakyResponse{}, err
 	}
@@ -105,6 +116,15 @@ func (s *Store) queryFlakyCountsByApp(
 	f FilterParams,
 	fromDate, toDate time.Time,
 ) (int, map[string]int, error) {
+	return s.queryFlakyCountsByAppQ(ctx, s.Pool, f, fromDate, toDate)
+}
+
+func (s *Store) queryFlakyCountsByAppQ(
+	ctx context.Context,
+	q dbQuerier,
+	f FilterParams,
+	fromDate, toDate time.Time,
+) (int, map[string]int, error) {
 	b := &sqlFilterBuilder{}
 	fromPH := b.add(fromDate)
 	toPH := b.add(toDate)
@@ -112,7 +132,7 @@ func (s *Store) queryFlakyCountsByApp(
 	fmt.Fprintf(&where, "c.metric_date >= %s AND c.metric_date <= %s", fromPH, toPH)
 	where.WriteString(appendCommitFilters(b, "c", f))
 
-	rows, err := s.Pool.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		WITH commit_agg AS (
 			SELECT
 				c.repository,
@@ -165,6 +185,15 @@ func (s *Store) queryPriorFlakyCountsByApp(
 	f FilterParams,
 	fromDate, toDate time.Time,
 ) (bool, int, map[string]int, map[string]bool, error) {
+	return s.queryPriorFlakyCountsByAppQ(ctx, s.Pool, f, fromDate, toDate)
+}
+
+func (s *Store) queryPriorFlakyCountsByAppQ(
+	ctx context.Context,
+	q dbQuerier,
+	f FilterParams,
+	fromDate, toDate time.Time,
+) (bool, int, map[string]int, map[string]bool, error) {
 	b := &sqlFilterBuilder{}
 	fromPH := b.add(fromDate)
 	toPH := b.add(toDate)
@@ -172,7 +201,7 @@ func (s *Store) queryPriorFlakyCountsByApp(
 	fmt.Fprintf(&where, "c.metric_date >= %s AND c.metric_date <= %s", fromPH, toPH)
 	where.WriteString(appendCommitFilters(b, "c", f))
 
-	rows, err := s.Pool.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		SELECT DISTINCT c.app
 		  FROM kpi_test_commit_outcomes c
 		 WHERE `+where.String(),
@@ -198,14 +227,14 @@ func (s *Store) queryPriorFlakyCountsByApp(
 		return false, 0, map[string]int{}, priorHasDataByApp, nil
 	}
 
-	total, byApp, err := s.queryFlakyCountsByApp(ctx, f, fromDate, toDate)
+	total, byApp, err := s.queryFlakyCountsByAppQ(ctx, q, f, fromDate, toDate)
 	if err != nil {
 		return false, 0, nil, nil, err
 	}
 	return true, total, byApp, priorHasDataByApp, nil
 }
 
-func (s *Store) queryFlakyTestRows(ctx context.Context, f FilterParams) ([]FlakyTestRow, error) {
+func (s *Store) queryFlakyTestRows(ctx context.Context, q dbQuerier, f FilterParams) ([]FlakyTestRow, error) {
 	offset, ok := safePageOffset(f.Page, f.Limit)
 	if !ok {
 		return []FlakyTestRow{}, nil
@@ -222,7 +251,7 @@ func (s *Store) queryFlakyTestRows(ctx context.Context, f FilterParams) ([]Flaky
 	limitPH := b.add(f.Limit)
 	offsetPH := b.add(offset)
 
-	rows, err := s.Pool.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		WITH commit_agg AS (
 			SELECT
 				c.repository,

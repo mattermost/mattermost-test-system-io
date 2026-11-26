@@ -4,6 +4,7 @@
 package contract
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -47,7 +48,7 @@ func TestKPIContract(t *testing.T) {
 		t.Fatalf("insert test: %v", err)
 	}
 
-	seedGroup := func(stage, lane, sha, runID string, prNum *int, durMs *int64, statuses []string) {
+	seedGroup := func(stage, lane, sha, runID string, prNum *int, durMs *int64, statuses []string, withOrch bool) {
 		var gid, rid, sid uuid.UUID
 		if err := env.Pool.QueryRow(ctx, `
 			INSERT INTO report_groups (
@@ -57,6 +58,24 @@ func TestKPIContract(t *testing.T) {
 			RETURNING id
 		`, lane, sha, runID, prNum, stage, durMs, now.Add(-2*time.Hour)).Scan(&gid); err != nil {
 			t.Fatalf("insert group: %v", err)
+		}
+		if withOrch {
+			ts := now.Add(-2 * time.Hour)
+			if _, err := env.Pool.Exec(ctx, `
+				INSERT INTO orchestration_runs (
+					repository, commit_sha, gh_run_id, name, gh_run_attempt, framework,
+					lease_timeout_ms, idle_timeout_ms, status,
+					pending_count, completed_pass_count, total_units,
+					dispatch_units_hash, started_at, last_activity_at, terminal_at, owner_oidc_subject
+				) VALUES (
+					'mattermost/mattermost', $1, $2, $3, '1', 'playwright',
+					60000, 60000, 'completed',
+					0, 1, 1,
+					'\xdeadbeef'::bytea, $4, $4, $4, 'contract-oidc'
+				)
+			`, sha, runID, lane, ts); err != nil {
+				t.Fatalf("insert orchestration_run: %v", err)
+			}
 		}
 		if err := env.Pool.QueryRow(ctx, `
 			INSERT INTO reports (report_group_id, name, status, created_at, updated_at)
@@ -85,9 +104,22 @@ func TestKPIContract(t *testing.T) {
 
 	pr := 42
 	dur := int64(12345)
-	seedGroup("main", "e2e-main", "sha-contract-1", "run-1", nil, nil, []string{"failed", "passed"})
-	seedGroup("pr", "e2e-pr", "sha-contract-2", "run-2", &pr, &dur, []string{"failed", "passed"})
+	seedGroup("main", "e2e-main", "sha-contract-1", "run-1", nil, nil, []string{"failed", "passed"}, false)
+	seedGroup("pr", "e2e-pr", "sha-contract-2", "run-2", &pr, &dur, []string{"failed", "passed"}, true)
 
-	exchange(t, c, http.MethodGet, "/api/v1/kpi/summary?app=mattermost&window=30d&sort=lane_asc", "", nil, nil, http.StatusOK, true)
+	rawSummary := exchange(t, c, http.MethodGet, "/api/v1/kpi/summary?app=mattermost&window=30d&sort=lane_asc", "", nil, nil, http.StatusOK, true)
+	var summary kpi.SummaryResponse
+	if err := json.Unmarshal(rawSummary, &summary); err != nil {
+		t.Fatalf("unmarshal summary: %v", err)
+	}
+	if summary.E2EDuration.SampleCount != 1 {
+		t.Fatalf("e2e_duration.sample_count = %d, want 1", summary.E2EDuration.SampleCount)
+	}
+	if summary.E2EDuration.P50Ms == nil || *summary.E2EDuration.P50Ms != 12345 {
+		t.Fatalf("e2e_duration.p50_ms = %v, want 12345", summary.E2EDuration.P50Ms)
+	}
+	if summary.E2EDuration.P90Ms == nil || *summary.E2EDuration.P90Ms != 12345 {
+		t.Fatalf("e2e_duration.p90_ms = %v, want 12345", summary.E2EDuration.P90Ms)
+	}
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/flaky?app=mattermost&window=14d&sort=flake_rate_desc&page=1&limit=10", "", nil, nil, http.StatusOK, true)
 }

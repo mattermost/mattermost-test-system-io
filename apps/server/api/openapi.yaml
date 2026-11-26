@@ -1315,8 +1315,6 @@ paths:
             type: string
             enum: [lane_asc, pass_rate_asc, pass_rate_desc, duration_desc, duration_asc]
             default: lane_asc
-        - $ref: '#/components/parameters/KpiPage'
-        - $ref: '#/components/parameters/KpiLimit'
       responses:
         '200':
           description: Pre-aggregated KPI summary
@@ -2675,7 +2673,9 @@ components:
       properties:
         total_lanes: { type: integer }
         orchestrated_lanes: { type: integer }
-        upload_only_lanes: { type: integer }
+        upload_only_lanes:
+          type: integer
+          description: Lanes in the window with zero orchestrated runs (upload-only only).
         strict_supported_lanes: { type: integer }
         total_runs: { type: integer }
         orchestrated_runs: { type: integer }
@@ -2686,6 +2686,7 @@ components:
         upload_only_lane_names:
           type: array
           items: { type: string }
+          description: Names of lanes with zero orchestrated runs in the window.
         notes:
           type: array
           items: { type: string }

@@ -107,11 +107,12 @@ func RefreshGroupSummaryWithRule(ctx context.Context, pool *pgxpool.Pool, groupI
 	// and may be missing rows that the winner already captured.
 	_, err = pool.Exec(ctx, `
 		UPDATE report_groups
-		   SET test_stats_json    = $2,
-		       orchestration_json = $3,
-		       reports_count      = $4,
-		       total_duration_ms  = $5,
-		       last_summary_at    = $6
+		   SET test_stats_json     = $2,
+		       orchestration_json  = $3,
+		       reports_count       = $4,
+		       total_duration_ms   = $5,
+		       last_summary_at     = $6,
+		       kpi_summary_version = kpi_summary_version + 1
 		 WHERE id = $1
 		   AND (last_summary_at IS NULL OR last_summary_at < $6)
 	`, groupID, statsJSON, nullableJSON(orchJSON), stats.ReportsCount, totalDurationMs, snapshotAt)

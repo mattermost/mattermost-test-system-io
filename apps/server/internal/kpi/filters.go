@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 )
@@ -25,12 +26,12 @@ const (
 
 // ParseSummaryParams parses and validates query parameters for GET /api/v1/kpi/summary.
 func ParseSummaryParams(q url.Values, now time.Time) (FilterParams, error) {
-	return parseParams(q, now, Window30d, SortLaneAsc, isValidSummarySort)
+	return parseParams(q, now, Window30d, SortLaneAsc, isValidSummarySort, false)
 }
 
 // ParseFlakyParams parses and validates query parameters for GET /api/v1/kpi/flaky.
 func ParseFlakyParams(q url.Values, now time.Time) (FilterParams, error) {
-	return parseParams(q, now, Window14d, SortFlakyCommitsDesc, isValidFlakySort)
+	return parseParams(q, now, Window14d, SortFlakyCommitsDesc, isValidFlakySort, true)
 }
 
 func parseParams(
@@ -38,14 +39,15 @@ func parseParams(
 	now time.Time,
 	defaultWindow, defaultSort string,
 	validSort func(string) bool,
+	withPagination bool,
 ) (FilterParams, error) {
 	app := strings.TrimSpace(q.Get("app"))
-	if len(app) > maxAppLen {
+	if utf8.RuneCountInString(app) > maxAppLen {
 		return FilterParams{}, fmt.Errorf("%w: app exceeds %d characters", ErrValidation, maxAppLen)
 	}
 
 	repo := authapi.NormalizeRepository(q.Get("repo"))
-	if len(repo) > maxRepoLen {
+	if utf8.RuneCountInString(repo) > maxRepoLen {
 		return FilterParams{}, fmt.Errorf("%w: repo exceeds %d characters", ErrValidation, maxRepoLen)
 	}
 
@@ -55,12 +57,12 @@ func parseParams(
 	}
 
 	lane := strings.TrimSpace(q.Get("lane"))
-	if len(lane) > maxLaneLen {
+	if utf8.RuneCountInString(lane) > maxLaneLen {
 		return FilterParams{}, fmt.Errorf("%w: lane exceeds %d characters", ErrValidation, maxLaneLen)
 	}
 
 	platform := strings.TrimSpace(q.Get("platform"))
-	if len(platform) > maxPlatformLen {
+	if utf8.RuneCountInString(platform) > maxPlatformLen {
 		return FilterParams{}, fmt.Errorf("%w: platform exceeds %d characters", ErrValidation, maxPlatformLen)
 	}
 
@@ -81,22 +83,25 @@ func parseParams(
 		return FilterParams{}, fmt.Errorf("%w: invalid sort %q", ErrValidation, sortBy)
 	}
 
-	page := 1
-	if rawPage := strings.TrimSpace(q.Get("page")); rawPage != "" {
-		n, err := strconv.Atoi(rawPage)
-		if err != nil || n < 1 {
-			return FilterParams{}, fmt.Errorf("%w: page must be an integer >= 1", ErrValidation)
+	var page, limit int
+	if withPagination {
+		page = 1
+		if rawPage := strings.TrimSpace(q.Get("page")); rawPage != "" {
+			n, err := strconv.Atoi(rawPage)
+			if err != nil || n < 1 {
+				return FilterParams{}, fmt.Errorf("%w: page must be an integer >= 1", ErrValidation)
+			}
+			page = n
 		}
-		page = n
-	}
 
-	limit := defaultLimit
-	if rawLimit := strings.TrimSpace(q.Get("limit")); rawLimit != "" {
-		n, err := strconv.Atoi(rawLimit)
-		if err != nil || n < 1 || n > maxLimit {
-			return FilterParams{}, fmt.Errorf("%w: limit must be an integer between 1 and %d", ErrValidation, maxLimit)
+		limit = defaultLimit
+		if rawLimit := strings.TrimSpace(q.Get("limit")); rawLimit != "" {
+			n, err := strconv.Atoi(rawLimit)
+			if err != nil || n < 1 || n > maxLimit {
+				return FilterParams{}, fmt.Errorf("%w: limit must be an integer between 1 and %d", ErrValidation, maxLimit)
+			}
+			limit = n
 		}
-		limit = n
 	}
 
 	curFrom, curTo, priorFrom, priorTo := WindowBounds(now, days)

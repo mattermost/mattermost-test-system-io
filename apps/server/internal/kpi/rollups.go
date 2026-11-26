@@ -86,6 +86,7 @@ type groupRow struct {
 	TotalDurationMs   *int64
 	TestStatsJSON     []byte
 	OrchestrationJSON []byte
+	SummaryVersion    int64
 }
 
 type orchState struct {
@@ -279,10 +280,15 @@ func RefreshGroupRollups(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 
 		if _, err := tx.Exec(ctx, `
 			UPDATE report_groups
-			   SET kpi_rollups_refreshed_at = $2
+			   SET kpi_rollups_refreshed_at = $2,
+			       kpi_rollups_version      = GREATEST(kpi_rollups_version, $3)
 			 WHERE id = $1
-			   AND (kpi_rollups_refreshed_at IS NULL OR kpi_rollups_refreshed_at < $2)
-		`, groupID, snapshotAt); err != nil {
+			   AND (
+			       kpi_rollups_refreshed_at IS NULL
+			       OR kpi_rollups_refreshed_at < $2
+			       OR kpi_rollups_version < $3
+			   )
+		`, groupID, snapshotAt, g.SummaryVersion); err != nil {
 			return fmt.Errorf("stamp kpi_rollups_refreshed_at: %w", err)
 		}
 		return nil
@@ -368,35 +374,44 @@ func DeleteGroupAndRecomputeRollups(ctx context.Context, pool *pgxpool.Pool, gro
 	return deleted, nil
 }
 
+const staleGroupRollupsPredicate = `
+	(
+		g.kpi_rollups_refreshed_at IS NULL
+		OR g.kpi_rollups_version < g.kpi_summary_version
+		OR g.kpi_rollups_refreshed_at < GREATEST(g.updated_at, g.last_upload_at)
+		OR EXISTS (
+			SELECT 1 FROM reports r
+			 WHERE r.report_group_id = g.id
+			   AND r.updated_at > g.kpi_rollups_refreshed_at)
+		OR EXISTS (
+			SELECT 1 FROM verdicts v
+			 WHERE v.report_group_id = g.id
+			   AND GREATEST(v.created_at, COALESCE(v.superseded_at, v.created_at)) > g.kpi_rollups_refreshed_at)
+		OR EXISTS (
+			SELECT 1 FROM orchestration_runs o
+			 WHERE o.repository = g.repository
+			   AND o.commit_sha = g.commit_sha
+			   AND o.gh_run_id = g.gh_run_id
+			   AND o.name = g.name
+			   AND o.gh_run_attempt = g.gh_run_attempt
+			   AND o.updated_at > g.kpi_rollups_refreshed_at)
+	)`
+
 // RefreshStaleGroupRollups sweeps unrefreshed or stale report_groups and refreshes their KPI rollups.
+// It splits the batch between newest and oldest stale groups so a burst of new activity cannot
+// starve older pending groups indefinitely.
 func RefreshStaleGroupRollups(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, limit int) error {
 	if pool == nil || limit <= 0 {
 		return nil
 	}
+	newestLimit := (limit + 1) / 2
 	rows, err := pool.Query(ctx, `
 		SELECT g.id
 		  FROM report_groups g
-		 WHERE g.kpi_rollups_refreshed_at IS NULL
-		    OR g.kpi_rollups_refreshed_at < GREATEST(g.updated_at, g.last_upload_at)
-		    OR EXISTS (
-		          SELECT 1 FROM reports r
-		           WHERE r.report_group_id = g.id
-		             AND r.updated_at > g.kpi_rollups_refreshed_at)
-		    OR EXISTS (
-		          SELECT 1 FROM verdicts v
-		           WHERE v.report_group_id = g.id
-		             AND GREATEST(v.created_at, COALESCE(v.superseded_at, v.created_at)) > g.kpi_rollups_refreshed_at)
-		    OR EXISTS (
-		          SELECT 1 FROM orchestration_runs o
-		           WHERE o.repository = g.repository
-		             AND o.commit_sha = g.commit_sha
-		             AND o.gh_run_id = g.gh_run_id
-		             AND o.name = g.name
-		             AND o.gh_run_attempt = g.gh_run_attempt
-		             AND o.updated_at > g.kpi_rollups_refreshed_at)
+		 WHERE `+staleGroupRollupsPredicate+`
 		 ORDER BY g.created_at DESC
 		 LIMIT $1
-	`, limit)
+	`, newestLimit)
 	if err != nil {
 		return err
 	}
@@ -404,7 +419,33 @@ func RefreshStaleGroupRollups(ctx context.Context, pool *pgxpool.Pool, logger *s
 	if err != nil {
 		return err
 	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	if remaining := limit - len(ids); remaining > 0 {
+		oldRows, err := pool.Query(ctx, `
+			SELECT g.id
+			  FROM report_groups g
+			 WHERE `+staleGroupRollupsPredicate+`
+			   AND NOT (g.id = ANY($2::uuid[]))
+			 ORDER BY g.created_at ASC
+			 LIMIT $1
+		`, remaining, ids)
+		if err != nil {
+			return err
+		}
+		oldestIDs, err := pgx.CollectRows(oldRows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			return err
+		}
+		ids = append(ids, oldestIDs...)
+	}
+
 	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		RefreshGroupRollupsBestEffort(ctx, pool, logger, id)
 	}
 	return nil
@@ -443,7 +484,7 @@ func loadGroupRow(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) (groupRow, 
 		       COALESCE(a.app, NULLIF(split_part(g.repository, '/', 2), ''), g.repository),
 		       g.framework, g.stage, g.name, g.commit_sha, g.gh_run_id, g.gh_run_attempt,
 		       g.gh_pr_number, g.status, COALESCE(g.platform, ''), g.total_duration_ms,
-		       g.test_stats_json, g.orchestration_json
+		       g.test_stats_json, g.orchestration_json, g.kpi_summary_version
 		  FROM report_groups g
 		  LEFT JOIN LATERAL (
 		      SELECT ap.app
@@ -457,7 +498,7 @@ func loadGroupRow(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) (groupRow, 
 		&g.ID, &g.CreatedAt, &g.MetricDate, &g.Repository, &g.App,
 		&g.Framework, &g.Stage, &g.Lane, &g.CommitSHA, &g.GHRunID, &g.GHRunAttempt,
 		&g.GHPRNumber, &g.Status, &g.Platform, &g.TotalDurationMs,
-		&g.TestStatsJSON, &g.OrchestrationJSON,
+		&g.TestStatsJSON, &g.OrchestrationJSON, &g.SummaryVersion,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return groupRow{}, false, nil
@@ -518,6 +559,7 @@ func loadOrchState(ctx context.Context, tx pgx.Tx, g groupRow, oldAll *oldGroupR
 		   AND o.name = $4
 		   AND o.gh_run_attempt = $5
 		 LIMIT 1
+		   FOR SHARE OF o
 	`, g.Repository, g.CommitSHA, g.GHRunID, g.Lane, g.GHRunAttempt).Scan(
 		&runID, &status, &failCount, &abandonedCount, &startedAt, &hasRetried, &lastTestAt,
 	)
@@ -544,22 +586,27 @@ func loadOrchState(ctx context.Context, tx pgx.Tx, g groupRow, oldAll *oldGroupR
 	if len(g.OrchestrationJSON) > 0 {
 		var oj orchJSONPayload
 		if uerr := json.Unmarshal(g.OrchestrationJSON, &oj); uerr == nil && oj.Status != "" {
-			dur := g.TotalDurationMs
-			if dur == nil && oj.Durations != nil && oj.Durations.LastTestAt != nil {
-				ms := max(int64(0), oj.Durations.LastTestAt.Sub(oj.Durations.BeginAt).Milliseconds())
-				dur = &ms
+			isTerminalJSON := oj.Status == statusCompleted || oj.Status == statusTimedOut
+			hasTerminalOld := oldAll != nil && oldAll.HasOrchestration && oldAll.OrchStatus != nil &&
+				(*oldAll.OrchStatus == statusCompleted || *oldAll.OrchStatus == statusTimedOut)
+			if isTerminalJSON || !hasTerminalOld {
+				dur := g.TotalDurationMs
+				if dur == nil && oj.Durations != nil && oj.Durations.LastTestAt != nil {
+					ms := max(int64(0), oj.Durations.LastTestAt.Sub(oj.Durations.BeginAt).Milliseconds())
+					dur = &ms
+				}
+				if dur == nil && oldAll != nil {
+					dur = oldAll.TotalDurationMs
+				}
+				return orchState{
+					HasOrchestration: true,
+					OrchStatus:       &oj.Status,
+					FailCount:        oj.Counts.CompletedFail,
+					AbandonedCount:   oj.Counts.Abandoned,
+					HasRetriedUnit:   oj.Durations != nil && oj.Durations.RetestUnitCount > 0,
+					TotalDurationMs:  dur,
+				}, nil
 			}
-			if dur == nil && oldAll != nil {
-				dur = oldAll.TotalDurationMs
-			}
-			return orchState{
-				HasOrchestration: true,
-				OrchStatus:       &oj.Status,
-				FailCount:        oj.Counts.CompletedFail,
-				AbandonedCount:   oj.Counts.Abandoned,
-				HasRetriedUnit:   oj.Durations != nil && oj.Durations.RetestUnitCount > 0,
-				TotalDurationMs:  dur,
-			}, nil
 		}
 	}
 
@@ -813,7 +860,10 @@ func acquireDeterministicLocks(
 	return nil
 }
 
-const statusCompleted = "completed"
+const (
+	statusCompleted = "completed"
+	statusTimedOut  = "timed_out"
+)
 
 type groupFlags struct {
 	IsRed                  bool
@@ -833,7 +883,7 @@ func computeGroupFlags(
 		if orch.OrchStatus != nil {
 			orchStatus = *orch.OrchStatus
 		}
-		isRed := orchStatus == "timed_out" || orch.FailCount > 0 || orch.AbandonedCount > 0
+		isRed := orchStatus == statusTimedOut || orch.FailCount > 0 || orch.AbandonedCount > 0
 		if orch.PreservedIsRed != nil {
 			isRed = *orch.PreservedIsRed
 		}
@@ -1265,7 +1315,7 @@ func recomputeBucketsAndCommitsTx(
 				r.project,
 				r.platform,
 				MAX(r.app),
-				(MAX(r.group_created_at) AT TIME ZONE 'UTC')::date,
+				r.metric_date,
 				MIN(r.group_created_at),
 				MAX(r.group_created_at),
 				COUNT(*) FILTER (WHERE r.verdict IN ('passed', 'flaky'))::integer,
@@ -1276,7 +1326,7 @@ func recomputeBucketsAndCommitsTx(
 				now()
 			FROM kpi_test_results r
 			WHERE r.repository = $1 AND r.commit_sha = $2
-			GROUP BY r.repository, r.commit_sha, r.stage, r.lane, r.test_id, r.project, r.platform
+			GROUP BY r.metric_date, r.repository, r.commit_sha, r.stage, r.lane, r.test_id, r.project, r.platform
 		`, c.Repository, c.CommitSHA); err != nil {
 			return fmt.Errorf("recompute kpi_test_commit_outcomes: %w", err)
 		}

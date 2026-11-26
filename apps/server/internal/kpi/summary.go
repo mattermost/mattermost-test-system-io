@@ -83,6 +83,17 @@ func (s *Store) queryLaneCoverage(
 	useFilterStage bool,
 	extraNotes []string,
 ) (LaneCoverage, error) {
+	return s.queryLaneCoverageQ(ctx, s.Pool, f, overrideStage, useFilterStage, extraNotes)
+}
+
+func (s *Store) queryLaneCoverageQ(
+	ctx context.Context,
+	q dbQuerier,
+	f FilterParams,
+	overrideStage string,
+	useFilterStage bool,
+	extraNotes []string,
+) (LaneCoverage, error) {
 	b := &sqlFilterBuilder{}
 	fromPH := b.add(f.CurFromDate)
 	toPH := b.add(f.CurToDate)
@@ -96,7 +107,7 @@ func (s *Store) queryLaneCoverage(
 	where.WriteString(b.appendCommonFilters("m", f, useFilterStage && overrideStage == ""))
 	where.WriteString(appendPlatformScope(b, "m", f.Platform))
 
-	rows, err := s.Pool.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		SELECT m.repository, m.lane,
 		       COALESCE(SUM(m.total_runs), 0)::integer,
 		       COALESCE(SUM(m.orchestrated_runs), 0)::integer,
@@ -132,8 +143,6 @@ func (s *Store) queryLaneCoverage(
 			cov.StrictSupportedLanes++
 		} else {
 			cov.UploadOnlyLanes++
-		}
-		if uploadRuns > 0 {
 			cov.UploadOnlyLaneNames = append(cov.UploadOnlyLaneNames, lane)
 		}
 	}
@@ -145,7 +154,7 @@ func (s *Store) queryLaneCoverage(
 	cov.UploadOnlyLaneNames = sortStringsDedup(cov.UploadOnlyLaneNames)
 	cov.Notes = append(cov.Notes, extraNotes...)
 	if cov.UploadOnlyRuns > 0 {
-		cov.Notes = append(cov.Notes, "upload-only lanes lack orchestration lease history and total_duration_ms; excluded from strict lane pass rate and p50/p90 E2E duration")
+		cov.Notes = append(cov.Notes, "upload-only runs lack orchestration lease history and total_duration_ms; excluded from strict lane pass rate and p50/p90 E2E duration")
 	}
 	return cov, nil
 }

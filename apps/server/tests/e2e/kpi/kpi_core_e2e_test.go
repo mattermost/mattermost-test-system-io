@@ -63,6 +63,9 @@ func TestMigration000036_UpDownAndNoConcurrentOrTestCasesIndex(t *testing.T) {
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate pg_indexes: %v", err)
+	}
 
 	objects := []string{
 		"public.kpi_test_results",
@@ -556,7 +559,15 @@ func TestKPI_IncrementalRefreshIdempotencyConcurrencySweepVerdictDeleteAndPrune(
 	}
 
 	// 4. Simulate `tsioctl orchestration prune`: delete orchestration_runs and refresh again!
-	// Snapshot must preserve has_orchestration, orch_status, is_red, has_retried_unit, total_duration_ms.
+	// Snapshot must preserve has_orchestration, orch_status, is_red, has_retried_unit, total_duration_ms
+	// even if report_groups.orchestration_json still holds a stale non-terminal status.
+	if _, err := env.Pool.Exec(ctx, `
+		UPDATE report_groups
+		   SET orchestration_json = '{"status":"in_progress","counts":{"completed_fail":0,"abandoned":0}}'::jsonb
+		 WHERE id = $1
+	`, gid); err != nil {
+		t.Fatalf("set stale orchestration_json: %v", err)
+	}
 	if _, err := env.Pool.Exec(ctx, `DELETE FROM orchestration_runs WHERE repository = 'mattermost/mattermost'`); err != nil {
 		t.Fatalf("delete orchestration_runs: %v", err)
 	}
@@ -633,11 +644,14 @@ func TestKPI_IncrementalRefreshIdempotencyConcurrencySweepVerdictDeleteAndPrune(
 func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 	env := testenv.Start(t, testenv.WithReaperDisabled())
 	ctx := t.Context()
+	raceCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	client := &http.Client{Timeout: 30 * time.Second}
 	now := time.Now().UTC()
 	apiKey := env.IssueAPIKey(t, "kpi-delete-race")
 
 	var sigID uuid.UUID
-	if err := env.Pool.QueryRow(ctx, `
+	if err := env.Pool.QueryRow(raceCtx, `
 		INSERT INTO failure_signatures (fingerprint, algo_version, normalized_message, first_seen_at)
 		VALUES ($1, $2, 'delete race signature', $3)
 		RETURNING id
@@ -645,44 +659,105 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 		t.Fatalf("insert signature: %v", err)
 	}
 
-	tHeavy := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:race-heavy", "Race > heavy")
+	tHeavy := insertTest(t, raceCtx, env.Pool, "mattermost/mattermost", "playwright", "h:race-heavy", "Race > heavy")
+
+	// Deterministic pre-delete supersession (200 with superseded_id != nil) and post-delete 400 checks.
+	detGID := insertGroup(t, raceCtx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-det", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "pr-det", Commit: "det-sha",
+		RunID: "det-1", Attempt: "1", Stage: "pr", CreatedAt: now,
+	})
+	detRID := insertReport(t, raceCtx, env.Pool, detGID, "e2e-det", "")
+	detSID := insertSuite(t, raceCtx, env.Pool, detRID, "Det")
+	insertCaseWithSig(t, raceCtx, env.Pool, detSID, tHeavy, sigID, "det", "failed", 0, 0)
+
+	postVerdict := func(groupID uuid.UUID, label string) (*http.Response, []byte, error) {
+		body, _ := json.Marshal(map[string]any{
+			"repository":      "mattermost/mattermost",
+			"report_group_id": groupID.String(),
+			"verdicts": []any{
+				map[string]any{
+					"test_id":      tHeavy.String(),
+					"signature_id": sigID.String(),
+					"label":        label,
+				},
+			},
+		})
+		req, err := http.NewRequestWithContext(raceCtx, http.MethodPost, env.ServerURL+"/api/v1/verdicts", bytes.NewReader(body))
+		if err != nil {
+			return nil, nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", apiKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		return resp, raw, err
+	}
+
+	if resp, _, err := postVerdict(detGID, "initial"); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("deterministic seed verdict failed: err=%v resp=%v", err, resp)
+	}
+	supResp, supBody, err := postVerdict(detGID, "infra")
+	if err != nil {
+		t.Fatalf("deterministic supersede verdict: %v", err)
+	}
+	if supResp.StatusCode != http.StatusOK {
+		t.Fatalf("deterministic supersede status = %d, want 200 (body=%s)", supResp.StatusCode, string(supBody))
+	}
+	var supParsed struct {
+		Verdicts []struct {
+			SupersededID *uuid.UUID `json:"superseded_id"`
+		} `json:"verdicts"`
+	}
+	if err := json.Unmarshal(supBody, &supParsed); err != nil {
+		t.Fatalf("unmarshal supersede response: %v", err)
+	}
+	if len(supParsed.Verdicts) != 1 || supParsed.Verdicts[0].SupersededID == nil {
+		t.Fatalf("expected 1 superseded verdict with superseded_id != nil, got %s", string(supBody))
+	}
+	detDelReq, _ := http.NewRequestWithContext(raceCtx, http.MethodDelete, env.ServerURL+"/api/v1/reports/"+detGID.String(), nil)
+	detDelReq.Header.Set("X-API-Key", apiKey)
+	detDelResp, err := client.Do(detDelReq)
+	if err != nil {
+		t.Fatalf("deterministic delete: %v", err)
+	}
+	detDelResp.Body.Close()
+	if detDelResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("deterministic delete status = %d, want 204", detDelResp.StatusCode)
+	}
+	afterDelResp, afterDelBody, err := postVerdict(detGID, "product-bug")
+	if err != nil {
+		t.Fatalf("post-delete verdict: %v", err)
+	}
+	if afterDelResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("post-delete verdict status = %d, want 400 (body=%s)", afterDelResp.StatusCode, string(afterDelBody))
+	}
 
 	const numGroups = 16
 	gids := make([]uuid.UUID, 0, numGroups)
 	for i := range numGroups {
-		gid := insertGroup(t, ctx, env.Pool, groupSeed{
+		gid := insertGroup(t, raceCtx, env.Pool, groupSeed{
 			Framework: "playwright", Name: "e2e-race", Status: "completed",
 			Repo: "mattermost/mattermost", Branch: "pr-race", Commit: fmt.Sprintf("race-sha-%d", i%4),
 			RunID: fmt.Sprintf("race-%d", i), Attempt: "1", Stage: "pr", CreatedAt: now,
 		})
-		rid := insertReport(t, ctx, env.Pool, gid, "e2e-race", "")
-		sid := insertSuite(t, ctx, env.Pool, rid, "Race")
+		rid := insertReport(t, raceCtx, env.Pool, gid, "e2e-race", "")
+		sid := insertSuite(t, raceCtx, env.Pool, rid, "Race")
 		for j := range 100 {
-			insertCaseWithSig(t, ctx, env.Pool, sid, tHeavy, sigID, "heavy", "failed", 0, j)
+			insertCaseWithSig(t, raceCtx, env.Pool, sid, tHeavy, sigID, "heavy", "failed", 0, j)
 		}
 
 		// Pre-seed an active verdict so concurrent POST /api/v1/verdicts calls
 		// execute the supersede path (FOR UPDATE + UPDATE verdicts + INSERT verdicts)
 		// while racing DELETE /api/v1/reports/{id}.
-		seedBody, _ := json.Marshal(map[string]any{
-			"repository":      "mattermost/mattermost",
-			"report_group_id": gid.String(),
-			"verdicts": []any{
-				map[string]any{
-					"test_id":      tHeavy.String(),
-					"signature_id": sigID.String(),
-					"label":        "initial",
-				},
-			},
-		})
-		seedReq, _ := http.NewRequest(http.MethodPost, env.ServerURL+"/api/v1/verdicts", bytes.NewReader(seedBody))
-		seedReq.Header.Set("Content-Type", "application/json")
-		seedReq.Header.Set("X-API-Key", apiKey)
-		seedResp, err := http.DefaultClient.Do(seedReq)
+		seedResp, _, err := postVerdict(gid, "initial")
 		if err != nil {
 			t.Fatalf("seed verdict %s: %v", gid, err)
 		}
-		seedResp.Body.Close()
 		if seedResp.StatusCode != http.StatusOK {
 			t.Fatalf("seed verdict %s status = %d, want 200", gid, seedResp.StatusCode)
 		}
@@ -701,26 +776,11 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 				if (idx+labelIdx)%2 == 0 {
 					time.Sleep(time.Duration((idx+labelIdx)%4) * time.Millisecond)
 				}
-				body, _ := json.Marshal(map[string]any{
-					"repository":      "mattermost/mattermost",
-					"report_group_id": groupID.String(),
-					"verdicts": []any{
-						map[string]any{
-							"test_id":      tHeavy.String(),
-							"signature_id": sigID.String(),
-							"label":        lbl,
-						},
-					},
-				})
-				req, _ := http.NewRequest(http.MethodPost, env.ServerURL+"/api/v1/verdicts", bytes.NewReader(body))
-				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("X-API-Key", apiKey)
-				resp, err := http.DefaultClient.Do(req)
+				resp, _, err := postVerdict(groupID, lbl)
 				if err != nil {
 					errCh <- fmt.Errorf("post verdict %s (%s): %w", groupID, lbl, err)
 					return
 				}
-				resp.Body.Close()
 				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadRequest {
 					errCh <- fmt.Errorf("post verdict %s (%s) status = %d", groupID, lbl, resp.StatusCode)
 				}
@@ -730,7 +790,7 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 		wg.Add(2)
 		go func(groupID uuid.UUID) {
 			defer wg.Done()
-			if err := kpi.RefreshGroupRollups(ctx, env.Pool, groupID); err != nil {
+			if err := kpi.RefreshGroupRollups(raceCtx, env.Pool, groupID); err != nil {
 				errCh <- fmt.Errorf("refresh %s: %w", groupID, err)
 			}
 		}(gid)
@@ -740,9 +800,9 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 			if idx%2 == 1 {
 				time.Sleep(time.Duration((idx%4)+1) * time.Millisecond)
 			}
-			req, _ := http.NewRequest(http.MethodDelete, env.ServerURL+"/api/v1/reports/"+groupID.String(), nil)
+			req, _ := http.NewRequestWithContext(raceCtx, http.MethodDelete, env.ServerURL+"/api/v1/reports/"+groupID.String(), nil)
 			req.Header.Set("X-API-Key", apiKey)
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := client.Do(req)
 			if err != nil {
 				errCh <- fmt.Errorf("delete %s: %w", groupID, err)
 				return
@@ -760,22 +820,22 @@ func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
 	}
 
 	var execRows, execRuns, laneRows, commitRows, groupRows, sigRows, groupSigRows int
-	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(run_count), 0) FROM kpi_daily_test_executions`).Scan(&execRows, &execRuns); err != nil {
+	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*), COALESCE(SUM(run_count), 0) FROM kpi_daily_test_executions`).Scan(&execRows, &execRuns); err != nil {
 		t.Fatalf("count kpi_daily_test_executions: %v", err)
 	}
-	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_lane_metrics`).Scan(&laneRows); err != nil {
+	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*) FROM kpi_daily_lane_metrics`).Scan(&laneRows); err != nil {
 		t.Fatalf("count kpi_daily_lane_metrics: %v", err)
 	}
-	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_test_commit_outcomes`).Scan(&commitRows); err != nil {
+	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*) FROM kpi_test_commit_outcomes`).Scan(&commitRows); err != nil {
 		t.Fatalf("count kpi_test_commit_outcomes: %v", err)
 	}
-	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_rollups`).Scan(&groupRows); err != nil {
+	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*) FROM kpi_group_rollups`).Scan(&groupRows); err != nil {
 		t.Fatalf("count kpi_group_rollups: %v", err)
 	}
-	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_signature_metrics`).Scan(&sigRows); err != nil {
+	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*) FROM kpi_daily_signature_metrics`).Scan(&sigRows); err != nil {
 		t.Fatalf("count kpi_daily_signature_metrics: %v", err)
 	}
-	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_signature_rollups`).Scan(&groupSigRows); err != nil {
+	if err := env.Pool.QueryRow(raceCtx, `SELECT COUNT(*) FROM kpi_group_signature_rollups`).Scan(&groupSigRows); err != nil {
 		t.Fatalf("count kpi_group_signature_rollups: %v", err)
 	}
 	if execRows != 0 || execRuns != 0 || laneRows != 0 || commitRows != 0 || groupRows != 0 || sigRows != 0 || groupSigRows != 0 {
@@ -957,6 +1017,178 @@ func TestKPI_TimedOutStrictPassRate14dFlakyCoveragePerAppPriorAndFirstAttemptSki
 
 	flaky := getJSON[kpi.FlakyResponse](t, env.ServerURL+"/api/v1/kpi/flaky?window=14d")
 	assertAppFlaky("/kpi/flaky?window=14d", flaky.ByApp)
+}
+
+func TestKPI_SummaryVersionOutOfWindowFlakyMixedLaneOldestSweepAndForShare(t *testing.T) {
+	env := testenv.Start(t, testenv.WithReaperDisabled())
+	ctx := t.Context()
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.UTC)
+	day1 := today.AddDate(0, 0, -1)
+	day20 := today.AddDate(0, 0, -20)
+
+	// 1. Out-of-window failure (day20) + in-window pass (day1) on the SAME commit (across 2 commits):
+	// Must NOT be counted as flaky in window=14d, MUST be counted as flaky in window=30d.
+	tSplit := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:split-flaky", "Split > cross-window")
+	for i, sha := range []string{"split-sha-1", "split-sha-2"} {
+		gOld := insertGroup(t, ctx, env.Pool, groupSeed{
+			Framework: "playwright", Name: "e2e-split", Status: "completed",
+			Repo: "mattermost/mattermost", Branch: "pr-split", Commit: sha,
+			RunID: fmt.Sprintf("split-old-%d", i), Attempt: "1", Stage: "pr", CreatedAt: day20,
+		})
+		rOld := insertReport(t, ctx, env.Pool, gOld, "e2e-split", "")
+		sOld := insertSuite(t, ctx, env.Pool, rOld, "Split")
+		insertCase(t, ctx, env.Pool, sOld, tSplit, "cross-window", "failed", 0, "", 0)
+		mustRefresh(t, ctx, env.Pool, gOld)
+
+		gNew := insertGroup(t, ctx, env.Pool, groupSeed{
+			Framework: "playwright", Name: "e2e-split", Status: "completed",
+			Repo: "mattermost/mattermost", Branch: "pr-split", Commit: sha,
+			RunID: fmt.Sprintf("split-new-%d", i), Attempt: "1", Stage: "pr", CreatedAt: day1,
+		})
+		rNew := insertReport(t, ctx, env.Pool, gNew, "e2e-split", "")
+		sNew := insertSuite(t, ctx, env.Pool, rNew, "Split")
+		insertCase(t, ctx, env.Pool, sNew, tSplit, "cross-window", "passed", 0, "", 0)
+		mustRefresh(t, ctx, env.Pool, gNew)
+	}
+
+	flaky14 := getJSON[kpi.FlakyResponse](t, env.ServerURL+"/api/v1/kpi/flaky?window=14d")
+	if flaky14.TotalFlakyTests != 0 {
+		t.Fatalf("14d flaky count = %d, want 0 (out-of-window fail must not leak into 14d)", flaky14.TotalFlakyTests)
+	}
+	flaky30 := getJSON[kpi.FlakyResponse](t, env.ServerURL+"/api/v1/kpi/flaky?window=30d")
+	if flaky30.TotalFlakyTests != 1 {
+		t.Fatalf("30d flaky count = %d, want 1", flaky30.TotalFlakyTests)
+	}
+
+	// 2. Mixed lane (1 orchestrated + 1 upload-only run on the same lane):
+	// UploadOnlyLanes must be 0 and UploadOnlyLaneNames must be empty.
+	gMixOrch := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-mixed", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "main", Commit: "mix-sha-1",
+		RunID: "mix-1", Attempt: "1", Stage: "main", CreatedAt: day1, DurMs: int64Ptr(15000),
+	})
+	insertOrchRun(t, ctx, env.Pool, orchSeed{
+		Repo: "mattermost/mattermost", Commit: "mix-sha-1", RunID: "mix-1",
+		Name: "e2e-mixed", Attempt: "1", Status: "completed", StartedAt: day1,
+	})
+	mustRefresh(t, ctx, env.Pool, gMixOrch)
+
+	gMixUp := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-mixed", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "main", Commit: "mix-sha-2",
+		RunID: "mix-2", Attempt: "1", Stage: "main", CreatedAt: day1,
+	})
+	mustRefresh(t, ctx, env.Pool, gMixUp)
+
+	sum := getJSON[kpi.SummaryResponse](t, env.ServerURL+"/api/v1/kpi/summary?window=7d&lane=e2e-mixed")
+	if sum.LaneCoverage.UploadOnlyLanes != 0 || len(sum.LaneCoverage.UploadOnlyLaneNames) != 0 {
+		t.Fatalf("mixed lane coverage = %+v, want upload_only_lanes=0 and empty upload_only_lane_names", sum.LaneCoverage)
+	}
+
+	// 3. kpi_summary_version > kpi_rollups_version triggers RefreshStaleGroupRollups even when
+	// kpi_rollups_refreshed_at is already stamped ahead of updated_at.
+	if _, err := env.Pool.Exec(ctx, `
+		UPDATE report_groups
+		   SET total_duration_ms = 25000,
+		       kpi_summary_version = kpi_summary_version + 1,
+		       kpi_rollups_refreshed_at = now() + interval '1 hour'
+		 WHERE id = $1
+	`, gMixOrch); err != nil {
+		t.Fatalf("bump kpi_summary_version: %v", err)
+	}
+	if err := kpi.RefreshStaleGroupRollups(ctx, env.Pool, nil, 10); err != nil {
+		t.Fatalf("RefreshStaleGroupRollups version catch-up: %v", err)
+	}
+	var gotDur *int64
+	var sumVer, rollVer int64
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT r.total_duration_ms, g.kpi_summary_version, g.kpi_rollups_version
+		  FROM kpi_group_rollups r
+		  JOIN report_groups g ON g.id = r.report_group_id
+		 WHERE r.report_group_id = $1 AND r.is_all_platforms = true
+	`, gMixOrch).Scan(&gotDur, &sumVer, &rollVer); err != nil {
+		t.Fatalf("query version catch-up: %v", err)
+	}
+	if gotDur == nil || *gotDur != 25000 || rollVer < sumVer {
+		t.Fatalf("version catch-up failed: dur=%v sumVer=%d rollVer=%d", gotDur, sumVer, rollVer)
+	}
+
+	// 4. Split newest+oldest stale sweep: with 4 stale groups and limit=2, both newest and oldest refresh.
+	staleIDs := make([]uuid.UUID, 4)
+	for i := range 4 {
+		staleIDs[i] = insertGroup(t, ctx, env.Pool, groupSeed{
+			Framework: "playwright", Name: "e2e-sweep", Status: "completed",
+			Repo: "mattermost/mattermost", Branch: "main", Commit: fmt.Sprintf("sweep-%d", i),
+			RunID: fmt.Sprintf("sweep-%d", i), Attempt: "1", Stage: "main",
+			CreatedAt: today.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	if err := kpi.RefreshStaleGroupRollups(ctx, env.Pool, nil, 2); err != nil {
+		t.Fatalf("RefreshStaleGroupRollups split batch: %v", err)
+	}
+	var refreshedOldest, refreshedNewest *time.Time
+	if err := env.Pool.QueryRow(ctx, `SELECT kpi_rollups_refreshed_at FROM report_groups WHERE id = $1`, staleIDs[0]).Scan(&refreshedOldest); err != nil {
+		t.Fatalf("query oldest: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT kpi_rollups_refreshed_at FROM report_groups WHERE id = $1`, staleIDs[3]).Scan(&refreshedNewest); err != nil {
+		t.Fatalf("query newest: %v", err)
+	}
+	if refreshedOldest == nil || refreshedNewest == nil {
+		t.Fatalf("split batch starved oldest or missed newest: oldest=%v newest=%v", refreshedOldest, refreshedNewest)
+	}
+
+	// 5. FOR SHARE OF o blocks RefreshGroupRollups until concurrent orchestration_runs update commits.
+	gOrch := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-share", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "main", Commit: "share-sha",
+		RunID: "share-1", Attempt: "1", Stage: "main", CreatedAt: day1,
+	})
+	orchID := insertOrchRun(t, ctx, env.Pool, orchSeed{
+		Repo: "mattermost/mattermost", Commit: "share-sha", RunID: "share-1",
+		Name: "e2e-share", Attempt: "1", Status: "in_progress", StartedAt: day1,
+	})
+
+	tx, err := env.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin orch writer tx: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE orchestration_runs
+		   SET status = 'completed', pending_count = 0, completed_pass_count = 1,
+		       terminal_at = clock_timestamp(), updated_at = clock_timestamp()
+		 WHERE id = $1
+	`, orchID); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("update orch in tx: %v", err)
+	}
+
+	refreshDone := make(chan error, 1)
+	go func() {
+		refreshDone <- kpi.RefreshGroupRollups(ctx, env.Pool, gOrch)
+	}()
+
+	select {
+	case err := <-refreshDone:
+		_ = tx.Rollback(ctx)
+		t.Fatalf("RefreshGroupRollups did not block behind uncommitted orchestration_runs lock (err=%v)", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit orch writer tx: %v", err)
+	}
+	if err := <-refreshDone; err != nil {
+		t.Fatalf("RefreshGroupRollups after commit: %v", err)
+	}
+	var gotOrchStatus *string
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT orch_status FROM kpi_group_rollups WHERE report_group_id = $1 AND is_all_platforms = true
+	`, gOrch).Scan(&gotOrchStatus); err != nil {
+		t.Fatalf("query orch_status: %v", err)
+	}
+	if gotOrchStatus == nil || *gotOrchStatus != "completed" {
+		t.Fatalf("orch_status = %v, want 'completed'", gotOrchStatus)
+	}
 }
 
 // ---- test helpers ----

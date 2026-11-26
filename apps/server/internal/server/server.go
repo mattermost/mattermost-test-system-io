@@ -79,6 +79,7 @@ type Deps struct {
 
 	// HTTP wiring
 	CORSAllowedOrigins []string
+	KPIE2ELanes        []string
 	OpenAPISpecPath    string // path to openapi.yaml (absolute or relative to cwd)
 	PostLoginRedirect  string
 
@@ -142,7 +143,7 @@ func Build(d Deps) chi.Router {
 		AuthzMode: authzMode,
 	}
 	kpiH := &kpiapi.Handlers{
-		Store:  &kpi.Store{Pool: d.Pool},
+		Store:  &kpi.Store{Pool: d.Pool, E2ELanes: d.KPIE2ELanes},
 		Logger: d.Logger,
 	}
 	wsH := &wsapi.Handler{Hub: d.Hub}
@@ -218,6 +219,7 @@ func Build(d Deps) chi.Router {
 		// --- Public: KPI read endpoints ---
 		r.Get("/kpi/summary", kpiH.Summary)
 		r.Get("/kpi/flaky", kpiH.Flaky)
+		r.Get("/kpi/prs/red", kpiH.PRsRed)
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)

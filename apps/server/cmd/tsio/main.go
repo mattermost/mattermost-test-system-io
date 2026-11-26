@@ -172,6 +172,7 @@ func run() error {
 		Environment:            cfg.Environment,
 		RepoURL:                cfg.RepoURL,
 		CORSAllowedOrigins:     cfg.CORSAllowedOrigins,
+		KPIE2ELanes:            cfg.KPIE2ELanes,
 		OpenAPISpecPath:        cfg.OpenAPISpecPath,
 		PostLoginRedirect:      "/",
 		MaxUploadBytes:         cfg.MaxUploadBytes,

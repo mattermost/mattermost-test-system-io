@@ -153,6 +153,104 @@ func TestParseFlakyParams_DefaultsAndSorts(t *testing.T) {
 	}
 }
 
+func TestParsePRsRedParams_DefaultsAndValidation(t *testing.T) {
+	now := time.Date(2026, 11, 26, 15, 30, 0, 0, time.UTC)
+
+	params, err := ParsePRsRedParams(url.Values{}, now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if params.Window != Window30d || params.WindowDays != 30 {
+		t.Fatalf("window = %q (%d), want 30d (30)", params.Window, params.WindowDays)
+	}
+	if params.Sort != SortCreatedDesc {
+		t.Fatalf("sort = %q, want %q", params.Sort, SortCreatedDesc)
+	}
+	if params.Page != 1 || params.Limit != defaultLimit {
+		t.Fatalf("page=%d limit=%d, want 1/%d", params.Page, params.Limit, defaultLimit)
+	}
+
+	for _, s := range []string{SortCreatedDesc, SortAgeDesc, SortPRDesc, SortLaneAsc, SortReasonAsc} {
+		p, err := ParsePRsRedParams(url.Values{"sort": {s}}, now)
+		if err != nil || p.Sort != s {
+			t.Fatalf("sort %q failed: p=%+v err=%v", s, p, err)
+		}
+	}
+
+	for _, bad := range []url.Values{
+		{"sort": {SortFlakyCommitsDesc}},
+		{"sort": {SortDurationDesc}},
+		{"window": {"5d"}},
+		{"stage": {"bogus"}},
+		{"page": {"0"}},
+		{"limit": {"101"}},
+		{"app": {strings.Repeat("a", 65)}},
+		{"repo": {strings.Repeat("r", 257)}},
+		{"lane": {strings.Repeat("l", 257)}},
+		{"platform": {strings.Repeat("p", 65)}},
+	} {
+		if _, err := ParsePRsRedParams(bad, now); err == nil {
+			t.Fatalf("expected validation error for %v", bad)
+		}
+	}
+}
+
+func TestParseConfiguredE2ELanes(t *testing.T) {
+	if got := parseConfiguredE2ELanes(nil); got != nil {
+		t.Fatalf("expected nil for empty input, got %+v", got)
+	}
+	if got := parseConfiguredE2ELanes([]string{"  ", ""}); got != nil {
+		t.Fatalf("expected nil for blank entries, got %+v", got)
+	}
+	got := parseConfiguredE2ELanes([]string{
+		" mattermost/mattermost : playwright-full ",
+		"Mattermost/Mattermost:playwright-full",
+		"desktop-pr",
+		"bad:",
+	})
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (%+v)", len(got), got)
+	}
+	if got[0].repo != "mattermost/mattermost" || got[0].lane != "playwright-full" {
+		t.Fatalf("entry[0] = %+v", got[0])
+	}
+	if got[1].repo != "" || got[1].lane != "desktop-pr" {
+		t.Fatalf("entry[1] = %+v", got[1])
+	}
+}
+
+func TestBuildRunURL(t *testing.T) {
+	got := buildRunURL(
+		"mattermost/mattermost",
+		"refs/heads/feat/my-pr",
+		"abcdef1234567890",
+		"playwright-full",
+		"",
+		"987654",
+		"2",
+	)
+	want := "/reports/mattermost/feat~my-pr/abcdef1/playwright-full?gh_run_id=987654&gh_run_attempt=2"
+	if got != want {
+		t.Fatalf("buildRunURL = %q, want %q", got, want)
+	}
+	if empty := buildRunURL("mattermost/mattermost", "", "abc", "lane", "", "1", "1"); empty != "/" {
+		t.Fatalf("expected '/' fallback for empty branch, got %q", empty)
+	}
+}
+
+func TestComputeGroupFlags_SinglePlatformStatsFallback(t *testing.T) {
+	flags := computeGroupFlags(
+		orchState{HasOrchestration: false},
+		testStatsJSONPayload{Total: 10, Failed: 2},
+		sliceCounts{},
+		1,
+		false, true, true,
+	)
+	if !flags.IsRed {
+		t.Fatal("expected single-platform test_stats_json-only fallback to set IsRed=true")
+	}
+}
+
 func TestAggregateGroupSlices_Attempt1AndPlatforms(t *testing.T) {
 	t1 := uuid.New()
 	t2 := uuid.New()

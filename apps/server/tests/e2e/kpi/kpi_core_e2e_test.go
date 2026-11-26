@@ -29,6 +29,14 @@ func TestMigration000036_UpDownAndNoConcurrentOrTestCasesIndex(t *testing.T) {
 	env := testenv.Start(t, testenv.WithReaperDisabled())
 	ctx := t.Context()
 
+	down37SQL, err := migrations.FS.ReadFile("000037_kpi_e2e_lanes.down.sql")
+	if err != nil {
+		t.Fatalf("read 000037 down: %v", err)
+	}
+	up37SQL, err := migrations.FS.ReadFile("000037_kpi_e2e_lanes.up.sql")
+	if err != nil {
+		t.Fatalf("read 000037 up: %v", err)
+	}
 	upSQL, err := migrations.FS.ReadFile("000036_kpi_rollups.up.sql")
 	if err != nil {
 		t.Fatalf("read 000036 up: %v", err)
@@ -95,6 +103,9 @@ func TestMigration000036_UpDownAndNoConcurrentOrTestCasesIndex(t *testing.T) {
 
 	assertRegclass(true)
 
+	if _, err := env.Pool.Exec(ctx, string(down37SQL)); err != nil {
+		t.Fatalf("exec 000037 down: %v", err)
+	}
 	if _, err := env.Pool.Exec(ctx, string(downSQL)); err != nil {
 		t.Fatalf("exec 000036 down: %v", err)
 	}
@@ -102,6 +113,9 @@ func TestMigration000036_UpDownAndNoConcurrentOrTestCasesIndex(t *testing.T) {
 
 	if _, err := env.Pool.Exec(ctx, string(upSQL)); err != nil {
 		t.Fatalf("re-exec 000036 up: %v", err)
+	}
+	if _, err := env.Pool.Exec(ctx, string(up37SQL)); err != nil {
+		t.Fatalf("re-exec 000037 up: %v", err)
 	}
 	assertRegclass(true)
 }

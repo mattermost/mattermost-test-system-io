@@ -34,6 +34,11 @@ func ParseFlakyParams(q url.Values, now time.Time) (FilterParams, error) {
 	return parseParams(q, now, Window14d, SortFlakyCommitsDesc, isValidFlakySort, true)
 }
 
+// ParsePRsRedParams parses and validates query parameters for GET /api/v1/kpi/prs/red.
+func ParsePRsRedParams(q url.Values, now time.Time) (FilterParams, error) {
+	return parseParams(q, now, Window30d, SortCreatedDesc, isValidPRRedSort)
+}
+
 func parseParams(
 	q url.Values,
 	now time.Time,
@@ -185,6 +190,15 @@ func isValidSummarySort(s string) bool {
 func isValidFlakySort(s string) bool {
 	switch s {
 	case SortFlakyCommitsDesc, SortFlakeRateDesc, SortTotalRunsDesc, SortLastFlakyDesc, SortNameAsc:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidPRRedSort(s string) bool {
+	switch s {
+	case SortCreatedDesc, SortAgeDesc, SortPRDesc, SortLaneAsc, SortReasonAsc:
 		return true
 	default:
 		return false

@@ -83,6 +83,38 @@ func (h *Handlers) Flaky(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// PRsRed serves GET /api/v1/kpi/prs/red.
+func (h *Handlers) PRsRed(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.Store == nil || h.Store.Pool == nil {
+		api.WriteError(w, r, api.ErrInternal)
+		return
+	}
+	q, err := parseRawQuery(r)
+	if err != nil {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	params, err := kpi.ParsePRsRedParams(q, h.Store.NowTime())
+	if err != nil {
+		if errors.Is(err, kpi.ErrValidation) {
+			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+			return
+		}
+		api.WriteError(w, r, err)
+		return
+	}
+
+	resp, err := h.Store.QueryPRsRed(r.Context(), params)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("kpi prs red query failed", slog.String("error", err.Error()))
+		}
+		api.WriteError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func parseRawQuery(r *http.Request) (url.Values, error) {
 	if r.URL == nil || r.URL.RawQuery == "" {
 		return url.Values{}, nil

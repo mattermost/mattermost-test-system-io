@@ -45,12 +45,12 @@ func ParsePRsRedParams(q url.Values, now time.Time) (FilterParams, error) {
 
 // ParseFailuresParams parses and validates query parameters for GET /api/v1/kpi/failures.
 func ParseFailuresParams(q url.Values, now time.Time) (FilterParams, error) {
-	return parseParams(q, now, Window30d, SortOccurrencesDesc, isValidFailuresSort)
+	return parseParams(q, now, Window30d, SortOccurrencesDesc, isValidFailuresSort, true)
 }
 
 // ParseFailureDetailParams parses and validates query parameters for GET /api/v1/kpi/failures/{id}.
 func ParseFailureDetailParams(q url.Values, now time.Time) (FilterParams, error) {
-	return parseParams(q, now, Window30d, SortOccurrencesDesc, isValidFailuresSort)
+	return parseParams(q, now, Window30d, SortOccurrencesDesc, isValidFailuresSort, true)
 }
 
 func parseParams(

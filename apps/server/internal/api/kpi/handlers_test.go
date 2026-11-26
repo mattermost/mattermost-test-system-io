@@ -117,6 +117,7 @@ func TestFailuresValidationErrors(t *testing.T) {
 		"/api/v1/kpi/failures?sort=flaky_commits_desc",
 		"/api/v1/kpi/failures?page=0",
 		"/api/v1/kpi/failures?limit=101",
+		"/api/v1/kpi/failures?window=%ZZ",
 	}
 	for _, u := range badURLs {
 		req := httptest.NewRequest(http.MethodGet, u, nil)
@@ -153,11 +154,16 @@ func TestFailureDetailValidationErrors(t *testing.T) {
 	}
 
 	validID := uuid.NewString()
-	reqBadWin := withID(validID, "/api/v1/kpi/failures/"+validID+"?window=99d")
-	recBadWin := httptest.NewRecorder()
-	h.FailureDetail(recBadWin, reqBadWin)
-	if recBadWin.Code != http.StatusBadRequest {
-		t.Fatalf("invalid window status = %d, want 400 (body=%s)", recBadWin.Code, recBadWin.Body.String())
+	for _, target := range []string{
+		"/api/v1/kpi/failures/" + validID + "?window=99d",
+		"/api/v1/kpi/failures/" + validID + "?window=%ZZ",
+	} {
+		reqBadWin := withID(validID, target)
+		recBadWin := httptest.NewRecorder()
+		h.FailureDetail(recBadWin, reqBadWin)
+		if recBadWin.Code != http.StatusBadRequest {
+			t.Fatalf("%s: invalid window status = %d, want 400 (body=%s)", target, recBadWin.Code, recBadWin.Body.String())
+		}
 	}
 }
 

@@ -504,6 +504,9 @@ func TestVerdicts_ErrorContextRedactionAndNonLeakage(t *testing.T) {
 		"X-Amz-Signature=deadbeef",
 		"dev@mattermost.com",
 		"top-secret-header",
+		"raw-openai-secret-e2e",
+		"secret-in-auth-obj-e2e",
+		"secret-in-pw-arr-e2e",
 	}
 
 	code, postRaw := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", tok, "", map[string]any{
@@ -514,11 +517,14 @@ func TestVerdicts_ErrorContextRedactionAndNonLeakage(t *testing.T) {
 				"signature_id": sigID.String(),
 				"label":        "machine failure",
 				"error_context": map[string]any{
-					"authorization": "Bearer top-secret-header",
-					"email":         "dev@mattermost.com",
-					"url":           "https://ci:s3cr3tpass@minio.local/bucket/obj?X-Amz-Signature=deadbeef",
-					"snippet":       "token ghp_1234567890abcdef1234567890abcdef failed",
-					"input_tokens":  512,
+					"authorization":  "Bearer top-secret-header",
+					"email":          "dev@mattermost.com",
+					"openai_api_key": "raw-openai-secret-e2e",
+					"auth":           map[string]any{"raw": "secret-in-auth-obj-e2e", "expires_in": 3600},
+					"password":       []string{"secret-in-pw-arr-e2e"},
+					"url":            "https://ci:s3cr3tpass@minio.local/bucket/obj?X-Amz-Signature=deadbeef",
+					"snippet":        "token ghp_1234567890abcdef1234567890abcdef failed",
+					"input_tokens":   512,
 				},
 			},
 		},

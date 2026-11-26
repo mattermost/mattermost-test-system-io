@@ -79,6 +79,7 @@ var sensitiveNormalizedKeys = map[string]bool{
 
 var sensitiveKeySegments = map[string]bool{
 	"authorization": true,
+	"auth":          true,
 	"password":      true,
 	"passwd":        true,
 	"passphrase":    true,
@@ -93,6 +94,20 @@ var sensitiveKeySegments = map[string]bool{
 	"apikey":        true,
 	"privatekey":    true,
 	"accesskey":     true,
+	"secretkey":     true,
+	"adminkey":      true,
+	"licensekey":    true,
+	"clientsecret":  true,
+}
+
+var sensitiveTwoSegmentSuffixes = map[string]bool{
+	"apikey":       true,
+	"accesskey":    true,
+	"privatekey":   true,
+	"secretkey":    true,
+	"adminkey":     true,
+	"licensekey":   true,
+	"clientsecret": true,
 }
 
 var sensitiveContainerKeys = map[string]bool{
@@ -141,10 +156,11 @@ func RedactErrorContext(raw json.RawMessage) (json.RawMessage, error) {
 	return out, nil
 }
 
-// RedactString strips invalid UTF-8 / NUL bytes and replaces credentialed URLs,
-// URL query strings, tokens, key=value secrets, and email addresses in s.
+// RedactString normalizes invalid UTF-8 / NUL bytes to spaces and replaces
+// credentialed URLs, URL query strings, tokens, key=value secrets, and email
+// addresses in s.
 func RedactString(s string) string {
-	s = sanitizeUTF8(s)
+	s = sanitizeUTF8ForRedaction(s)
 	s = credURLRE.ReplaceAllString(s, "${1}"+redactedPlaceholder+"@")
 	s = urlQueryRE.ReplaceAllString(s, "${1}?"+redactedPlaceholder)
 	s = bearerRE.ReplaceAllString(s, "${1} "+redactedPlaceholder)
@@ -183,13 +199,7 @@ func redactValue(v any, forceRedact bool) any {
 			if _, exists := out[cleanKey]; exists {
 				continue
 			}
-			childForce := forceRedact || isSensitiveContainerKey(cleanKey)
-			if !childForce && isSensitiveKey(cleanKey) {
-				if _, isStr := x[k].(string); isStr {
-					out[cleanKey] = redactedPlaceholder
-					continue
-				}
-			}
+			childForce := forceRedact || isSensitiveContainerKey(cleanKey) || isSensitiveKey(cleanKey)
 			out[cleanKey] = redactValue(x[k], childForce)
 		}
 		return out
@@ -203,10 +213,17 @@ func isSensitiveKey(key string) bool {
 	if sensitiveNormalizedKeys[joined] {
 		return true
 	}
-	if len(segs) == 0 {
+	n := len(segs)
+	if n == 0 {
 		return false
 	}
-	return sensitiveKeySegments[segs[len(segs)-1]]
+	if sensitiveKeySegments[segs[n-1]] {
+		return true
+	}
+	if n >= 2 && sensitiveTwoSegmentSuffixes[segs[n-2]+segs[n-1]] {
+		return true
+	}
+	return false
 }
 
 func isSensitiveContainerKey(key string) bool {
@@ -244,6 +261,10 @@ func splitKey(key string) (joined string, segments []string) {
 
 func sanitizeUTF8(s string) string {
 	return strings.ReplaceAll(strings.ToValidUTF8(s, ""), "\x00", "")
+}
+
+func sanitizeUTF8ForRedaction(s string) string {
+	return strings.ReplaceAll(strings.ToValidUTF8(s, " "), "\x00", " ")
 }
 
 func sanitizeUTF8Ptr(p *string) *string {

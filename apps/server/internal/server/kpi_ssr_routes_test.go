@@ -40,7 +40,9 @@ func TestKPISSRRoutesMountedWhenHTMLViewEnabled(t *testing.T) {
 	for _, path := range []string{
 		"/kpi?window=99d",
 		"/kpi?page=0",
+		"/kpi?page=999999999999999999",
 		"/kpi/prs?sort=invalid_sort",
+		"/kpi/prs?page=999999999999999999",
 		"/kpi/failures/not-a-uuid",
 	} {
 		rec := httptest.NewRecorder()

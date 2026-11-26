@@ -26,6 +26,7 @@ const (
 	maxPlatformLen = 64
 	defaultLimit   = 50
 	maxLimit       = 100
+	maxPage        = 1_000_000
 )
 
 // ParseSummaryParams parses and validates query parameters for GET /api/v1/kpi/summary.
@@ -112,8 +113,8 @@ func parseParams(
 		page = 1
 		if rawPage := strings.TrimSpace(q.Get("page")); rawPage != "" {
 			n, err := strconv.Atoi(rawPage)
-			if err != nil || n < 1 {
-				return FilterParams{}, fmt.Errorf("%w: page must be an integer >= 1", ErrValidation)
+			if err != nil || n < 1 || n > maxPage || n-1 > math.MaxInt/maxLimit {
+				return FilterParams{}, fmt.Errorf("%w: page must be an integer between 1 and %d", ErrValidation, maxPage)
 			}
 			page = n
 		}

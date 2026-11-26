@@ -2,6 +2,7 @@ package htmlpage
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -424,13 +425,58 @@ func shortSignatureLabel(errorClass *string, normalizedMsg string) string {
 		return strings.TrimSpace(*errorClass)
 	}
 	msg := strings.TrimSpace(normalizedMsg)
-	if len(msg) > 64 {
-		return msg[:61] + "..."
-	}
 	if msg == "" {
 		return "Failure signature"
 	}
+	runes := []rune(msg)
+	if len(runes) > 64 {
+		return string(runes[:61]) + "..."
+	}
 	return msg
+}
+
+type kpiPagination struct {
+	Page           int
+	TotalPages     int
+	RowStart       int
+	ShowEnd        int
+	ShowPagination bool
+	HasPrev        bool
+	HasNext        bool
+	PrevHref       string
+	NextHref       string
+}
+
+func buildKPIPagination(state KPIFilterState, page, limit, total, respTotalPages int) kpiPagination {
+	totalPages, rowStart, showEnd := paginateRange(page, limit, total)
+	if respTotalPages > 0 {
+		totalPages = respTotalPages
+	}
+	if page < 1 {
+		page = 1
+	}
+	showPagination := total > 0 && (totalPages > 1 || page > totalPages)
+	hasPrev := total > 0 && totalPages >= 1 && page > 1
+	var prevHref string
+	if hasPrev {
+		prevHref = kpiPageQuery(state, min(page-1, totalPages))
+	}
+	hasNext := total > 0 && page < totalPages
+	var nextHref string
+	if hasNext {
+		nextHref = kpiPageQuery(state, page+1)
+	}
+	return kpiPagination{
+		Page:           page,
+		TotalPages:     totalPages,
+		RowStart:       rowStart,
+		ShowEnd:        showEnd,
+		ShowPagination: showPagination,
+		HasPrev:        hasPrev,
+		HasNext:        hasNext,
+		PrevHref:       prevHref,
+		NextHref:       nextHref,
+	}
 }
 
 func paginateRange(page, limit, total int) (totalPages, rowStart, showEnd int) {
@@ -444,6 +490,9 @@ func paginateRange(page, limit, total int) (totalPages, rowStart, showEnd int) {
 		return 1, 0, 0
 	}
 	totalPages = (total + limit - 1) / limit
+	if page-1 > math.MaxInt/limit {
+		return totalPages, 0, 0
+	}
 	offset := (page - 1) * limit
 	if offset >= total {
 		return totalPages, 0, 0

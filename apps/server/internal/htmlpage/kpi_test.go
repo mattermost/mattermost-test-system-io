@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -719,5 +720,208 @@ func TestKPIHandlers_ValidationAndNilStore(t *testing.T) {
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("GET %s with nil store = %d, want 503", path, rec.Code)
 		}
+	}
+}
+
+func TestKPIPaginationOutOfRangeRecovery(t *testing.T) {
+	now := time.Date(2026, 11, 26, 15, 0, 0, 0, time.UTC)
+
+	t.Run("overview_page_gt_total_pages_with_multiple_pages", func(t *testing.T) {
+		params, err := kpi.ParseFailuresParams(url.Values{
+			"app":    {"mattermost"},
+			"window": {"14d"},
+			"sort":   {kpi.SortRateDesc},
+			"page":   {"5"},
+		}, now)
+		if err != nil {
+			t.Fatalf("ParseFailuresParams: %v", err)
+		}
+
+		page := BuildKPIOverviewPage(
+			SiteInfo{},
+			kpi.FilterOptions{},
+			kpi.SummaryResponse{Filters: params},
+			kpi.FailuresResponse{
+				Filters: params,
+				Pagination: kpi.Pagination{
+					Page:       5,
+					Limit:      50,
+					Total:      57,
+					TotalPages: 2,
+				},
+				Failures: []kpi.RecurringFailureRow{},
+			},
+			now,
+		)
+		if !page.ShowPagination || !page.HasPrev || page.HasNext {
+			t.Fatalf("unexpected pagination flags: Show=%v HasPrev=%v HasNext=%v", page.ShowPagination, page.HasPrev, page.HasNext)
+		}
+		if !strings.Contains(page.PrevHref, "page=2") || !strings.Contains(page.PrevHref, "app=mattermost") || !strings.Contains(page.PrevHref, "sort=rate_desc") {
+			t.Fatalf("expected PrevHref to jump directly to page=2 preserving filters, got %q", page.PrevHref)
+		}
+
+		htmlBytes, err := RenderKPIOverview(page)
+		if err != nil {
+			t.Fatalf("RenderKPIOverview: %v", err)
+		}
+		s := string(htmlBytes)
+		for _, want := range []string{
+			`57 canonical signatures`,
+			`Page 5 out of range`,
+			`No failure signatures on page 5 (total 57 across 2 pages).`,
+			`kpi-pagination`,
+			`href="?app=mattermost&amp;page=2&amp;sort=rate_desc&amp;window=14d">Previous</a>`,
+			`<span class="btn-page is-disabled" aria-disabled="true">Next</span>`,
+		} {
+			if !strings.Contains(s, want) {
+				t.Fatalf("out-of-range overview missing %q", want)
+			}
+		}
+		if strings.Contains(s, "No recurring failures") {
+			t.Fatal("out-of-range overview must NOT say 'No recurring failures'")
+		}
+	})
+
+	t.Run("prs_page_gt_total_pages_with_multiple_pages", func(t *testing.T) {
+		params, err := kpi.ParsePRsRedParams(url.Values{
+			"app":  {"mattermost"},
+			"sort": {kpi.SortAgeDesc},
+			"page": {"5"},
+		}, now)
+		if err != nil {
+			t.Fatalf("ParsePRsRedParams: %v", err)
+		}
+
+		page := BuildKPIPRsPage(
+			SiteInfo{},
+			kpi.FilterOptions{},
+			kpi.PRRedResponse{
+				Filters: params,
+				Pagination: kpi.Pagination{
+					Page:       5,
+					Limit:      50,
+					Total:      57,
+					TotalPages: 2,
+				},
+				Lanes: []kpi.RedPRLaneRow{},
+			},
+			now,
+		)
+		if !page.ShowPagination || !page.HasPrev || page.HasNext {
+			t.Fatalf("unexpected PRs pagination flags: Show=%v HasPrev=%v HasNext=%v", page.ShowPagination, page.HasPrev, page.HasNext)
+		}
+		if !strings.Contains(page.PrevHref, "page=2") {
+			t.Fatalf("expected PrevHref to jump to page=2, got %q", page.PrevHref)
+		}
+
+		htmlBytes, err := RenderKPIPRs(page)
+		if err != nil {
+			t.Fatalf("RenderKPIPRs: %v", err)
+		}
+		s := string(htmlBytes)
+		for _, want := range []string{
+			`57 E2E red PR lane runs`,
+			`Page 5 out of range`,
+			`No red PR lanes on page 5 (total 57 across 2 pages).`,
+			`kpi-pagination`,
+			`href="?app=mattermost&amp;page=2&amp;sort=age_desc">Previous</a>`,
+			`<span class="btn-page is-disabled" aria-disabled="true">Next</span>`,
+		} {
+			if !strings.Contains(s, want) {
+				t.Fatalf("out-of-range PRs missing %q", want)
+			}
+		}
+		if strings.Contains(s, "No E2E red PR lanes") {
+			t.Fatal("out-of-range PRs must NOT say 'No E2E red PR lanes'")
+		}
+	})
+
+	t.Run("page_gt_total_pages_when_single_page_exists", func(t *testing.T) {
+		params, err := kpi.ParseFailuresParams(url.Values{"page": {"4"}}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := BuildKPIOverviewPage(
+			SiteInfo{},
+			kpi.FilterOptions{},
+			kpi.SummaryResponse{Filters: params},
+			kpi.FailuresResponse{
+				Filters: params,
+				Pagination: kpi.Pagination{
+					Page:       4,
+					Limit:      50,
+					Total:      10,
+					TotalPages: 1,
+				},
+			},
+			now,
+		)
+		if !page.ShowPagination || !page.HasPrev || page.HasNext || page.PrevHref != "?" {
+			t.Fatalf("unexpected single-page recovery pagination: %+v", page)
+		}
+	})
+}
+
+func TestKPIHardening_URLSanitizationPathEscapeUTF8AndMobileCSS(t *testing.T) {
+	now := time.Date(2026, 11, 26, 15, 0, 0, 0, time.UTC)
+
+	// 1. Protocol-relative RunURL rejected in BuildKPIPRsPage.
+	prParams, err := kpi.ParsePRsRedParams(url.Values{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prPage := BuildKPIPRsPage(SiteInfo{}, kpi.FilterOptions{}, kpi.PRRedResponse{
+		Filters:    prParams,
+		Pagination: kpi.Pagination{Page: 1, Limit: 50, Total: 2, TotalPages: 1},
+		Lanes: []kpi.RedPRLaneRow{
+			{ReportGroupID: "rg-proto", GHPRNumber: 101, RunURL: "//evil.example/phish", CreatedAt: now},
+			{ReportGroupID: "rg-bslash", GHPRNumber: 102, RunURL: `/\evil.example/phish`, CreatedAt: now},
+		},
+	}, now)
+	const fallbackReportsURL = "/reports"
+	if prPage.Lanes[0].RunURL != fallbackReportsURL || prPage.Lanes[1].RunURL != fallbackReportsURL {
+		t.Fatalf("expected unsafe RunURLs to fall back to %s, got %q and %q", fallbackReportsURL, prPage.Lanes[0].RunURL, prPage.Lanes[1].RunURL)
+	}
+
+	// 2. SignatureID path-escaped in BuildKPIOverviewPage.
+	ovParams, err := kpi.ParseFailuresParams(url.Values{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ovPage := BuildKPIOverviewPage(SiteInfo{}, kpi.FilterOptions{}, kpi.SummaryResponse{Filters: ovParams}, kpi.FailuresResponse{
+		Filters:    ovParams,
+		Pagination: kpi.Pagination{Page: 1, Limit: 50, Total: 1, TotalPages: 1},
+		Failures: []kpi.RecurringFailureRow{
+			{
+				SignatureID:       "../admin?x=1#frag",
+				NormalizedMessage: "boom",
+				LastSeenAt:        now,
+			},
+		},
+	}, now)
+	wantHref := "/kpi/failures/" + url.PathEscape("../admin?x=1#frag")
+	if ovPage.Failures[0].Href != wantHref {
+		t.Fatalf("Signature Href = %q, want %q", ovPage.Failures[0].Href, wantHref)
+	}
+
+	// 3. Multi-byte UTF-8 rune truncation in shortSignatureLabel.
+	multiByte := strings.Repeat("日本語テスト", 12) // 72 runes, 216 bytes
+	gotLabel := shortSignatureLabel(nil, multiByte)
+	if !utf8.ValidString(gotLabel) {
+		t.Fatalf("shortSignatureLabel produced invalid UTF-8: %q", gotLabel)
+	}
+	if runeLen := utf8.RuneCountInString(gotLabel); runeLen != 64 {
+		t.Fatalf("shortSignatureLabel rune count = %d, want 64 (%q)", runeLen, gotLabel)
+	}
+	if !strings.HasSuffix(gotLabel, "...") {
+		t.Fatalf("shortSignatureLabel missing ellipsis: %q", gotLabel)
+	}
+
+	// 4. Verify 480px wrapping CSS rules exist in embedded styleCSS.
+	if !strings.Contains(styleCSS, ".site-header-bar {\n  display: flex;\n  flex-wrap: wrap;") {
+		t.Fatal("expected .site-header-bar to include flex-wrap: wrap")
+	}
+	if !strings.Contains(styleCSS, ".kpi-card-substats > div {\n  display: flex;\n  flex-wrap: wrap;") {
+		t.Fatal("expected .kpi-card-substats > div to include flex-wrap: wrap")
 	}
 }

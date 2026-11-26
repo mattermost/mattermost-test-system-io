@@ -213,12 +213,17 @@
 <section class="kpi-panel" aria-label="Recurring failures">
   <header class="kpi-panel-head">
     <h3 class="kpi-panel-title">Recurring Failures</h3>
-    {{if .HasFailures}}<span class="kpi-panel-subtitle tabular">{{.Total}} canonical signatures</span>{{end}}
+    {{if gt .Total 0}}<span class="kpi-panel-subtitle tabular">{{.Total}} canonical signatures</span>{{end}}
   </header>
   {{if not .HasFailures}}
   <div class="empty-state empty-state-inline">
+    {{if gt .Total 0}}
+    <p class="empty-title">Page {{.Page}} out of range</p>
+    <p class="empty-hint">No failure signatures on page {{.Page}} (total {{.Total}} across {{.TotalPages}} {{if eq .TotalPages 1}}page{{else}}pages{{end}}).</p>
+    {{else}}
     <p class="empty-title">No recurring failures</p>
     <p class="empty-hint">No failure signatures matched the active filters in this window.</p>
+    {{end}}
   </div>
   {{else}}
   <div class="kpi-table-scroll">
@@ -257,17 +262,21 @@
       </tbody>
     </table>
   </div>
-  {{if gt .TotalPages 1}}
+  {{end}}
+  {{if .ShowPagination}}
   <nav class="pagination kpi-pagination" aria-label="Recurring failures pagination">
     <span class="pagination-summary">
+      {{if .HasFailures}}
       <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} signatures</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
+      {{else}}
+      <span class="pager-long">Page {{.Page}} of {{.TotalPages}} ({{.Total}} signatures)</span><span class="pager-short">Page {{.Page}}/{{.TotalPages}} ({{.Total}})</span>
+      {{end}}
     </span>
     <span class="pagination-actions">
-      {{if gt .Page 1}}<a class="btn-page" href="{{kpiQuery .Filters.State (sub .Page 1)}}">Previous</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Previous</span>{{end}}
-      {{if lt .Page .TotalPages}}<a class="btn-page" href="{{kpiQuery .Filters.State (add .Page 1)}}">Next</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Next</span>{{end}}
+      {{if .HasPrev}}<a class="btn-page" href="{{.PrevHref}}">Previous</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Previous</span>{{end}}
+      {{if .HasNext}}<a class="btn-page" href="{{.NextHref}}">Next</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Next</span>{{end}}
     </span>
   </nav>
-  {{end}}
   {{end}}
 </section>
 {{end}}

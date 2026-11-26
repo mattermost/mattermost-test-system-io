@@ -39,6 +39,9 @@ func (s *Store) QueryFailures(ctx context.Context, f FilterParams) (FailuresResp
 	if s == nil || s.Pool == nil {
 		return FailuresResponse{}, errors.New("kpi store pool is nil")
 	}
+	if err := validatePaginationParams(f); err != nil {
+		return FailuresResponse{}, err
+	}
 
 	cov, err := s.queryLaneCoverage(ctx, f, "", true, nil)
 	if err != nil {
@@ -54,7 +57,7 @@ func (s *Store) QueryFailures(ctx context.Context, f FilterParams) (FailuresResp
 
 	total := len(rows)
 	totalPages := 0
-	if total > 0 {
+	if total > 0 && f.Limit > 0 {
 		totalPages = int(math.Ceil(float64(total) / float64(f.Limit)))
 	}
 

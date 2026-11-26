@@ -2,6 +2,7 @@ package htmlpage
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -172,6 +173,11 @@ type KPIOverviewPage struct {
 	TotalPages      int
 	RowStart        int
 	ShowEnd         int
+	ShowPagination  bool
+	HasPrev         bool
+	HasNext         bool
+	PrevHref        string
+	NextHref        string
 }
 
 // BuildKPIOverviewPage maps KPI summary and recurring failures responses into KPIOverviewPage.
@@ -291,7 +297,7 @@ func BuildKPIOverviewPage(
 		}
 		failureRows = append(failureRows, KPIRecurringFailureRow{
 			SignatureID:        r.SignatureID,
-			Href:               kpiHref("/kpi/failures/"+r.SignatureID, filterBar.State, 1, "", false),
+			Href:               kpiHref("/kpi/failures/"+url.PathEscape(r.SignatureID), filterBar.State, 1, "", false),
 			Title:              shortSignatureLabel(r.ErrorClass, r.NormalizedMessage),
 			NormalizedMessage:  r.NormalizedMessage,
 			TopFrame:           topFrame,
@@ -312,14 +318,7 @@ func BuildKPIOverviewPage(
 		})
 	}
 
-	totalPages, rowStart, showEnd := paginateRange(failures.Pagination.Page, failures.Pagination.Limit, failures.Pagination.Total)
-	if failures.Pagination.TotalPages > 0 {
-		totalPages = failures.Pagination.TotalPages
-	}
-	pageNum := failures.Pagination.Page
-	if pageNum < 1 {
-		pageNum = 1
-	}
+	pag := buildKPIPagination(filterBar.State, failures.Pagination.Page, failures.Pagination.Limit, failures.Pagination.Total, failures.Pagination.TotalPages)
 
 	return KPIOverviewPage{
 		Title:           "KPIs · Test System IO",
@@ -342,10 +341,15 @@ func BuildKPIOverviewPage(
 		HasFailures:     len(failureRows) > 0,
 		Failures:        failureRows,
 		Total:           failures.Pagination.Total,
-		Page:            pageNum,
-		TotalPages:      totalPages,
-		RowStart:        rowStart,
-		ShowEnd:         showEnd,
+		Page:            pag.Page,
+		TotalPages:      pag.TotalPages,
+		RowStart:        pag.RowStart,
+		ShowEnd:         pag.ShowEnd,
+		ShowPagination:  pag.ShowPagination,
+		HasPrev:         pag.HasPrev,
+		HasNext:         pag.HasNext,
+		PrevHref:        pag.PrevHref,
+		NextHref:        pag.NextHref,
 	}
 }
 

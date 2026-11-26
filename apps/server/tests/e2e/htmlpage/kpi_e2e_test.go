@@ -375,20 +375,55 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 	}
 	assertNoKPIGuardrailViolations(t, "GET /kpi/prs filtered", prsFiltered, secrets)
 
-	// ---- Verify 400 on invalid filter/sort/page ----
+	// ---- Verify 400 on invalid filter/sort/page (including int64 overflow) ----
 	for _, badPath := range []string{
 		"/kpi?window=3d",
 		"/kpi?stage=bogus",
 		"/kpi?sort=unknown_sort",
 		"/kpi?page=0",
 		"/kpi?page=abc",
+		"/kpi?page=999999999999999999",
 		"/kpi/prs?window=3d",
 		"/kpi/prs?sort=rate_desc",
 		"/kpi/prs?page=-1",
+		"/kpi/prs?page=999999999999999999",
+		"/api/v1/kpi/failures?page=999999999999999999",
+		"/api/v1/kpi/prs/red?page=999999999999999999",
 		"/kpi/failures/" + sigActive.String() + "?window=3d",
 	} {
 		getHTML(t, env.ServerURL+badPath, http.StatusBadRequest)
 	}
+
+	// ---- Verify page > total_pages preserves pagination recovery and avoids misleading empty copy ----
+	ovOutOfRange := getHTML(t, env.ServerURL+"/kpi?page=5", http.StatusOK)
+	for _, want := range []string{
+		`Page 5 out of range`,
+		`kpi-pagination`,
+		`Previous</a>`,
+	} {
+		if !strings.Contains(ovOutOfRange, want) {
+			t.Fatalf("GET /kpi?page=5 missing %q", want)
+		}
+	}
+	if strings.Contains(ovOutOfRange, "No recurring failures") {
+		t.Fatal("GET /kpi?page=5 with seeded failures must NOT say 'No recurring failures'")
+	}
+	assertNoKPIGuardrailViolations(t, "GET /kpi?page=5", ovOutOfRange, secrets)
+
+	prsOutOfRange := getHTML(t, env.ServerURL+"/kpi/prs?page=5", http.StatusOK)
+	for _, want := range []string{
+		`Page 5 out of range`,
+		`kpi-pagination`,
+		`Previous</a>`,
+	} {
+		if !strings.Contains(prsOutOfRange, want) {
+			t.Fatalf("GET /kpi/prs?page=5 missing %q", want)
+		}
+	}
+	if strings.Contains(prsOutOfRange, "No E2E red PR lanes") {
+		t.Fatal("GET /kpi/prs?page=5 with seeded red PR lanes must NOT say 'No E2E red PR lanes'")
+	}
+	assertNoKPIGuardrailViolations(t, "GET /kpi/prs?page=5", prsOutOfRange, secrets)
 }
 
 func assertNoKPIGuardrailViolations(t *testing.T, label, htmlBody string, secrets []string) {

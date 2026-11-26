@@ -1478,7 +1478,7 @@ func TestSEC11515_HandComputedUnifiedKPIFixtureSuite(t *testing.T) {
 	assertNearPtr(t, "KPI 5 p90_ms", sum.E2EDuration.P90Ms, 520000.0, 1e-6)
 	assertNearPtr(t, "KPI 5 prior_p50_ms", sum.E2EDuration.PriorP50Ms, 500000.0, 1e-6)
 	assertNearPtr(t, "KPI 5 delta_p50_ms", sum.E2EDuration.DeltaP50Ms, -200000.0, 1e-6)
-	wantUploadOnly := []string{"desktop-pr-upload", "detox-pr", "e2e-unit-pr"}
+	wantUploadOnly := []string{"desktop-pr-upload", "e2e-unit-pr"}
 	if len(sum.E2EDuration.LaneCoverage.UploadOnlyLaneNames) != len(wantUploadOnly) {
 		t.Fatalf("KPI 5 upload-only coverage = %+v, want %v", sum.E2EDuration.LaneCoverage, wantUploadOnly)
 	}

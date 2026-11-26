@@ -33,7 +33,6 @@ type commitKey struct {
 type testExecKey struct {
 	MetricDate time.Time
 	Repository string
-	App        string
 	Stage      string
 	Lane       string
 	Platform   string
@@ -48,13 +47,9 @@ type testExecCounts struct {
 	Skip  int `json:"skip"`
 }
 
-// DeletedGroupSnapshot captures a group's rollup dimensions before DELETE FROM report_groups
-// so downstream daily/commit rollups can be recomputed after CASCADE deletes kpi_group_rollups.
-type DeletedGroupSnapshot struct {
-	GroupID    uuid.UUID
-	Buckets    []bucketKey
-	Commits    []commitKey
-	TestDeltas map[testExecKey]testExecCounts
+type testExecDelta struct {
+	App string
+	testExecCounts
 }
 
 type oldGroupRollup struct {
@@ -203,7 +198,7 @@ func RefreshGroupRollups(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 		var oldAll *oldGroupRollup
 		bucketSet := map[bucketKey]struct{}{}
 		commitSet := map[commitKey]struct{}{}
-		deltas := map[testExecKey]testExecCounts{}
+		deltas := map[testExecKey]testExecDelta{}
 
 		for i := range oldRows {
 			r := &oldRows[i]
@@ -251,13 +246,15 @@ func RefreshGroupRollups(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 				k := testExecKey{
 					MetricDate: g.MetricDate.UTC(),
 					Repository: g.Repository,
-					App:        g.App,
 					Stage:      g.Stage,
 					Lane:       g.Lane,
 					Platform:   p,
 					TestID:     tid,
 				}
 				cur := deltas[k]
+				if g.App != "" {
+					cur.App = g.App
+				}
 				cur.Run += c.Run
 				cur.Pass += c.Pass
 				cur.Fail += c.Fail
@@ -292,110 +289,83 @@ func RefreshGroupRollups(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 	})
 }
 
-// CaptureDeletedGroupSnapshot snapshots a group's rollup dimensions before DELETE FROM report_groups.
-func CaptureDeletedGroupSnapshot(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) (*DeletedGroupSnapshot, error) {
+// DeleteGroupAndRecomputeRollups atomically deletes a report_group and recomputes
+// affected daily and commit KPI rollups inside the same transaction under the strict
+// advisory lock ordering (`kpi_group` -> sorted `kpi_commit` -> sorted `kpi_bucket`).
+// Returns (false, nil) when no report_group with groupID exists.
+func DeleteGroupAndRecomputeRollups(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) (bool, error) {
 	if pool == nil || groupID == uuid.Nil {
-		return nil, nil
+		return false, nil
 	}
-	rows, err := pool.Query(ctx, `
-		SELECT metric_date, repository, stage, lane, is_all_platforms, platform, commit_sha, test_counts
-		  FROM kpi_group_rollups
-		 WHERE report_group_id = $1
-	`, groupID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	bucketSet := map[bucketKey]struct{}{}
-	commitSet := map[commitKey]struct{}{}
-	deltas := map[testExecKey]testExecCounts{}
-	hasAny := false
-
-	for rows.Next() {
-		hasAny = true
-		var (
-			metricDate     time.Time
-			repo, stage    string
-			lane, platform string
-			commitSHA      string
-			isAll          bool
-			tcJSON         []byte
-		)
-		if err := rows.Scan(&metricDate, &repo, &stage, &lane, &isAll, &platform, &commitSHA, &tcJSON); err != nil {
-			return nil, err
-		}
-		bucketSet[bucketKey{MetricDate: metricDate.UTC(), Repository: repo, Stage: stage, Lane: lane}] = struct{}{}
-		commitSet[commitKey{Repository: repo, CommitSHA: commitSHA}] = struct{}{}
-		if !isAll {
-			if err := addTestCountsJSON(deltas, metricDate, repo, "", stage, lane, platform, tcJSON, -1); err != nil {
-				return nil, err
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if !hasAny {
-		return nil, nil
-	}
-
-	snap := &DeletedGroupSnapshot{
-		GroupID:    groupID,
-		TestDeltas: deltas,
-	}
-	for b := range bucketSet {
-		snap.Buckets = append(snap.Buckets, b)
-	}
-	for c := range commitSet {
-		snap.Commits = append(snap.Commits, c)
-	}
-	return snap, nil
-}
-
-// RecomputeAfterGroupDelete updates daily/commit rollups after a report group has been deleted.
-func RecomputeAfterGroupDelete(ctx context.Context, pool *pgxpool.Pool, snap *DeletedGroupSnapshot) error {
-	if pool == nil || snap == nil {
-		return nil
-	}
-	return db.InTx(ctx, pool, func(tx pgx.Tx) error {
+	var deleted bool
+	err := db.InTx(ctx, pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`SELECT pg_advisory_xact_lock(hashtextextended('kpi_group:' || $1, 0))`,
-			snap.GroupID.String(),
+			groupID.String(),
 		); err != nil {
+			return fmt.Errorf("lock group: %w", err)
+		}
+
+		oldRows, err := loadOldGroupRollups(ctx, tx, groupID)
+		if err != nil {
 			return err
 		}
+
+		var rgRepo, rgCommit string
+		var rgExists bool
+		err = tx.QueryRow(ctx, `
+			SELECT repository, commit_sha
+			  FROM report_groups
+			 WHERE id = $1
+		`, groupID).Scan(&rgRepo, &rgCommit)
+		if err == nil {
+			rgExists = true
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("load report_group for delete: %w", err)
+		}
+
+		if !rgExists && len(oldRows) == 0 {
+			deleted = false
+			return nil
+		}
+
 		bucketSet := map[bucketKey]struct{}{}
-		for _, b := range snap.Buckets {
-			bucketSet[b] = struct{}{}
-		}
 		commitSet := map[commitKey]struct{}{}
-		for _, c := range snap.Commits {
-			commitSet[c] = struct{}{}
+		deltas := map[testExecKey]testExecDelta{}
+
+		if rgExists {
+			commitSet[commitKey{Repository: rgRepo, CommitSHA: rgCommit}] = struct{}{}
 		}
+		for i := range oldRows {
+			r := &oldRows[i]
+			bucketSet[bucketKey{MetricDate: r.MetricDate.UTC(), Repository: r.Repository, Stage: r.Stage, Lane: r.Lane}] = struct{}{}
+			commitSet[commitKey{Repository: r.Repository, CommitSHA: r.CommitSHA}] = struct{}{}
+			if !r.IsAllPlatforms {
+				if err := addTestCountsJSON(deltas, r.MetricDate, r.Repository, "", r.Stage, r.Lane, r.Platform, r.TestCountsJSON, -1); err != nil {
+					return err
+				}
+			}
+		}
+
 		if err := acquireDeterministicLocks(ctx, tx, commitSet, bucketSet); err != nil {
 			return err
 		}
-		if err := applyTestExecDeltasTx(ctx, tx, snap.TestDeltas); err != nil {
+
+		tag, err := tx.Exec(ctx, `DELETE FROM report_groups WHERE id = $1`, groupID)
+		if err != nil {
+			return fmt.Errorf("delete report_group: %w", err)
+		}
+		deleted = tag.RowsAffected() > 0
+
+		if err := applyTestExecDeltasTx(ctx, tx, deltas); err != nil {
 			return err
 		}
 		return recomputeBucketsAndCommitsTx(ctx, tx, bucketSet, commitSet)
 	})
-}
-
-// RecomputeAfterGroupDeleteBestEffort wraps RecomputeAfterGroupDelete and logs failures.
-func RecomputeAfterGroupDeleteBestEffort(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, snap *DeletedGroupSnapshot) {
-	if pool == nil || snap == nil {
-		return
+	if err != nil {
+		return false, err
 	}
-	if err := RecomputeAfterGroupDelete(ctx, pool, snap); err != nil {
-		if logger == nil {
-			logger = slog.Default()
-		}
-		logger.Warn("recompute_after_group_delete failed",
-			slog.String("group_id", snap.GroupID.String()),
-			slog.String("error", err.Error()))
-	}
+	return deleted, nil
 }
 
 // RefreshStaleGroupRollups sweeps unrefreshed or stale report_groups and refreshes their KPI rollups.
@@ -416,14 +386,14 @@ func RefreshStaleGroupRollups(ctx context.Context, pool *pgxpool.Pool, logger *s
 		          SELECT 1 FROM verdicts v
 		           WHERE v.report_group_id = g.id
 		             AND GREATEST(v.created_at, COALESCE(v.superseded_at, v.created_at)) > g.kpi_rollups_refreshed_at)
-		    OR (g.status = 'in_progress' AND EXISTS (
+		    OR EXISTS (
 		          SELECT 1 FROM orchestration_runs o
 		           WHERE o.repository = g.repository
 		             AND o.commit_sha = g.commit_sha
 		             AND o.gh_run_id = g.gh_run_id
 		             AND o.name = g.name
 		             AND o.gh_run_attempt = g.gh_run_attempt
-		             AND o.updated_at > g.kpi_rollups_refreshed_at))
+		             AND o.updated_at > g.kpi_rollups_refreshed_at)
 		 ORDER BY g.created_at DESC
 		 LIMIT $1
 	`, limit)
@@ -504,7 +474,7 @@ func cleanupMissingGroupTx(ctx context.Context, tx pgx.Tx, oldRows []oldGroupRol
 	}
 	bucketSet := map[bucketKey]struct{}{}
 	commitSet := map[commitKey]struct{}{}
-	deltas := map[testExecKey]testExecCounts{}
+	deltas := map[testExecKey]testExecDelta{}
 	for i := range oldRows {
 		r := &oldRows[i]
 		bucketSet[bucketKey{MetricDate: r.MetricDate.UTC(), Repository: r.Repository, Stage: r.Stage, Lane: r.Lane}] = struct{}{}
@@ -1033,7 +1003,7 @@ func replaceGroupSignatureRollupsTx(ctx context.Context, tx pgx.Tx, g groupRow) 
 	return nil
 }
 
-func applyTestExecDeltasTx(ctx context.Context, tx pgx.Tx, deltas map[testExecKey]testExecCounts) error {
+func applyTestExecDeltasTx(ctx context.Context, tx pgx.Tx, deltas map[testExecKey]testExecDelta) error {
 	if len(deltas) == 0 {
 		return nil
 	}
@@ -1047,11 +1017,31 @@ func applyTestExecDeltasTx(ctx context.Context, tx pgx.Tx, deltas map[testExecKe
 	if len(keys) == 0 {
 		return nil
 	}
+	sort.Slice(keys, func(i, j int) bool {
+		di := keys[i].MetricDate.UTC().Format("2006-01-02")
+		dj := keys[j].MetricDate.UTC().Format("2006-01-02")
+		if di != dj {
+			return di < dj
+		}
+		if keys[i].Repository != keys[j].Repository {
+			return keys[i].Repository < keys[j].Repository
+		}
+		if keys[i].Stage != keys[j].Stage {
+			return keys[i].Stage < keys[j].Stage
+		}
+		if keys[i].Lane != keys[j].Lane {
+			return keys[i].Lane < keys[j].Lane
+		}
+		if keys[i].Platform != keys[j].Platform {
+			return keys[i].Platform < keys[j].Platform
+		}
+		return keys[i].TestID.String() < keys[j].TestID.String()
+	})
 
 	batch := &pgx.Batch{}
 	for _, k := range keys {
 		c := deltas[k]
-		app := k.App
+		app := c.App
 		if app == "" {
 			app = k.Repository
 		}
@@ -1151,7 +1141,7 @@ func recomputeBucketsAndCommitsTx(
 				COUNT(*) FILTER (WHERE NOT gr.has_orchestration)::integer,
 				COUNT(*) FILTER (WHERE gr.is_attempt1 AND gr.is_completed)::integer,
 				COUNT(*) FILTER (WHERE gr.is_attempt1 AND gr.is_completed AND gr.is_attempt1_passed)::integer,
-				COUNT(*) FILTER (WHERE gr.is_attempt1 AND gr.is_completed AND gr.has_orchestration AND gr.orch_status = 'completed')::integer,
+				COUNT(*) FILTER (WHERE gr.is_attempt1 AND gr.is_completed AND gr.has_orchestration AND gr.orch_status IN ('completed', 'timed_out'))::integer,
 				COUNT(*) FILTER (WHERE gr.is_attempt1 AND gr.is_completed AND gr.is_attempt1_strict_passed)::integer,
 				COALESCE(ARRAY_AGG(gr.total_duration_ms ORDER BY gr.report_group_id)
 					FILTER (WHERE gr.is_completed AND gr.has_orchestration AND gr.total_duration_ms IS NOT NULL), '{}'::bigint[]),
@@ -1283,7 +1273,7 @@ func recomputeBucketsAndCommitsTx(
 }
 
 func addTestCountsJSON(
-	deltas map[testExecKey]testExecCounts,
+	deltas map[testExecKey]testExecDelta,
 	metricDate time.Time,
 	repo, app, stage, lane, platform string,
 	raw []byte,
@@ -1304,13 +1294,15 @@ func addTestCountsJSON(
 		k := testExecKey{
 			MetricDate: metricDate.UTC(),
 			Repository: repo,
-			App:        app,
 			Stage:      stage,
 			Lane:       lane,
 			Platform:   platform,
 			TestID:     tid,
 		}
 		cur := deltas[k]
+		if app != "" {
+			cur.App = app
+		}
 		cur.Run += sign * c.Run
 		cur.Pass += sign * c.Pass
 		cur.Fail += sign * c.Fail

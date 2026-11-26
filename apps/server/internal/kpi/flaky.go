@@ -25,7 +25,7 @@ func (s *Store) QueryFlaky(ctx context.Context, f FilterParams) (FlakyResponse, 
 	if err != nil {
 		return FlakyResponse{}, err
 	}
-	priorHasData, _, priorByApp, err := s.queryPriorFlakyCountsByApp(ctx, f, f.PriorFromDate, f.PriorToDate)
+	priorHasData, _, priorByApp, priorHasDataByApp, err := s.queryPriorFlakyCountsByApp(ctx, f, f.PriorFromDate, f.PriorToDate)
 	if err != nil {
 		return FlakyResponse{}, err
 	}
@@ -43,7 +43,7 @@ func (s *Store) QueryFlaky(ctx context.Context, f FilterParams) (FlakyResponse, 
 	for app := range appSet {
 		c := curByApp[app]
 		var pPtr, dPtr *int
-		if priorHasData {
+		if priorHasDataByApp[app] {
 			p := priorByApp[app]
 			pPtr = &p
 			d := c - p
@@ -164,7 +164,7 @@ func (s *Store) queryPriorFlakyCountsByApp(
 	ctx context.Context,
 	f FilterParams,
 	fromDate, toDate time.Time,
-) (bool, int, map[string]int, error) {
+) (bool, int, map[string]int, map[string]bool, error) {
 	b := &sqlFilterBuilder{}
 	fromPH := b.add(fromDate)
 	toPH := b.add(toDate)
@@ -172,26 +172,37 @@ func (s *Store) queryPriorFlakyCountsByApp(
 	fmt.Fprintf(&where, "c.metric_date >= %s AND c.metric_date <= %s", fromPH, toPH)
 	where.WriteString(appendCommitFilters(b, "c", f))
 
-	var hasData bool
-	if err := s.Pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			  FROM kpi_test_commit_outcomes c
-			 WHERE `+where.String()+`
-			 LIMIT 1
-		)
-	`, b.args...).Scan(&hasData); err != nil {
-		return false, 0, nil, fmt.Errorf("check prior flaky baseline: %w", err)
+	rows, err := s.Pool.Query(ctx, `
+		SELECT DISTINCT c.app
+		  FROM kpi_test_commit_outcomes c
+		 WHERE `+where.String(),
+		b.args...,
+	)
+	if err != nil {
+		return false, 0, nil, nil, fmt.Errorf("check prior flaky baseline: %w", err)
 	}
-	if !hasData {
-		return false, 0, map[string]int{}, nil
+	defer rows.Close()
+
+	priorHasDataByApp := map[string]bool{}
+	for rows.Next() {
+		var app string
+		if err := rows.Scan(&app); err != nil {
+			return false, 0, nil, nil, fmt.Errorf("scan prior flaky baseline app: %w", err)
+		}
+		priorHasDataByApp[app] = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, 0, nil, nil, fmt.Errorf("iterate prior flaky baseline: %w", err)
+	}
+	if len(priorHasDataByApp) == 0 {
+		return false, 0, map[string]int{}, priorHasDataByApp, nil
 	}
 
 	total, byApp, err := s.queryFlakyCountsByApp(ctx, f, fromDate, toDate)
 	if err != nil {
-		return false, 0, nil, err
+		return false, 0, nil, nil, err
 	}
-	return true, total, byApp, nil
+	return true, total, byApp, priorHasDataByApp, nil
 }
 
 func (s *Store) queryFlakyTestRows(ctx context.Context, f FilterParams) ([]FlakyTestRow, error) {

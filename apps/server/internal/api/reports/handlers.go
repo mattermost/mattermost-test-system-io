@@ -617,28 +617,22 @@ func (h *Handlers) JSONFile(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-// Delete removes a report group (cascades to reports/suites/cases/artifacts).
+// Delete removes a report group (cascades to reports/suites/cases/artifacts)
+// and atomically recomputes affected KPI rollups.
 func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		api.WriteError(w, r, api.ErrBadRequest)
 		return
 	}
-	snap, snapErr := kpi.CaptureDeletedGroupSnapshot(r.Context(), h.Pool, id)
-	if snapErr != nil && h.Logger != nil {
-		h.Logger.Warn("capture deleted group kpi snapshot failed",
-			slog.String("group_id", id.String()),
-			slog.String("error", snapErr.Error()))
-	}
-	tag, err := h.Pool.Exec(r.Context(), `DELETE FROM report_groups WHERE id = $1`, id)
+	deleted, err := kpi.DeleteGroupAndRecomputeRollups(r.Context(), h.Pool, id)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
-	if tag.RowsAffected() > 0 && snap != nil {
-		kpiCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-		defer cancel()
-		kpi.RecomputeAfterGroupDeleteBestEffort(kpiCtx, h.Pool, h.Logger, snap)
+	if !deleted {
+		api.WriteError(w, r, api.ErrNotFound)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

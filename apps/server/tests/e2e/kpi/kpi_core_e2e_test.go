@@ -599,6 +599,303 @@ func TestKPI_IncrementalRefreshIdempotencyConcurrencySweepVerdictDeleteAndPrune(
 	if remDaily != 0 || remCommit != 0 || remExec != 0 {
 		t.Fatalf("expected 0 remaining rollups after group delete, got daily=%d commit=%d exec=%d", remDaily, remCommit, remExec)
 	}
+
+	// Deleting a missing group returns 404.
+	missingReq, _ := http.NewRequest(http.MethodDelete, env.ServerURL+"/api/v1/reports/"+uuid.NewString(), nil)
+	missingReq.Header.Set("X-API-Key", apiKey)
+	missingResp, err := http.DefaultClient.Do(missingReq)
+	if err != nil {
+		t.Fatalf("delete missing report group: %v", err)
+	}
+	missingResp.Body.Close()
+	if missingResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("delete missing status = %d, want 404", missingResp.StatusCode)
+	}
+}
+
+func TestKPI_ConcurrentDeleteVsVerdictRefreshLeavesZeroOrphans(t *testing.T) {
+	env := testenv.Start(t, testenv.WithReaperDisabled())
+	ctx := t.Context()
+	now := time.Now().UTC()
+	apiKey := env.IssueAPIKey(t, "kpi-delete-race")
+
+	var sigID uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO failure_signatures (fingerprint, algo_version, normalized_message, first_seen_at)
+		VALUES ($1, $2, 'delete race signature', $3)
+		RETURNING id
+	`, strings.Repeat("b", 64), errorsig.AlgoVersion, now).Scan(&sigID); err != nil {
+		t.Fatalf("insert signature: %v", err)
+	}
+
+	tHeavy := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:race-heavy", "Race > heavy")
+
+	const numGroups = 10
+	gids := make([]uuid.UUID, 0, numGroups)
+	for i := range numGroups {
+		gid := insertGroup(t, ctx, env.Pool, groupSeed{
+			Framework: "playwright", Name: "e2e-race", Status: "completed",
+			Repo: "mattermost/mattermost", Branch: "pr-race", Commit: fmt.Sprintf("race-sha-%d", i),
+			RunID: fmt.Sprintf("race-%d", i), Attempt: "1", Stage: "pr", CreatedAt: now,
+		})
+		rid := insertReport(t, ctx, env.Pool, gid, "e2e-race", "")
+		sid := insertSuite(t, ctx, env.Pool, rid, "Race")
+		for j := range 100 {
+			insertCaseWithSig(t, ctx, env.Pool, sid, tHeavy, sigID, "heavy", "failed", 0, j)
+		}
+		gids = append(gids, gid)
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, numGroups*3)
+	for i, gid := range gids {
+		wg.Add(3)
+		go func(idx int, groupID uuid.UUID) {
+			defer wg.Done()
+			if idx%2 == 0 {
+				time.Sleep(time.Duration(idx%5) * time.Millisecond)
+			}
+			body, _ := json.Marshal(map[string]any{
+				"repository":      "mattermost/mattermost",
+				"report_group_id": groupID.String(),
+				"verdicts": []any{
+					map[string]any{
+						"test_id":      tHeavy.String(),
+						"signature_id": sigID.String(),
+						"label":        "infra",
+					},
+				},
+			})
+			req, _ := http.NewRequest(http.MethodPost, env.ServerURL+"/api/v1/verdicts", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-API-Key", apiKey)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				errCh <- fmt.Errorf("post verdict %s: %w", groupID, err)
+				return
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadRequest {
+				errCh <- fmt.Errorf("post verdict %s status = %d", groupID, resp.StatusCode)
+			}
+		}(i, gid)
+
+		go func(groupID uuid.UUID) {
+			defer wg.Done()
+			if err := kpi.RefreshGroupRollups(ctx, env.Pool, groupID); err != nil {
+				errCh <- fmt.Errorf("refresh %s: %w", groupID, err)
+			}
+		}(gid)
+
+		go func(idx int, groupID uuid.UUID) {
+			defer wg.Done()
+			if idx%2 == 1 {
+				time.Sleep(time.Duration((idx%5)+1) * time.Millisecond)
+			}
+			req, _ := http.NewRequest(http.MethodDelete, env.ServerURL+"/api/v1/reports/"+groupID.String(), nil)
+			req.Header.Set("X-API-Key", apiKey)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				errCh <- fmt.Errorf("delete %s: %w", groupID, err)
+				return
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent {
+				errCh <- fmt.Errorf("delete %s status = %d, want 204", groupID, resp.StatusCode)
+			}
+		}(i, gid)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+
+	var execRuns, laneRows, commitRows, groupRows, sigRows int
+	_ = env.Pool.QueryRow(ctx, `SELECT COALESCE(SUM(run_count), 0) FROM kpi_daily_test_executions`).Scan(&execRuns)
+	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_lane_metrics`).Scan(&laneRows)
+	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_test_commit_outcomes`).Scan(&commitRows)
+	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_group_rollups`).Scan(&groupRows)
+	_ = env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_daily_signature_metrics`).Scan(&sigRows)
+	if execRuns != 0 || laneRows != 0 || commitRows != 0 || groupRows != 0 || sigRows != 0 {
+		t.Fatalf("leaked rollup rows after concurrent delete/refresh: execRuns=%d lane=%d commit=%d group=%d sig=%d",
+			execRuns, laneRows, commitRows, groupRows, sigRows)
+	}
+}
+
+func TestKPI_TimedOutStrictPassRate14dFlakyCoveragePerAppPriorAndFirstAttemptSkipped(t *testing.T) {
+	env := testenv.Start(t, testenv.WithReaperDisabled())
+	ctx := t.Context()
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.UTC)
+	day1 := today.AddDate(0, 0, -1)
+	day10 := today.AddDate(0, 0, -10)
+	day9 := today.AddDate(0, 0, -9)
+	day20 := today.AddDate(0, 0, -20)
+
+	mmPass := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:reg-mm-pass", "Reg > mm pass")
+	mmSkipPass := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:reg-mm-skip-pass", "Reg > mm skip+pass")
+	mmFlaky := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:reg-mm-flaky", "Reg > mm flaky")
+	deskFlaky := insertTest(t, ctx, env.Pool, "mattermost/desktop", "playwright", "h:reg-desk-flaky", "Reg > desktop flaky")
+
+	// 1. Main attempt-1 passing orchestrated lane + synthetic (retry=0 skipped, retry=1 passed) test.
+	gMainOK := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-main-ok", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "main", Commit: "reg-main-ok",
+		RunID: "reg-main-1", Attempt: "1", Stage: "main", CreatedAt: day1,
+		DurMs: int64Ptr(10000),
+	})
+	insertOrchRun(t, ctx, env.Pool, orchSeed{
+		Repo: "mattermost/mattermost", Commit: "reg-main-ok", RunID: "reg-main-1",
+		Name: "e2e-main-ok", Attempt: "1", Status: "completed", StartedAt: day1,
+	})
+	rOK := insertReport(t, ctx, env.Pool, gMainOK, "e2e-main-ok", "")
+	sOK := insertSuite(t, ctx, env.Pool, rOK, "Suite")
+	insertCase(t, ctx, env.Pool, sOK, mmPass, "mm pass", "passed", 0, "", 0)
+	insertCase(t, ctx, env.Pool, sOK, mmSkipPass, "mm skip+pass", "skipped", 0, "", 1)
+	insertCase(t, ctx, env.Pool, sOK, mmSkipPass, "mm skip+pass", "passed", 1, "", 2)
+	mustRefresh(t, ctx, env.Pool, gMainOK)
+
+	// Verify synthetic retry=0 skipped + retry=1 passed has verdict='passed' AND first_attempt_passed=false.
+	var verdict string
+	var firstAttemptPassed bool
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT verdict, first_attempt_passed
+		  FROM kpi_test_results
+		 WHERE report_group_id = $1 AND test_id = $2
+	`, gMainOK, mmSkipPass).Scan(&verdict, &firstAttemptPassed); err != nil {
+		t.Fatalf("query kpi_test_results for skip+pass: %v", err)
+	}
+	if verdict != "passed" || firstAttemptPassed {
+		t.Fatalf("skip+pass got verdict=%q first_attempt_passed=%v, want passed / false", verdict, firstAttemptPassed)
+	}
+
+	// 2. Main attempt-1 timed_out orchestrated lane (must count in strict_total_lanes as failure!).
+	// Start as in_progress first, refresh, then transition orchestration_runs to timed_out to also
+	// verify RefreshStaleGroupRollups catches completed report_groups whose orchestration transitioned afterward.
+	gMainTO := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-main-to", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "main", Commit: "reg-main-to",
+		RunID: "reg-main-2", Attempt: "1", Stage: "main", CreatedAt: day1,
+	})
+	orchTO := insertOrchRun(t, ctx, env.Pool, orchSeed{
+		Repo: "mattermost/mattermost", Commit: "reg-main-to", RunID: "reg-main-2",
+		Name: "e2e-main-to", Attempt: "1", Status: "in_progress", StartedAt: day1,
+	})
+	mustRefresh(t, ctx, env.Pool, gMainTO)
+
+	if _, err := env.Pool.Exec(ctx, `
+		UPDATE orchestration_runs
+		   SET status = 'timed_out',
+		       abandoned_count = 1,
+		       pending_count = 0,
+		       terminal_at = now(),
+		       updated_at = now() + interval '1 second'
+		 WHERE id = $1
+	`, orchTO); err != nil {
+		t.Fatalf("update orchestration_runs to timed_out: %v", err)
+	}
+	if err := kpi.RefreshStaleGroupRollups(ctx, env.Pool, nil, 10); err != nil {
+		t.Fatalf("RefreshStaleGroupRollups after orch timed_out: %v", err)
+	}
+
+	// 3. Mattermost prior-14d run (day20) + current flaky test across 2 commits (day1, day9).
+	gMMPrior := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-mm-prior", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "pr-p1", Commit: "mm-prior-sha",
+		RunID: "mm-p1", Attempt: "1", Stage: "pr", CreatedAt: day20,
+	})
+	rMMPrior := insertReport(t, ctx, env.Pool, gMMPrior, "e2e-mm-prior", "")
+	sMMPrior := insertSuite(t, ctx, env.Pool, rMMPrior, "Suite")
+	insertCase(t, ctx, env.Pool, sMMPrior, mmPass, "mm pass", "passed", 0, "", 0)
+	mustRefresh(t, ctx, env.Pool, gMMPrior)
+
+	for idx, cday := range []time.Time{day1, day9} {
+		gMMF := insertGroup(t, ctx, env.Pool, groupSeed{
+			Framework: "playwright", Name: "e2e-mm-flaky", Status: "completed",
+			Repo: "mattermost/mattermost", Branch: "pr-f", Commit: fmt.Sprintf("mm-flaky-%d", idx),
+			RunID: fmt.Sprintf("mm-f-%d", idx), Attempt: "1", Stage: "pr", CreatedAt: cday,
+		})
+		rMMF := insertReport(t, ctx, env.Pool, gMMF, "e2e-mm-flaky", "")
+		sMMF := insertSuite(t, ctx, env.Pool, rMMF, "Suite")
+		insertCase(t, ctx, env.Pool, sMMF, mmFlaky, "mm flaky", "failed", 0, "", 0)
+		insertCase(t, ctx, env.Pool, sMMF, mmFlaky, "mm flaky", "passed", 1, "", 1)
+		mustRefresh(t, ctx, env.Pool, gMMF)
+	}
+
+	// 4. Desktop flaky test across 2 commits 9-10 days ago (inside 14d, outside 7d) and ZERO runs in prior 14d!
+	for idx, cday := range []time.Time{day10, day9} {
+		gDeskF := insertGroup(t, ctx, env.Pool, groupSeed{
+			Framework: "playwright", Name: "desktop-10d-ago", Status: "completed",
+			Repo: "mattermost/desktop", Branch: "pr-df", Commit: fmt.Sprintf("desk-flaky-%d", idx),
+			RunID: fmt.Sprintf("desk-f-%d", idx), Attempt: "1", Stage: "pr", CreatedAt: cday,
+		})
+		rDeskF := insertReport(t, ctx, env.Pool, gDeskF, "desktop-10d-ago", "")
+		sDeskF := insertSuite(t, ctx, env.Pool, rDeskF, "Desktop")
+		insertCase(t, ctx, env.Pool, sDeskF, deskFlaky, "desk flaky", "failed", 0, "", 0)
+		insertCase(t, ctx, env.Pool, sDeskF, deskFlaky, "desk flaky", "passed", 1, "", 1)
+		mustRefresh(t, ctx, env.Pool, gDeskF)
+	}
+
+	summary := getJSON[kpi.SummaryResponse](t, env.ServerURL+"/api/v1/kpi/summary?window=7d")
+
+	// Assert KPI 1 test-level (skip+pass excluded from first_attempt_passed -> 1/2 = 50%).
+	if summary.MainPassRate.TestLevel.FirstAttemptPassed != 1 || summary.MainPassRate.TestLevel.TotalTests != 2 {
+		t.Fatalf("test_level = %d/%d, want 1/2",
+			summary.MainPassRate.TestLevel.FirstAttemptPassed, summary.MainPassRate.TestLevel.TotalTests)
+	}
+	assertNearPtr(t, "test_level pass_rate", summary.MainPassRate.TestLevel.PassRate, 50.0, 1e-6)
+
+	// Assert timed_out orchestrated run counted in strict_total_lanes -> 1/2 = 50%.
+	if summary.MainPassRate.LaneLevel.PassedLanes != 1 || summary.MainPassRate.LaneLevel.TotalLanes != 2 {
+		t.Fatalf("lane_level = %d/%d, want 1/2",
+			summary.MainPassRate.LaneLevel.PassedLanes, summary.MainPassRate.LaneLevel.TotalLanes)
+	}
+	assertNearPtr(t, "lane_level pass_rate", summary.MainPassRate.LaneLevel.PassRate, 50.0, 1e-6)
+	if summary.MainPassRate.LaneLevel.StrictPassedLanes != 1 || summary.MainPassRate.LaneLevel.StrictTotalLanes != 2 {
+		t.Fatalf("strict_lane_level = %d/%d, want 1/2",
+			summary.MainPassRate.LaneLevel.StrictPassedLanes, summary.MainPassRate.LaneLevel.StrictTotalLanes)
+	}
+	assertNearPtr(t, "strict_pass_rate", summary.MainPassRate.LaneLevel.StrictPassRate, 50.0, 1e-6)
+
+	// Assert ?window=7d top-level coverage omits desktop-10d-ago, while flaky_tests.lane_coverage includes it!
+	for _, ln := range summary.LaneCoverage.CoveredLanes {
+		if ln == "desktop-10d-ago" {
+			t.Fatalf("7d top-level lane_coverage unexpectedly included desktop-10d-ago: %v", summary.LaneCoverage.CoveredLanes)
+		}
+	}
+	foundDesk10d := false
+	for _, ln := range summary.FlakyTests.LaneCoverage.CoveredLanes {
+		if ln == "desktop-10d-ago" {
+			foundDesk10d = true
+			break
+		}
+	}
+	if !foundDesk10d {
+		t.Fatalf("flaky_tests.lane_coverage (%v) missing 10d-old flaky lane 'desktop-10d-ago'",
+			summary.FlakyTests.LaneCoverage.CoveredLanes)
+	}
+
+	// Assert per-app prior_count / delta: mattermost has numeric prior_count=0 (delta=1), desktop has nil prior_count & nil delta!
+	assertAppFlaky := func(endpoint string, byApp []kpi.AppFlakyCount) {
+		t.Helper()
+		m := map[string]kpi.AppFlakyCount{}
+		for _, item := range byApp {
+			m[item.App] = item
+		}
+		mm, ok := m["mattermost"]
+		if !ok || mm.Count != 1 || mm.PriorCount == nil || *mm.PriorCount != 0 || mm.Delta == nil || *mm.Delta != 1 {
+			t.Fatalf("%s mattermost by_app = %+v (exists=%v), want count=1 prior=0 delta=1", endpoint, mm, ok)
+		}
+		desk, ok := m["desktop"]
+		if !ok || desk.Count != 1 || desk.PriorCount != nil || desk.Delta != nil {
+			t.Fatalf("%s desktop by_app = %+v (exists=%v), want count=1 prior=nil delta=nil", endpoint, desk, ok)
+		}
+	}
+	assertAppFlaky("/kpi/summary?window=7d", summary.FlakyTests.ByApp)
+
+	flaky := getJSON[kpi.FlakyResponse](t, env.ServerURL+"/api/v1/kpi/flaky?window=14d")
+	assertAppFlaky("/kpi/flaky?window=14d", flaky.ByApp)
 }
 
 // ---- test helpers ----

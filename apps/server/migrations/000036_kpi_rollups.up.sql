@@ -50,7 +50,7 @@ SELECT
         tsio_test_verdict(
             ARRAY_AGG(tc.status ORDER BY r.created_at, r.id, s.ordinal, s.id, tc.ordinal, tc.retry_count, tc.id)
         ) = 'passed'
-        AND MIN(tc.retry_count) = 0
+        AND BOOL_OR(tc.retry_count = 0 AND tc.status = 'passed')
     ) AS first_attempt_passed,
     COUNT(*) FILTER (WHERE tc.status IN ('passed', 'flaky'))::integer AS passed_attempts,
     COUNT(*) FILTER (WHERE COALESCE(tc.status, '') NOT IN ('passed', 'flaky', 'skipped', 'pending'))::integer AS failed_attempts,

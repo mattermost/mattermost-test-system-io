@@ -43,7 +43,7 @@ func (s *Store) QuerySummary(ctx context.Context, f FilterParams) (SummaryRespon
 		return SummaryResponse{}, err
 	}
 
-	flakySummary, err := s.querySummaryFlaky(ctx, f, topCoverage)
+	flakySummary, err := s.querySummaryFlaky(ctx, f)
 	if err != nil {
 		return SummaryResponse{}, err
 	}
@@ -323,18 +323,30 @@ func sortMainLaneRows(rows []MainLaneRow, sortBy string) {
 	})
 }
 
-func (s *Store) querySummaryFlaky(ctx context.Context, f FilterParams, cov LaneCoverage) (FlakySummary, error) {
+func (s *Store) querySummaryFlaky(ctx context.Context, f FilterParams) (FlakySummary, error) {
 	const canonicalFlakyDays = 14
 	curTo := f.CurToDate
 	curFrom := curTo.AddDate(0, 0, -(canonicalFlakyDays - 1))
 	priorTo := curFrom.AddDate(0, 0, -1)
 	priorFrom := curFrom.AddDate(0, 0, -canonicalFlakyDays)
 
+	flakyFilter := f
+	flakyFilter.CurFromDate = curFrom
+	flakyFilter.CurToDate = curTo
+	var flakyNotes []string
+	if f.WindowDays != canonicalFlakyDays {
+		flakyNotes = append(flakyNotes, fmt.Sprintf("window=%q filter overridden for KPI 3: flaky_tests always evaluates trailing 14d", f.Window))
+	}
+	cov, err := s.queryLaneCoverage(ctx, flakyFilter, "", true, flakyNotes)
+	if err != nil {
+		return FlakySummary{}, err
+	}
+
 	curTotal, curByApp, err := s.queryFlakyCountsByApp(ctx, f, curFrom, curTo)
 	if err != nil {
 		return FlakySummary{}, err
 	}
-	priorHasData, priorTotal, priorByApp, err := s.queryPriorFlakyCountsByApp(ctx, f, priorFrom, priorTo)
+	priorHasData, priorTotal, priorByApp, priorHasDataByApp, err := s.queryPriorFlakyCountsByApp(ctx, f, priorFrom, priorTo)
 	if err != nil {
 		return FlakySummary{}, err
 	}
@@ -360,7 +372,7 @@ func (s *Store) querySummaryFlaky(ctx context.Context, f FilterParams, cov LaneC
 	for app := range appSet {
 		c := curByApp[app]
 		var pPtr, dPtr *int
-		if priorHasData {
+		if priorHasDataByApp[app] {
 			p := priorByApp[app]
 			pPtr = &p
 			d := c - p

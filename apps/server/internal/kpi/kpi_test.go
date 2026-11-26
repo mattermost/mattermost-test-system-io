@@ -165,3 +165,37 @@ func TestTruncateToUTCWeekMonday(t *testing.T) {
 		t.Fatalf("truncateToUTCWeekMonday(%s) = %s, want %s", sunday, got, want)
 	}
 }
+
+func TestTestExecKeyNetZeroDeltaWithoutApp(t *testing.T) {
+	day := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	tid := uuid.New()
+	raw := []byte(`{"` + tid.String() + `":{"run":2,"pass":1,"fail":1,"flaky":0,"skip":0}}`)
+
+	deltas := map[testExecKey]testExecDelta{}
+	if err := addTestCountsJSON(deltas, day, "mattermost/mattermost", "", "main", "e2e", "", raw, -1); err != nil {
+		t.Fatalf("addTestCountsJSON(-1): %v", err)
+	}
+
+	k := testExecKey{
+		MetricDate: day,
+		Repository: "mattermost/mattermost",
+		Stage:      "main",
+		Lane:       "e2e",
+		Platform:   "",
+		TestID:     tid,
+	}
+	cur := deltas[k]
+	cur.App = "mattermost"
+	cur.Run += 2
+	cur.Pass++
+	cur.Fail++
+	deltas[k] = cur
+
+	if len(deltas) != 1 {
+		t.Fatalf("expected 1 coalesced delta key, got %d", len(deltas))
+	}
+	got := deltas[k]
+	if got.Run != 0 || got.Pass != 0 || got.Fail != 0 || got.Flaky != 0 || got.Skip != 0 {
+		t.Fatalf("expected net-zero delta, got %+v", got)
+	}
+}

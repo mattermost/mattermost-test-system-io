@@ -86,6 +86,7 @@ func TestPRsRedValidationErrors(t *testing.T) {
 		"/api/v1/kpi/prs/red?sort=duration_desc",
 		"/api/v1/kpi/prs/red?page=0",
 		"/api/v1/kpi/prs/red?limit=200",
+		"/api/v1/kpi/prs/red?window=%ZZ",
 	}
 	for _, u := range badURLs {
 		req := httptest.NewRequest(http.MethodGet, u, nil)

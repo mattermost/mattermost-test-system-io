@@ -758,8 +758,6 @@ func (s *Store) queryPRLaneCoverage(ctx context.Context, f FilterParams, extraNo
 			cov.StrictSupportedLanes++
 		} else {
 			cov.UploadOnlyLanes++
-		}
-		if uploadRuns > 0 {
 			cov.UploadOnlyLaneNames = append(cov.UploadOnlyLaneNames, lane)
 		}
 	}
@@ -772,7 +770,7 @@ func (s *Store) queryPRLaneCoverage(ctx context.Context, f FilterParams, extraNo
 	cov.Notes = append(cov.Notes, extraNotes...)
 	cov.Notes = append(cov.Notes, "lower bound ('at least'): excludes lanes <= 24h old until settled and excludes failures fixed by pushing a new commit")
 	if cov.UploadOnlyRuns > 0 {
-		cov.Notes = append(cov.Notes, "upload-only lanes use test_stats_json failed counts; orchestration lease history unavailable")
+		cov.Notes = append(cov.Notes, "upload-only runs use test_stats_json failed counts; orchestration lease history unavailable")
 	}
 	return cov, nil
 }

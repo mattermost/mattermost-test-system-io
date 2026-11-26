@@ -36,7 +36,7 @@ func ParseFlakyParams(q url.Values, now time.Time) (FilterParams, error) {
 
 // ParsePRsRedParams parses and validates query parameters for GET /api/v1/kpi/prs/red.
 func ParsePRsRedParams(q url.Values, now time.Time) (FilterParams, error) {
-	return parseParams(q, now, Window30d, SortCreatedDesc, isValidPRRedSort)
+	return parseParams(q, now, Window30d, SortCreatedDesc, isValidPRRedSort, true)
 }
 
 func parseParams(

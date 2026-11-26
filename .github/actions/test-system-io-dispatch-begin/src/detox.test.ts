@@ -3,7 +3,17 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { discoverDetoxSpecs, parseDetoxSpecTags, passesDetoxTagFilters } from "./detox.ts";
+import {
+  discoverDetoxSpecs,
+  filterDetoxSpecsByTags,
+  listDetoxSpecs,
+  listedSpecPaths,
+  parseDetoxSpecList,
+  parseDetoxSpecTags,
+  passesDetoxTagFilters,
+  resolveDetoxSpecList,
+  sortDetoxSpecsLast,
+} from "./detox.ts";
 
 function withTmpDir(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "detox-discovery-"));
@@ -180,5 +190,159 @@ test("discoverDetoxSpecs: includeTags keeps only matching specs with real paths"
       excludeTags: [],
     });
     assert.deepEqual(specs, ["e2e/test/products/channels/smoke_test/channels.e2e.ts"]);
+  });
+});
+
+test("resolveDetoxSpecList: relative and in-dir absolute entries become sorted, unique detox-relative paths", () => {
+  withTmpDir((dir) => {
+    writeSpec(dir, "e2e/test/b.e2e.ts");
+    writeSpec(dir, "e2e/test/nested/a.ios.e2e.ts");
+    const specs = resolveDetoxSpecList(dir, [
+      "e2e/test/b.e2e.ts",
+      path.join(dir, "e2e/test/nested/a.ios.e2e.ts"),
+      "./e2e/test/b.e2e.ts",
+      "",
+    ]);
+    assert.deepEqual(specs, ["e2e/test/b.e2e.ts", "e2e/test/nested/a.ios.e2e.ts"]);
+  });
+});
+
+test("resolveDetoxSpecList: a symlinked detoxDir still yields paths relative to it", () => {
+  withTmpDir((dir) => {
+    writeSpec(dir, "real/e2e/test/a.e2e.ts");
+    fs.symlinkSync(path.join(dir, "real"), path.join(dir, "link"));
+    const listed = path.join(fs.realpathSync(dir), "real/e2e/test/a.e2e.ts");
+    assert.deepEqual(resolveDetoxSpecList(path.join(dir, "link"), [listed]), ["e2e/test/a.e2e.ts"]);
+  });
+});
+
+test("resolveDetoxSpecList: missing, outside, and non-spec entries throw", () => {
+  withTmpDir((dir) => {
+    writeSpec(dir, "detox/e2e/test/a.e2e.ts");
+    writeSpec(dir, "other/b.e2e.ts");
+    fs.writeFileSync(path.join(dir, "detox/e2e/test/helper.ts"), "");
+    const detoxDir = path.join(dir, "detox");
+    assert.throws(
+      () => resolveDetoxSpecList(detoxDir, ["e2e/test/missing.e2e.ts"]),
+      /does not exist/,
+    );
+    assert.throws(() => resolveDetoxSpecList(detoxDir, ["../other/b.e2e.ts"]), /outside/);
+    assert.throws(
+      () => resolveDetoxSpecList(detoxDir, [path.join(dir, "other/b.e2e.ts")]),
+      /outside/,
+    );
+    assert.throws(
+      () => resolveDetoxSpecList(detoxDir, ["e2e/test/helper.ts"]),
+      /not a \*\.e2e\.ts/,
+    );
+    assert.throws(() => resolveDetoxSpecList(detoxDir, ["e2e/test"]), /not a \*\.e2e\.ts/);
+    writeSpec(detoxDir, "e2e/test/a $(id).e2e.ts");
+    assert.throws(
+      () => resolveDetoxSpecList(detoxDir, ["e2e/test/a $(id).e2e.ts"]),
+      /characters outside/,
+    );
+  });
+});
+
+test("parseDetoxSpecList: splits on any whitespace", () => {
+  assert.deepEqual(parseDetoxSpecList("  a.e2e.ts\nb.e2e.ts  c.e2e.ts\n"), [
+    "a.e2e.ts",
+    "b.e2e.ts",
+    "c.e2e.ts",
+  ]);
+  assert.deepEqual(parseDetoxSpecList(""), []);
+});
+
+test("listedSpecPaths: keeps absolute *.e2e.ts lines only", () => {
+  const out = [
+    "/w/detox/e2e/test/a.e2e.ts",
+    "",
+    "  /w/detox/e2e/test/b.ipad.e2e.ts  ",
+    "e2e/rel.e2e.ts",
+    "/w/x.ts",
+    "log line",
+  ];
+  assert.deepEqual(listedSpecPaths(out.join("\n")), [
+    "/w/detox/e2e/test/a.e2e.ts",
+    "/w/detox/e2e/test/b.ipad.e2e.ts",
+  ]);
+});
+
+function withFakeNpx(dir: string, script: string, fn: () => void): void {
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "npx"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+  const prev = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${prev ?? ""}`;
+  try {
+    fn();
+  } finally {
+    process.env.PATH = prev;
+  }
+}
+
+test("listDetoxSpecs: runs detox --listTests in detoxDir with the config and returns detox-relative paths", () => {
+  withTmpDir((dir) => {
+    const detoxDir = path.join(dir, "detox");
+    writeSpec(detoxDir, "e2e/test/a.e2e.ts");
+    writeSpec(detoxDir, "e2e/test/b.ipad.e2e.ts");
+    const script = [
+      'echo "$*" > "$PWD/args.txt"',
+      'echo "detox log" >&2',
+      'echo "$PWD/e2e/test/b.ipad.e2e.ts"',
+      'echo "$PWD/e2e/test/a.e2e.ts"',
+    ].join("\n");
+    withFakeNpx(dir, script, () => {
+      assert.deepEqual(listDetoxSpecs(detoxDir, "ios.ipad.debug"), [
+        "e2e/test/a.e2e.ts",
+        "e2e/test/b.ipad.e2e.ts",
+      ]);
+    });
+    assert.equal(
+      fs.readFileSync(path.join(detoxDir, "args.txt"), "utf8").trim(),
+      "detox test -c ios.ipad.debug --listTests",
+    );
+  });
+});
+
+test("listDetoxSpecs: a failing detox exit throws with stderr", () => {
+  withTmpDir((dir) => {
+    fs.mkdirSync(path.join(dir, "detox"));
+    withFakeNpx(dir, 'echo "no such configuration" >&2; exit 2', () => {
+      assert.throws(
+        () => listDetoxSpecs(path.join(dir, "detox"), "nope"),
+        /exited 2[\s\S]*no such configuration/,
+      );
+    });
+  });
+});
+
+test("listDetoxSpecs: refuses a config that is not a plain name", () => {
+  for (const bad of ["", "-c", "--listTests", "ios sim", "a;b", "../x"]) {
+    assert.throws(() => listDetoxSpecs(".", bad), /not a valid configuration name/);
+  }
+});
+
+test("filterDetoxSpecsByTags and sortDetoxSpecsLast: tags read from each listed file", () => {
+  withTmpDir((dir) => {
+    writeSpec(dir, "e2e/test/a.e2e.ts");
+    writeSpec(
+      dir,
+      "e2e/test/m1.e2e.ts",
+      "// Copyright\n// Tags: @server_mutation\nimport x from 'y';",
+    );
+    writeSpec(dir, "e2e/test/b.e2e.ts", "// Tags: @flaky\n");
+    writeSpec(dir, "e2e/test/m2.e2e.ts", "// Tags: @smoke @server_mutation\n");
+    const a = "e2e/test/a.e2e.ts";
+    const b = "e2e/test/b.e2e.ts";
+    const m1 = "e2e/test/m1.e2e.ts";
+    const m2 = "e2e/test/m2.e2e.ts";
+
+    assert.deepEqual(
+      filterDetoxSpecsByTags(dir, [a, b, m1, m2], { includeTags: [], excludeTags: ["@flaky"] }),
+      [a, m1, m2],
+    );
+    assert.deepEqual(sortDetoxSpecsLast(dir, [m1, a, b, m2], ["@server_mutation"]), [a, b, m1, m2]);
+    assert.deepEqual(sortDetoxSpecsLast(dir, [m1, a], []), [m1, a]);
   });
 });

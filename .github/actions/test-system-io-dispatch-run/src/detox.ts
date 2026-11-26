@@ -23,6 +23,58 @@ export interface DetoxUnitResult {
 
 const DETOX_NODE_OPTIONS = "--max_old_space_size=4096";
 
+// Detox hands spec args to Jest through /bin/sh unquoted, so a runnable spec
+// path is limited to characters the shell passes through unchanged.
+const SAFE_SPEC_PATH_RE = /^[A-Za-z0-9_][A-Za-z0-9._/-]*\.e2e\.ts$/;
+
+function canonicalPath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/**
+ * Resolves a leased spec_path to its path relative to detoxDir, or returns an
+ * error when it is missing, outside detoxDir, not a file, or not shell-safe.
+ */
+export function checkLeasedSpec(
+  detoxDir: string,
+  specPath: string,
+): { rel: string } | { error: string } {
+  const root = canonicalPath(detoxDir);
+  let real: string;
+  try {
+    real = fs.realpathSync(path.resolve(root, specPath));
+  } catch {
+    return { error: `spec not found under ${detoxDir}` };
+  }
+  if (!real.startsWith(root + path.sep) || !fs.statSync(real).isFile()) {
+    return { error: `spec is not a file under ${detoxDir}` };
+  }
+  const rel = path.relative(root, real).split(path.sep).join("/");
+  if (!SAFE_SPEC_PATH_RE.test(rel)) {
+    return { error: "spec path is not a *.e2e.ts file with a shell-safe name" };
+  }
+  return { rel };
+}
+
+/** Maps each Jest testResults entry to its path relative to detoxDir. */
+export function indexJestFiles(detoxDir: string, files: JestTestFile[]): Map<string, JestTestFile> {
+  const root = canonicalPath(detoxDir);
+  const out = new Map<string, JestTestFile>();
+  for (const f of files) {
+    if (!f.name) continue;
+    const rel = path
+      .relative(root, canonicalPath(path.resolve(root, f.name)))
+      .split(path.sep)
+      .join("/");
+    out.set(rel, f);
+  }
+  return out;
+}
+
 export function runUnit(
   cfg: RunUnitConfig,
   iterationSeq: number,
@@ -33,11 +85,37 @@ export function runUnit(
 
   const artifactsDir = path.join(iterDir, "artifacts");
   const jestOutputPath = path.join(iterDir, "jest-results.json");
+  const invocation: InvocationRecord = {
+    specPath: specPaths[0]!,
+    iterDir,
+    playwrightJsonPath: jestOutputPath,
+  };
+
+  const relBySpec = new Map<string, string>();
+  const rejected: SpecResult[] = [];
+  for (const sp of specPaths) {
+    const checked = checkLeasedSpec(cfg.detoxDir, sp);
+    if ("error" in checked) {
+      core.warning(`detox: skipping leased spec "${sp}": ${checked.error}`);
+      rejected.push({
+        spec_path: sp,
+        status: "interrupted",
+        actual_duration_ms: 0,
+        test_cases: [],
+        error_message: checked.error,
+      });
+    } else {
+      relBySpec.set(sp, checked.rel);
+    }
+  }
+  if (relBySpec.size === 0) {
+    return { invocation, results: rejected, screenshotsBySpec: {} };
+  }
 
   const args = [
     "detox",
     "test",
-    ...specPaths,
+    ...relBySpec.values(),
     "-c",
     cfg.detoxConfig,
     "--record-logs",
@@ -55,7 +133,7 @@ export function runUnit(
   const nodeOptions = [process.env.NODE_OPTIONS, DETOX_NODE_OPTIONS].filter(Boolean).join(" ");
   const maxWorkers = cfg.maxWorkers && cfg.maxWorkers > 0 ? cfg.maxWorkers : 1;
   core.info(
-    `detox invoke: ${specPaths.length} spec(s), DETOX_MAX_WORKERS=${maxWorkers}, config=${cfg.detoxConfig}`,
+    `detox invoke: ${relBySpec.size} spec(s), DETOX_MAX_WORKERS=${maxWorkers}, config=${cfg.detoxConfig}`,
   );
 
   const startedAt = Date.now();
@@ -86,10 +164,10 @@ export function runUnit(
     }
   }
 
+  const jestFiles = indexJestFiles(cfg.detoxDir, parsed?.testResults ?? []);
   const results: SpecResult[] = [];
-  for (const sp of specPaths) {
-    const baseName = path.basename(sp);
-    const fileEntry = parsed?.testResults?.find((f) => path.basename(f.name ?? "") === baseName);
+  for (const [sp, rel] of relBySpec) {
+    const fileEntry = jestFiles.get(rel);
     if (!fileEntry) {
       results.push({ spec_path: sp, status: "interrupted", actual_duration_ms: 0, test_cases: [] });
       continue;
@@ -99,11 +177,7 @@ export function runUnit(
 
   const screenshotsBySpec = collectDetoxScreenshots(artifactsDir, results);
 
-  return {
-    invocation: { specPath: specPaths[0]!, iterDir, playwrightJsonPath: jestOutputPath },
-    results,
-    screenshotsBySpec,
-  };
+  return { invocation, results: [...results, ...rejected], screenshotsBySpec };
 }
 
 /**
@@ -156,7 +230,7 @@ function walkImagesByParentFolder(dir: string, out: Map<string, string[]>): void
 interface JestReport {
   testResults?: JestTestFile[];
 }
-interface JestTestFile {
+export interface JestTestFile {
   name?: string;
   assertionResults?: JestTestResult[];
 }

@@ -52,7 +52,7 @@ inputs:
 
       - `playwright` (default, for backward compatibility with existing consumers): enumerates files matching `testDir`/`testMatch` from `<repo-dir>/<playwright-dir>/playwright.config.*` (excluding `test_setup.ts` and `specs/visual/`) and submits them as dispatch units; the orchestration_runs row is created with `framework: "playwright"`.
       - `cypress`: enumerates `*_spec.{ts,js}` files under `<repo-dir>/<cypress-dir>/tests/integration/` and submits them as dispatch units; the orchestration_runs row is created with `framework: "cypress"`.
-      - `detox`: enumerates `*.e2e.ts` files under `<repo-dir>/<detox-dir>/<detox-search-path>/` and submits them as dispatch units; the orchestration_runs row is created with `framework: "detox"`.
+      - `detox`: enumerates `*.e2e.ts` files under `<repo-dir>/<detox-dir>/<detox-search-path>/` (or takes them from `detox-list-tests` / `detox-specs`) and submits them as dispatch units relative to `detox-dir`; the orchestration_runs row is created with `framework: "detox"`.
       - `maestro`: enumerates `*.yml`/`*.yaml` flow files under `<repo-dir>/<maestro-dir>/<maestro-flow-path>/` and submits them as dispatch units; the orchestration_runs row is created with `framework: "maestro"`.
     required: false
     default: "playwright"
@@ -239,6 +239,38 @@ inputs:
       dropped when its preamble tags share any tag with this list (e.g.
       `@ipad_only`). Applied after `detox-include-tags`. Empty disables.
       Detox only.
+    required: false
+    default: ""
+  detox-list-tests:
+    description: >
+      When `"true"`, the specs are the files `npx detox test -c <detox-config>
+      --listTests` prints from `detox-dir`, so the Detox configuration (its
+      testRunner args, Jest testMatch and ignore patterns) decides what is
+      queued. Needs the Detox project's node_modules installed; no device is
+      booted. Replaces the `detox-search-path` walk. Detox only.
+    required: false
+    default: "false"
+  detox-config:
+    description: >
+      Detox configuration name for `detox-list-tests` (e.g. `ios.sim.debug`).
+      Use the same value as dispatch-run's `detox-config`. Detox only.
+    required: false
+    default: ""
+  detox-specs:
+    description: >
+      Whitespace-separated spec files to queue instead of discovering them
+      (e.g. a re-run of failed specs). Each is relative to `detox-dir`; a
+      missing file, a file outside `detox-dir`, or a non-`*.e2e.ts` file
+      fails begin. Replaces the `detox-search-path` walk and cannot be
+      combined with `detox-list-tests`. Detox only.
+    required: false
+    default: ""
+  detox-sort-last:
+    description: >
+      Comma-separated `// Tags:` list. Specs whose preamble tags share any
+      tag with this list dispatch after every other spec (e.g.
+      `@server_mutation`, so a spec that changes server-wide state runs at
+      the end of a worker's queue). Applies to every spec source. Detox only.
     required: false
     default: ""
 

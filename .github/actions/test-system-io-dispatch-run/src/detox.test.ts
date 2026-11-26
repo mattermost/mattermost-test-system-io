@@ -3,7 +3,14 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { aggregateDetoxFile, collectDetoxScreenshots, detoxStatus } from "./detox.ts";
+import {
+  aggregateDetoxFile,
+  checkLeasedSpec,
+  collectDetoxScreenshots,
+  detoxStatus,
+  indexJestFiles,
+  runUnit,
+} from "./detox.ts";
 import type { SpecResult } from "./types.ts";
 
 function withTmpDir(fn: (dir: string) => void): void {
@@ -231,5 +238,136 @@ test("collectDetoxScreenshots: missing artifacts directory returns empty map", (
   withTmpDir((dir) => {
     const bySpec = collectDetoxScreenshots(path.join(dir, "does-not-exist"), []);
     assert.deepEqual(bySpec, {});
+  });
+});
+
+// ── leased spec checks and result matching ───────────────────────────────
+
+function writeFile(root: string, rel: string, body = ""): void {
+  fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+  fs.writeFileSync(path.join(root, rel), body);
+}
+
+test("checkLeasedSpec: accepts in-dir specs, rejects missing, outside, non-spec, and shell-unsafe paths", () => {
+  withTmpDir((dir) => {
+    const detoxDir = path.join(dir, "detox");
+    writeFile(detoxDir, "e2e/test/a.e2e.ts");
+    writeFile(detoxDir, "e2e/test/helper.ts");
+    writeFile(detoxDir, "e2e/test/x;id.e2e.ts");
+    writeFile(dir, "other/b.e2e.ts");
+
+    assert.deepEqual(checkLeasedSpec(detoxDir, "e2e/test/a.e2e.ts"), { rel: "e2e/test/a.e2e.ts" });
+    assert.deepEqual(checkLeasedSpec(detoxDir, "./e2e/test/../test/a.e2e.ts"), {
+      rel: "e2e/test/a.e2e.ts",
+    });
+    assert.match(
+      (checkLeasedSpec(detoxDir, "e2e/test/missing.e2e.ts") as { error: string }).error,
+      /not found/,
+    );
+    assert.match(
+      (checkLeasedSpec(detoxDir, "../other/b.e2e.ts") as { error: string }).error,
+      /not a file under/,
+    );
+    assert.match(
+      (checkLeasedSpec(detoxDir, "e2e/test") as { error: string }).error,
+      /not a file under/,
+    );
+    assert.match(
+      (checkLeasedSpec(detoxDir, "e2e/test/helper.ts") as { error: string }).error,
+      /shell-safe/,
+    );
+    assert.match(
+      (checkLeasedSpec(detoxDir, "e2e/test/x;id.e2e.ts") as { error: string }).error,
+      /shell-safe/,
+    );
+  });
+});
+
+test("indexJestFiles: keys Jest absolute names by detox-relative path, so same basenames stay distinct", () => {
+  withTmpDir((dir) => {
+    writeFile(dir, "e2e/test/autocomplete/search.e2e.ts");
+    writeFile(dir, "e2e/test/smoke_test/search.e2e.ts");
+    const real = fs.realpathSync(dir);
+    const a = { name: path.join(real, "e2e/test/autocomplete/search.e2e.ts") };
+    const b = { name: path.join(real, "e2e/test/smoke_test/search.e2e.ts") };
+    const index = indexJestFiles(dir, [a, b, {}]);
+    assert.equal(index.size, 2);
+    assert.equal(index.get("e2e/test/autocomplete/search.e2e.ts"), a);
+    assert.equal(index.get("e2e/test/smoke_test/search.e2e.ts"), b);
+  });
+});
+
+function withFakeNpx(dir: string, script: string, fn: () => void): void {
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "npx"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+  const prev = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${prev ?? ""}`;
+  try {
+    fn();
+  } finally {
+    process.env.PATH = prev;
+  }
+}
+
+// Writes a Jest JSON report where only smoke_test/search.e2e.ts ran and failed.
+const FAKE_DETOX = [
+  'echo "$*" > "$PWD/args.txt"',
+  'while [ "$1" != "--outputFile" ]; do shift; done',
+  'printf \'{"testResults":[{"name":"%s/e2e/test/smoke_test/search.e2e.ts","assertionResults":[{"title":"t","fullName":"S t","status":"failed","failureMessages":["boom"]}]}]}\' "$(pwd -P)" > "$2"',
+].join("\n");
+
+test("runUnit: passes only valid leased specs to detox and matches results by full path", () => {
+  withTmpDir((dir) => {
+    const detoxDir = path.join(dir, "detox");
+    writeFile(detoxDir, "e2e/test/autocomplete/search.e2e.ts");
+    writeFile(detoxDir, "e2e/test/smoke_test/search.e2e.ts");
+    let out: ReturnType<typeof runUnit> | undefined;
+    withFakeNpx(dir, FAKE_DETOX, () => {
+      out = runUnit(
+        { detoxDir, detoxConfig: "ios.sim.debug", workerArtifacts: path.join(dir, "artifacts") },
+        1,
+        [
+          "e2e/test/autocomplete/search.e2e.ts",
+          "e2e/test/smoke_test/search.e2e.ts",
+          "e2e/test/gone.e2e.ts",
+        ],
+      );
+    });
+
+    const args = fs.readFileSync(path.join(detoxDir, "args.txt"), "utf8");
+    assert.match(
+      args,
+      /^detox test e2e\/test\/autocomplete\/search\.e2e\.ts e2e\/test\/smoke_test\/search\.e2e\.ts -c ios\.sim\.debug /,
+    );
+    assert.doesNotMatch(args, /gone/);
+
+    const byPath = new Map(out!.results.map((r) => [r.spec_path, r]));
+    assert.equal(out!.results.length, 3);
+    assert.equal(byPath.get("e2e/test/autocomplete/search.e2e.ts")?.status, "interrupted");
+    assert.equal(byPath.get("e2e/test/smoke_test/search.e2e.ts")?.status, "failed");
+    assert.equal(byPath.get("e2e/test/smoke_test/search.e2e.ts")?.error_message, "boom");
+    assert.equal(byPath.get("e2e/test/gone.e2e.ts")?.status, "interrupted");
+    assert.match(byPath.get("e2e/test/gone.e2e.ts")?.error_message ?? "", /not found/);
+  });
+});
+
+test("runUnit: does not start detox when no leased spec is runnable", () => {
+  withTmpDir((dir) => {
+    const detoxDir = path.join(dir, "detox");
+    fs.mkdirSync(detoxDir);
+    let out: ReturnType<typeof runUnit> | undefined;
+    withFakeNpx(dir, 'touch "$PWD/ran"', () => {
+      out = runUnit(
+        { detoxDir, detoxConfig: "ios.sim.debug", workerArtifacts: path.join(dir, "artifacts") },
+        1,
+        ["e2e/test/gone.e2e.ts"],
+      );
+    });
+    assert.equal(fs.existsSync(path.join(detoxDir, "ran")), false);
+    assert.deepEqual(
+      out!.results.map((r) => [r.spec_path, r.status]),
+      [["e2e/test/gone.e2e.ts", "interrupted"]],
+    );
   });
 });

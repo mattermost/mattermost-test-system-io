@@ -792,10 +792,16 @@ func rerunGreenExpr(alias string) string {
 		   AND r2.is_red = false
 		   AND (NOT r2.has_orchestration OR r2.orch_status = 'completed')
 		   AND (
-		       r2.gh_run_attempt_num > %s.gh_run_attempt_num
-		       OR (r2.gh_run_attempt_num = 0 AND %s.gh_run_attempt_num = 0 AND r2.group_created_at > %s.group_created_at)
+		       (r2.gh_run_id <> '' AND r2.gh_run_id = %s.gh_run_id AND (
+		           r2.gh_run_attempt_num > %s.gh_run_attempt_num
+		           OR (r2.gh_run_attempt_num = 0 AND %s.gh_run_attempt_num = 0 AND r2.group_created_at > %s.group_created_at)
+		       ))
+		       OR (
+		           (r2.gh_run_id = '' OR %s.gh_run_id = '' OR r2.gh_run_id <> %s.gh_run_id)
+		           AND r2.group_created_at > %s.group_created_at
+		       )
 		   )
-	)`, alias, alias, alias, alias, alias, alias, alias, alias)
+	)`, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias)
 }
 
 func stillRedExpr(alias string) string {

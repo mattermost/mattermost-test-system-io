@@ -883,4 +883,138 @@ func TestKPI_UploadOnlyPRLaneHTTPFlowToPRFalseRed(t *testing.T) {
 	}
 }
 
+func TestKPI_PRFalseRedCrossRunAttemptNotTreatedAsRerun(t *testing.T) {
+	env := testenv.Start(t, testenv.WithReaperDisabled())
+	ctx := t.Context()
+
+	fixedNow := time.Now().UTC().Truncate(time.Second)
+	store := &kpi.Store{
+		Pool: env.Pool,
+		Now:  func() time.Time { return fixedNow },
+	}
+	repo := "mattermost/mattermost"
+	t1 := insertTest(t, ctx, env.Pool, repo, "playwright", "h:cross-run", "PR > cross-run")
+	sig401 := insertFailureSig(t, ctx, env, repo, "fp-cross-run-401")
+	sig402 := insertFailureSig(t, ctx, env, repo, "fp-cross-run-402")
+	sig403 := insertFailureSig(t, ctx, env, repo, "fp-cross-run-403")
+	sig404 := insertFailureSig(t, ctx, env, repo, "fp-cross-run-404")
+	prPtr := func(n int) *int { return &n }
+
+	t48h := fixedNow.Add(-48 * time.Hour)
+	t30h := fixedNow.Add(-30 * time.Hour)
+	t25h := fixedNow.Add(-25 * time.Hour)
+
+	// Older green run (run-old, attempt 2) must NOT mark a later red run (run-new, attempt 1) as went_green_on_rerun.
+	gOldGreen := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-401", Commit: "sha-401", RunID: "run-old-401", Attempt: "2",
+		PRNum: prPtr(401), Stage: "pr", CreatedAt: t48h,
+	})
+	rOldGreen := insertReport(t, ctx, env.Pool, gOldGreen, "playwright-full", "")
+	sOldGreen := insertSuite(t, ctx, env.Pool, rOldGreen, "S")
+	insertCase(t, ctx, env.Pool, sOldGreen, t1, "t1", "passed", 0, "", 0)
+	mustRefresh(t, ctx, env.Pool, gOldGreen)
+
+	gNewRed := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-401", Commit: "sha-401", RunID: "run-new-401", Attempt: "1",
+		PRNum: prPtr(401), Stage: "pr", CreatedAt: t30h,
+	})
+	rNewRed := insertReport(t, ctx, env.Pool, gNewRed, "playwright-full", "")
+	sNewRed := insertSuite(t, ctx, env.Pool, rNewRed, "S")
+	insertCaseWithSig(t, ctx, env.Pool, sNewRed, t1, sig401, "t1", "failed", 0, 0)
+	mustRefresh(t, ctx, env.Pool, gNewRed)
+
+	// Legacy records missing gh_run_id fall back chronologically: older green (attempt 2) ignored, later green matches.
+	gLegacyOldGreen := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-402", Commit: "sha-402", RunID: "", Attempt: "2",
+		PRNum: prPtr(402), Stage: "pr", CreatedAt: t48h,
+	})
+	rLegacyOldGreen := insertReport(t, ctx, env.Pool, gLegacyOldGreen, "playwright-full", "")
+	sLegacyOldGreen := insertSuite(t, ctx, env.Pool, rLegacyOldGreen, "S")
+	insertCase(t, ctx, env.Pool, sLegacyOldGreen, t1, "t1", "passed", 0, "", 0)
+	mustRefresh(t, ctx, env.Pool, gLegacyOldGreen)
+
+	gLegacyRed := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-402", Commit: "sha-402", RunID: "", Attempt: "1",
+		PRNum: prPtr(402), Stage: "pr", CreatedAt: t30h,
+	})
+	rLegacyRed := insertReport(t, ctx, env.Pool, gLegacyRed, "playwright-full", "")
+	sLegacyRed := insertSuite(t, ctx, env.Pool, rLegacyRed, "S")
+	insertCaseWithSig(t, ctx, env.Pool, sLegacyRed, t1, sig402, "t1", "failed", 0, 0)
+	mustRefresh(t, ctx, env.Pool, gLegacyRed)
+
+	// Separate PR #403 with legacy empty gh_run_id and a genuinely later green rerun.
+	gLegacy403Red := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-403", Commit: "sha-403", RunID: "", Attempt: "1",
+		PRNum: prPtr(403), Stage: "pr", CreatedAt: t30h,
+	})
+	rLegacy403Red := insertReport(t, ctx, env.Pool, gLegacy403Red, "playwright-full", "")
+	sLegacy403Red := insertSuite(t, ctx, env.Pool, rLegacy403Red, "S")
+	insertCaseWithSig(t, ctx, env.Pool, sLegacy403Red, t1, sig403, "t1", "failed", 0, 0)
+	mustRefresh(t, ctx, env.Pool, gLegacy403Red)
+
+	gLegacy403LaterGreen := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-403", Commit: "sha-403", RunID: "", Attempt: "2",
+		PRNum: prPtr(403), Stage: "pr", CreatedAt: t25h,
+	})
+	rLegacy403LaterGreen := insertReport(t, ctx, env.Pool, gLegacy403LaterGreen, "playwright-full", "")
+	sLegacy403LaterGreen := insertSuite(t, ctx, env.Pool, rLegacy403LaterGreen, "S")
+	insertCase(t, ctx, env.Pool, sLegacy403LaterGreen, t1, "t1", "passed", 0, "", 0)
+	mustRefresh(t, ctx, env.Pool, gLegacy403LaterGreen)
+
+	// PR #404: later green workflow run (run-404-b, attempt 1) after earlier red run (run-404-a, attempt 2) -> chronological rerun match!
+	g404Red := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-404", Commit: "sha-404", RunID: "run-404-a", Attempt: "2",
+		PRNum: prPtr(404), Stage: "pr", CreatedAt: t30h,
+	})
+	r404Red := insertReport(t, ctx, env.Pool, g404Red, "playwright-full", "")
+	s404Red := insertSuite(t, ctx, env.Pool, r404Red, "S")
+	insertCaseWithSig(t, ctx, env.Pool, s404Red, t1, sig404, "t1", "failed", 0, 0)
+	mustRefresh(t, ctx, env.Pool, g404Red)
+
+	g404LaterGreen := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-404", Commit: "sha-404", RunID: "run-404-b", Attempt: "1",
+		PRNum: prPtr(404), Stage: "pr", CreatedAt: t25h,
+	})
+	r404LaterGreen := insertReport(t, ctx, env.Pool, g404LaterGreen, "playwright-full", "")
+	s404LaterGreen := insertSuite(t, ctx, env.Pool, r404LaterGreen, "S")
+	insertCase(t, ctx, env.Pool, s404LaterGreen, t1, "t1", "passed", 0, "", 0)
+	mustRefresh(t, ctx, env.Pool, g404LaterGreen)
+
+	params, err := kpi.ParsePRsRedParams(nil, fixedNow)
+	if err != nil {
+		t.Fatalf("ParsePRsRedParams: %v", err)
+	}
+	res, err := store.QueryPRsRed(ctx, params)
+	if err != nil {
+		t.Fatalf("QueryPRsRed: %v", err)
+	}
+	byPR := map[int]kpi.RedPRLaneRow{}
+	for _, row := range res.Lanes {
+		byPR[row.GHPRNumber] = row
+	}
+	if row := byPR[401]; row.WentGreenOnRerun || !row.StillRed || row.Reason != kpi.ReasonOther {
+		t.Fatalf("PR #401 cross-run attempt falsely matched rerun: %+v", row)
+	}
+	if row := byPR[402]; row.WentGreenOnRerun || !row.StillRed || row.Reason != kpi.ReasonOther {
+		t.Fatalf("PR #402 legacy older green falsely matched rerun: %+v", row)
+	}
+	if row := byPR[403]; !row.WentGreenOnRerun || row.StillRed || row.Reason != kpi.ReasonWentGreenOnRerun {
+		t.Fatalf("PR #403 legacy later green did not match rerun: %+v", row)
+	}
+	if row := byPR[404]; !row.WentGreenOnRerun || row.StillRed || row.Reason != kpi.ReasonWentGreenOnRerun {
+		t.Fatalf("PR #404 later cross-run green did not match rerun: %+v", row)
+	}
+	if res.SettledRedLanes != 4 || res.SettledFalseRedLanes != 2 {
+		t.Fatalf("counts = settled:%d falseRed:%d, want 4/2", res.SettledRedLanes, res.SettledFalseRedLanes)
+	}
+}
+
 func window30dForTest() string { return kpi.Window30d }

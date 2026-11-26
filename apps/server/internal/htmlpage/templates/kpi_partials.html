@@ -8,6 +8,9 @@
 {{define "kpi-filter-bar"}}
 <section class="kpi-filters" aria-label="KPI filters">
   <form method="GET" action="{{.State.ActionPath}}" id="kpi-filter-form" class="kpi-filters-form">
+    {{if .State.HasCustomLimit}}
+    <input type="hidden" name="limit" value="{{.State.Limit}}">
+    {{end}}
     <label class="kpi-filter-field">
       <span class="kpi-filter-label">App</span>
       <select name="app" class="kpi-filter-select" data-kpi-filter="app" aria-label="Filter by app">

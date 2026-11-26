@@ -16,6 +16,7 @@ const (
 	kpiDeltaNeutral = "kpi-delta-neutral"
 	kpiDeltaGood    = "kpi-delta-good"
 	kpiDeltaBad     = "kpi-delta-bad"
+	kpiDefaultLimit = 50
 )
 
 // KPIFilterOption represents one <option> in a KPI filter or sort dropdown.
@@ -35,9 +36,15 @@ type KPIFilterState struct {
 	Window      string
 	Sort        string
 	Page        int
+	Limit       int
 	DefaultSort string
 	ActionPath  string
 	ResetHref   string
+}
+
+// HasCustomLimit reports whether a non-default page limit is active.
+func (s KPIFilterState) HasCustomLimit() bool {
+	return s.Limit > 0 && s.Limit != kpiDefaultLimit
 }
 
 // KPIFilterBar holds all filter/sort dropdown options for KPI pages.
@@ -86,6 +93,10 @@ func kpiFilterStateFromParams(f kpi.FilterParams, actionPath, defaultSort string
 	if page < 1 {
 		page = 1
 	}
+	limit := f.Limit
+	if limit <= 0 {
+		limit = kpiDefaultLimit
+	}
 	window := f.Window
 	if window == "" {
 		window = kpi.Window30d
@@ -103,6 +114,7 @@ func kpiFilterStateFromParams(f kpi.FilterParams, actionPath, defaultSort string
 		Window:      window,
 		Sort:        sortBy,
 		Page:        page,
+		Limit:       limit,
 		DefaultSort: defaultSort,
 		ActionPath:  actionPath,
 		ResetHref:   actionPath,
@@ -132,7 +144,8 @@ func buildKPIFilterBar(
 	hasActive := state.App != "" || state.Repo != "" || state.Stage != "" ||
 		state.Lane != "" || state.Platform != "" ||
 		(state.Window != "" && state.Window != kpi.Window30d) ||
-		(state.Sort != "" && defaultSort != "" && state.Sort != defaultSort)
+		(state.Sort != "" && defaultSort != "" && state.Sort != defaultSort) ||
+		state.HasCustomLimit()
 
 	return KPIFilterBar{
 		State:            state,
@@ -199,6 +212,9 @@ func kpiQueryString(f KPIFilterState, page int, sort string, includeSort bool) s
 	}
 	if includeSort && sort != "" && sort != f.DefaultSort {
 		v.Set("sort", sort)
+	}
+	if f.HasCustomLimit() {
+		v.Set("limit", strconv.Itoa(f.Limit))
 	}
 	if page > 1 {
 		v.Set("page", strconv.Itoa(page))
@@ -481,7 +497,7 @@ func buildKPIPagination(state KPIFilterState, page, limit, total, respTotalPages
 
 func paginateRange(page, limit, total int) (totalPages, rowStart, showEnd int) {
 	if limit <= 0 {
-		limit = 50
+		limit = kpiDefaultLimit
 	}
 	if page < 1 {
 		page = 1

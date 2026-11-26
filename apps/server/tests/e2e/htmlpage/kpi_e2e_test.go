@@ -375,6 +375,50 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 	}
 	assertNoKPIGuardrailViolations(t, "GET /kpi/prs filtered", prsFiltered, secrets)
 
+	// ---- Verify custom limit preservation in pagination links and filter form ----
+	prsLimitP1 := getHTML(t, env.ServerURL+"/kpi/prs?limit=1", http.StatusOK)
+	for _, want := range []string{
+		`<input type="hidden" name="limit" value="1">`,
+		`href="/kpi?limit=1"`,
+		`href="/kpi/prs?limit=1"`,
+		`href="?limit=1&amp;page=2">Next</a>`,
+		`href="/kpi/prs" class="kpi-btn kpi-btn-ghost">Reset</a>`,
+	} {
+		if !strings.Contains(prsLimitP1, want) {
+			t.Fatalf("GET /kpi/prs?limit=1 missing %q", want)
+		}
+	}
+	assertNoKPIGuardrailViolations(t, "GET /kpi/prs?limit=1", prsLimitP1, secrets)
+
+	prsLimitP2 := getHTML(t, env.ServerURL+"/kpi/prs?limit=1&page=2", http.StatusOK)
+	for _, want := range []string{
+		`<input type="hidden" name="limit" value="1">`,
+		`href="?limit=1">Previous</a>`,
+	} {
+		if !strings.Contains(prsLimitP2, want) {
+			t.Fatalf("GET /kpi/prs?limit=1&page=2 missing %q", want)
+		}
+	}
+	assertNoKPIGuardrailViolations(t, "GET /kpi/prs?limit=1&page=2", prsLimitP2, secrets)
+
+	prsDefaultLimit := getHTML(t, env.ServerURL+"/kpi/prs?limit=50", http.StatusOK)
+	if strings.Contains(prsDefaultLimit, `name="limit"`) {
+		t.Fatal("GET /kpi/prs?limit=50 must not render hidden limit input")
+	}
+	assertNoKPIGuardrailViolations(t, "GET /kpi/prs?limit=50", prsDefaultLimit, secrets)
+
+	ovLimitP1 := getHTML(t, env.ServerURL+"/kpi?limit=2", http.StatusOK)
+	for _, want := range []string{
+		`<input type="hidden" name="limit" value="2">`,
+		`href="?limit=2&amp;page=2">Next</a>`,
+		`href="/kpi/prs?limit=2"`,
+	} {
+		if !strings.Contains(ovLimitP1, want) {
+			t.Fatalf("GET /kpi?limit=2 missing %q", want)
+		}
+	}
+	assertNoKPIGuardrailViolations(t, "GET /kpi?limit=2", ovLimitP1, secrets)
+
 	// ---- Verify 400 on invalid filter/sort/page (including int64 overflow) ----
 	for _, badPath := range []string{
 		"/kpi?window=3d",

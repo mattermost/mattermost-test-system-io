@@ -925,3 +925,143 @@ func TestKPIHardening_URLSanitizationPathEscapeUTF8AndMobileCSS(t *testing.T) {
 		t.Fatal("expected .kpi-card-substats > div to include flex-wrap: wrap")
 	}
 }
+
+func TestKPICustomLimitPreservation(t *testing.T) {
+	now := time.Date(2026, 11, 26, 15, 0, 0, 0, time.UTC)
+
+	t.Run("prs_custom_limit_preserved_in_links_and_filter_form", func(t *testing.T) {
+		params, err := kpi.ParsePRsRedParams(url.Values{
+			"app":   {"mattermost"},
+			"sort":  {kpi.SortAgeDesc},
+			"limit": {"10"},
+			"page":  {"2"},
+		}, now)
+		if err != nil {
+			t.Fatalf("ParsePRsRedParams: %v", err)
+		}
+
+		page := BuildKPIPRsPage(SiteInfo{}, kpi.FilterOptions{Apps: []string{"mattermost"}}, kpi.PRRedResponse{
+			Filters: params,
+			Pagination: kpi.Pagination{
+				Page:       2,
+				Limit:      10,
+				Total:      25,
+				TotalPages: 3,
+			},
+			Lanes: []kpi.RedPRLaneRow{
+				{ReportGroupID: "rg-1", GHPRNumber: 101, Repository: "mattermost/mattermost", Lane: "e2e", CreatedAt: now},
+			},
+		}, now)
+
+		if page.Filters.State.Limit != 10 || !page.Filters.State.HasCustomLimit() || !page.Filters.HasActiveFilters {
+			t.Fatalf("expected custom limit=10 and HasActiveFilters=true, got %+v", page.Filters.State)
+		}
+		if page.PrevHref != "?app=mattermost&limit=10&sort=age_desc" {
+			t.Fatalf("PrevHref = %q, want %q", page.PrevHref, "?app=mattermost&limit=10&sort=age_desc")
+		}
+		if page.NextHref != "?app=mattermost&limit=10&page=3&sort=age_desc" {
+			t.Fatalf("NextHref = %q, want %q", page.NextHref, "?app=mattermost&limit=10&page=3&sort=age_desc")
+		}
+		if page.OverviewHref != "/kpi?app=mattermost&limit=10" {
+			t.Fatalf("OverviewHref = %q, want %q", page.OverviewHref, "/kpi?app=mattermost&limit=10")
+		}
+		if page.PRsHref != "/kpi/prs?app=mattermost&limit=10" {
+			t.Fatalf("PRsHref = %q, want %q", page.PRsHref, "/kpi/prs?app=mattermost&limit=10")
+		}
+
+		htmlBytes, err := RenderKPIPRs(page)
+		if err != nil {
+			t.Fatalf("RenderKPIPRs: %v", err)
+		}
+		s := string(htmlBytes)
+		for _, want := range []string{
+			`<input type="hidden" name="limit" value="10">`,
+			`href="?app=mattermost&amp;limit=10&amp;sort=age_desc">Previous</a>`,
+			`href="?app=mattermost&amp;limit=10&amp;page=3&amp;sort=age_desc">Next</a>`,
+			`href="/kpi/prs" class="kpi-btn kpi-btn-ghost">Reset</a>`,
+		} {
+			if !strings.Contains(s, want) {
+				t.Fatalf("rendered /kpi/prs missing %q", want)
+			}
+		}
+	})
+
+	t.Run("overview_custom_limit_100_and_only_limit_active", func(t *testing.T) {
+		params, err := kpi.ParseFailuresParams(url.Values{"limit": {"100"}}, now)
+		if err != nil {
+			t.Fatalf("ParseFailuresParams: %v", err)
+		}
+
+		page := BuildKPIOverviewPage(
+			SiteInfo{},
+			kpi.FilterOptions{},
+			kpi.SummaryResponse{Filters: params},
+			kpi.FailuresResponse{
+				Filters:    params,
+				Pagination: kpi.Pagination{Page: 1, Limit: 100, Total: 150, TotalPages: 2},
+				Failures: []kpi.RecurringFailureRow{
+					{SignatureID: "sig-1", NormalizedMessage: "boom", LastSeenAt: now},
+				},
+			},
+			now,
+		)
+
+		if !page.Filters.HasActiveFilters {
+			t.Fatal("expected HasActiveFilters=true when custom limit=100 is active")
+		}
+		if page.NextHref != "?limit=100&page=2" {
+			t.Fatalf("NextHref = %q, want %q", page.NextHref, "?limit=100&page=2")
+		}
+		if page.PRsHref != "/kpi/prs?limit=100" {
+			t.Fatalf("PRsHref = %q, want %q", page.PRsHref, "/kpi/prs?limit=100")
+		}
+		if page.Failures[0].Href != "/kpi/failures/sig-1?limit=100" {
+			t.Fatalf("Failure Href = %q, want %q", page.Failures[0].Href, "/kpi/failures/sig-1?limit=100")
+		}
+
+		htmlBytes, err := RenderKPIOverview(page)
+		if err != nil {
+			t.Fatalf("RenderKPIOverview: %v", err)
+		}
+		s := string(htmlBytes)
+		for _, want := range []string{
+			`<input type="hidden" name="limit" value="100">`,
+			`href="?limit=100&amp;page=2">Next</a>`,
+			`href="/kpi" class="kpi-btn kpi-btn-ghost">Reset</a>`,
+		} {
+			if !strings.Contains(s, want) {
+				t.Fatalf("rendered /kpi missing %q", want)
+			}
+		}
+	})
+
+	t.Run("default_limit_omits_limit_param_and_hidden_input", func(t *testing.T) {
+		params, err := kpi.ParsePRsRedParams(url.Values{"limit": {"50"}}, now)
+		if err != nil {
+			t.Fatalf("ParsePRsRedParams: %v", err)
+		}
+		page := BuildKPIPRsPage(SiteInfo{}, kpi.FilterOptions{}, kpi.PRRedResponse{
+			Filters:    params,
+			Pagination: kpi.Pagination{Page: 1, Limit: 50, Total: 80, TotalPages: 2},
+			Lanes:      []kpi.RedPRLaneRow{{ReportGroupID: "rg-1", GHPRNumber: 1, CreatedAt: now}},
+		}, now)
+
+		if page.Filters.State.HasCustomLimit() || page.Filters.HasActiveFilters {
+			t.Fatalf("expected default limit=50 not to mark custom/active filters, got %+v", page.Filters)
+		}
+		if page.NextHref != "?page=2" {
+			t.Fatalf("NextHref = %q, want %q", page.NextHref, "?page=2")
+		}
+		if got := kpiQueryString(KPIFilterState{}, 1, "", false); got != "" {
+			t.Fatalf("zero-value KPIFilterState kpiQueryString = %q, want empty", got)
+		}
+
+		htmlBytes, err := RenderKPIPRs(page)
+		if err != nil {
+			t.Fatalf("RenderKPIPRs: %v", err)
+		}
+		if strings.Contains(string(htmlBytes), `name="limit"`) {
+			t.Fatal("default limit=50 must not emit hidden limit input")
+		}
+	})
+}

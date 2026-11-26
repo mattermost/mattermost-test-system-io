@@ -171,6 +171,7 @@ func Build(d Deps) chi.Router {
 	}
 
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(verdictsBodyLimitMiddleware)
 		if validator != nil {
 			r.Use(validator.Middleware)
 		}
@@ -313,4 +314,13 @@ func Build(d Deps) chi.Router {
 	}
 
 	return r
+}
+
+func verdictsBodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/verdicts" {
+			r.Body = http.MaxBytesReader(w, r.Body, verdictsapi.MaxCreateBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
 }

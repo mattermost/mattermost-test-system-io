@@ -64,19 +64,18 @@ func oidcToken(t *testing.T, env *testenv.Env, repo, workflow string) string {
 	})
 }
 
-func doJSON(t *testing.T, method, url, bearer, apiKey string, body any) (int, []byte) {
-	t.Helper()
+func doJSONErr(method, url, bearer, apiKey string, body any) (int, []byte, error) {
 	var rd io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			t.Fatalf("marshal body: %v", err)
+			return 0, nil, fmt.Errorf("marshal body: %w", err)
 		}
 		rd = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequest(method, url, rd)
 	if err != nil {
-		t.Fatalf("new request: %v", err)
+		return 0, nil, fmt.Errorf("new request: %w", err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -89,11 +88,23 @@ func doJSON(t *testing.T, method, url, bearer, apiKey string, body any) (int, []
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("do %s %s: %v", method, url, err)
+		return 0, nil, fmt.Errorf("do %s %s: %w", method, url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, raw
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("read %s %s response: %w", method, url, err)
+	}
+	return resp.StatusCode, raw, nil
+}
+
+func doJSON(t *testing.T, method, url, bearer, apiKey string, body any) (int, []byte) {
+	t.Helper()
+	code, raw, err := doJSONErr(method, url, bearer, apiKey, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, raw
 }
 
 func seedGroup(t *testing.T, env *testenv.Env, repo, runID string) uuid.UUID {
@@ -196,6 +207,7 @@ func TestVerdicts_AuthzAndRepoMatch(t *testing.T) {
 	sigID := seedSignature(t, env, strings.Repeat("a", 64), errorsig.AlgoVersion, nil)
 
 	uploaderA := oidcToken(t, env, repoA, wfUploader)
+	uploaderB := oidcToken(t, env, repoB, wfUploader)
 	viewerA := oidcToken(t, env, repoA, wfViewer)
 	apiKey := env.IssueAPIKey(t, "ci-verdicts")
 
@@ -271,6 +283,71 @@ func TestVerdicts_AuthzAndRepoMatch(t *testing.T) {
 			t.Fatalf("api key status = %d, want 200 (body=%s)", code, body)
 		}
 	})
+
+	t.Run("cross-repo reused_from_id gets 403 and same-repo reused_from_id succeeds", func(t *testing.T) {
+		var createResp struct {
+			Verdicts []struct {
+				ID uuid.UUID `json:"id"`
+			} `json:"verdicts"`
+		}
+
+		// Create a verdict in repoB.
+		code, bodyB := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", uploaderB, "", map[string]any{
+			"repository":      repoB,
+			"report_group_id": rgB.String(),
+			"verdicts":        []any{map[string]any{"signature_id": sigID.String(), "label": "flaky"}},
+		})
+		if code != http.StatusOK {
+			t.Fatalf("seed repoB verdict status = %d (body=%s)", code, bodyB)
+		}
+		if err := json.Unmarshal(bodyB, &createResp); err != nil || len(createResp.Verdicts) != 1 {
+			t.Fatalf("decode repoB verdict: err=%v body=%s", err, bodyB)
+		}
+		verdictBID := createResp.Verdicts[0].ID
+
+		// Cross-repo reused_from_id from repoA must fail with 403.
+		rgA2 := seedGroup(t, env, repoA, "run-authz-a-reuse-cross")
+		code, crossBody := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", uploaderA, "", map[string]any{
+			"repository":      repoA,
+			"report_group_id": rgA2.String(),
+			"verdicts": []any{map[string]any{
+				"signature_id":   sigID.String(),
+				"label":          "flaky",
+				"reused_from_id": verdictBID.String(),
+			}},
+		})
+		if code != http.StatusForbidden {
+			t.Fatalf("cross-repo reused_from_id status = %d, want 403 (body=%s)", code, crossBody)
+		}
+
+		// Create a verdict in repoA and verify same-repo reused_from_id succeeds (including normalized repo variant).
+		code, bodyA := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", uploaderA, "", map[string]any{
+			"repository":      repoA,
+			"report_group_id": rgA2.String(),
+			"verdicts":        []any{map[string]any{"signature_id": sigID.String(), "label": "app bug"}},
+		})
+		if code != http.StatusOK {
+			t.Fatalf("seed repoA verdict status = %d (body=%s)", code, bodyA)
+		}
+		if err := json.Unmarshal(bodyA, &createResp); err != nil || len(createResp.Verdicts) != 1 {
+			t.Fatalf("decode repoA verdict: err=%v body=%s", err, bodyA)
+		}
+		verdictAID := createResp.Verdicts[0].ID
+
+		rgA3 := seedGroup(t, env, repoA, "run-authz-a-reuse-same")
+		code, sameBody := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", uploaderA, "", map[string]any{
+			"repository":      "Mattermost/Repo-A.git",
+			"report_group_id": rgA3.String(),
+			"verdicts": []any{map[string]any{
+				"signature_id":   sigID.String(),
+				"label":          "app bug",
+				"reused_from_id": verdictAID.String(),
+			}},
+		})
+		if code != http.StatusOK {
+			t.Fatalf("same-repo reused_from_id status = %d, want 200 (body=%s)", code, sameBody)
+		}
+	})
 }
 
 func TestVerdicts_IdempotencySupersedeAndConcurrency(t *testing.T) {
@@ -329,7 +406,7 @@ func TestVerdicts_IdempotencySupersedeAndConcurrency(t *testing.T) {
 		t.Fatalf("label = %q, want verbatim 'broken on main'", resp1.Verdicts[0].Label)
 	}
 
-	// 2. Idempotent replay
+	// 2. Idempotent replay (including case-variant + .git normalized repository)
 	code, raw2 := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", tok, "", reqBody)
 	if code != http.StatusOK {
 		t.Fatalf("replay post = %d: %s", code, raw2)
@@ -340,6 +417,23 @@ func TestVerdicts_IdempotencySupersedeAndConcurrency(t *testing.T) {
 	}
 	if resp2.Verdicts[0].ID != resp1.Verdicts[0].ID || resp2.Verdicts[0].Created || resp2.Verdicts[0].SupersededID != nil {
 		t.Fatalf("expected idempotent replay of %s with created=false, got %s", resp1.Verdicts[0].ID, raw2)
+	}
+
+	reqBodyCaseVariant := map[string]any{
+		"repository":      "Mattermost/Repo-A.git",
+		"report_group_id": rg.String(),
+		"verdicts":        reqBody["verdicts"],
+	}
+	code, raw2Case := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", tok, "", reqBodyCaseVariant)
+	if code != http.StatusOK {
+		t.Fatalf("case-variant replay post = %d: %s", code, raw2Case)
+	}
+	var resp2Case createResp
+	if err := json.Unmarshal(raw2Case, &resp2Case); err != nil {
+		t.Fatalf("decode resp2Case: %v", err)
+	}
+	if resp2Case.Verdicts[0].ID != resp1.Verdicts[0].ID || resp2Case.Verdicts[0].Created || resp2Case.Verdicts[0].SupersededID != nil {
+		t.Fatalf("expected case-variant idempotent replay of %s with created=false, got %s", resp1.Verdicts[0].ID, raw2Case)
 	}
 
 	// 3. Supersede with changed label
@@ -395,6 +489,48 @@ func TestVerdicts_IdempotencySupersedeAndConcurrency(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "unsafe javascript triage_url",
+			body: map[string]any{
+				"repository": repoA,
+				"verdicts":   []any{map[string]any{"label": "flaky", "triage_url": "javascript:alert(1)"}},
+			},
+		},
+		{
+			name: "credentialed triage_url",
+			body: map[string]any{
+				"repository": repoA,
+				"verdicts":   []any{map[string]any{"label": "flaky", "triage_url": "https://user:pass@example.com/run/1"}},
+			},
+		},
+		{
+			name: "percent-encoded email in triage_url path",
+			body: map[string]any{
+				"repository": repoA,
+				"verdicts":   []any{map[string]any{"label": "flaky", "triage_url": "https://example.com/alice%40example.com"}},
+			},
+		},
+		{
+			name: "percent-encoded secret in triage_url path",
+			body: map[string]any{
+				"repository": repoA,
+				"verdicts":   []any{map[string]any{"label": "flaky", "triage_url": "https://example.com/token%3Dsecret"}},
+			},
+		},
+		{
+			name: "percent-encoded secret in triage_url fragment",
+			body: map[string]any{
+				"repository": repoA,
+				"verdicts":   []any{map[string]any{"label": "flaky", "triage_url": "https://example.com/run#password%3Dsecret"}},
+			},
+		},
+		{
+			name: "out-of-range json.Number in error_context",
+			body: map[string]any{
+				"repository": repoA,
+				"verdicts":   []any{map[string]any{"label": "flaky", "error_context": json.RawMessage(`{"huge": 1e200000}`)}},
+			},
+		},
 	}
 	for _, tc := range badCases {
 		code, body := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", tok, "", tc.body)
@@ -423,7 +559,11 @@ func TestVerdicts_IdempotencySupersedeAndConcurrency(t *testing.T) {
 					map[string]any{"test_id": testID.String(), "signature_id": sigID.String(), "label": lbl},
 				},
 			}
-			c, raw := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", tok, "", b)
+			c, raw, err := doJSONErr(http.MethodPost, env.ServerURL+"/api/v1/verdicts", tok, "", b)
+			if err != nil {
+				errs <- fmt.Errorf("worker %d err=%w", idx, err)
+				return
+			}
 			if c != http.StatusOK {
 				errs <- fmt.Errorf("worker %d status=%d body=%s", idx, c, raw)
 			}
@@ -478,15 +618,58 @@ func TestVerdicts_ReportGroupNullAndOnDeleteSetNull(t *testing.T) {
 		t.Fatalf("nullCount = %d, want 2", nullCount)
 	}
 
-	// Standalone lane-level verdict with report_group_id: null, test_id: null, signature_id: null
-	code, body := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", tok, "", map[string]any{
-		"repository": repoA,
-		"verdicts": []any{
-			map[string]any{"label": "all specs ran", "summary": "Lane healthy"},
+	// Standalone lane-level verdict with report_group_id omitted and explicit null:
+	// replaying identical payloads must create distinct verdicts (created: true, unique IDs).
+	type standaloneResp struct {
+		Verdicts []struct {
+			ID            uuid.UUID  `json:"id"`
+			ReportGroupID *uuid.UUID `json:"report_group_id"`
+			Created       bool       `json:"created"`
+		} `json:"verdicts"`
+	}
+	seenIDs := make(map[uuid.UUID]struct{}, 4)
+	for _, tc := range []struct {
+		name    string
+		payload map[string]any
+	}{
+		{
+			name: "omitted report_group_id",
+			payload: map[string]any{
+				"repository": repoA,
+				"verdicts": []any{
+					map[string]any{"label": "all specs ran", "summary": "Lane healthy"},
+				},
+			},
 		},
-	})
-	if code != http.StatusOK {
-		t.Fatalf("standalone lane verdict failed: %d %s", code, body)
+		{
+			name: "explicit null report_group_id",
+			payload: map[string]any{
+				"repository":      repoA,
+				"report_group_id": nil,
+				"verdicts": []any{
+					map[string]any{"label": "all specs ran", "summary": "Lane healthy"},
+				},
+			},
+		},
+	} {
+		for attempt := 1; attempt <= 2; attempt++ {
+			code, body := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", tok, "", tc.payload)
+			if code != http.StatusOK {
+				t.Fatalf("standalone lane verdict (%s attempt %d) failed: %d %s", tc.name, attempt, code, body)
+			}
+			var decoded standaloneResp
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatalf("decode standalone verdict (%s attempt %d): %v", tc.name, attempt, err)
+			}
+			if len(decoded.Verdicts) != 1 || !decoded.Verdicts[0].Created || decoded.Verdicts[0].ReportGroupID != nil {
+				t.Fatalf("unexpected standalone verdict (%s attempt %d): %s", tc.name, attempt, body)
+			}
+			id := decoded.Verdicts[0].ID
+			if _, dup := seenIDs[id]; dup {
+				t.Fatalf("standalone verdict (%s attempt %d) reused ID %s, want distinct verdict", tc.name, attempt, id)
+			}
+			seenIDs[id] = struct{}{}
+		}
 	}
 }
 
@@ -507,6 +690,9 @@ func TestVerdicts_ErrorContextRedactionAndNonLeakage(t *testing.T) {
 		"raw-openai-secret-e2e",
 		"secret-in-auth-obj-e2e",
 		"secret-in-pw-arr-e2e",
+		"987654",
+		"654321",
+		"sid=cookie-secret-e2e",
 	}
 
 	code, postRaw := doJSON(t, http.MethodPost, env.ServerURL+"/api/v1/verdicts", tok, "", map[string]any{
@@ -521,9 +707,10 @@ func TestVerdicts_ErrorContextRedactionAndNonLeakage(t *testing.T) {
 					"email":          "dev@mattermost.com",
 					"openai_api_key": "raw-openai-secret-e2e",
 					"auth":           map[string]any{"raw": "secret-in-auth-obj-e2e", "expires_in": 3600},
-					"password":       []string{"secret-in-pw-arr-e2e"},
+					"credentials":    map[string]any{"pin": 987654},
+					"password":       []any{654321, "secret-in-pw-arr-e2e"},
 					"url":            "https://ci:s3cr3tpass@minio.local/bucket/obj?X-Amz-Signature=deadbeef",
-					"snippet":        "token ghp_1234567890abcdef1234567890abcdef failed",
+					"snippet":        "Cookie: theme=dark; sid=cookie-secret-e2e\ntoken ghp_1234567890abcdef1234567890abcdef failed",
 					"input_tokens":   512,
 				},
 			},

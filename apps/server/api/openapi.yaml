@@ -1245,6 +1245,11 @@ paths:
     post:
       tags: [verdicts]
       summary: Persist or supersede a batch of AI triage verdicts
+      description: |
+        Persist a batch of AI triage verdicts. When `report_group_id` is supplied,
+        active verdicts for the same `(report_group_id, test_id, signature_id)` target
+        are replayed idempotently if identical or superseded otherwise. When
+        `report_group_id` is omitted or `null`, each item inserts a new verdict.
       requestBody:
         required: true
         content:
@@ -1252,13 +1257,14 @@ paths:
             schema: { $ref: '#/components/schemas/VerdictsBatchRequest' }
       responses:
         '200':
-          description: Verdicts persisted or replayed idempotently
+          description: Verdicts persisted, superseded, or replayed idempotently (when report_group_id is supplied)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/VerdictsBatchResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
 
   /api/v1/verdicts/by-signature/{fingerprint}:
     parameters:
@@ -2456,7 +2462,7 @@ components:
         confidence: { type: number, minimum: 0, maximum: 1, nullable: true }
         summary: { type: string, nullable: true }
         model: { type: string, nullable: true }
-        triage_url: { type: string, nullable: true }
+        triage_url: { type: string, nullable: true, description: "Optional HTTP/HTTPS link to the triage run (without credentials, query parameters, or secrets)" }
         error_context:
           type: object
           additionalProperties: true
@@ -2468,7 +2474,7 @@ components:
       required: [repository, verdicts]
       properties:
         repository: { type: string, minLength: 1 }
-        report_group_id: { type: string, format: uuid, nullable: true }
+        report_group_id: { type: string, format: uuid, nullable: true, description: "Optional report group ID; enables idempotent replay/supersede per (report_group_id, test_id, signature_id)" }
         verdicts:
           type: array
           minItems: 1
@@ -2490,7 +2496,7 @@ components:
         confidence: { type: number, nullable: true }
         summary: { type: string, nullable: true }
         model: { type: string, nullable: true }
-        triage_url: { type: string, nullable: true }
+        triage_url: { type: string, nullable: true, description: "Optional HTTP/HTTPS link to the triage run" }
         reused_from_id: { type: string, format: uuid, nullable: true }
         created_at: { type: string, format: date-time }
         created: { type: boolean }
@@ -2520,7 +2526,7 @@ components:
         confidence: { type: number, nullable: true }
         summary: { type: string, nullable: true }
         model: { type: string, nullable: true }
-        triage_url: { type: string, nullable: true }
+        triage_url: { type: string, nullable: true, description: "Optional HTTP/HTTPS link to the triage run" }
         reused_from_id: { type: string, format: uuid, nullable: true }
         created_at: { type: string, format: date-time }
 

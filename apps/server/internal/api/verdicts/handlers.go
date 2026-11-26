@@ -20,7 +20,8 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/verdicts"
 )
 
-const maxCreateBodyBytes = 4 << 20 // 4 MiB
+// MaxCreateBodyBytes caps the JSON request body size for POST /api/v1/verdicts.
+const MaxCreateBodyBytes = 4 << 20 // 4 MiB
 
 // Handlers bundles HTTP handlers for /api/v1/verdicts*.
 type Handlers struct {
@@ -58,7 +59,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxCreateBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, MaxCreateBodyBytes)
 	var body createBatchBody
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(&body); err != nil {
@@ -72,12 +73,17 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); err != io.EOF {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			api.WriteError(w, r, api.ErrTooLarge)
+			return
+		}
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
 		return
 	}
 
 	body.Repository = authapi.NormalizeRepository(body.Repository)
-	if body.Repository == "" {
+	if body.Repository == "" || strings.EqualFold(body.Repository, ".git") {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "repository is required")
 		return
 	}
@@ -122,8 +128,10 @@ func (h *Handlers) BySignature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	q := r.URL.Query()
 	windowDays := verdicts.DefaultWindowDays
-	if rawWin := strings.TrimSpace(r.URL.Query().Get("window_days")); rawWin != "" {
+	if q.Has("window_days") {
+		rawWin := strings.TrimSpace(q.Get("window_days"))
 		n, err := strconv.Atoi(rawWin)
 		if err != nil || n < verdicts.MinWindowDays || n > verdicts.MaxWindowDays {
 			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST",
@@ -133,7 +141,14 @@ func (h *Handlers) BySignature(w http.ResponseWriter, r *http.Request) {
 		windowDays = n
 	}
 
-	repo := r.URL.Query().Get("repository")
+	var repo string
+	if q.Has("repository") {
+		repo = authapi.NormalizeRepository(q.Get("repository"))
+		if repo == "" || strings.EqualFold(repo, ".git") {
+			api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "repository must not be empty")
+			return
+		}
+	}
 	v, err := h.Store.LookupBySignatureFingerprint(r.Context(), fp, windowDays, repo)
 	if err != nil {
 		switch {
@@ -197,7 +212,7 @@ func parseOptionalUUID(raw *string, field string) (*uuid.UUID, error) {
 	}
 	trimmed := strings.TrimSpace(*raw)
 	if trimmed == "" {
-		return nil, nil
+		return nil, fmt.Errorf("%s must be a valid UUID", field)
 	}
 	id, err := uuid.Parse(trimmed)
 	if err != nil {

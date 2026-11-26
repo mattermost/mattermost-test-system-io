@@ -31,6 +31,6 @@ CREATE INDEX verdicts_repo_created_idx
     ON verdicts (repository, created_at DESC)
     WHERE superseded_at IS NULL;
 
-CREATE INDEX IF NOT EXISTS failure_signatures_merged_into_idx
+CREATE INDEX failure_signatures_merged_into_idx
     ON failure_signatures (merged_into_id)
     WHERE merged_into_id IS NOT NULL;

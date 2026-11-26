@@ -70,6 +70,11 @@ func (v *OpenAPIValidator) Middleware(next http.Handler) http.Handler {
 			},
 		}
 		if err := openapi3filter.ValidateRequest(r.Context(), input); err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				api.WriteError(w, r, api.ErrTooLarge)
+				return
+			}
 			api.WriteError(w, r, fmt.Errorf("%w: %s", api.ErrBadRequest, err.Error()))
 			return
 		}

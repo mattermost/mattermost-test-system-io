@@ -14,12 +14,14 @@ import (
 
 func TestPrepareBatchInput(t *testing.T) {
 	t.Run("validates repository, items count, label, confidence, error_context", func(t *testing.T) {
-		_, _, err := prepareBatchInput(BatchInput{Repository: "   ", Items: []CreateItem{{Label: "flaky"}}})
-		if !errors.Is(err, ErrValidation) {
-			t.Fatalf("empty repo: got %v, want ErrValidation", err)
+		for _, badRepo := range []string{"   ", ".git", ".GIT"} {
+			_, _, err := prepareBatchInput(BatchInput{Repository: badRepo, Items: []CreateItem{{Label: "flaky"}}})
+			if !errors.Is(err, ErrValidation) {
+				t.Fatalf("bad repo %q: got %v, want ErrValidation", badRepo, err)
+			}
 		}
 
-		_, _, err = prepareBatchInput(BatchInput{Repository: "mattermost/mattermost", Items: nil})
+		_, _, err := prepareBatchInput(BatchInput{Repository: "mattermost/mattermost", Items: nil})
 		if !errors.Is(err, ErrValidation) {
 			t.Fatalf("empty items: got %v, want ErrValidation", err)
 		}
@@ -73,6 +75,80 @@ func TestPrepareBatchInput(t *testing.T) {
 		}
 		if items[0].errorContext == nil || strings.Contains(*items[0].errorContext, "ghp_") {
 			t.Fatalf("errorContext not redacted: %v", items[0].errorContext)
+		}
+	})
+
+	t.Run("validates triage_url and rejects unsafe or credentialed URLs", func(t *testing.T) {
+		for _, okURL := range []string{
+			"https://github.com/mattermost/mattermost/actions/runs/123",
+			"http://ci.internal:8080/runs/1",
+		} {
+			u := okURL
+			_, items, err := prepareBatchInput(BatchInput{
+				Repository: "mattermost/mattermost",
+				Items:      []CreateItem{{Label: "flaky", TriageURL: &u}},
+			})
+			if err != nil {
+				t.Fatalf("valid triage_url %q rejected: %v", okURL, err)
+			}
+			if items[0].triageURL == nil || *items[0].triageURL != okURL {
+				t.Fatalf("triageURL = %v, want %q", items[0].triageURL, okURL)
+			}
+		}
+
+		for _, emptyURL := range []string{"", "   "} {
+			u := emptyURL
+			_, items, err := prepareBatchInput(BatchInput{
+				Repository: "mattermost/mattermost",
+				Items:      []CreateItem{{Label: "flaky", TriageURL: &u}},
+			})
+			if err != nil {
+				t.Fatalf("empty triage_url %q rejected: %v", emptyURL, err)
+			}
+			if items[0].triageURL != nil {
+				t.Fatalf("empty triage_url %q normalized to %q, want nil", emptyURL, *items[0].triageURL)
+			}
+		}
+
+		for _, badURL := range []string{
+			"javascript:alert(1)",
+			"https://user:pass@example.com/run/1",
+			"https://example.com/run?X-Amz-Signature=abc",
+			"https://example.com/ghp_1234567890abcdef1234567890abcdef",
+			"https://example.com\nfoo",
+			"https://example.com/alice%40example.com",
+			"https://example.com/token%3Dsecret",
+			"https://example.com/run#password%3Dsecret",
+			"https://example.com/run#Bearer%20secret123",
+		} {
+			u := badURL
+			_, _, err := prepareBatchInput(BatchInput{
+				Repository: "mattermost/mattermost",
+				Items:      []CreateItem{{Label: "flaky", TriageURL: &u}},
+			})
+			if !errors.Is(err, ErrValidation) {
+				t.Fatalf("bad triage_url %q: got %v, want ErrValidation", badURL, err)
+			}
+		}
+	})
+
+	t.Run("rejects out-of-range json.Number in error_context while preserving valid PG numeric", func(t *testing.T) {
+		for _, badJSON := range []string{`{"huge": 1e200000}`, `{"tiny": 1e-20000}`} {
+			_, _, err := prepareBatchInput(BatchInput{
+				Repository: "mattermost/mattermost",
+				Items:      []CreateItem{{Label: "flaky", ErrorContext: json.RawMessage(badJSON)}},
+			})
+			if !errors.Is(err, ErrValidation) {
+				t.Fatalf("bad numeric %s: got %v, want ErrValidation", badJSON, err)
+			}
+		}
+
+		_, _, err := prepareBatchInput(BatchInput{
+			Repository: "mattermost/mattermost",
+			Items:      []CreateItem{{Label: "flaky", ErrorContext: json.RawMessage(`{"ok": 1e500, "password": 1e200000}`)}},
+		})
+		if err != nil {
+			t.Fatalf("valid large numeric / redacted secret numeric failed: %v", err)
 		}
 	})
 }

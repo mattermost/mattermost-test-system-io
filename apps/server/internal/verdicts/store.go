@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -197,7 +199,7 @@ func (s *Store) LookupBySignatureFingerprint(ctx context.Context, fingerprint st
 			JOIN failure_signatures p ON p.id = u.merged_into_id
 			WHERE u.merged_into_id IS NOT NULL
 			  AND NOT (p.id = ANY(u.path))
-			  AND u.depth < 32
+			  AND u.depth < 1000
 		),
 		root AS (
 			SELECT id
@@ -213,7 +215,7 @@ func (s *Store) LookupBySignatureFingerprint(ctx context.Context, fingerprint st
 			FROM family f
 			JOIN failure_signatures c ON c.merged_into_id = f.id
 			WHERE NOT (c.id = ANY(f.path))
-			  AND f.depth < 32
+			  AND f.depth < 1000
 		)
 		SELECT v.id, v.report_group_id, v.repository, v.test_id, v.signature_id,
 		       fs.fingerprint, v.label, v.decided_by, v.rule, v.confidence::float8,
@@ -242,7 +244,7 @@ func (s *Store) LookupBySignatureFingerprint(ctx context.Context, fingerprint st
 
 func prepareBatchInput(in BatchInput) (string, []preparedItem, error) {
 	repo := authapi.NormalizeRepository(in.Repository)
-	if repo == "" {
+	if repo == "" || strings.EqualFold(repo, ".git") {
 		return "", nil, fmt.Errorf("%w: repository is required", ErrValidation)
 	}
 	if len(in.Items) == 0 {
@@ -280,6 +282,10 @@ func prepareBatchInput(in BatchInput) (string, []preparedItem, error) {
 				fpPtr = &fp
 			}
 		}
+		triageURL, err := validateTriageURL(item.TriageURL)
+		if err != nil {
+			return "", nil, fmt.Errorf("verdicts[%d]: %w", i, err)
+		}
 		out[i] = preparedItem{
 			testID:       item.TestID,
 			signatureID:  item.SignatureID,
@@ -290,12 +296,38 @@ func prepareBatchInput(in BatchInput) (string, []preparedItem, error) {
 			confidence:   item.Confidence,
 			summary:      sanitizeUTF8Ptr(item.Summary),
 			model:        sanitizeUTF8Ptr(item.Model),
-			triageURL:    sanitizeUTF8Ptr(item.TriageURL),
+			triageURL:    triageURL,
 			errorContext: errCtxStr,
 			reusedFromID: item.ReusedFromID,
 		}
 	}
 	return repo, out, nil
+}
+
+func validateTriageURL(raw *string) (*string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	cleaned := strings.TrimSpace(sanitizeUTF8(*raw))
+	if cleaned == "" {
+		return nil, nil
+	}
+	if strings.ContainsFunc(cleaned, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) {
+		return nil, fmt.Errorf("%w: triage_url must be a valid http or https URL", ErrValidation)
+	}
+	u, err := url.Parse(cleaned)
+	if err != nil || (!strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https")) || u.Hostname() == "" {
+		return nil, fmt.Errorf("%w: triage_url must be a valid http or https URL", ErrValidation)
+	}
+	if u.User != nil || strings.Contains(u.Host, "@") || u.RawQuery != "" || u.ForceQuery {
+		return nil, fmt.Errorf("%w: triage_url must not contain credentials or query parameters", ErrValidation)
+	}
+	if RedactString(cleaned) != cleaned || RedactString(u.Path) != u.Path || RedactString(u.Fragment) != u.Fragment {
+		return nil, fmt.Errorf("%w: triage_url must not contain secrets or email addresses", ErrValidation)
+	}
+	return &cleaned, nil
 }
 
 func validateAndResolveTx(ctx context.Context, tx pgx.Tx, repo string, reportGroupID *uuid.UUID, items []preparedItem) error {
@@ -335,13 +367,16 @@ func validateAndResolveTx(ctx context.Context, tx pgx.Tx, repo string, reportGro
 		}
 
 		if it.reusedFromID != nil {
-			var one int
-			err := tx.QueryRow(ctx, `SELECT 1 FROM verdicts WHERE id = $1`, *it.reusedFromID).Scan(&one)
+			var reusedRepo string
+			err := tx.QueryRow(ctx, `SELECT repository FROM verdicts WHERE id = $1`, *it.reusedFromID).Scan(&reusedRepo)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("%w: verdicts[%d]: unknown reused_from_id", ErrValidation, i)
 			}
 			if err != nil {
 				return fmt.Errorf("lookup reused_from_id: %w", err)
+			}
+			if !strings.EqualFold(authapi.NormalizeRepository(reusedRepo), repo) {
+				return fmt.Errorf("%w: reused_from_id belongs to a different repository", ErrRepoMismatch)
 			}
 		}
 
@@ -421,7 +456,7 @@ func upsertItemTx(ctx context.Context, tx pgx.Tx, repo string, rgID *uuid.UUID, 
 		       label, decided_by, rule, confidence::float8, summary, model,
 		       triage_url, reused_from_id, created_at,
 		       (
-		           repository IS NOT DISTINCT FROM $4
+		           lower(repository) IS NOT DISTINCT FROM lower($4)
 		           AND label IS NOT DISTINCT FROM $5
 		           AND decided_by IS NOT DISTINCT FROM $6
 		           AND rule IS NOT DISTINCT FROM $7
@@ -438,7 +473,7 @@ func upsertItemTx(ctx context.Context, tx pgx.Tx, repo string, rgID *uuid.UUID, 
 		  AND COALESCE(signature_id, '00000000-0000-0000-0000-000000000000'::uuid) = $3
 		  AND superseded_at IS NULL
 		LIMIT 1
-		FOR UPDATE
+		FOR NO KEY UPDATE
 	`, *rgID, derefUUID(it.testID), derefUUID(it.signatureID),
 		repo, it.label, it.decidedBy, it.rule, it.confidence,
 		it.summary, it.model, it.triageURL, it.errorContext, it.reusedFromID,
@@ -513,8 +548,13 @@ func derefUUID(id *uuid.UUID) uuid.UUID {
 
 func mapPGError(err error) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-		return fmt.Errorf("%w: referenced entity does not exist", ErrValidation)
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23503":
+			return fmt.Errorf("%w: referenced entity does not exist", ErrValidation)
+		case "22003", "22P02":
+			return fmt.Errorf("%w: invalid or out-of-range error_context JSON", ErrValidation)
+		}
 	}
 	return err
 }

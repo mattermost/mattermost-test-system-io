@@ -570,22 +570,28 @@ func TestSEC11515_RealOrchestrationRetestChainAndPRFalseRedAttribution(t *testin
 		if err != nil {
 			t.Fatalf("upload json: %v", err)
 		}
-		upBody, _ := io.ReadAll(upResp.Body)
+		upBody, readErr := io.ReadAll(upResp.Body)
 		upResp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read upload response %s/%s: %v", lane, runID, readErr)
+		}
 		if upResp.StatusCode != http.StatusOK {
 			t.Fatalf("upload %s/%s: %d %s", lane, runID, upResp.StatusCode, upBody)
 		}
 
 		gid := uuid.MustParse(bResp.ReportID)
 		deadline := time.Now().Add(15 * time.Second)
+		var lastStatus string
+		var lastErr error
 		for time.Now().Before(deadline) {
-			var status string
-			if err := env.Pool.QueryRow(ctx, `SELECT status FROM report_groups WHERE id = $1`, gid).Scan(&status); err == nil && status == "completed" {
-				break
+			lastErr = env.Pool.QueryRow(ctx, `SELECT status FROM report_groups WHERE id = $1`, gid).Scan(&lastStatus)
+			if lastErr == nil && lastStatus == "completed" {
+				return gid
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
-		return gid
+		t.Fatalf("report_group %s (%s/%s) did not reach completed within 15s (last status=%q, err=%v)", gid, lane, runID, lastStatus, lastErr)
+		return uuid.Nil
 	}
 
 	beginOrch := func(lane, branch, commit, runID, attempt string, units []string, retest bool) uuid.UUID {
@@ -1624,7 +1630,10 @@ func postJSONStatus(t *testing.T, url, bearer string, body any) (int, []byte) {
 		t.Fatalf("do POST %s: %v", url, err)
 	}
 	defer resp.Body.Close()
-	out, _ := io.ReadAll(resp.Body)
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read POST %s: %v", url, err)
+	}
 	return resp.StatusCode, out
 }
 
@@ -1645,7 +1654,10 @@ func postJSONWithAPIKey(t *testing.T, url, apiKey string, body any) (int, []byte
 		t.Fatalf("do POST %s: %v", url, err)
 	}
 	defer resp.Body.Close()
-	out, _ := io.ReadAll(resp.Body)
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read POST %s: %v", url, err)
+	}
 	return resp.StatusCode, out
 }
 

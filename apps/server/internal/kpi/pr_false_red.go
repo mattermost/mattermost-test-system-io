@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -26,7 +28,8 @@ func parseConfiguredE2ELanes(raw []string) []e2eLaneEntry {
 		return nil
 	}
 	seen := map[e2eLaneEntry]struct{}{}
-	out := make([]e2eLaneEntry, 0, len(raw))
+	wildcards := map[string]struct{}{}
+	deduped := make([]e2eLaneEntry, 0, len(raw))
 	for _, item := range raw {
 		trimmed := strings.TrimSpace(item)
 		if trimmed == "" {
@@ -35,6 +38,9 @@ func parseConfiguredE2ELanes(raw []string) []e2eLaneEntry {
 		var entry e2eLaneEntry
 		if idx := strings.Index(trimmed, ":"); idx >= 0 {
 			entry.repo = strings.TrimSpace(trimmed[:idx])
+			if entry.repo == "*" {
+				entry.repo = ""
+			}
 			entry.lane = strings.TrimSpace(trimmed[idx+1:])
 		} else {
 			entry.lane = trimmed
@@ -47,21 +53,38 @@ func parseConfiguredE2ELanes(raw []string) []e2eLaneEntry {
 			continue
 		}
 		seen[key] = struct{}{}
-		out = append(out, entry)
+		if entry.repo == "" {
+			wildcards[entry.lane] = struct{}{}
+		}
+		deduped = append(deduped, entry)
 	}
-	if len(out) == 0 {
+	if len(deduped) == 0 {
 		return nil
+	}
+	if len(wildcards) == 0 {
+		return deduped
+	}
+	out := make([]e2eLaneEntry, 0, len(deduped))
+	for _, entry := range deduped {
+		if entry.repo != "" {
+			if _, subsumed := wildcards[entry.lane]; subsumed {
+				continue
+			}
+		}
+		out = append(out, entry)
 	}
 	return out
 }
 
-func appendE2ELanesJoin(b *sqlFilterBuilder, alias string, override []e2eLaneEntry) string {
+func appendE2ELanesFilter(b *sqlFilterBuilder, alias string, override []e2eLaneEntry) string {
 	if len(override) == 0 {
-		return fmt.Sprintf(`
-			JOIN kpi_e2e_lanes el
-			  ON lower(el.repository) = lower(%s.repository)
-			 AND el.lane = %s.lane
-			 AND el.enabled = true`, alias, alias)
+		return fmt.Sprintf(` AND EXISTS (
+			SELECT 1
+			  FROM kpi_e2e_lanes el
+			 WHERE lower(el.repository) = lower(%s.repository)
+			   AND el.lane = %s.lane
+			   AND el.enabled = true
+		)`, alias, alias)
 	}
 	repos := make([]string, len(override))
 	lanes := make([]string, len(override))
@@ -71,13 +94,12 @@ func appendE2ELanesJoin(b *sqlFilterBuilder, alias string, override []e2eLaneEnt
 	}
 	repoPH := b.add(repos)
 	lanePH := b.add(lanes)
-	return fmt.Sprintf(`
-		JOIN (
-			SELECT DISTINCT e.repo, e.lane
-			  FROM UNNEST(%s::text[], %s::text[]) AS e(repo, lane)
-		) el
-		  ON (el.repo = '' OR lower(el.repo) = lower(%s.repository))
-		 AND el.lane = %s.lane`, repoPH, lanePH, alias, alias)
+	return fmt.Sprintf(` AND EXISTS (
+		SELECT 1
+		  FROM UNNEST(%s::text[], %s::text[]) AS el(repo, lane)
+		 WHERE (el.repo = '' OR lower(el.repo) = lower(%s.repository))
+		   AND el.lane = %s.lane
+	)`, repoPH, lanePH, alias, alias)
 }
 
 func (s *Store) effectiveRefNow(f FilterParams) time.Time {
@@ -175,10 +197,10 @@ func (s *Store) queryPRFalseRedSummary(ctx context.Context, f FilterParams, extr
 	fromPH := b.add(f.CurFromDate)
 	toPH := b.add(f.CurToDate)
 	cutoffPH := b.add(settledCutoff)
-	joinSQL := appendE2ELanesJoin(b, "gr", override)
 
 	var where strings.Builder
 	fmt.Fprintf(&where, "gr.gh_pr_number IS NOT NULL AND gr.gh_pr_number > 0 AND gr.is_red = true AND gr.metric_date >= %s AND gr.metric_date <= %s", fromPH, toPH)
+	where.WriteString(appendE2ELanesFilter(b, "gr", override))
 	where.WriteString(b.appendCommonFilters("gr", f, false))
 	where.WriteString(appendPlatformScope(b, "gr", f.Platform))
 
@@ -192,7 +214,7 @@ func (s *Store) queryPRFalseRedSummary(ctx context.Context, f FilterParams, extr
 				(gr.group_created_at < `+cutoffPH+`) AS settled,
 				`+rerunGreenExpr("gr")+` AS went_green_on_rerun,
 				`+allSigsFailingElsewhereExpr("gr")+` AS all_signatures_failing_elsewhere
-			  FROM kpi_group_rollups gr`+joinSQL+`
+			  FROM kpi_group_rollups gr
 			 WHERE `+where.String()+`
 		)
 		SELECT
@@ -285,10 +307,10 @@ func (s *Store) queryPRRedTotals(
 	fromPH := b.add(fromDate)
 	toPH := b.add(toDate)
 	cutoffPH := b.add(settledCutoff)
-	joinSQL := appendE2ELanesJoin(b, "gr", override)
 
 	var where strings.Builder
 	fmt.Fprintf(&where, "gr.gh_pr_number IS NOT NULL AND gr.gh_pr_number > 0 AND gr.is_red = true AND gr.metric_date >= %s AND gr.metric_date <= %s", fromPH, toPH)
+	where.WriteString(appendE2ELanesFilter(b, "gr", override))
 	where.WriteString(b.appendCommonFilters("gr", f, false))
 	where.WriteString(appendPlatformScope(b, "gr", f.Platform))
 
@@ -300,7 +322,7 @@ func (s *Store) queryPRRedTotals(
 				`+rerunGreenExpr("gr")+` AS went_green_on_rerun,
 				`+allSigsFailingElsewhereExpr("gr")+` AS all_signatures_failing_elsewhere,
 				`+stillRedExpr("gr")+` AS still_red
-			  FROM kpi_group_rollups gr`+joinSQL+`
+			  FROM kpi_group_rollups gr
 			 WHERE `+where.String()+`
 		)
 		SELECT
@@ -338,10 +360,10 @@ func (s *Store) queryPRFalseRedRateForDates(
 	fromPH := b.add(fromDate)
 	toPH := b.add(toDate)
 	cutoffPH := b.add(settledCutoff)
-	joinSQL := appendE2ELanesJoin(b, "gr", override)
 
 	var where strings.Builder
 	fmt.Fprintf(&where, "gr.gh_pr_number IS NOT NULL AND gr.gh_pr_number > 0 AND gr.is_red = true AND gr.metric_date >= %s AND gr.metric_date <= %s AND gr.group_created_at < %s", fromPH, toPH, cutoffPH)
+	where.WriteString(appendE2ELanesFilter(b, "gr", override))
 	where.WriteString(b.appendCommonFilters("gr", f, false))
 	where.WriteString(appendPlatformScope(b, "gr", f.Platform))
 
@@ -349,7 +371,7 @@ func (s *Store) queryPRFalseRedRateForDates(
 		SELECT
 			COUNT(*) FILTER (WHERE `+rerunGreenExpr("gr")+`)::integer,
 			COUNT(*)::integer
-		  FROM kpi_group_rollups gr`+joinSQL+`
+		  FROM kpi_group_rollups gr
 		 WHERE `+where.String(),
 		b.args...,
 	).Scan(&falseRed, &settledRed)
@@ -369,10 +391,10 @@ func (s *Store) queryRedPRLaneRows(
 	fromPH := b.add(f.CurFromDate)
 	toPH := b.add(f.CurToDate)
 	cutoffPH := b.add(settledCutoff)
-	joinSQL := appendE2ELanesJoin(b, "gr", override)
 
 	var where strings.Builder
 	fmt.Fprintf(&where, "gr.gh_pr_number IS NOT NULL AND gr.gh_pr_number > 0 AND gr.is_red = true AND gr.metric_date >= %s AND gr.metric_date <= %s", fromPH, toPH)
+	where.WriteString(appendE2ELanesFilter(b, "gr", override))
 	where.WriteString(b.appendCommonFilters("gr", f, false))
 	where.WriteString(appendPlatformScope(b, "gr", f.Platform))
 
@@ -406,7 +428,7 @@ func (s *Store) queryRedPRLaneRows(
 				sa.all_signatures_failing_elsewhere,
 				sa.failed_signature_count,
 				gr.tests_failed
-			  FROM kpi_group_rollups gr`+joinSQL+`
+			  FROM kpi_group_rollups gr
 			  JOIN report_groups rg ON rg.id = gr.report_group_id
 			  LEFT JOIN LATERAL (
 			      WITH lane_sigs AS (
@@ -551,13 +573,67 @@ func (s *Store) queryRedPRLaneRows(
 	return out, rows.Err()
 }
 
+func loadAppsMap(ctx context.Context, pool *pgxpool.Pool) (exact map[string]string, lower map[string]string, err error) {
+	rows, err := pool.Query(ctx, `SELECT repository, app FROM apps ORDER BY repository ASC`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query apps: %w", err)
+	}
+	defer rows.Close()
+
+	exact = map[string]string{}
+	lower = map[string]string{}
+	for rows.Next() {
+		var repo, app string
+		if err := rows.Scan(&repo, &app); err != nil {
+			return nil, nil, fmt.Errorf("scan app: %w", err)
+		}
+		exact[repo] = app
+		lower[strings.ToLower(repo)] = app
+	}
+	return exact, lower, rows.Err()
+}
+
+func resolveRepoApp(repo string, exact, lower map[string]string) string {
+	if app, ok := exact[repo]; ok && app != "" {
+		return app
+	}
+	if app, ok := lower[strings.ToLower(repo)]; ok && app != "" {
+		return app
+	}
+	if parts := strings.SplitN(repo, "/", 3); len(parts) >= 2 && parts[1] != "" {
+		return parts[1]
+	}
+	return repo
+}
+
 func (s *Store) queryConfiguredE2ELanes(ctx context.Context, f FilterParams) ([]ConfiguredE2ELane, error) {
 	if override := parseConfiguredE2ELanes(s.E2ELanes); len(override) > 0 {
+		var exactApps, lowerApps map[string]string
+		if f.App != "" {
+			hasRepoScoped := false
+			for _, e := range override {
+				if e.repo != "" {
+					hasRepoScoped = true
+					break
+				}
+			}
+			if hasRepoScoped {
+				var err error
+				exactApps, lowerApps, err = loadAppsMap(ctx, s.Pool)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+
 		out := make([]ConfiguredE2ELane, 0, len(override))
 		for _, e := range override {
 			repo := e.repo
 			if repo == "" {
 				repo = "*"
+			}
+			if f.App != "" && repo != "*" && resolveRepoApp(repo, exactApps, lowerApps) != f.App {
+				continue
 			}
 			if f.Repo != "" && repo != "*" {
 				if strings.Contains(f.Repo, "/") {
@@ -639,10 +715,10 @@ func (s *Store) queryPRLaneCoverage(ctx context.Context, f FilterParams, extraNo
 	b := &sqlFilterBuilder{}
 	fromPH := b.add(f.CurFromDate)
 	toPH := b.add(f.CurToDate)
-	joinSQL := appendE2ELanesJoin(b, "gr", override)
 
 	var where strings.Builder
 	fmt.Fprintf(&where, "gr.gh_pr_number IS NOT NULL AND gr.gh_pr_number > 0 AND gr.metric_date >= %s AND gr.metric_date <= %s", fromPH, toPH)
+	where.WriteString(appendE2ELanesFilter(b, "gr", override))
 	where.WriteString(b.appendCommonFilters("gr", f, false))
 	where.WriteString(appendPlatformScope(b, "gr", f.Platform))
 
@@ -651,7 +727,7 @@ func (s *Store) queryPRLaneCoverage(ctx context.Context, f FilterParams, extraNo
 		       COUNT(*)::integer,
 		       COUNT(*) FILTER (WHERE gr.has_orchestration)::integer,
 		       COUNT(*) FILTER (WHERE NOT gr.has_orchestration)::integer
-		  FROM kpi_group_rollups gr`+joinSQL+`
+		  FROM kpi_group_rollups gr
 		 WHERE `+where.String()+`
 		 GROUP BY gr.repository, gr.lane
 		 ORDER BY gr.lane ASC, gr.repository ASC

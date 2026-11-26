@@ -217,6 +217,63 @@ func TestParseConfiguredE2ELanes(t *testing.T) {
 	if got[1].repo != "" || got[1].lane != "desktop-pr" {
 		t.Fatalf("entry[1] = %+v", got[1])
 	}
+
+	// Overlapping repo-scoped + wildcard entries must prune the subsumed repo-scoped entries regardless of order.
+	for _, tc := range []struct {
+		name string
+		raw  []string
+	}{
+		{
+			name: "repo_before_wildcard",
+			raw:  []string{"mattermost/mattermost:playwright-full", "playwright-full", "mattermost/desktop:desktop-pr"},
+		},
+		{
+			name: "wildcard_before_repo",
+			raw:  []string{"playwright-full", "mattermost/mattermost:playwright-full", "mattermost/desktop:desktop-pr"},
+		},
+		{
+			name: "star_prefix_wildcard",
+			raw:  []string{"mattermost/mattermost:playwright-full", "*:playwright-full", "mattermost/desktop:desktop-pr"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deduped := parseConfiguredE2ELanes(tc.raw)
+			if len(deduped) != 2 {
+				t.Fatalf("len = %d, want 2 (%+v)", len(deduped), deduped)
+			}
+			hasWildcardPW, hasDesktop := false, false
+			for _, e := range deduped {
+				if e.repo == "" && e.lane == "playwright-full" {
+					hasWildcardPW = true
+				}
+				if e.repo == "mattermost/desktop" && e.lane == "desktop-pr" {
+					hasDesktop = true
+				}
+			}
+			if !hasWildcardPW || !hasDesktop {
+				t.Fatalf("unexpected deduped entries: %+v", deduped)
+			}
+		})
+	}
+}
+
+func TestResolveRepoApp(t *testing.T) {
+	const mobileApp = "mobile"
+	exact := map[string]string{"mattermost/mattermost-mobile": mobileApp, "mattermost/desktop": "desktop"}
+	lower := map[string]string{"mattermost/mattermost-mobile": mobileApp, "mattermost/desktop": "desktop"}
+
+	if got := resolveRepoApp("mattermost/mattermost-mobile", exact, lower); got != mobileApp {
+		t.Fatalf("exact match = %q, want %s", got, mobileApp)
+	}
+	if got := resolveRepoApp("Mattermost/Mattermost-Mobile", exact, lower); got != mobileApp {
+		t.Fatalf("case-insensitive match = %q, want %s", got, mobileApp)
+	}
+	if got := resolveRepoApp("mattermost/mattermost", exact, lower); got != "mattermost" {
+		t.Fatalf("split_part fallback = %q, want mattermost", got)
+	}
+	if got := resolveRepoApp("custom-repo", exact, lower); got != "custom-repo" {
+		t.Fatalf("bare repo fallback = %q, want custom-repo", got)
+	}
 }
 
 func TestBuildRunURL(t *testing.T) {

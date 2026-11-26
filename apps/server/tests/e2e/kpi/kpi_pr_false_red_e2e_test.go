@@ -4,7 +4,13 @@
 package kpie2e
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -561,6 +567,105 @@ func TestKPI_PRFalseRedSettledAttributionAndSummaryFixtures(t *testing.T) {
 		t.Fatalf("override got %+v, want PR #110 only", resOverride.Lanes)
 	}
 
+	// Regression test (Defect 1 & 2): overlapping repo-scoped + wildcard TSIO_KPI_E2E_LANES
+	// must NEVER duplicate rows, must match QuerySummary, and must filter configured_e2e_lanes by ?app=.
+	overlapStore := &kpi.Store{
+		Pool:     env.Pool,
+		Now:      func() time.Time { return fixedNow },
+		E2ELanes: []string{"mattermost/mattermost:playwright-full", "playwright-full", "mattermost/desktop:desktop-pr"},
+	}
+	resOverlap, err := overlapStore.QueryPRsRed(ctx, f30)
+	if err != nil {
+		t.Fatalf("overlap QueryPRsRed: %v", err)
+	}
+	seenGroupIDs := map[string]int{}
+	stillRedCount := 0
+	for _, row := range resOverlap.Lanes {
+		seenGroupIDs[row.ReportGroupID]++
+		if seenGroupIDs[row.ReportGroupID] > 1 {
+			t.Fatalf("duplicate report_group_id %s in overlap Lanes", row.ReportGroupID)
+		}
+		if row.StillRed {
+			stillRedCount++
+		}
+	}
+	if resOverlap.Pagination.Total != 14 || len(resOverlap.Lanes) != 14 {
+		t.Fatalf("overlap total=%d len=%d, want 14/14 (12 settled playwright-full + 1 desktop-pr + 1 unsettled PR #201)",
+			resOverlap.Pagination.Total, len(resOverlap.Lanes))
+	}
+	if resOverlap.SettledRedLanes != 13 || resOverlap.SettledFalseRedLanes != 1 || resOverlap.UnsettledRedLanes != 1 || resOverlap.StillRedLanes != stillRedCount {
+		t.Fatalf("overlap counts = settled:%d falseRed:%d unsettled:%d stillRed:%d (want 13/1/1/%d)",
+			resOverlap.SettledRedLanes, resOverlap.SettledFalseRedLanes, resOverlap.UnsettledRedLanes, resOverlap.StillRedLanes, stillRedCount)
+	}
+	assertNearPtr(t, "overlap false_red_rate", resOverlap.FalseRedRate, 100.0/13.0, 1e-6)
+
+	sumFilter30, err := kpi.ParseSummaryParams(map[string][]string{"window": {"30d"}}, fixedNow)
+	if err != nil {
+		t.Fatalf("ParseSummaryParams(30d): %v", err)
+	}
+	overlapSum, err := overlapStore.QuerySummary(ctx, sumFilter30)
+	if err != nil {
+		t.Fatalf("overlap QuerySummary: %v", err)
+	}
+	if overlapSum.PRFalseRed == nil ||
+		overlapSum.PRFalseRed.SettledRedLanes != resOverlap.SettledRedLanes ||
+		overlapSum.PRFalseRed.SettledFalseRedLanes != resOverlap.SettledFalseRedLanes ||
+		overlapSum.PRFalseRed.UnsettledRedLanes != resOverlap.UnsettledRedLanes {
+		t.Fatalf("overlap QuerySummary mismatch: summary=%+v prsRed settled=%d/%d unsettled=%d",
+			overlapSum.PRFalseRed, resOverlap.SettledRedLanes, resOverlap.SettledFalseRedLanes, resOverlap.UnsettledRedLanes)
+	}
+	assertNearPtr(t, "overlap summary false_red_rate", overlapSum.PRFalseRed.FalseRedRate, 100.0/13.0, 1e-6)
+
+	desktopAppFilter, err := kpi.ParsePRsRedParams(map[string][]string{"app": {"desktop"}}, fixedNow)
+	if err != nil {
+		t.Fatalf("ParsePRsRedParams(app=desktop): %v", err)
+	}
+	resDesktopApp, err := overlapStore.QueryPRsRed(ctx, desktopAppFilter)
+	if err != nil {
+		t.Fatalf("overlap QueryPRsRed(app=desktop): %v", err)
+	}
+	hasDesktopLane := false
+	for _, cl := range resDesktopApp.ConfiguredE2ELanes {
+		if cl.Repository == "mattermost/mattermost" && cl.Lane == "playwright-full" {
+			t.Fatalf("app=desktop unexpectedly included mattermost/mattermost:playwright-full in configured_e2e_lanes: %+v",
+				resDesktopApp.ConfiguredE2ELanes)
+		}
+		if cl.Repository == "mattermost/desktop" && cl.Lane == "desktop-pr" {
+			hasDesktopLane = true
+		}
+	}
+	if !hasDesktopLane {
+		t.Fatalf("app=desktop missing mattermost/desktop:desktop-pr in configured_e2e_lanes: %+v", resDesktopApp.ConfiguredE2ELanes)
+	}
+
+	scopedStore := &kpi.Store{
+		Pool:     env.Pool,
+		Now:      func() time.Time { return fixedNow },
+		E2ELanes: []string{"mattermost/mattermost:playwright-full", "mattermost/mattermost-mobile:mobile-detox-pr", "mattermost/desktop:desktop-pr"},
+	}
+	resScopedDesktop, err := scopedStore.QueryPRsRed(ctx, desktopAppFilter)
+	if err != nil {
+		t.Fatalf("scoped QueryPRsRed(app=desktop): %v", err)
+	}
+	if len(resScopedDesktop.ConfiguredE2ELanes) != 1 ||
+		resScopedDesktop.ConfiguredE2ELanes[0].Repository != "mattermost/desktop" ||
+		resScopedDesktop.ConfiguredE2ELanes[0].Lane != "desktop-pr" {
+		t.Fatalf("scoped app=desktop configured_e2e_lanes = %+v, want [mattermost/desktop:desktop-pr]", resScopedDesktop.ConfiguredE2ELanes)
+	}
+	mobileAppFilter, err := kpi.ParsePRsRedParams(map[string][]string{"app": {"mobile"}}, fixedNow)
+	if err != nil {
+		t.Fatalf("ParsePRsRedParams(app=mobile): %v", err)
+	}
+	resScopedMobile, err := scopedStore.QueryPRsRed(ctx, mobileAppFilter)
+	if err != nil {
+		t.Fatalf("scoped QueryPRsRed(app=mobile): %v", err)
+	}
+	if len(resScopedMobile.ConfiguredE2ELanes) != 1 ||
+		resScopedMobile.ConfiguredE2ELanes[0].Repository != "mattermost/mattermost-mobile" ||
+		resScopedMobile.ConfiguredE2ELanes[0].Lane != "mobile-detox-pr" {
+		t.Fatalf("scoped app=mobile configured_e2e_lanes = %+v, want [mattermost/mattermost-mobile:mobile-detox-pr]", resScopedMobile.ConfiguredE2ELanes)
+	}
+
 	// Summary & WeeklySeries & HTTP endpoint checks (including stage=main ignored note + zero author names).
 	rawHTTP := getRaw(t, env.ServerURL+"/api/v1/kpi/prs/red?window=30d&stage=main&sort=pr_desc&page=1&limit=3")
 	if strings.Contains(strings.ToLower(rawHTTP), "author") {
@@ -615,6 +720,166 @@ func TestKPI_PRFalseRedSettledAttributionAndSummaryFixtures(t *testing.T) {
 	// Verify remaining sort modes return HTTP 200 cleanly.
 	for _, sortVal := range []string{"created_desc", "age_desc", "lane_asc", "reason_asc"} {
 		_ = getJSON[kpi.PRRedResponse](t, env.ServerURL+"/api/v1/kpi/prs/red?sort="+sortVal)
+	}
+}
+
+func TestKPI_UploadOnlyPRLaneHTTPFlowToPRFalseRed(t *testing.T) {
+	env := testenv.Start(t, testenv.WithStore(testenv.NewFakeStore()), testenv.WithReaperDisabled())
+	ctx := t.Context()
+	apiKey := env.IssueAPIKey(t, "kpi-upload-only")
+
+	const failingPlaywrightJSON = `{
+  "suites": [
+    {
+      "title": "desktop.spec.ts",
+      "file": "desktop.spec.ts",
+      "specs": [
+        {
+          "title": "opens window",
+          "tests": [
+            {
+              "projectName": "electron",
+              "status": "unexpected",
+              "results": [
+                {
+                  "status": "failed",
+                  "duration": 150,
+                  "retry": 0,
+                  "startTime": "2026-11-26T00:00:00.000Z",
+                  "errors": [{"message": "Expected true", "stack": "Error: Expected true\n    at desktop.spec.ts:10:5"}]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}`
+
+	postJSON := func(path string, payload any) []byte {
+		t.Helper()
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", path, err)
+		}
+		req, err := http.NewRequest(http.MethodPost, env.ServerURL+path, bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("new req %s: %v", path, err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", apiKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST %s status=%d body=%s", path, resp.StatusCode, body)
+		}
+		return body
+	}
+
+	beginBody := postJSON("/api/v1/reports/begin", map[string]any{
+		"repository":             "mattermost/desktop",
+		"commit":                 "abcdef1234567890",
+		"gh_run_id":              "run-upload-301",
+		"gh_run_attempt":         "1",
+		"gh_pr_number":           301,
+		"framework":              "playwright",
+		"name":                   "desktop-pr",
+		"branch":                 "pr-301",
+		"total_reports_expected": 1,
+	})
+	var beginResp struct {
+		ReportID string `json:"report_id"`
+	}
+	if err := json.Unmarshal(beginBody, &beginResp); err != nil {
+		t.Fatalf("decode begin: %v", err)
+	}
+
+	regBody := postJSON("/api/v1/reports/register", map[string]any{
+		"repository":     "mattermost/desktop",
+		"commit":         "abcdef1234567890",
+		"gh_run_id":      "run-upload-301",
+		"gh_run_attempt": "1",
+		"gh_pr_number":   301,
+		"framework":      "playwright",
+		"name":           "desktop-pr",
+		"branch":         "pr-301",
+		"gh_job_id":      "job-301",
+		"gh_job_name":    "desktop-pr",
+		"json_files": []any{
+			map[string]any{"path": "results.json", "size": len(failingPlaywrightJSON)},
+		},
+		"screenshots": []any{},
+	})
+	var regResp struct {
+		ReportID string `json:"report_id"`
+		UploadID string `json:"upload_id"`
+	}
+	if err := json.Unmarshal(regBody, &regResp); err != nil {
+		t.Fatalf("decode register: %v", err)
+	}
+
+	buf := &bytes.Buffer{}
+	mw := multipart.NewWriter(buf)
+	part, err := mw.CreateFormFile("files", "results.json")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write([]byte(failingPlaywrightJSON)); err != nil {
+		t.Fatalf("write json: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	uploadURL := fmt.Sprintf("%s/api/v1/reports/upload/%s/%s/json", env.ServerURL, regResp.ReportID, regResp.UploadID)
+	upReq, err := http.NewRequest(http.MethodPost, uploadURL, buf)
+	if err != nil {
+		t.Fatalf("new upload req: %v", err)
+	}
+	upReq.Header.Set("Content-Type", mw.FormDataContentType())
+	upReq.Header.Set("X-API-Key", apiKey)
+	upResp, err := http.DefaultClient.Do(upReq)
+	if err != nil {
+		t.Fatalf("do upload: %v", err)
+	}
+	upBody, _ := io.ReadAll(upResp.Body)
+	upResp.Body.Close()
+	if upResp.StatusCode != http.StatusOK {
+		t.Fatalf("upload status=%d body=%s", upResp.StatusCode, upBody)
+	}
+
+	// Background extraction & auto-finalize triggers kpi.RefreshGroupRollupsBestEffort.
+	deadline := time.Now().Add(10 * time.Second)
+	var isRed bool
+	var refreshed bool
+	for time.Now().Before(deadline) {
+		err := env.Pool.QueryRow(ctx, `
+			SELECT is_red
+			  FROM kpi_group_rollups
+			 WHERE report_group_id = $1 AND is_all_platforms = true
+		`, beginResp.ReportID).Scan(&isRed)
+		if err == nil && isRed {
+			refreshed = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !refreshed {
+		t.Fatalf("timed out waiting for kpi_group_rollups.is_red=true for group %s", beginResp.ReportID)
+	}
+
+	res := getJSON[kpi.PRRedResponse](t, env.ServerURL+"/api/v1/kpi/prs/red?repo=mattermost/desktop")
+	if res.Pagination.Total != 1 || len(res.Lanes) != 1 {
+		t.Fatalf("got total=%d len=%d, want 1", res.Pagination.Total, len(res.Lanes))
+	}
+	row := res.Lanes[0]
+	if row.ReportGroupID != beginResp.ReportID || row.GHPRNumber != 301 || row.HasOrchestration ||
+		row.TestsFailed != 1 || row.Settled || !row.StillRed || row.Reason != kpi.ReasonOther {
+		t.Fatalf("unexpected upload-only PR lane row: %+v", row)
 	}
 }
 

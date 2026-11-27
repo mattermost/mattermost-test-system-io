@@ -261,7 +261,8 @@ inputs:
       Whitespace-separated spec files to queue instead of discovering them
       (e.g. a re-run of failed specs). Each is relative to `detox-dir`; a
       missing file, a file outside `detox-dir`, or a non-`*.e2e.ts` file
-      fails begin. Replaces the `detox-search-path` walk and cannot be
+      fails begin. The error lists the first 10 bad entries and the total
+      count. Replaces the `detox-search-path` walk and cannot be
       combined with `detox-list-tests`. Detox only.
     required: false
     default: ""

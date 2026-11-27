@@ -13,6 +13,7 @@ const DETOX_CONFIG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 // dispatch-run hands specs to Detox, which runs Jest through /bin/sh unquoted.
 const SAFE_SPEC_PATH_RE = /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
 const LIST_TESTS_MAX_BUFFER = 16 * 1024 * 1024;
+const MAX_LISTED_SPEC_ERRORS = 10;
 
 export interface DetoxDiscoveryOptions {
   /** Relative to detoxDir. May point at a directory (walked recursively) or a single spec file. */
@@ -135,34 +136,45 @@ function toRelative(detoxDir: string, full: string): string {
 /**
  * Resolves spec entries (relative to detoxDir, or absolute inside it) to sorted, de-duplicated
  * paths relative to detoxDir. Symlinks are resolved on both sides so `/private/var` and
- * `/var` checkouts compare equal. Throws on any entry that is missing, outside detoxDir, not a
+ * `/var` checkouts compare equal. Throws when any entry is missing, outside detoxDir, not a
  * file, or not `*.e2e.ts`, so a bad list fails begin instead of leasing a unit no worker can run.
+ * The error names the first MAX_LISTED_SPEC_ERRORS bad entries and the total.
  */
 export function resolveDetoxSpecList(detoxDir: string, entries: string[]): string[] {
   const root = fs.realpathSync(detoxDir);
   const out = new Set<string>();
+  const errors: string[] = [];
   for (const raw of entries) {
     const entry = raw.trim();
     if (entry === "") continue;
-    let real: string;
-    try {
-      real = fs.realpathSync(path.resolve(root, entry));
-    } catch {
-      throw new Error(`detox spec "${entry}" does not exist under ${detoxDir}`);
-    }
-    if (!real.startsWith(root + path.sep)) {
-      throw new Error(`detox spec "${entry}" is outside ${detoxDir}`);
-    }
-    if (!fs.statSync(real).isFile() || !DETOX_SPEC_RE.test(real)) {
-      throw new Error(`detox spec "${entry}" is not a *.e2e.ts file`);
-    }
-    const rel = toRelative(root, real);
-    if (!SAFE_SPEC_PATH_RE.test(rel)) {
-      throw new Error(`detox spec "${entry}" has characters outside [A-Za-z0-9._/-]`);
-    }
-    out.add(rel);
+    const resolved = resolveDetoxSpecEntry(root, entry);
+    if ("error" in resolved) errors.push(`"${entry}" ${resolved.error}`);
+    else out.add(resolved.rel);
+  }
+  if (errors.length > 0) {
+    const shown = errors.slice(0, MAX_LISTED_SPEC_ERRORS).map((e) => `  ${e}`);
+    if (errors.length > shown.length) shown.push(`  ...and ${errors.length - shown.length} more`);
+    throw new Error(
+      `${errors.length} invalid detox spec(s) under ${detoxDir}:\n${shown.join("\n")}`,
+    );
   }
   return [...out].sort();
+}
+
+function resolveDetoxSpecEntry(root: string, entry: string): { rel: string } | { error: string } {
+  let real: string;
+  try {
+    real = fs.realpathSync(path.resolve(root, entry));
+  } catch {
+    return { error: "does not exist" };
+  }
+  if (!real.startsWith(root + path.sep)) return { error: "is outside detox-dir" };
+  if (!fs.statSync(real).isFile() || !DETOX_SPEC_RE.test(real)) {
+    return { error: "is not a *.e2e.ts file" };
+  }
+  const rel = toRelative(root, real);
+  if (!SAFE_SPEC_PATH_RE.test(rel)) return { error: "has characters outside [A-Za-z0-9._/-]" };
+  return { rel };
 }
 
 /** Splits the `detox-specs` input on whitespace (newlines, spaces). Paths with spaces are not supported. */

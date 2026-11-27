@@ -26183,6 +26183,7 @@ var DETOX_SPEC_RE = /\.e2e\.ts$/;
 var DETOX_CONFIG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 var SAFE_SPEC_PATH_RE = /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
 var LIST_TESTS_MAX_BUFFER = 16 * 1024 * 1024;
+var MAX_LISTED_SPEC_ERRORS = 10;
 function discoverDetoxSpecs(detoxDir, opts) {
   const target = path2.join(detoxDir, opts.searchPath);
   let stat2;
@@ -26265,28 +26266,38 @@ function toRelative(detoxDir, full) {
 function resolveDetoxSpecList(detoxDir, entries) {
   const root = fs4.realpathSync(detoxDir);
   const out = /* @__PURE__ */ new Set();
+  const errors = [];
   for (const raw of entries) {
     const entry = raw.trim();
     if (entry === "") continue;
-    let real;
-    try {
-      real = fs4.realpathSync(path2.resolve(root, entry));
-    } catch {
-      throw new Error(`detox spec "${entry}" does not exist under ${detoxDir}`);
-    }
-    if (!real.startsWith(root + path2.sep)) {
-      throw new Error(`detox spec "${entry}" is outside ${detoxDir}`);
-    }
-    if (!fs4.statSync(real).isFile() || !DETOX_SPEC_RE.test(real)) {
-      throw new Error(`detox spec "${entry}" is not a *.e2e.ts file`);
-    }
-    const rel = toRelative(root, real);
-    if (!SAFE_SPEC_PATH_RE.test(rel)) {
-      throw new Error(`detox spec "${entry}" has characters outside [A-Za-z0-9._/-]`);
-    }
-    out.add(rel);
+    const resolved = resolveDetoxSpecEntry(root, entry);
+    if ("error" in resolved) errors.push(`"${entry}" ${resolved.error}`);
+    else out.add(resolved.rel);
+  }
+  if (errors.length > 0) {
+    const shown = errors.slice(0, MAX_LISTED_SPEC_ERRORS).map((e) => `  ${e}`);
+    if (errors.length > shown.length) shown.push(`  ...and ${errors.length - shown.length} more`);
+    throw new Error(
+      `${errors.length} invalid detox spec(s) under ${detoxDir}:
+${shown.join("\n")}`
+    );
   }
   return [...out].sort();
+}
+function resolveDetoxSpecEntry(root, entry) {
+  let real;
+  try {
+    real = fs4.realpathSync(path2.resolve(root, entry));
+  } catch {
+    return { error: "does not exist" };
+  }
+  if (!real.startsWith(root + path2.sep)) return { error: "is outside detox-dir" };
+  if (!fs4.statSync(real).isFile() || !DETOX_SPEC_RE.test(real)) {
+    return { error: "is not a *.e2e.ts file" };
+  }
+  const rel = toRelative(root, real);
+  if (!SAFE_SPEC_PATH_RE.test(rel)) return { error: "has characters outside [A-Za-z0-9._/-]" };
+  return { rel };
 }
 function parseDetoxSpecList(input) {
   return input.split(/\s+/).filter(Boolean);

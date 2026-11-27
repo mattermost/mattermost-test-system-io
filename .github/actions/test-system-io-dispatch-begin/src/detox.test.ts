@@ -244,6 +244,48 @@ test("resolveDetoxSpecList: missing, outside, and non-spec entries throw", () =>
   });
 });
 
+test("resolveDetoxSpecList: every bad entry is reported, not just the first", () => {
+  withTmpDir((dir) => {
+    writeSpec(dir, "detox/e2e/test/a.e2e.ts");
+    writeSpec(dir, "x.e2e.ts");
+    const detoxDir = path.join(dir, "detox");
+    assert.throws(
+      () =>
+        resolveDetoxSpecList(detoxDir, [
+          "e2e/test/missing.e2e.ts",
+          "e2e/test/a.e2e.ts",
+          "../x.e2e.ts",
+        ]),
+      (err: Error) => {
+        assert.equal(
+          err.message,
+          `2 invalid detox spec(s) under ${detoxDir}:\n` +
+            `  "e2e/test/missing.e2e.ts" does not exist\n` +
+            `  "../x.e2e.ts" is outside detox-dir`,
+        );
+        return true;
+      },
+    );
+  });
+});
+
+test("resolveDetoxSpecList: lists the first 10 bad entries, then how many more", () => {
+  withTmpDir((dir) => {
+    const missing = Array.from({ length: 13 }, (_, i) => `e2e/test/missing_${i}.e2e.ts`);
+    assert.throws(
+      () => resolveDetoxSpecList(dir, missing),
+      (err: Error) => {
+        const lines = err.message.split("\n");
+        assert.equal(lines[0], `13 invalid detox spec(s) under ${dir}:`);
+        assert.equal(lines.length, 12);
+        assert.equal(lines[10], `  "e2e/test/missing_9.e2e.ts" does not exist`);
+        assert.equal(lines[11], "  ...and 3 more");
+        return true;
+      },
+    );
+  });
+});
+
 test("parseDetoxSpecList: splits on any whitespace", () => {
   assert.deepEqual(parseDetoxSpecList("  a.e2e.ts\nb.e2e.ts  c.e2e.ts\n"), [
     "a.e2e.ts",

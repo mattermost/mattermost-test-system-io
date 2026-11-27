@@ -310,6 +310,12 @@ test("listedSpecPaths: keeps absolute *.e2e.ts lines only", () => {
   ]);
 });
 
+test("listedSpecPaths: reads Jest's --json array output", () => {
+  const out = JSON.stringify(["/w/detox/e2e/test/a.e2e.ts", "/w/x.ts", "e2e/rel.e2e.ts", 3]);
+  assert.deepEqual(listedSpecPaths(`${out}\n`), ["/w/detox/e2e/test/a.e2e.ts"]);
+  assert.deepEqual(listedSpecPaths("[not json"), []);
+});
+
 function withFakeNpx(dir: string, script: string, fn: () => void): void {
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);

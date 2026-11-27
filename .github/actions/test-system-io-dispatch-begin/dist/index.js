@@ -26322,7 +26322,17 @@ ${tail}`);
   return resolveDetoxSpecList(detoxDir, listedSpecPaths(child.stdout ?? ""));
 }
 function listedSpecPaths(stdout) {
-  return stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => path2.isAbsolute(line) && DETOX_SPEC_RE.test(line));
+  return stdout.split(/\r?\n/).map((line) => line.trim()).flatMap((line) => jsonStringArray(line) ?? [line]).filter((p) => path2.isAbsolute(p) && DETOX_SPEC_RE.test(p));
+}
+function jsonStringArray(line) {
+  if (!line.startsWith("[")) return void 0;
+  try {
+    const parsed = JSON.parse(line);
+    if (!Array.isArray(parsed)) return void 0;
+    return parsed.filter((p) => typeof p === "string");
+  } catch {
+    return void 0;
+  }
 }
 function filterDetoxSpecsByTags(detoxDir, specs, opts) {
   if (opts.includeTags.length === 0 && opts.excludeTags.length === 0) return specs;

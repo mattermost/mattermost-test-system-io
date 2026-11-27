@@ -207,12 +207,27 @@ export function listDetoxSpecs(detoxDir: string, detoxConfig: string): string[] 
   return resolveDetoxSpecList(detoxDir, listedSpecPaths(child.stdout ?? ""));
 }
 
-/** The spec lines of `--listTests` stdout. Detox logs go to stderr; anything else is dropped. */
+/**
+ * The spec paths in `--listTests` stdout: one per line, or one JSON array line when the
+ * configuration passes Jest `json`. Detox logs go to stderr; anything else is dropped.
+ */
 export function listedSpecPaths(stdout: string): string[] {
   return stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => path.isAbsolute(line) && DETOX_SPEC_RE.test(line));
+    .flatMap((line) => jsonStringArray(line) ?? [line])
+    .filter((p) => path.isAbsolute(p) && DETOX_SPEC_RE.test(p));
+}
+
+function jsonStringArray(line: string): string[] | undefined {
+  if (!line.startsWith("[")) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(line);
+    if (!Array.isArray(parsed)) return undefined;
+    return parsed.filter((p): p is string => typeof p === "string");
+  } catch {
+    return undefined;
+  }
 }
 
 /** Keeps the specs that pass the include/exclude tag filters, in their given order. */

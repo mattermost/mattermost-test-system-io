@@ -14,7 +14,14 @@ import * as path from "node:path";
 import * as core from "@actions/core";
 import { setCommitStatus } from "./commit-status";
 import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
-import { discoverDetoxSpecs } from "./detox";
+import {
+  discoverDetoxSpecs,
+  filterDetoxSpecsByTags,
+  listDetoxSpecs,
+  parseDetoxSpecList,
+  resolveDetoxSpecList,
+  sortDetoxSpecsLast,
+} from "./detox";
 import { durationOf, fetchDurationHistory, orderLongestFirst } from "./durations";
 import { discoverMaestroSpecs } from "./maestro";
 import { discoverPlaywrightSpecs } from "./playwright";
@@ -75,6 +82,10 @@ export async function run(): Promise<void> {
   const detoxSearchPath = core.getInput("detox-search-path") || "e2e/test";
   const detoxIncludeTags = parseTagList(core.getInput("detox-include-tags"));
   const detoxExcludeTags = parseTagList(core.getInput("detox-exclude-tags"));
+  const detoxSortLast = parseTagList(core.getInput("detox-sort-last"));
+  const detoxSpecList = parseDetoxSpecList(core.getInput("detox-specs"));
+  const detoxListTests = core.getInput("detox-list-tests").trim().toLowerCase() === "true";
+  const detoxConfig = core.getInput("detox-config").trim();
   const maestroDirInput = core.getInput("maestro-dir") || "detox/maestro";
   const maestroFlowPath = core.getInput("maestro-flow-path") || "flows";
   const maestroExcludeTags = parseTagList(core.getInput("maestro-exclude-tags"));
@@ -130,18 +141,36 @@ export async function run(): Promise<void> {
     }
   } else if (framework === "detox") {
     const detoxDir = path.resolve(repoDir, detoxDirInput);
-    specs = discoverDetoxSpecs(detoxDir, {
-      searchPath: detoxSearchPath,
-      includeTags: detoxIncludeTags,
-      excludeTags: detoxExcludeTags,
-    });
+    const tagFilters = { includeTags: detoxIncludeTags, excludeTags: detoxExcludeTags };
+    let source: string;
+    if (detoxSpecList.length > 0 && detoxListTests) {
+      throw new Error("set either detox-specs or detox-list-tests, not both");
+    } else if (detoxSpecList.length > 0) {
+      source = "detox-specs";
+      specs = filterDetoxSpecsByTags(
+        detoxDir,
+        resolveDetoxSpecList(detoxDir, detoxSpecList),
+        tagFilters,
+      );
+    } else if (detoxListTests) {
+      if (!detoxConfig) throw new Error("detox-list-tests needs detox-config");
+      source = `detox test -c ${detoxConfig} --listTests`;
+      specs = filterDetoxSpecsByTags(detoxDir, listDetoxSpecs(detoxDir, detoxConfig), tagFilters);
+    } else {
+      source = path.join(detoxDir, detoxSearchPath);
+      specs = discoverDetoxSpecs(detoxDir, { searchPath: detoxSearchPath, ...tagFilters });
+    }
     if (specs.length === 0) {
       throw new Error(
-        `no Detox specs found under ${path.join(detoxDir, detoxSearchPath)} ` +
+        `no Detox specs found from ${source} ` +
           `(include-tags=${detoxIncludeTags.join(",") || "*"}, ` +
           `exclude-tags=${detoxExcludeTags.join(",") || "none"})`,
       );
     }
+    specs = sortDetoxSpecsLast(detoxDir, specs, detoxSortLast);
+    core.startGroup(`${specs.length} Detox spec(s) from ${source}, in dispatch order`);
+    specs.forEach((s) => core.info(s));
+    core.endGroup();
   } else if (framework === "maestro") {
     const maestroDir = path.resolve(repoDir, maestroDirInput);
     specs = discoverMaestroSpecs(maestroDir, {

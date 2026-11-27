@@ -12,7 +12,7 @@ import {
   parseDetoxSpecTags,
   passesDetoxTagFilters,
   resolveDetoxSpecList,
-  sortDetoxSpecsLast,
+  sortDetoxSpecsByTags,
 } from "./detox.ts";
 
 function withTmpDir(fn: (dir: string) => void): void {
@@ -371,7 +371,7 @@ test("listDetoxSpecs: refuses a config that is not a plain name", () => {
   }
 });
 
-test("filterDetoxSpecsByTags and sortDetoxSpecsLast: tags read from each listed file", () => {
+test("filterDetoxSpecsByTags and sortDetoxSpecsByTags: tags read from each listed file", () => {
   withTmpDir((dir) => {
     writeSpec(dir, "e2e/test/a.e2e.ts");
     writeSpec(
@@ -390,7 +390,64 @@ test("filterDetoxSpecsByTags and sortDetoxSpecsLast: tags read from each listed 
       filterDetoxSpecsByTags(dir, [a, b, m1, m2], { includeTags: [], excludeTags: ["@flaky"] }),
       [a, m1, m2],
     );
-    assert.deepEqual(sortDetoxSpecsLast(dir, [m1, a, b, m2], ["@server_mutation"]), [a, b, m1, m2]);
-    assert.deepEqual(sortDetoxSpecsLast(dir, [m1, a], []), [m1, a]);
+    assert.deepEqual(
+      sortDetoxSpecsByTags(dir, [m1, a, b, m2], { sortFirst: [], sortLast: ["@server_mutation"] }),
+      [a, b, m1, m2],
+    );
+    assert.deepEqual(sortDetoxSpecsByTags(dir, [m1, a], { sortFirst: [], sortLast: [] }), [m1, a]);
+  });
+});
+
+test("sortDetoxSpecsByTags: sort-first specs lead, sort-last specs trail, each group keeps its order", () => {
+  withTmpDir((dir) => {
+    writeSpec(dir, "e2e/test/a.e2e.ts");
+    writeSpec(
+      dir,
+      "e2e/test/f1.e2e.ts",
+      "// Copyright\n// Tags: @multi_server\nimport x from 'y';",
+    );
+    writeSpec(dir, "e2e/test/f2.e2e.ts", "// Tags: @smoke @multi_server\n");
+    writeSpec(dir, "e2e/test/m.e2e.ts", "// Tags: @server_mutation\n");
+    writeSpec(dir, "e2e/test/b.e2e.ts", "// Tags: @smoke\n");
+    const a = "e2e/test/a.e2e.ts";
+    const b = "e2e/test/b.e2e.ts";
+    const f1 = "e2e/test/f1.e2e.ts";
+    const f2 = "e2e/test/f2.e2e.ts";
+    const m = "e2e/test/m.e2e.ts";
+
+    assert.deepEqual(
+      sortDetoxSpecsByTags(dir, [a, f2, m, b, f1], { sortFirst: ["@multi_server"], sortLast: [] }),
+      [f2, f1, a, m, b],
+    );
+    assert.deepEqual(
+      sortDetoxSpecsByTags(dir, [m, a, f2, b, f1], {
+        sortFirst: ["@multi_server"],
+        sortLast: ["@server_mutation"],
+      }),
+      [f2, f1, a, b, m],
+    );
+    assert.deepEqual(
+      sortDetoxSpecsByTags(dir, [b, a, m], { sortFirst: ["@multi_server"], sortLast: [] }),
+      [b, a, m],
+    );
+  });
+});
+
+test("sortDetoxSpecsByTags: a spec matching both sort-first and sort-last fails with its path and tags", () => {
+  withTmpDir((dir) => {
+    writeSpec(dir, "e2e/test/a.e2e.ts");
+    writeSpec(dir, "e2e/test/both.e2e.ts", "// Tags: @multi_server @server_mutation\n");
+    assert.throws(
+      () =>
+        sortDetoxSpecsByTags(dir, ["e2e/test/a.e2e.ts", "e2e/test/both.e2e.ts"], {
+          sortFirst: ["@multi_server"],
+          sortLast: ["@server_mutation"],
+        }),
+      {
+        message:
+          "1 detox spec(s) match both detox-sort-first (@multi_server) and detox-sort-last (@server_mutation):\n" +
+          "  e2e/test/both.e2e.ts (tags: @multi_server @server_mutation)",
+      },
+    );
   });
 });

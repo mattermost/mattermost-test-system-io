@@ -182,6 +182,13 @@ func TestSEC11515_AuthzMergedLineageAndRedactionAcrossAllAPIsAndSSR(t *testing.T
 	if code, _ := postJSONStatus(t, env.ServerURL+"/api/v1/verdicts", uploaderOther, verdictPayload); code != http.StatusForbidden {
 		t.Fatalf("wrong-repo POST /verdicts status = %d, want 403", code)
 	}
+	var rejectedCount int
+	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM verdicts WHERE report_group_id = $1`, rgID).Scan(&rejectedCount); err != nil {
+		t.Fatalf("count verdicts after rejected POSTs: %v", err)
+	}
+	if rejectedCount != 0 {
+		t.Fatalf("rejected POST /verdicts wrote %d rows, want 0", rejectedCount)
+	}
 
 	// 2. Authorized uploader succeeds (200) and refreshes KPI rollups.
 	code, postBody := postJSONStatus(t, env.ServerURL+"/api/v1/verdicts", uploaderMM, verdictPayload)
@@ -207,8 +214,14 @@ func TestSEC11515_AuthzMergedLineageAndRedactionAcrossAllAPIsAndSSR(t *testing.T
 	if !strings.Contains(storedErrCtx, "[REDACTED]") {
 		t.Fatalf("expected [REDACTED] placeholder in stored error_context, got %s", storedErrCtx)
 	}
-	if !strings.Contains(storedErrCtx, "321") {
-		t.Fatalf("expected safe numeric field input_tokens=321 preserved in stored error_context, got %s", storedErrCtx)
+	dec := json.NewDecoder(strings.NewReader(storedErrCtx))
+	dec.UseNumber()
+	var ctxMap map[string]any
+	if err := dec.Decode(&ctxMap); err != nil {
+		t.Fatalf("decode stored error_context: %v", err)
+	}
+	if tokNum, ok := ctxMap["input_tokens"].(json.Number); !ok || tokNum.String() != "321" {
+		t.Fatalf("expected safe numeric field input_tokens=321 preserved in stored error_context, got %#v (%s)", ctxMap["input_tokens"], storedErrCtx)
 	}
 
 	// 4. Assert merged_into_id traversal + zero leakage across ALL read APIs.
@@ -231,6 +244,19 @@ func TestSEC11515_AuthzMergedLineageAndRedactionAcrossAllAPIsAndSSR(t *testing.T
 	// Also query canonical fingerprint via merged_into_id lineage!
 	byCanonBody := getRaw(t, env.ServerURL+"/api/v1/verdicts/by-signature/"+fpCanon)
 	assertNoSecretOrContextLeak(t, "GET /api/v1/verdicts/by-signature/{fpCanon}", byCanonBody, sentinels, true)
+	var byCanonResp struct {
+		Fingerprint string `json:"fingerprint"`
+		Label       string `json:"label"`
+	}
+	if err := json.Unmarshal([]byte(byCanonBody), &byCanonResp); err != nil {
+		t.Fatalf("decode by-signature canonical: %v", err)
+	}
+	if byCanonResp.Fingerprint != fpOld && byCanonResp.Fingerprint != fpCanon {
+		t.Fatalf("unexpected fingerprint in canonical by-signature response: %q", byCanonResp.Fingerprint)
+	}
+	if byCanonResp.Label != "flaky-infra" {
+		t.Fatalf("canonical by-signature label = %q, want flaky-infra", byCanonResp.Label)
+	}
 
 	failuresBody := getRaw(t, env.ServerURL+"/api/v1/kpi/failures?window=30d")
 	assertNoSecretOrContextLeak(t, "GET /api/v1/kpi/failures", failuresBody, sentinels, true)
@@ -580,15 +606,19 @@ func TestSEC11515_RealOrchestrationRetestChainAndPRFalseRedAttribution(t *testin
 		}
 
 		gid := uuid.MustParse(bResp.ReportID)
-		deadline := time.Now().Add(15 * time.Second)
+		pollCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
 		var lastStatus string
 		var lastErr error
-		for time.Now().Before(deadline) {
-			lastErr = env.Pool.QueryRow(ctx, `SELECT status FROM report_groups WHERE id = $1`, gid).Scan(&lastStatus)
+		for pollCtx.Err() == nil {
+			lastErr = env.Pool.QueryRow(pollCtx, `SELECT status FROM report_groups WHERE id = $1`, gid).Scan(&lastStatus)
 			if lastErr == nil && lastStatus == "completed" {
 				return gid
 			}
-			time.Sleep(50 * time.Millisecond)
+			select {
+			case <-pollCtx.Done():
+			case <-time.After(50 * time.Millisecond):
+			}
 		}
 		t.Fatalf("report_group %s (%s/%s) did not reach completed within 15s (last status=%q, err=%v)", gid, lane, runID, lastStatus, lastErr)
 		return uuid.Nil
@@ -892,6 +922,14 @@ func TestSEC11515_RealOrchestrationRetestChainAndPRFalseRedAttribution(t *testin
 			sum.MainPassRate.LaneLevel.StrictPassedLanes, sum.MainPassRate.LaneLevel.StrictTotalLanes)
 	}
 	assertNearPtr(t, "KPI 1 strict_pass_rate", sum.MainPassRate.LaneLevel.StrictPassRate, 25.0, 1e-6)
+	reclaimSum := getJSON[kpi.SummaryResponse](t, env.ServerURL+"/api/v1/kpi/summary?window=30d&lane=e2e-main-reclaim")
+	if reclaimSum.MainPassRate.LaneLevel.PassedLanes != 1 || reclaimSum.MainPassRate.LaneLevel.StrictPassedLanes != 1 || reclaimSum.MainPassRate.LaneLevel.StrictTotalLanes != 1 {
+		t.Fatalf("e2e-main-reclaim lane strict = %+v, want passed=1 strict=1/1", reclaimSum.MainPassRate.LaneLevel)
+	}
+	retestSum := getJSON[kpi.SummaryResponse](t, env.ServerURL+"/api/v1/kpi/summary?window=30d&lane=e2e-main-retest")
+	if retestSum.MainPassRate.LaneLevel.PassedLanes != 1 || retestSum.MainPassRate.LaneLevel.TotalLanes != 1 || retestSum.MainPassRate.LaneLevel.StrictPassedLanes != 0 || retestSum.MainPassRate.LaneLevel.StrictTotalLanes != 1 {
+		t.Fatalf("e2e-main-retest lane strict = %+v, want passed=1/1 strict=0/1", retestSum.MainPassRate.LaneLevel)
+	}
 
 	// PR false-red (8 settled red lanes: #401 rerun, #402 main, #403-#406 >=3 PRs, #407 new-commit other, #408 timed_out other):
 	//   went_green_on_rerun = 1 (#401), failing_elsewhere = 5 (#402-#406), other = 2 (#407, #408) -> 1/8 = 12.5%
@@ -997,8 +1035,8 @@ func TestSEC11515_RealOrchestrationRetestChainAndPRFalseRedAttribution(t *testin
 //	  - Prior 30d samples (ms): [500000, 500000, 500000] -> prior_p50 = 500000.0 ms, delta_p50 = -200000.0 ms.
 //	  - Upload-only PR lane: desktop-pr-upload (excluded from percentiles, listed in lane_coverage.upload_only_lane_names).
 //
-//	Supporting Triage Metrics (window=30d, 15 total runs in current 30d):
-//	  - Completed (non-timed-out): 14, Timed-out: 1 (gPR103TO), Incomplete: 0, In-progress: 0 => completion_rate = 14/15 * 100 = 93.333333%.
+//	Supporting Triage Metrics (window=30d, 16 total runs in current 30d):
+//	  - Completed (non-timed-out): 15 (including gPRMobPrior green mobile baseline), Timed-out: 1 (gPR103TO), Incomplete: 0, In-progress: 0 => completion_rate = 15/16 * 100 = 93.75%.
 //	  - Failed runs: 11; Triaged runs: 2 (gPR101, gPR104Unsettled) => run_coverage_rate = 2/11 * 100 = 18.181818%.
 //	  - Failed test occurrences: 10; Triaged test occurrences: 2 => test_coverage_rate = 2/10 * 100 = 20.0%.
 //	  - Verdicts: 2 total, 1 reused => verdict_reuse_rate = 50.0%. Label mix: flaky-infra (1, 50%), infra (1, 50%).
@@ -1281,7 +1319,7 @@ func TestSEC11515_HandComputedUnifiedKPIFixtureSuite(t *testing.T) {
 	gPRDeskUpload := insertGroup(t, ctx, env.Pool, groupSeed{
 		Framework: secPWFramework, Name: "desktop-pr-upload", Status: "completed",
 		Repo: secDeskRepo, Branch: "pr-107", Commit: "sha-desk-pr", RunID: "u-desk-pr", Attempt: "1",
-		PRNum: prPtr(107), Stage: "pr", CreatedAt: curDay,
+		PRNum: prPtr(107), Stage: "pr", CreatedAt: curDay, DurMs: int64Ptr(999000),
 	})
 	rDU := insertReport(t, ctx, env.Pool, gPRDeskUpload, "desktop-pr-upload", "")
 	sDU := insertSuite(t, ctx, env.Pool, rDU, "DeskPR")
@@ -1460,6 +1498,20 @@ func TestSEC11515_HandComputedUnifiedKPIFixtureSuite(t *testing.T) {
 	failuresResp := getJSON[kpi.FailuresResponse](t, env.ServerURL+"/api/v1/kpi/failures?window=30d")
 	if failuresResp.Summary != *sum.RecurringFailures {
 		t.Fatalf("/kpi/failures summary %+v != /kpi/summary %+v", failuresResp.Summary, *sum.RecurringFailures)
+	}
+	stateBySig := make(map[string]string, len(failuresResp.Failures))
+	for _, f := range failuresResp.Failures {
+		stateBySig[f.SignatureID] = f.State
+	}
+	for sig, wantState := range map[uuid.UUID]string{
+		sigActive:  kpi.FailureStateActive,
+		sigResurf:  kpi.FailureStateResurfaced,
+		sigQuiet:   kpi.FailureStateQuiet,
+		sigLowRuns: kpi.FailureStateNotEnoughRuns,
+	} {
+		if got := stateBySig[sig.String()]; got != wantState {
+			t.Fatalf("/kpi/failures[%s] state = %q, want %q", sig, got, wantState)
+		}
 	}
 	activeDetail := getJSON[kpi.FailureDetailResponse](t, env.ServerURL+"/api/v1/kpi/failures/"+sigActive.String()+"?window=30d")
 	if activeDetail.State != kpi.FailureStateActive || activeDetail.OccurrenceCount != 4 || activeDetail.AffectedTestRuns != 300 {

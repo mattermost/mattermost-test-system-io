@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type dailyTriageAgg struct {
@@ -29,6 +31,15 @@ type timedOutSplit struct {
 }
 
 func (s *Store) queryTriageSummary(ctx context.Context, f FilterParams) (*TriageSummary, error) {
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("begin triage summary tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	b := &sqlFilterBuilder{}
 	fromPH := b.add(f.CurFromDate)
 	toPH := b.add(f.CurToDate)
@@ -39,7 +50,7 @@ func (s *Store) queryTriageSummary(ctx context.Context, f FilterParams) (*Triage
 	where.WriteString(appendPlatformScope(b, "m", f.Platform))
 
 	var agg dailyTriageAgg
-	err := s.Pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT
 			COALESCE(SUM(m.total_runs), 0)::integer,
 			COALESCE(SUM(m.completed_runs), 0)::integer,
@@ -75,7 +86,7 @@ func (s *Store) queryTriageSummary(ctx context.Context, f FilterParams) (*Triage
 	tWhere.WriteString(appendPlatformScope(bt, "gr", f.Platform))
 
 	var toSplit timedOutSplit
-	err = s.Pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT
 			COUNT(*)::integer,
 			COUNT(*) FILTER (WHERE gr.is_completed)::integer,
@@ -89,7 +100,7 @@ func (s *Store) queryTriageSummary(ctx context.Context, f FilterParams) (*Triage
 		return nil, fmt.Errorf("query timed out runs split: %w", err)
 	}
 
-	labelCounts, err := s.queryVerdictLabelMix(ctx, where.String(), b.args)
+	labelCounts, err := queryVerdictLabelMix(ctx, tx, where.String(), b.args)
 	if err != nil {
 		return nil, err
 	}
@@ -98,8 +109,8 @@ func (s *Store) queryTriageSummary(ctx context.Context, f FilterParams) (*Triage
 	return &summary, nil
 }
 
-func (s *Store) queryVerdictLabelMix(ctx context.Context, where string, args []any) (map[string]int, error) {
-	rows, err := s.Pool.Query(ctx, `
+func queryVerdictLabelMix(ctx context.Context, tx pgx.Tx, where string, args []any) (map[string]int, error) {
+	rows, err := tx.Query(ctx, `
 		SELECT e.key, COALESCE(SUM(e.value::bigint), 0)::integer
 		  FROM kpi_daily_lane_metrics m
 		 CROSS JOIN LATERAL jsonb_each_text(m.verdict_label_counts) AS e(key, value)

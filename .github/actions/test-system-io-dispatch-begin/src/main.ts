@@ -20,7 +20,7 @@ import {
   listDetoxSpecs,
   parseDetoxSpecList,
   resolveDetoxSpecList,
-  sortDetoxSpecsLast,
+  sortDetoxSpecsByTags,
 } from "./detox";
 import { durationOf, fetchDurationHistory, orderLongestFirst } from "./durations";
 import { discoverMaestroSpecs } from "./maestro";
@@ -82,6 +82,7 @@ export async function run(): Promise<void> {
   const detoxSearchPath = core.getInput("detox-search-path") || "e2e/test";
   const detoxIncludeTags = parseTagList(core.getInput("detox-include-tags"));
   const detoxExcludeTags = parseTagList(core.getInput("detox-exclude-tags"));
+  const detoxSortFirst = parseTagList(core.getInput("detox-sort-first"));
   const detoxSortLast = parseTagList(core.getInput("detox-sort-last"));
   const detoxSpecList = parseDetoxSpecList(core.getInput("detox-specs"));
   const detoxListTests = core.getInput("detox-list-tests").trim().toLowerCase() === "true";
@@ -167,7 +168,10 @@ export async function run(): Promise<void> {
           `exclude-tags=${detoxExcludeTags.join(",") || "none"})`,
       );
     }
-    specs = sortDetoxSpecsLast(detoxDir, specs, detoxSortLast);
+    specs = sortDetoxSpecsByTags(detoxDir, specs, {
+      sortFirst: detoxSortFirst,
+      sortLast: detoxSortLast,
+    });
     core.startGroup(`${specs.length} Detox spec(s) from ${source}, in dispatch order`);
     specs.forEach((s) => core.info(s));
     core.endGroup();

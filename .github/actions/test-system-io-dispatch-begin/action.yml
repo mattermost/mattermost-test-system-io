@@ -266,6 +266,16 @@ inputs:
       combined with `detox-list-tests`. Detox only.
     required: false
     default: ""
+  detox-sort-first:
+    description: >
+      Comma-separated `// Tags:` list. Specs whose preamble tags share any
+      tag with this list dispatch before every other spec (e.g.
+      `@multi_server`, so slow or setup-heavy specs start early). A spec
+      matching both `detox-sort-first` and `detox-sort-last` fails begin,
+      and the error lists the first 10 such specs. Applies to every spec
+      source. Detox only.
+    required: false
+    default: ""
   detox-sort-last:
     description: >
       Comma-separated `// Tags:` list. Specs whose preamble tags share any

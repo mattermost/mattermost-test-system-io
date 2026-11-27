@@ -242,19 +242,46 @@ export function filterDetoxSpecsByTags(
   );
 }
 
-/** Moves specs whose `// Tags:` share any tag with sortLast to the end, keeping each group's order. */
-export function sortDetoxSpecsLast(
+export interface DetoxSortOptions {
+  /** Specs whose `// Tags:` share any tag with this list dispatch before every other spec. */
+  sortFirst: string[];
+  /** Specs whose `// Tags:` share any tag with this list dispatch after every other spec. */
+  sortLast: string[];
+}
+
+/**
+ * Orders specs into [sortFirst matches] | [neither] | [sortLast matches], keeping each group's
+ * order. Throws when a spec matches both lists, naming the first MAX_LISTED_SPEC_ERRORS of them.
+ */
+export function sortDetoxSpecsByTags(
   detoxDir: string,
   specs: string[],
-  sortLast: string[],
+  opts: DetoxSortOptions,
 ): string[] {
-  if (sortLast.length === 0) return specs;
-  const last = new Set(sortLast);
+  if (opts.sortFirst.length === 0 && opts.sortLast.length === 0) return specs;
   const head: string[] = [];
+  const middle: string[] = [];
   const tail: string[] = [];
+  const conflicts: string[] = [];
   for (const s of specs) {
     const tags = readDetoxSpecTags(path.join(detoxDir, s));
-    (tags.some((t) => last.has(t)) ? tail : head).push(s);
+    const first = shareAny(tags, opts.sortFirst);
+    const last = shareAny(tags, opts.sortLast);
+    if (first && last) conflicts.push(`${s} (tags: ${tags.join(" ")})`);
+    else if (first) head.push(s);
+    else if (last) tail.push(s);
+    else middle.push(s);
   }
-  return [...head, ...tail];
+  if (conflicts.length > 0) {
+    const shown = conflicts.slice(0, MAX_LISTED_SPEC_ERRORS).map((c) => `  ${c}`);
+    if (conflicts.length > shown.length) {
+      shown.push(`  ...and ${conflicts.length - shown.length} more`);
+    }
+    throw new Error(
+      `${conflicts.length} detox spec(s) match both detox-sort-first ` +
+        `(${opts.sortFirst.join(",")}) and detox-sort-last (${opts.sortLast.join(",")}):\n` +
+        shown.join("\n"),
+    );
+  }
+  return [...head, ...middle, ...tail];
 }

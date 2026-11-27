@@ -26340,16 +26340,32 @@ function filterDetoxSpecsByTags(detoxDir, specs, opts) {
     (s) => passesDetoxTagFilters(readDetoxSpecTags(path2.join(detoxDir, s)), opts)
   );
 }
-function sortDetoxSpecsLast(detoxDir, specs, sortLast) {
-  if (sortLast.length === 0) return specs;
-  const last = new Set(sortLast);
+function sortDetoxSpecsByTags(detoxDir, specs, opts) {
+  if (opts.sortFirst.length === 0 && opts.sortLast.length === 0) return specs;
   const head = [];
+  const middle = [];
   const tail = [];
+  const conflicts = [];
   for (const s of specs) {
     const tags = readDetoxSpecTags(path2.join(detoxDir, s));
-    (tags.some((t) => last.has(t)) ? tail : head).push(s);
+    const first = shareAny2(tags, opts.sortFirst);
+    const last = shareAny2(tags, opts.sortLast);
+    if (first && last) conflicts.push(`${s} (tags: ${tags.join(" ")})`);
+    else if (first) head.push(s);
+    else if (last) tail.push(s);
+    else middle.push(s);
   }
-  return [...head, ...tail];
+  if (conflicts.length > 0) {
+    const shown = conflicts.slice(0, MAX_LISTED_SPEC_ERRORS).map((c) => `  ${c}`);
+    if (conflicts.length > shown.length) {
+      shown.push(`  ...and ${conflicts.length - shown.length} more`);
+    }
+    throw new Error(
+      `${conflicts.length} detox spec(s) match both detox-sort-first (${opts.sortFirst.join(",")}) and detox-sort-last (${opts.sortLast.join(",")}):
+` + shown.join("\n")
+    );
+  }
+  return [...head, ...middle, ...tail];
 }
 
 // src/durations.ts
@@ -26695,6 +26711,7 @@ async function run() {
   const detoxSearchPath = getInput("detox-search-path") || "e2e/test";
   const detoxIncludeTags = parseTagList(getInput("detox-include-tags"));
   const detoxExcludeTags = parseTagList(getInput("detox-exclude-tags"));
+  const detoxSortFirst = parseTagList(getInput("detox-sort-first"));
   const detoxSortLast = parseTagList(getInput("detox-sort-last"));
   const detoxSpecList = parseDetoxSpecList(getInput("detox-specs"));
   const detoxListTests = getInput("detox-list-tests").trim().toLowerCase() === "true";
@@ -26768,7 +26785,10 @@ async function run() {
         `no Detox specs found from ${source} (include-tags=${detoxIncludeTags.join(",") || "*"}, exclude-tags=${detoxExcludeTags.join(",") || "none"})`
       );
     }
-    specs = sortDetoxSpecsLast(detoxDir, specs, detoxSortLast);
+    specs = sortDetoxSpecsByTags(detoxDir, specs, {
+      sortFirst: detoxSortFirst,
+      sortLast: detoxSortLast
+    });
     startGroup(`${specs.length} Detox spec(s) from ${source}, in dispatch order`);
     specs.forEach((s) => info(s));
     endGroup();

@@ -252,7 +252,7 @@ func (s *Store) expireOneLease(ctx context.Context, leaseID uuid.UUID) (*expireL
 		// Lock + check the lease.
 		row := tx.QueryRow(ctx, `
 			SELECT id, run_id, gh_job_name, gh_job_id, unit_ids,
-			       issued_at, deadline, released_at, release_reason,
+			       kind, issued_at, deadline, released_at, release_reason,
 			       auth_oidc_subject, auth_api_key_id
 			  FROM leases
 			 WHERE id = $1

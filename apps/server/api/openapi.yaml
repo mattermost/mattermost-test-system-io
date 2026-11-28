@@ -929,10 +929,11 @@ paths:
         a duplicate report against the same worker's already-completed lease
         for the run is a no-op and returns 200 (first answer wins).
 
-        Late reports (received after the lease deadline) are accepted and
-        recorded as additional attempts on the corresponding specs. They do
-        NOT change unit state if the unit has already finalized via another
-        worker's subsequent lease.
+        Late reports (received after the lease deadline or after the lease was
+        already released) are accepted and recorded on the corresponding attempts.
+        They do NOT change unit state if the unit's active ownership has moved
+        to another lease or the unit has already finalized; any such unit IDs are
+        returned in `superseded_unit_ids`.
 
         Reports from a worker that never had a lease issued for this run
         (no matching (run, gh_job_id) row in `leases`) are rejected with 404.
@@ -2171,8 +2172,8 @@ components:
         unit_states_changed:
           type: array
           description: |
-            Empty when the report was late and unit state was already
-            terminal.
+            Empty when the report was late and unit ownership had moved or unit
+            state was already terminal.
           items:
             type: object
             required: [unit_id, new_state]
@@ -2181,6 +2182,13 @@ components:
               new_state:
                 type: string
                 enum: [completed_pass, completed_fail, completed_skipped]
+        superseded_unit_ids:
+          type: array
+          description: |
+            Dispatch unit IDs in this report whose active ownership had already
+            moved away from this lease (reclaimed, re-leased, or finalized).
+            Empty array when all units were still owned by this lease.
+          items: { type: string, format: uuid }
         counts:
           type: object
           description: |
@@ -2303,21 +2311,27 @@ components:
 
     CurrentLease:
       type: object
-      required: [id, gh_job_name, gh_job_id, issued_at, deadline]
+      required: [id, gh_job_name, gh_job_id, kind, issued_at, deadline]
       properties:
         id: { type: string, format: uuid }
         gh_job_name: { type: string }
         gh_job_id: { type: string }
+        kind:
+          type: string
+          enum: [fresh, reclaim, retest]
         issued_at: { type: string, format: date-time }
         deadline: { type: string, format: date-time }
 
     Attempt:
       type: object
-      required: [id, lease_id, spec_path, late_report, expired, created_at, gh_job_name, gh_job_id]
+      required: [id, lease_id, spec_path, kind, late_report, expired, created_at, gh_job_name, gh_job_id]
       properties:
         id: { type: string, format: uuid }
         lease_id: { type: string, format: uuid }
         spec_path: { type: string }
+        kind:
+          type: string
+          enum: [fresh, reclaim, retest]
         status:
           type: string
           nullable: true

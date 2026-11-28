@@ -255,7 +255,7 @@ func (s *Store) fetchUnitsWithLeases(ctx context.Context, runID uuid.UUID) ([]Un
 	rows, err := s.Pool.Query(ctx, `
 		SELECT du.id, du.run_id, du.dispatch_seq, du.spec_path, du.state,
 		       du.current_lease_id, du.lease_count, du.fail_count, du.outcome_set_at,
-		       l.gh_job_name, l.gh_job_id, l.issued_at, l.deadline
+		       l.gh_job_name, l.gh_job_id, l.kind, l.issued_at, l.deadline
 		  FROM dispatch_units du
 		  LEFT JOIN leases l ON l.id = du.current_lease_id
 		 WHERE du.run_id = $1
@@ -272,22 +272,24 @@ func (s *Store) fetchUnitsWithLeases(ctx context.Context, runID uuid.UUID) ([]Un
 			u             UnitView
 			leaseGHName   *string
 			leaseGHID     *string
+			leaseKind     *string
 			leaseIssuedAt *time.Time
 			leaseDeadline *time.Time
 		)
 		if err := rows.Scan(
 			&u.ID, &u.RunID, &u.DispatchSeq, &u.SpecPath, &u.State,
 			&u.CurrentLeaseID, &u.LeaseCount, &u.FailCount, &u.OutcomeSetAt,
-			&leaseGHName, &leaseGHID, &leaseIssuedAt, &leaseDeadline,
+			&leaseGHName, &leaseGHID, &leaseKind, &leaseIssuedAt, &leaseDeadline,
 		); err != nil {
 			return nil, fmt.Errorf("scan unit: %w", err)
 		}
 		if u.CurrentLeaseID != nil && leaseGHName != nil && leaseGHID != nil &&
-			leaseIssuedAt != nil && leaseDeadline != nil {
+			leaseKind != nil && leaseIssuedAt != nil && leaseDeadline != nil {
 			u.CurrentLease = &CurrentLeaseView{
 				ID:        *u.CurrentLeaseID,
 				GHJobName: *leaseGHName,
 				GHJobID:   *leaseGHID,
+				Kind:      *leaseKind,
 				IssuedAt:  *leaseIssuedAt,
 				Deadline:  *leaseDeadline,
 			}
@@ -309,7 +311,7 @@ func (s *Store) attachAttempts(ctx context.Context, runID uuid.UUID, units []Uni
 	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT a.id, a.lease_id, a.dispatch_unit_id, a.run_id, a.spec_path,
-		       a.status, a.actual_duration_ms, a.error_message, a.error_stack,
+		       a.kind, a.status, a.actual_duration_ms, a.error_message, a.error_stack,
 		       a.test_cases, a.reported_at, a.late_report, a.expired, a.created_at,
 		       l.gh_job_name, l.gh_job_id
 		  FROM attempts a
@@ -331,7 +333,7 @@ func (s *Store) attachAttempts(ctx context.Context, runID uuid.UUID, units []Uni
 		var v AttemptView
 		if err := rows.Scan(
 			&v.ID, &v.LeaseID, &v.DispatchUnitID, &v.RunID, &v.SpecPath,
-			&v.Status, &v.ActualDurationMs, &v.ErrorMessage, &v.ErrorStack,
+			&v.Kind, &v.Status, &v.ActualDurationMs, &v.ErrorMessage, &v.ErrorStack,
 			&v.TestCases, &v.ReportedAt, &v.LateReport, &v.Expired, &v.CreatedAt,
 			&v.GHJobName, &v.GHJobID,
 		); err != nil {

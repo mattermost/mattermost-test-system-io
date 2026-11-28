@@ -4,6 +4,7 @@
 package orchestratione2e
 
 import (
+	"context"
 	"net/http"
 	"testing"
 )
@@ -131,6 +132,13 @@ func TestRetestLazyDispatchAndPassFlipsUnitToCompletedPass(t *testing.T) {
 		t.Fatalf("retest fail_count = %v, want 1", retestUnit["fail_count"])
 	}
 
+	// While retest is leased, /status reports current_lease.kind == "retest".
+	midStat := expectStatus(t, getJSON(t, env, tok, statusURL(identity(nil))), http.StatusOK)
+	midUnit0 := midStat["units"].([]any)[0].(map[string]any)
+	if midLease := midUnit0["current_lease"].(map[string]any); midLease["kind"] != "retest" {
+		t.Fatalf("retest current_lease.kind = %v, want retest", midLease["kind"])
+	}
+
 	// --- Worker A passes the retest. Unit becomes completed_pass; run completes. ---
 	completeA3 := postJSON(t, env, tok, "/api/v1/orchestration/complete",
 		completeBody("playwright-shard-A", "job-retest-A", passResults([]string{units[0]})))
@@ -143,7 +151,7 @@ func TestRetestLazyDispatchAndPassFlipsUnitToCompletedPass(t *testing.T) {
 		t.Fatalf("retest new_state = %v, want completed_pass", changes[0])
 	}
 
-	// --- Final /status: completed, all 3 in completed_pass. ---
+	// --- Final /status: completed, all 3 in completed_pass, attempts marked fresh then retest. ---
 	finalStat := getJSON(t, env, tok, statusURL(identity(nil)))
 	finalBody := expectStatus(t, finalStat, http.StatusOK)
 	if finalBody["status"] != "completed" {
@@ -153,6 +161,23 @@ func TestRetestLazyDispatchAndPassFlipsUnitToCompletedPass(t *testing.T) {
 	if fc["pending"] != 0 || fc["leased"] != 0 || fc["completed_pass"] != 3 ||
 		fc["completed_fail"] != 0 || fc["retest_eligible"] != 0 {
 		t.Fatalf("final counts = %s, want pass=3, all others 0", fmtCounts(fc))
+	}
+	finalUnit0 := finalBody["units"].([]any)[0].(map[string]any)
+	u0Attempts := finalUnit0["attempts"].([]any)
+	if len(u0Attempts) != 2 ||
+		u0Attempts[0].(map[string]any)["kind"] != "fresh" ||
+		u0Attempts[1].(map[string]any)["kind"] != "retest" {
+		t.Fatalf("unit 0 attempt kinds = %+v, want [fresh, retest]", u0Attempts)
+	}
+	var retestLeaseKind string
+	if err := env.Pool.QueryRow(context.Background(), `
+		SELECT l.kind FROM leases l
+		 WHERE l.id = $1::uuid
+	`, u0Attempts[1].(map[string]any)["lease_id"]).Scan(&retestLeaseKind); err != nil {
+		t.Fatalf("query retest lease kind: %v", err)
+	}
+	if retestLeaseKind != "retest" {
+		t.Fatalf("retest lease kind = %q, want retest", retestLeaseKind)
 	}
 }
 

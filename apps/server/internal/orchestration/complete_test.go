@@ -244,3 +244,54 @@ func TestUnitStateCounterColumn(t *testing.T) {
 		}
 	}
 }
+
+func TestCanFinalizeUnit(t *testing.T) {
+	t.Parallel()
+
+	leaseA := uuid.Must(uuid.NewV7())
+	leaseB := uuid.Must(uuid.NewV7())
+
+	cases := []struct {
+		name           string
+		state          string
+		currentLeaseID *uuid.UUID
+		leaseID        uuid.UUID
+		want           bool
+	}{
+		{"matching leased owner", UnitStateLeased, &leaseA, leaseA, true},
+		{"reclaimed by another lease", UnitStateLeased, &leaseB, leaseA, false},
+		{"nil current lease", UnitStateLeased, nil, leaseA, false},
+		{"pending state", UnitStatePending, &leaseA, leaseA, false},
+		{"completed_pass state", UnitStateCompletedPass, &leaseA, leaseA, false},
+		{"completed_fail state", UnitStateCompletedFail, &leaseA, leaseA, false},
+		{"abandoned state", UnitStateAbandoned, &leaseA, leaseA, false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := canFinalizeUnit(tc.state, tc.currentLeaseID, tc.leaseID); got != tc.want {
+				t.Fatalf("canFinalizeUnit(%q, %v, %s) = %v, want %v",
+					tc.state, tc.currentLeaseID, tc.leaseID, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsLateReportOrReleased(t *testing.T) {
+	t.Parallel()
+
+	deadline := time.Date(2026, time.April, 25, 12, 0, 0, 0, time.UTC)
+	released := deadline.Add(-10 * time.Second)
+
+	if isLateReportOrReleased(deadline.Add(-time.Second), deadline, nil) {
+		t.Fatal("before deadline and unreleased should be on-time")
+	}
+	if !isLateReportOrReleased(deadline.Add(time.Second), deadline, nil) {
+		t.Fatal("after deadline should be late")
+	}
+	if !isLateReportOrReleased(deadline.Add(-time.Second), deadline, &released) {
+		t.Fatal("already-released lease should be treated as late")
+	}
+}

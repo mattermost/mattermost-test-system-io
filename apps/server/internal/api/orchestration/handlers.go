@@ -534,6 +534,7 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 			"accepted":            true,
 			"late_report":         outcome.LateReport,
 			"unit_states_changed": []any{},
+			"superseded_unit_ids": []string{},
 			// outcome.RunCounts is populated on every RecordCompletion path,
 			// idempotent replay included — no extra query needed here.
 			"counts":  queueCountsPayload(outcome.RunCounts),
@@ -563,6 +564,7 @@ func (h *Handlers) Complete(w http.ResponseWriter, r *http.Request) {
 		"accepted":            true,
 		"late_report":         outcome.LateReport,
 		"unit_states_changed": unitStateChangesPayload(outcome.UnitStatesChanged),
+		"superseded_unit_ids": uuidStrings(outcome.SupersededUnitIDs),
 		"counts":              queueCountsPayload(outcome.RunCounts),
 		"db_pool":             dbPoolPayload(h.Pool),
 	}
@@ -1227,6 +1229,15 @@ func unitStateChangesPayload(changes []orchestration.UnitStateChange) []map[stri
 	return out
 }
 
+// uuidStrings converts UUIDs into a non-nil string slice so empty serializes as [].
+func uuidStrings(ids []uuid.UUID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id.String())
+	}
+	return out
+}
+
 // unitsPayload serializes the run's dispatch units (with current lease and
 // attempt history) for the /status and /begin response bodies. The shape
 // matches the OpenAPI Unit / Attempt / CurrentLease schemas.
@@ -1247,6 +1258,7 @@ func unitsPayload(units []orchestration.UnitView) []map[string]any {
 				"id":          u.CurrentLease.ID.String(),
 				"gh_job_name": u.CurrentLease.GHJobName,
 				"gh_job_id":   u.CurrentLease.GHJobID,
+				"kind":        u.CurrentLease.Kind,
 				"issued_at":   u.CurrentLease.IssuedAt.UTC(),
 				"deadline":    u.CurrentLease.Deadline.UTC(),
 			}
@@ -1275,6 +1287,7 @@ func attemptsPayload(attempts []orchestration.AttemptView) []map[string]any {
 			"id":                 a.ID.String(),
 			"lease_id":           a.LeaseID.String(),
 			"spec_path":          a.SpecPath,
+			"kind":               a.Kind,
 			"status":             a.Status,
 			"actual_duration_ms": a.ActualDurationMs,
 			"error_message":      a.ErrorMessage,

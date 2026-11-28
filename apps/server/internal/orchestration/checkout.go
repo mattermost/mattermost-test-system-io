@@ -96,7 +96,7 @@ func (s *Store) AtomicCheckout(
 	)
 
 	txErr := s.inTx(ctx, func(tx pgx.Tx) error {
-		l, err := insertLeaseTx(ctx, tx, run, worker)
+		l, err := insertLeaseTx(ctx, tx, run, worker, LeaseKindFresh)
 		if err != nil {
 			return err
 		}
@@ -118,18 +118,20 @@ func (s *Store) AtomicCheckout(
 			return nil
 		}
 
-		// Update the lease's unit_ids array now that we know what got picked.
+		// Update the lease's unit_ids array and kind now that we know what got picked.
 		unitIDs := make([]uuid.UUID, 0, len(dispatched))
 		for _, u := range dispatched {
 			unitIDs = append(unitIDs, u.ID)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE leases SET unit_ids = $1 WHERE id = $2`, unitIDs, l.ID); err != nil {
+		leaseKind := leaseKindForBatch(dispatched)
+		if _, err := tx.Exec(ctx, `UPDATE leases SET unit_ids = $1, kind = $2 WHERE id = $3`, unitIDs, leaseKind, l.ID); err != nil {
 			return fmt.Errorf("update lease unit_ids: %w", err)
 		}
 		l.UnitIDs = unitIDs
+		l.Kind = leaseKind
 
 		// Insert one attempts row per spec_path in each dispatched unit.
-		if err := insertInitialAttemptsTx(ctx, tx, run.ID, l.ID, dispatched); err != nil {
+		if err := insertInitialAttemptsTx(ctx, tx, run.ID, l.ID, dispatched, false); err != nil {
 			return err
 		}
 
@@ -239,7 +241,7 @@ func (s *Store) AtomicRetestCheckout(
 	)
 
 	txErr := s.inTx(ctx, func(tx pgx.Tx) error {
-		l, err := insertLeaseTx(ctx, tx, run, worker)
+		l, err := insertLeaseTx(ctx, tx, run, worker, LeaseKindRetest)
 		if err != nil {
 			return err
 		}
@@ -270,7 +272,7 @@ func (s *Store) AtomicRetestCheckout(
 		l.UnitIDs = unitIDs
 
 		// Insert one attempts row per spec_path in each dispatched unit.
-		if err := insertInitialAttemptsTx(ctx, tx, run.ID, l.ID, dispatched); err != nil {
+		if err := insertInitialAttemptsTx(ctx, tx, run.ID, l.ID, dispatched, true); err != nil {
 			return err
 		}
 
@@ -443,7 +445,7 @@ func (s *Store) CountWorkers(ctx context.Context, runID uuid.UUID) (WorkerCounts
 // IMPORTANT: the leases_active_worker_uq partial UNIQUE constraint is
 // evaluated on this INSERT — a conflict here is what surfaces as
 // ErrWorkerHasActiveLease.
-func insertLeaseTx(ctx context.Context, tx pgx.Tx, run *Run, worker WorkerIdentity) (*Lease, error) {
+func insertLeaseTx(ctx context.Context, tx pgx.Tx, run *Run, worker WorkerIdentity, kind string) (*Lease, error) {
 	// Use an empty-but-valid array placeholder; the table CHECK is
 	// cardinality(unit_ids) >= 1 so we cannot actually leave it empty. We
 	// insert with a single zero UUID then immediately overwrite via UPDATE
@@ -461,11 +463,11 @@ func insertLeaseTx(ctx context.Context, tx pgx.Tx, run *Run, worker WorkerIdenti
 		deadline time.Time
 	)
 	err := tx.QueryRow(ctx, `
-		INSERT INTO leases (id, run_id, gh_job_name, gh_job_id, unit_ids, deadline)
-		VALUES ($1, $2, $3, $4, $5,
-		        now() + make_interval(secs => $6::double precision / 1000.0))
+		INSERT INTO leases (id, run_id, gh_job_name, gh_job_id, unit_ids, kind, deadline)
+		VALUES ($1, $2, $3, $4, $5, $6,
+		        now() + make_interval(secs => $7::double precision / 1000.0))
 		RETURNING issued_at, deadline
-	`, leaseID, run.ID, worker.GHJobName, worker.GHJobID, placeholder, run.LeaseTimeoutMs).
+	`, leaseID, run.ID, worker.GHJobName, worker.GHJobID, placeholder, kind, run.LeaseTimeoutMs).
 		Scan(&issuedAt, &deadline)
 	if err != nil {
 		return nil, fmt.Errorf("insert lease: %w", err)
@@ -475,6 +477,7 @@ func insertLeaseTx(ctx context.Context, tx pgx.Tx, run *Run, worker WorkerIdenti
 		RunID:    run.ID,
 		Worker:   worker,
 		UnitIDs:  nil,
+		Kind:     kind,
 		IssuedAt: issuedAt,
 		Deadline: deadline,
 	}, nil
@@ -540,6 +543,7 @@ func insertInitialAttemptsTx(
 	tx pgx.Tx,
 	runID, leaseID uuid.UUID,
 	units []*DispatchUnit,
+	isRetest bool,
 ) error {
 	if len(units) == 0 {
 		return nil
@@ -547,9 +551,9 @@ func insertInitialAttemptsTx(
 	batch := &pgx.Batch{}
 	for _, u := range units {
 		batch.Queue(`
-			INSERT INTO attempts (lease_id, dispatch_unit_id, run_id, spec_path)
-			VALUES ($1, $2, $3, $4)
-		`, leaseID, u.ID, runID, u.SpecPath)
+			INSERT INTO attempts (lease_id, dispatch_unit_id, run_id, spec_path, kind)
+			VALUES ($1, $2, $3, $4, $5)
+		`, leaseID, u.ID, runID, u.SpecPath, attemptKindForUnit(u.LeaseCount, isRetest))
 	}
 	br := tx.SendBatch(ctx, batch)
 	defer func() { _ = br.Close() }()
@@ -559,6 +563,27 @@ func insertInitialAttemptsTx(
 		}
 	}
 	return nil
+}
+
+// attemptKindForUnit classifies a newly dispatched attempt as fresh, reclaim, or retest.
+func attemptKindForUnit(leaseCount int, isRetest bool) string {
+	if isRetest {
+		return LeaseKindRetest
+	}
+	if leaseCount > 1 {
+		return LeaseKindReclaim
+	}
+	return LeaseKindFresh
+}
+
+// leaseKindForBatch returns reclaim if any unit in a non-retest checkout was previously leased.
+func leaseKindForBatch(units []*DispatchUnit) string {
+	for _, u := range units {
+		if u.LeaseCount > 1 {
+			return LeaseKindReclaim
+		}
+	}
+	return LeaseKindFresh
 }
 
 // expireOverdueLeasesForRun runs the same lease-expiry sweep the reaper does

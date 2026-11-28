@@ -377,16 +377,25 @@ func (s *Store) querySummaryFlaky(ctx context.Context, f FilterParams) (FlakySum
 	if err != nil {
 		return FlakySummary{}, err
 	}
-	priorHasData, priorTotal, priorByApp, priorHasDataByApp, err := s.queryPriorFlakyCountsByApp(ctx, f, priorFrom, priorTo)
+	priorHasData, _, priorByApp, priorHasDataByApp, err := s.queryPriorFlakyCountsByApp(ctx, f, priorFrom, priorTo)
 	if err != nil {
 		return FlakySummary{}, err
 	}
 
 	var priorTotalPtr, deltaPtr *int
 	if priorHasData {
-		priorTotalPtr = &priorTotal
-		d := curTotal - priorTotal
-		deltaPtr = &d
+		var compCur, compPrior int
+		hasComparable := false
+		for app := range priorHasDataByApp {
+			hasComparable = true
+			compCur += curByApp[app]
+			compPrior += priorByApp[app]
+		}
+		if hasComparable {
+			priorTotalPtr = &compPrior
+			d := compCur - compPrior
+			deltaPtr = &d
+		}
 	}
 
 	appSet := map[string]struct{}{}

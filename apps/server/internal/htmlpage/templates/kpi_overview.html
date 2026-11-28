@@ -3,7 +3,7 @@
   <div class="kpi-page-title-row">
     <div>
       <h2 class="kpi-page-title">Test Health KPIs</h2>
-      <p class="kpi-page-subtitle">CI reliability and test health across repositories</p>
+      <p class="kpi-page-subtitle">Per-repository CI reliability and failure triage</p>
     </div>
     <nav class="kpi-subnav" aria-label="KPI sections">
       <a href="{{.OverviewHref}}" class="kpi-subnav-link is-active">Overview</a>
@@ -11,48 +11,88 @@
     </nav>
   </div>
   {{template "kpi-filter-bar" .Filters}}
-  {{if .CoverageNotes}}
-  <details class="kpi-disclosure" role="note">
-    <summary class="kpi-disclosure-summary">
-      <span class="kpi-coverage-summary"><strong>Lane coverage:</strong> {{.CoverageSummary}}</span>
-      <span class="kpi-disclosure-hint">Details</span>
-    </summary>
-    <ul class="kpi-coverage-notes">
-      {{range .CoverageNotes}}<li>{{.}}</li>{{end}}
-    </ul>
-  </details>
-  {{else}}
-  <div class="kpi-coverage-banner" role="note">
-    <span class="kpi-coverage-summary"><strong>Lane coverage:</strong> {{.CoverageSummary}}</span>
+  <div class="kpi-status-strip" role="status">
+    <span>{{.PulseSummary}}</span>
+    {{if .IsAllRepos}}<span class="kpi-badge kpi-badge-muted">No blended cross-repo averages</span>{{end}}
   </div>
-  {{end}}
 </header>
 
-<section class="kpi-cards-grid" aria-label="Core KPI summary cards">
+{{if .IsAllRepos}}
+<section class="kpi-panel" aria-label="Repository health scorecard">
+  <header class="kpi-panel-head">
+    <h3 class="kpi-panel-title">Repository Health Scorecard</h3>
+    <span class="kpi-panel-subtitle">Each product measured strictly within its own runner &amp; telemetry</span>
+  </header>
+  {{if not .HasScorecard}}
+  <div class="empty-state empty-state-inline">
+    <p class="empty-title">No data</p>
+    <p class="empty-hint">No test runs recorded in this time window.</p>
+  </div>
+  {{else}}
+  <div class="kpi-table-scroll">
+    <table class="kpi-table">
+      <thead>
+        <tr>
+          <th>Repository</th>
+          <th>Telemetry</th>
+          <th class="num">Main run pass</th>
+          <th class="num">Zero-retry</th>
+          <th class="num">PR false-red</th>
+          <th class="num">Flaky (14d)</th>
+          <th class="num">PR E2E wait</th>
+          <th class="num">Timeouts</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .RepoScorecard}}
+        <tr>
+          <td>
+            <a href="{{.Href}}" class="kpi-sig-link">{{.DisplayName}}</a>
+            <div class="kpi-sig-meta mono">{{.Repository}}</div>
+          </td>
+          <td><span class="kpi-badge {{if .IsOrchestrated}}kpi-reason-rerun{{else}}kpi-badge-muted{{end}}">{{.RunnersSummary}}</span></td>
+          <td class="num tabular">
+            <div><span class="{{.MainRunClass}}">{{.MainRunPassText}}</span></div>
+            {{if .MainTestSub}}<div class="kpi-sig-meta">{{.MainTestSub}}</div>{{end}}
+          </td>
+          <td class="num tabular">{{.ZeroRetryText}}</td>
+          <td class="num tabular">
+            <div>{{.PRFalseRedText}}</div>
+            {{if .PRFalseRedSub}}<div class="kpi-sig-meta">{{.PRFalseRedSub}}</div>{{end}}
+          </td>
+          <td class="num tabular">{{.FlakyText}}</td>
+          <td class="num tabular">
+            <div>{{.PRDurationText}}</div>
+            {{if .PRDurationSub}}<div class="kpi-sig-meta">{{.PRDurationSub}}</div>{{end}}
+          </td>
+          <td class="num tabular"><span class="{{.TimeoutsClass}}">{{.TimeoutsText}}</span></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+</section>
+{{else}}
+<section class="kpi-cards-grid" aria-label="Repository KPI summary cards">
   <article class="kpi-card">
     <div class="kpi-card-head">
-      <h3 class="kpi-card-title">Main first-attempt pass rate</h3>
+      <h3 class="kpi-card-title">Main pass rate</h3>
       <div class="kpi-head-badges">
         {{if .MainPass.HealthLabel}}<span class="{{.MainPass.HealthClass}}">{{.MainPass.HealthLabel}}</span>{{end}}
-        <span class="kpi-delta {{.MainPass.DeltaClass}} tabular">{{.MainPass.PrimaryDelta}}</span>
+        {{if ne .MainPass.PrimaryDelta "N/A"}}<span class="kpi-delta {{.MainPass.DeltaClass}} tabular">{{.MainPass.PrimaryDelta}}</span>{{end}}
       </div>
     </div>
     <div class="kpi-card-value tabular">{{.MainPass.PrimaryRate}}</div>
     {{if .MainPass.HasData}}
-    <p class="kpi-card-meta tabular">{{.MainPass.FirstAttemptPassed}} / {{.MainPass.TotalTests}} tests passed on first attempt</p>
+    <p class="kpi-card-meta tabular">{{.MainPass.PrimaryMeta}}</p>
+    {{if .MainPass.HasStrict}}
     <dl class="kpi-card-substats">
-      <div><dt>Lane pass (attempt 1)</dt><dd class="tabular">{{.MainPass.LaneRate}} ({{.MainPass.LanePassed}}/{{.MainPass.LaneTotal}})</dd></div>
       <div><dt>Zero-retry runs</dt><dd class="tabular">{{.MainPass.StrictRate}} ({{.MainPass.StrictPassed}}/{{.MainPass.StrictTotal}})</dd></div>
     </dl>
+    {{end}}
     {{else}}
     <p class="kpi-card-empty">No data — no main-stage runs in this window</p>
-    {{end}}
-    <p class="kpi-card-note">{{.MainPass.CoverageSummary}}{{if .MainPass.UploadOnlyNote}} · {{.MainPass.UploadOnlyNote}}{{end}}</p>
-    {{if .MainPass.CoverageNotes}}
-    <details class="kpi-disclosure kpi-card-disclosure">
-      <summary class="kpi-disclosure-summary"><span>Scope notes</span><span class="kpi-disclosure-hint">Show</span></summary>
-      <ul class="kpi-card-notes">{{range .MainPass.CoverageNotes}}<li>{{.}}</li>{{end}}</ul>
-    </details>
     {{end}}
   </article>
 
@@ -61,14 +101,14 @@
       <h3 class="kpi-card-title">PR false-red rate</h3>
       <div class="kpi-head-badges">
         {{if .PRFalseRed.HealthLabel}}<span class="{{.PRFalseRed.HealthClass}}">{{.PRFalseRed.HealthLabel}}</span>{{end}}
-        <span class="kpi-delta {{.PRFalseRed.DeltaClass}} tabular">{{.PRFalseRed.Delta}}</span>
+        {{if .PRFalseRed.Delta}}<span class="kpi-delta {{.PRFalseRed.DeltaClass}} tabular">{{.PRFalseRed.Delta}}</span>{{end}}
       </div>
     </div>
     <div class="kpi-card-value tabular">{{.PRFalseRed.HeadlineRate}}</div>
     {{if .PRFalseRed.HasData}}
-    <p class="kpi-card-meta tabular">{{.PRFalseRed.SettledFalseRedLanes}} / {{.PRFalseRed.SettledRedLanes}} settled red lanes{{if gt .PRFalseRed.UnsettledRedLanes 0}} · {{.PRFalseRed.UnsettledRedLanes}} unsettled (&lt;24h){{end}}</p>
+    <p class="kpi-card-meta tabular">{{.PRFalseRed.SettledFalseRedLanes}} / {{.PRFalseRed.SettledRedLanes}} settled red lanes{{if gt .PRFalseRed.UnsettledRedLanes 0}} · {{.PRFalseRed.UnsettledRedLanes}} recent (&lt;24h){{end}}</p>
     {{else}}
-    <p class="kpi-card-empty">No data{{if gt .PRFalseRed.UnsettledRedLanes 0}} · {{.PRFalseRed.UnsettledRedLanes}} unsettled (&lt;24h){{end}}</p>
+    <p class="kpi-card-empty">No data{{if gt .PRFalseRed.UnsettledRedLanes 0}} · {{.PRFalseRed.UnsettledRedLanes}} recent (&lt;24h){{end}}</p>
     {{end}}
     <p class="kpi-card-note">{{.PRFalseRed.SettledNote}}</p>
     <p class="kpi-card-link-row"><a href="{{.PRFalseRed.PRsHref}}" class="kpi-inline-link">Inspect PR E2E queue &rarr;</a></p>
@@ -79,163 +119,113 @@
       <h3 class="kpi-card-title">Flaky tests</h3>
       <div class="kpi-head-badges">
         {{if .Flaky.HealthLabel}}<span class="{{.Flaky.HealthClass}}">{{.Flaky.HealthLabel}}</span>{{end}}
-        <span class="kpi-delta {{.Flaky.DeltaClass}} tabular">{{.Flaky.Delta}}</span>
+        {{if ne .Flaky.Delta "N/A"}}<span class="kpi-delta {{.Flaky.DeltaClass}} tabular">{{.Flaky.Delta}}</span>{{end}}
       </div>
     </div>
     <div class="kpi-card-value tabular">{{if .Flaky.HasData}}{{.Flaky.Count}}{{else}}N/A{{end}}</div>
     <p class="kpi-card-meta">{{.Flaky.RuleNote}}</p>
-    {{if .Flaky.ByApp}}
-    <div class="kpi-chip-list">
-      {{range .Flaky.ByApp}}
-      <span class="kpi-chip tabular">{{.App}}: {{.Count}} ({{.Delta}})</span>
-      {{end}}
-    </div>
-    {{else}}
-    <p class="kpi-card-empty">{{if .Flaky.HasData}}0 flaky tests across matching apps{{else}}No data in window{{end}}</p>
-    {{end}}
   </article>
 
-  <article class="kpi-card">
-    <div class="kpi-card-head">
-      <h3 class="kpi-card-title">Recurring failures</h3>
-      <span class="kpi-badge kpi-badge-neutral tabular">{{.Recurring.TriagedCount}} triaged</span>
-    </div>
-    <div class="kpi-card-value tabular">{{if .Recurring.HasData}}{{.Recurring.TotalSignatures}}{{else}}0{{end}}</div>
-    <p class="kpi-card-meta tabular">{{if .Recurring.HasData}}{{.Recurring.OccurrencesText}}{{else}}No data — no failure patterns in window{{end}}</p>
-    <div class="kpi-chip-list">
-      <span class="kpi-badge kpi-state-active tabular">Active: {{.Recurring.ActiveCount}}</span>
-      <span class="kpi-badge kpi-state-resurfaced tabular">Resurfaced: {{.Recurring.ResurfacedCount}}</span>
-      <span class="kpi-badge kpi-state-quiet tabular">Quiet: {{.Recurring.QuietCount}}</span>
-      <span class="kpi-badge kpi-state-not-enough-runs tabular">Not enough runs: {{.Recurring.NotEnoughRunsCount}}</span>
-    </div>
-  </article>
-
+  {{if .E2EDuration.ShowCard}}
   <article class="kpi-card">
     <div class="kpi-card-head">
       <h3 class="kpi-card-title">E2E PR run time</h3>
-      <span class="kpi-delta {{.E2EDuration.P50DeltaClass}} tabular">{{.E2EDuration.P50Delta}}</span>
+      {{if ne .E2EDuration.P50Delta "N/A"}}<span class="kpi-delta {{.E2EDuration.P50DeltaClass}} tabular">{{.E2EDuration.P50Delta}}</span>{{end}}
     </div>
-    <div class="kpi-card-value tabular">{{.E2EDuration.P50}} <span class="kpi-card-value-unit">median</span></div>
+    <div class="kpi-card-value tabular">{{.E2EDuration.P50}}{{if .E2EDuration.HasData}} <span class="kpi-card-value-unit">median</span>{{end}}</div>
     {{if .E2EDuration.HasData}}
-    <p class="kpi-card-meta tabular">p90: {{.E2EDuration.P90}} · {{.E2EDuration.SampleCountText}}</p>
+    <p class="kpi-card-meta tabular">p90: {{.E2EDuration.P90}} · {{.E2EDuration.SampleText}}</p>
     {{else}}
-    <p class="kpi-card-empty">No data — p90: N/A (orchestrated PR lanes only)</p>
+    <p class="kpi-card-empty">No completed PR duration samples in this window</p>
     {{end}}
-    <p class="kpi-card-note">{{.E2EDuration.CoverageSummary}}</p>
-    {{if .E2EDuration.CoverageNotes}}
-    <details class="kpi-disclosure kpi-card-disclosure">
-      <summary class="kpi-disclosure-summary"><span>Scope notes</span><span class="kpi-disclosure-hint">Show</span></summary>
-      <ul class="kpi-card-notes">{{range .E2EDuration.CoverageNotes}}<li>{{.}}</li>{{end}}</ul>
-    </details>
+    {{if .E2EDuration.CompletionRate}}
+    <dl class="kpi-card-substats">
+      <div><dt>Run completion</dt><dd class="tabular">{{.E2EDuration.CompletionRate}} ({{.E2EDuration.CompletedRuns}} ok · {{.E2EDuration.TimedOutRuns}} timed out)</dd></div>
+    </dl>
     {{end}}
   </article>
-</section>
-
-<section class="kpi-panel" aria-label="AI triage and run completion metrics">
-  <header class="kpi-panel-head">
-    <h3 class="kpi-panel-title">AI Triage &amp; Run Completion</h3>
-  </header>
-  {{if not .Triage.HasData}}
-  <div class="empty-state empty-state-inline">
-    <p class="empty-hint">No triage or run completion data in this window</p>
-  </div>
-  {{else}}
-  <div class="kpi-triage-grid">
-    <div class="kpi-stat-box">
-      <div class="kpi-stat-label">Run triage coverage</div>
-      <div class="kpi-stat-value tabular">{{.Triage.RunCoverage}}</div>
-      <div class="kpi-stat-sub tabular">{{.Triage.TriagedRunsCount}} / {{.Triage.FailedRunsCount}} failed runs</div>
-    </div>
-    <div class="kpi-stat-box">
-      <div class="kpi-stat-label">Test triage coverage</div>
-      <div class="kpi-stat-value tabular">{{.Triage.TestCoverage}}</div>
-      <div class="kpi-stat-sub tabular">{{.Triage.TriagedTestOccurrences}} / {{.Triage.FailedTestOccurrences}} failed occurrences</div>
-    </div>
-    <div class="kpi-stat-box">
-      <div class="kpi-stat-label">Verdict reuse rate</div>
-      <div class="kpi-stat-value tabular">{{.Triage.VerdictReuseRate}}</div>
-      <div class="kpi-stat-sub tabular">{{.Triage.VerdictsReused}} / {{.Triage.VerdictsTotal}} verdicts reused</div>
-    </div>
-    <div class="kpi-stat-box">
-      <div class="kpi-stat-label">Run completion rate</div>
-      <div class="kpi-stat-value tabular">{{.Triage.CompletionRate}}</div>
-      <div class="kpi-stat-sub tabular">{{.Triage.CompletedRuns}} completed · {{.Triage.IncompleteRuns}} incomplete · {{.Triage.TimedOutRuns}} timed out{{if gt .Triage.InProgressRuns 0}} · {{.Triage.InProgressRuns}} live{{end}}</div>
-    </div>
-  </div>
-  {{if .Triage.LabelMix}}
-  <div class="kpi-label-mix">
-    <h4 class="kpi-subheading">Verdict label mix</h4>
-    <div class="kpi-chip-list">
-      {{range .Triage.LabelMix}}
-      <span class="kpi-badge kpi-verdict-badge tabular">{{.Label}}: {{.Count}} ({{.SharePct}})</span>
-      {{end}}
-    </div>
-  </div>
-  {{else}}
-  <p class="kpi-card-note">No verdict labels recorded in this window.</p>
-  {{end}}
   {{end}}
 </section>
 
-<section class="kpi-panel" aria-label="Weekly KPI trends">
+{{if .HasLaneRows}}
+<section class="kpi-panel" aria-label="Lane breakdown">
   <header class="kpi-panel-head">
-    <h3 class="kpi-panel-title">Weekly Trends</h3>
-    <span class="kpi-panel-subtitle">Main test first-attempt pass rate &amp; weekly metrics</span>
+    <h3 class="kpi-panel-title">Lanes in {{.ActiveRepoLabel}}</h3>
+    <span class="kpi-panel-subtitle">{{len .LaneRows}} active lanes</span>
   </header>
-  {{if not .HasWeekly}}
-  <div class="empty-state empty-state-inline">
-    <p class="empty-hint">No weekly trend data in this window</p>
-  </div>
-  {{else}}
-  <div class="kpi-chart-wrap">
-    <svg class="kpi-bar-svg" viewBox="0 0 {{.WeeklyChartW}} 110" role="img" aria-label="Weekly main pass rate bar chart">
-      <line x1="8" y1="88" x2="{{sub .WeeklyChartW 8}}" y2="88" class="kpi-chart-axis"/>
-      {{range .WeeklyBars}}
-      <g>
-        <title>{{.Tooltip}}</title>
-        <rect x="{{.X}}" y="{{.Y}}" width="{{.Width}}" height="{{.Height}}" rx="3" class="kpi-chart-bar {{.ColorClass}}"/>
-        <text x="{{add .X (div .Width 2)}}" y="103" text-anchor="middle" class="kpi-chart-label">{{.Label}}</text>
-      </g>
-      {{end}}
-    </svg>
-  </div>
   <div class="kpi-table-scroll">
     <table class="kpi-table">
       <thead>
         <tr>
-          <th>Week</th>
+          <th>Lane</th>
+          <th>Stage</th>
+          <th class="num">Runs</th>
+          <th class="num">Main run pass</th>
           <th class="num">Main test pass</th>
-          <th class="num">Main lane pass</th>
+          <th class="num">Zero-retry</th>
+          <th class="num">PR wait p50</th>
           <th class="num">PR false-red</th>
-          <th class="num">Flaky tests</th>
-          <th class="num">Recurring failures</th>
-          <th class="num">E2E p50</th>
-          <th class="num">Triage coverage</th>
         </tr>
       </thead>
       <tbody>
-        {{range .WeeklyRows}}
+        {{range .LaneRows}}
         <tr>
-          <td class="mono tabular">{{.WeekStart}}</td>
-          <td class="num tabular">{{.MainTestPassRate}}</td>
-          <td class="num tabular">{{.MainLanePassRate}}</td>
-          <td class="num tabular">{{.PRFalseRedRate}}</td>
-          <td class="num tabular">{{.FlakyTestCount}}</td>
-          <td class="num tabular">{{.RecurringFailures}}</td>
-          <td class="num tabular">{{.E2EP50}}</td>
-          <td class="num tabular">{{.TriageCoverage}}</td>
+          <td><a href="{{.Href}}" class="kpi-sig-link mono">{{.Lane}}</a></td>
+          <td>{{.Stage}}</td>
+          <td class="num tabular">{{.RunsCount}}</td>
+          <td class="num tabular">{{if .RunPassClass}}<span class="{{.RunPassClass}}">{{.RunPassText}}</span>{{else}}{{.RunPassText}}{{end}}</td>
+          <td class="num tabular">{{.TestPassText}}</td>
+          <td class="num tabular">{{.ZeroRetryText}}</td>
+          <td class="num tabular">{{.PRDurationText}}</td>
+          <td class="num tabular">{{.PRFalseRedText}}</td>
         </tr>
         {{end}}
       </tbody>
     </table>
   </div>
-  {{end}}
 </section>
+{{end}}
 
-<section class="kpi-panel" aria-label="Recurring failures">
+{{if .HasWeekly}}
+<section class="kpi-panel" aria-label="Weekly pass rate trend">
   <header class="kpi-panel-head">
-    <h3 class="kpi-panel-title">Recurring Failures</h3>
-    {{if gt .Total 0}}<span class="kpi-panel-subtitle tabular">{{.TotalPatternsText}}</span>{{end}}
+    <h3 class="kpi-panel-title">Weekly Main Pass Rate</h3>
+    <span class="kpi-panel-subtitle">Hover bars for exact weekly percentages</span>
+  </header>
+  <div class="kpi-chart-wrap">
+    <svg class="kpi-bar-svg" viewBox="0 0 {{.WeeklyChartW}} 108" role="img" aria-label="Weekly main pass rate bar chart">
+      <line x1="32" y1="10" x2="{{sub .WeeklyChartW 8}}" y2="10" class="kpi-chart-grid"/>
+      <line x1="32" y1="48" x2="{{sub .WeeklyChartW 8}}" y2="48" class="kpi-chart-grid"/>
+      <line x1="32" y1="86" x2="{{sub .WeeklyChartW 8}}" y2="86" class="kpi-chart-axis"/>
+      <text x="28" y="13" text-anchor="end" class="kpi-chart-label">100%</text>
+      <text x="28" y="51" text-anchor="end" class="kpi-chart-label">50%</text>
+      <text x="28" y="89" text-anchor="end" class="kpi-chart-label">0%</text>
+      {{range .WeeklyBars}}
+      <g>
+        <title>{{.Tooltip}}</title>
+        <rect x="{{.X}}" y="{{.Y}}" width="{{.Width}}" height="{{.Height}}" rx="3" class="kpi-chart-bar {{.ColorClass}}"/>
+        <text x="{{add .X (div .Width 2)}}" y="101" text-anchor="middle" class="kpi-chart-label">{{.Label}}</text>
+      </g>
+      {{end}}
+    </svg>
+  </div>
+</section>
+{{end}}
+{{end}}
+
+<section class="kpi-panel" aria-label="Failure patterns">
+  <header class="kpi-panel-head">
+    <div>
+      <h3 class="kpi-panel-title">{{if .ShowAll}}All Failure Patterns{{else}}Active Failure Patterns{{end}}</h3>
+      {{if gt .Total 0}}<span class="kpi-panel-subtitle tabular">{{.TotalPatternsText}}</span>{{end}}
+    </div>
+    <div class="kpi-panel-controls">
+      <nav class="kpi-pill-group" aria-label="Failure state filter">
+        <a href="{{.ActiveOnlyHref}}" class="kpi-pill{{if not .ShowAll}} is-active{{end}}">Active ({{.ActiveTotalCount}})</a>
+        <a href="{{.ShowAllHref}}" class="kpi-pill{{if .ShowAll}} is-active{{end}}">All ({{.AllTotalCount}})</a>
+      </nav>
+      {{template "kpi-sort-select" .Filters}}
+    </div>
   </header>
   {{if not .HasFailures}}
   <div class="empty-state empty-state-inline">
@@ -243,8 +233,8 @@
     <p class="empty-title">Page {{.Page}} out of range</p>
     <p class="empty-hint">No failure patterns on page {{.Page}} (total {{.Total}} across {{.TotalPages}} {{if eq .TotalPages 1}}page{{else}}pages{{end}}).</p>
     {{else}}
-    <p class="empty-title">No recurring failures</p>
-    <p class="empty-hint">No failure patterns matched the active filters in this window.</p>
+    <p class="empty-title">No {{if not .ShowAll}}active {{end}}failure patterns</p>
+    <p class="empty-hint">{{if and (not .ShowAll) (gt .DormantCount 0)}}{{.DormantCount}} older dormant patterns hidden — select All ({{.AllTotalCount}}) above to inspect them.{{else}}No failure patterns matched the active filters in this window.{{end}}</p>
     {{end}}
   </div>
   {{else}}
@@ -254,8 +244,7 @@
         <tr>
           <th>Failure pattern</th>
           <th>State</th>
-          <th class="num">Occurrences</th>
-          <th class="num">Rate</th>
+          <th class="num">Failures</th>
           <th class="num">14d trend</th>
           <th>Triage</th>
           <th class="num">Last seen</th>
@@ -266,7 +255,7 @@
         <tr>
           <td class="kpi-sig-cell">
             <a href="{{.Href}}" class="kpi-sig-link">{{.Title}}</a>
-            <div class="kpi-sig-msg">{{.NormalizedMessage}}</div>
+            {{if .NormalizedMessage}}<div class="kpi-sig-msg">{{.NormalizedMessage}}</div>{{end}}
             <div class="kpi-sig-meta">
               {{if .TopFrame}}<span class="mono">{{.TopFrame}}</span>{{end}}
               {{if .ReposSummary}}<span>{{.ReposSummary}}</span>{{end}}
@@ -275,10 +264,6 @@
           </td>
           <td><span class="{{.StateClass}}">{{.StateLabel}}</span></td>
           <td class="num tabular">{{.OccurrenceCount}}</td>
-          <td class="num tabular">
-            <div>{{.RateText}}</div>
-            {{if .IsLowSample}}<div class="kpi-low-sample">low sample</div>{{end}}
-          </td>
           <td class="num tabular"><span class="kpi-delta {{.DeltaClass}}">{{.DeltaRate14d}}</span></td>
           <td>{{if .LatestVerdictLabel}}<span class="kpi-badge kpi-verdict-badge">{{.LatestVerdictLabel}}</span>{{else}}<span class="kpi-badge kpi-badge-muted">Untriaged</span>{{end}}</td>
           <td class="num tabular"><time datetime="{{.LastSeenISO}}" title="{{.LastSeenISO}}">{{.LastSeenRel}}</time></td>
@@ -289,7 +274,7 @@
   </div>
   {{end}}
   {{if .ShowPagination}}
-  <nav class="pagination kpi-pagination" aria-label="Recurring failures pagination">
+  <nav class="pagination kpi-pagination" aria-label="Failure patterns pagination">
     <span class="pagination-summary">
       {{if .HasFailures}}
       <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} patterns</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>

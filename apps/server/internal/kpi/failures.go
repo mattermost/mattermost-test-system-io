@@ -36,6 +36,12 @@ END`
 
 // QueryFailures computes GET /api/v1/kpi/failures strictly from pre-aggregated rollup tables.
 func (s *Store) QueryFailures(ctx context.Context, f FilterParams) (FailuresResponse, error) {
+	return s.QueryFailuresFiltered(ctx, f, false)
+}
+
+// QueryFailuresFiltered computes recurring failures, optionally restricting paginated rows to
+// Active and Resurfaced patterns while keeping Summary counts unfiltered.
+func (s *Store) QueryFailuresFiltered(ctx context.Context, f FilterParams, activeOnly bool) (FailuresResponse, error) {
 	if s == nil || s.Pool == nil {
 		return FailuresResponse{}, errors.New("kpi store pool is nil")
 	}
@@ -51,6 +57,16 @@ func (s *Store) QueryFailures(ctx context.Context, f FilterParams) (FailuresResp
 	rows, summary, err := s.computeRecurringFailures(ctx, f)
 	if err != nil {
 		return FailuresResponse{}, err
+	}
+
+	if activeOnly {
+		filtered := make([]RecurringFailureRow, 0, len(rows))
+		for _, r := range rows {
+			if r.State == FailureStateActive || r.State == FailureStateResurfaced {
+				filtered = append(filtered, r)
+			}
+		}
+		rows = filtered
 	}
 
 	sortRecurringFailures(rows, f.Sort)

@@ -6,80 +6,59 @@
 {{end}}
 
 {{define "kpi-filter-bar"}}
-<section class="kpi-filters" aria-label="KPI filters">
-  <form method="GET" action="{{.State.ActionPath}}" id="kpi-filter-form" class="kpi-filters-form">
-    {{if .State.HasCustomLimit}}
-    <input type="hidden" name="limit" value="{{.State.Limit}}">
+<section class="kpi-nav-bar" aria-label="KPI navigation and time window">
+  <div class="kpi-nav-row">
+    <nav class="kpi-repo-tabs" aria-label="Repository scope">
+      {{range .RepoTabs}}
+      <a href="{{.Href}}" class="kpi-repo-tab{{if .Active}} is-active{{end}}">{{.Label}}</a>
+      {{end}}
+    </nav>
+    <div class="kpi-nav-right">
+      <nav class="kpi-pill-group" aria-label="Time window">
+        {{range .WindowPills}}
+        <a href="{{.Href}}" class="kpi-pill{{if .Active}} is-active{{end}}">{{.Label}}</a>
+        {{end}}
+      </nav>
+      {{if .HasActiveFilters}}
+      <a href="{{.State.ResetHref}}" class="kpi-btn kpi-btn-ghost">Reset</a>
+      {{end}}
+    </div>
+  </div>
+  {{if or .ShowPlatforms .ShowLaneSelect}}
+  <div class="kpi-subfilter-row">
+    {{if .ShowPlatforms}}
+    <nav class="kpi-pill-group" aria-label="Platform filter">
+      <span class="kpi-filter-inline-label">Platform:</span>
+      {{range .PlatformPills}}
+      <a href="{{.Href}}" class="kpi-pill{{if .Active}} is-active{{end}}">{{.Label}}</a>
+      {{end}}
+    </nav>
     {{end}}
-    <label class="kpi-filter-field">
-      <span class="kpi-filter-label">App</span>
-      <select name="app" class="kpi-filter-select" data-kpi-filter="app" aria-label="Filter by app">
-        <option value=""{{if not .State.App}} selected{{end}}>All apps</option>
-        {{range .Apps}}
-        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
-        {{end}}
-      </select>
-    </label>
-    <label class="kpi-filter-field">
-      <span class="kpi-filter-label">Repository</span>
-      <select name="repo" class="kpi-filter-select" data-kpi-filter="repo" aria-label="Filter by repository">
-        <option value=""{{if not .State.Repo}} selected{{end}}>All repositories</option>
-        {{range .Repos}}
-        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
-        {{end}}
-      </select>
-    </label>
-    <label class="kpi-filter-field">
-      <span class="kpi-filter-label">Stage</span>
-      <select name="stage" class="kpi-filter-select" data-kpi-filter="stage" aria-label="Filter by stage">
-        <option value=""{{if not .State.Stage}} selected{{end}}>All stages</option>
-        {{range .Stages}}
-        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
-        {{end}}
-      </select>
-    </label>
-    <label class="kpi-filter-field">
-      <span class="kpi-filter-label">Lane</span>
-      <select name="lane" class="kpi-filter-select" data-kpi-filter="lane" aria-label="Filter by lane">
+    {{if .ShowLaneSelect}}
+    <label class="kpi-inline-select-wrap">
+      <span class="kpi-filter-inline-label">Lane:</span>
+      <select name="lane" class="kpi-filter-select kpi-inline-select" data-kpi-filter="lane" aria-label="Filter by lane">
         <option value=""{{if not .State.Lane}} selected{{end}}>All lanes</option>
         {{range .Lanes}}
         <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
         {{end}}
       </select>
     </label>
-    <label class="kpi-filter-field">
-      <span class="kpi-filter-label">Platform</span>
-      <select name="platform" class="kpi-filter-select" data-kpi-filter="platform" aria-label="Filter by platform">
-        <option value=""{{if not .State.Platform}} selected{{end}}>All platforms</option>
-        {{range .Platforms}}
-        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
-        {{end}}
-      </select>
-    </label>
-    <label class="kpi-filter-field">
-      <span class="kpi-filter-label">Window</span>
-      <select name="window" class="kpi-filter-select" data-kpi-filter="window" aria-label="Filter by time window">
-        {{range .Windows}}
-        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
-        {{end}}
-      </select>
-    </label>
-    {{if .HasSorts}}
-    <label class="kpi-filter-field">
-      <span class="kpi-filter-label">Sort</span>
-      <select name="sort" class="kpi-filter-select" data-kpi-filter="sort" aria-label="Sort results">
-        {{range .Sorts}}
-        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
-        {{end}}
-      </select>
-    </label>
     {{end}}
-    <div class="kpi-filter-actions">
-      <button type="submit" class="kpi-btn kpi-btn-primary">Apply</button>
-      {{if .HasActiveFilters}}
-      <a href="{{.State.ResetHref}}" class="kpi-btn kpi-btn-ghost">Reset</a>
-      {{end}}
-    </div>
-  </form>
+  </div>
+  {{end}}
 </section>
+{{end}}
+
+{{define "kpi-sort-select"}}
+{{if .HasSorts}}
+<label class="kpi-inline-select-wrap">
+  <span class="kpi-filter-inline-label">Sort:</span>
+  <select name="sort" class="kpi-filter-select kpi-inline-select" data-kpi-filter="sort" aria-label="Sort results">
+    {{range .Sorts}}
+    <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+    {{end}}
+  </select>
+</label>
+{{end}}
 {{end}}

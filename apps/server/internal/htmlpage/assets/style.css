@@ -2041,6 +2041,120 @@ html.dark .site-nav-link.is-active {
 }
 .kpi-btn-ghost:hover { background: #f3f4f6; }
 
+.kpi-nav-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.75rem;
+}
+.kpi-nav-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.625rem 0.875rem;
+}
+.kpi-repo-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1875rem;
+  border-radius: 0.5rem;
+  background: #f3f4f6;
+}
+.kpi-repo-tab {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3125rem 0.6875rem;
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #4b5563;
+}
+.kpi-repo-tab:hover { color: #111827; }
+.kpi-repo-tab.is-active {
+  background: #ffffff;
+  color: #111827;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.kpi-nav-right,
+.kpi-subfilter-row,
+.kpi-panel-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+.kpi-pill-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+}
+.kpi-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.625rem;
+  border-radius: 9999px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #4b5563;
+}
+.kpi-pill:hover { background: #f3f4f6; color: #111827; }
+.kpi-pill.is-active {
+  background: #eff6ff;
+  border-color: #3b82f6;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+.kpi-filter-inline-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #6b7280;
+}
+.kpi-inline-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+.kpi-inline-select {
+  width: auto;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+}
+.kpi-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #ffffff;
+  font-size: 0.8125rem;
+  color: #374151;
+}
+.kpi-inline-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 1.25rem;
+  margin-top: 0.875rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #f3f4f6;
+  font-size: 0.8125rem;
+  color: #4b5563;
+}
+.kpi-chart-grid { stroke: #f3f4f6; stroke-width: 1; }
+
 .kpi-coverage-banner {
   padding: 0.625rem 0.875rem;
   border: 1px solid #e5e7eb;
@@ -2536,6 +2650,8 @@ html.dark .kpi-sig-meta,
 html.dark .kpi-table th,
 html.dark .kpi-muted-text { color: #9ca3af; }
 html.dark .kpi-filters,
+html.dark .kpi-nav-bar,
+html.dark .kpi-status-strip,
 html.dark .kpi-coverage-banner,
 html.dark .kpi-disclosure,
 html.dark .kpi-card,
@@ -2544,6 +2660,25 @@ html.dark .kpi-failure-hero {
   background: rgba(31, 41, 55, 0.5);
   border-color: #374151;
 }
+html.dark .kpi-status-strip,
+html.dark .kpi-inline-strip { color: #d1d5db; }
+html.dark .kpi-repo-tabs { background: #1f2937; }
+html.dark .kpi-repo-tab { color: #9ca3af; }
+html.dark .kpi-repo-tab:hover { color: #f3f4f6; }
+html.dark .kpi-repo-tab.is-active { background: #374151; color: #ffffff; }
+html.dark .kpi-pill {
+  background: #1f2937;
+  border-color: #374151;
+  color: #9ca3af;
+}
+html.dark .kpi-pill:hover { background: #374151; color: #f3f4f6; }
+html.dark .kpi-pill.is-active {
+  background: rgba(30, 58, 138, 0.45);
+  border-color: #60a5fa;
+  color: #93c5fd;
+}
+html.dark .kpi-filter-inline-label { color: #9ca3af; }
+html.dark .kpi-chart-grid { stroke: rgba(55, 65, 81, 0.5); }
 html.dark .kpi-stat-box,
 html.dark .kpi-sample-msg,
 html.dark .kpi-card-disclosure,
@@ -2577,6 +2712,7 @@ html.dark .kpi-sig-link { color: #60a5fa; }
 html.dark .kpi-card-substats,
 html.dark .kpi-configured-lanes,
 html.dark .kpi-pr-list,
+html.dark .kpi-inline-strip,
 html.dark .kpi-table th,
 html.dark .kpi-table td { border-color: rgba(55, 65, 81, 0.6); }
 html.dark .kpi-chip,

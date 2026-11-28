@@ -3,7 +3,7 @@
   <div class="kpi-page-title-row">
     <div>
       <h2 class="kpi-page-title">PR E2E Signal Reliability</h2>
-      <p class="kpi-page-subtitle">Settled false-red lower bound, failure attribution, and currently red PRs</p>
+      <p class="kpi-page-subtitle">{{.SettledNote}}</p>
     </div>
     <nav class="kpi-subnav" aria-label="KPI sections">
       <a href="{{.OverviewHref}}" class="kpi-subnav-link">Overview</a>
@@ -11,53 +11,37 @@
     </nav>
   </div>
   {{template "kpi-filter-bar" .Filters}}
-  {{if .CoverageNotes}}
-  <details class="kpi-disclosure" role="note">
-    <summary class="kpi-disclosure-summary">
-      <span class="kpi-coverage-summary"><strong>Lane coverage:</strong> {{.CoverageSummary}}</span>
-      <span class="kpi-disclosure-hint">Details</span>
-    </summary>
-    <ul class="kpi-coverage-notes">
-      {{range .CoverageNotes}}<li>{{.}}</li>{{end}}
-    </ul>
-  </details>
-  {{else}}
-  <div class="kpi-coverage-banner" role="note">
-    <span class="kpi-coverage-summary"><strong>Lane coverage:</strong> {{.CoverageSummary}}</span>
-  </div>
-  {{end}}
 </header>
 
-<section class="kpi-prs-top-grid" aria-label="PR false-red summary and reason mix">
+<section class="kpi-prs-top-grid" aria-label="PR false-red summary and cause mix">
   <article class="kpi-card">
     <div class="kpi-card-head">
       <h3 class="kpi-card-title">PR false-red rate</h3>
-      <span class="kpi-delta {{.DeltaClass}} tabular">{{.Delta}}</span>
+      <div class="kpi-head-badges">
+        {{if .HealthLabel}}<span class="{{.HealthClass}}">{{.HealthLabel}}</span>{{end}}
+        {{if .Delta}}<span class="kpi-delta {{.DeltaClass}} tabular">{{.Delta}}</span>{{end}}
+      </div>
     </div>
     <div class="kpi-card-value tabular">{{.HeadlineRate}}</div>
     {{if .HasRateData}}
-    <p class="kpi-card-meta tabular">{{.SettledFalseRedLanes}} false-red of {{.SettledRedLanes}} settled red PR lanes</p>
+    <p class="kpi-card-meta tabular">{{.SettledFalseRedLanes}} of {{.SettledRedLanes}} aged (&gt;24h) red PR runs passed on rerun</p>
     {{else}}
-    <p class="kpi-card-empty">No data — no settled (&gt;24h) red PR lanes in this window</p>
+    <p class="kpi-card-empty">No settled (&gt;24h) red PR runs in this window</p>
     {{end}}
-    <dl class="kpi-card-substats">
-      <div><dt>Unsettled red (&lt;24h)</dt><dd class="tabular">{{.UnsettledRedLanes}}</dd></div>
-      <div><dt>Still E2E red now</dt><dd class="tabular">{{.StillRedLanes}}</dd></div>
-    </dl>
-    <p class="kpi-card-note">{{.SettledNote}}</p>
+    <p class="kpi-card-note tabular">{{.QueueSummary}}</p>
   </article>
 
   <article class="kpi-card kpi-card-wide">
     <div class="kpi-card-head">
-      <h3 class="kpi-card-title">Reason mix (settled red PR lanes)</h3>
+      <h3 class="kpi-card-title">Failure attribution (aged &gt;24h red PRs)</h3>
       <span class="kpi-panel-subtitle tabular">{{.ReasonMixTotalText}}</span>
     </div>
     {{if eq .ReasonMixTotal 0}}
     <div class="empty-state empty-state-inline">
-      <p class="empty-hint">No settled red PR lanes to classify in this window</p>
+      <p class="empty-hint">No aged (&gt;24h) red PR runs to classify in this window</p>
     </div>
     {{else}}
-    <div class="kpi-mix-bar" role="img" aria-label="Settled red PR reason breakdown">
+    <div class="kpi-mix-bar" role="img" aria-label="Aged red PR cause breakdown">
       {{range .ReasonMix}}
       {{if gt .WidthPct 0}}
       <div class="kpi-mix-seg {{.ColorClass}}" style="width: {{.WidthPct}}%" title="{{.Label}}: {{.Count}} ({{.SharePct}})"></div>
@@ -73,35 +57,27 @@
       </div>
       {{end}}
     </div>
-    {{if .ConfiguredLanes}}
-    <details class="kpi-disclosure kpi-configured-lanes">
-      <summary class="kpi-disclosure-summary">
-        <span class="kpi-filter-label">Configured E2E lanes: Tracking {{.ConfiguredLanesText}}</span>
-        <span class="kpi-disclosure-hint">Show lanes</span>
-      </summary>
-      <div class="kpi-chip-list">
-        {{range .ConfiguredLanes}}
-        <span class="kpi-chip mono">{{.Repository}}:{{.Lane}}</span>
-        {{end}}
-      </div>
-    </details>
-    {{end}}
   </article>
 </section>
 
 <section class="kpi-panel" aria-label="Red now PR E2E queue">
   <header class="kpi-panel-head">
-    <h3 class="kpi-panel-title">Red now</h3>
-    <span class="kpi-panel-subtitle tabular">{{.TotalLanesText}}</span>
+    <div>
+      <h3 class="kpi-panel-title">Red now</h3>
+      <span class="kpi-panel-subtitle tabular">{{.TotalLanesText}}</span>
+    </div>
+    <div class="kpi-panel-controls">
+      {{template "kpi-sort-select" .Filters}}
+    </div>
   </header>
   {{if not .HasLanes}}
   <div class="empty-state empty-state-inline">
     {{if gt .Total 0}}
     <p class="empty-title">Page {{.Page}} out of range</p>
-    <p class="empty-hint">No red PR lanes on page {{.Page}} (total {{.Total}} across {{.TotalPages}} {{if eq .TotalPages 1}}page{{else}}pages{{end}}).</p>
+    <p class="empty-hint">No red PR runs on page {{.Page}} (total {{.Total}} across {{.TotalPages}} {{if eq .TotalPages 1}}page{{else}}pages{{end}}).</p>
     {{else}}
-    <p class="empty-title">No E2E red PR lanes</p>
-    <p class="empty-hint">No data — no red configured PR E2E lanes matched the active filters.</p>
+    <p class="empty-title">No E2E red PR runs</p>
+    <p class="empty-hint">All clear — no red PR E2E runs matched the active filters.</p>
     {{end}}
   </div>
   {{else}}
@@ -109,11 +85,9 @@
     <table class="kpi-table kpi-prs-table">
       <thead>
         <tr>
-          <th>PR</th>
-          <th>Lane &amp; Repo</th>
-          <th>Status</th>
-          <th>Reason</th>
-          <th>Elsewhere</th>
+          <th>PR &amp; Commit</th>
+          <th>Suite &amp; Repo</th>
+          <th>Status &amp; Likely Cause</th>
           <th class="num">Age</th>
           <th class="num">Failed</th>
         </tr>
@@ -126,22 +100,14 @@
             <div class="kpi-sig-meta mono">{{.ShortSHA}}</div>
           </td>
           <td>
-            <div class="kpi-lane-name">{{.Lane}}</div>
-            <div class="kpi-sig-meta">{{.Repository}}{{if .Platform}} · {{.Platform}}{{end}}</div>
+            <div class="kpi-lane-name mono">{{.Lane}}</div>
+            <div class="kpi-sig-meta">{{if $.ShowRepoBadge}}{{.RepoShort}} · {{end}}{{.Repository}}{{if .Platform}} · {{.Platform}}{{end}}</div>
           </td>
           <td>
             <div class="kpi-badge-stack">
               <span class="{{.StatusClass}}">{{.StatusLabel}}</span>
-              <span class="{{.SettledClass}}">{{.SettledLabel}}</span>
+              <span class="{{.CauseClass}}">{{.CauseLabel}}</span>
             </div>
-          </td>
-          <td><span class="{{.ReasonClass}}">{{.ReasonLabel}}</span></td>
-          <td>
-            {{if .HasElsewhereMatch}}
-            <span class="kpi-badge kpi-reason-elsewhere">{{.ElsewhereSummary}}</span>
-            {{else}}
-            <span class="kpi-muted-text">{{.ElsewhereSummary}}</span>
-            {{end}}
           </td>
           <td class="num tabular"><time datetime="{{.CreatedISO}}" title="{{.CreatedISO}}">{{.AgeText}}</time></td>
           <td class="num tabular">{{.FailedSummary}}</td>
@@ -155,9 +121,9 @@
   <nav class="pagination kpi-pagination" aria-label="Red PR queue pagination">
     <span class="pagination-summary">
       {{if .HasLanes}}
-      <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} PR lanes</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
+      <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} PR runs</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
       {{else}}
-      <span class="pager-long">Page {{.Page}} of {{.TotalPages}} ({{.Total}} PR lanes)</span><span class="pager-short">Page {{.Page}}/{{.TotalPages}} ({{.Total}})</span>
+      <span class="pager-long">Page {{.Page}} of {{.TotalPages}} ({{.Total}} PR runs)</span><span class="pager-short">Page {{.Page}}/{{.TotalPages}} ({{.Total}})</span>
       {{end}}
     </span>
     <span class="pagination-actions">

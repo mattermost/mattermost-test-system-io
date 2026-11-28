@@ -339,7 +339,8 @@ func (h *Handler) ServeKPIOverview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to load kpi summary", http.StatusInternalServerError)
 		return
 	}
-	failures, err := h.KPI.QueryFailures(r.Context(), failuresParams)
+	showAll := strings.TrimSpace(r.URL.Query().Get("show")) == "all"
+	failures, err := h.KPI.QueryFailuresFiltered(r.Context(), failuresParams, !showAll)
 	if err != nil {
 		if h.Logger != nil {
 			h.Logger.Warn("htmlpage kpi failures failed", slog.String("error", err.Error()))
@@ -348,7 +349,7 @@ func (h *Handler) ServeKPIOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page := BuildKPIOverviewPage(h.Site, opts, summary, failures, now)
+	page := BuildKPIOverviewPageWithShow(h.Site, opts, summary, failures, now, showAll)
 	html, err := RenderKPIOverview(page)
 	if err != nil {
 		if h.Logger != nil {

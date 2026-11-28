@@ -53,12 +53,9 @@ func TestKPISSRPages_EmptyZeroDenominatorStates(t *testing.T) {
 	overviewHTML := getHTML(t, env.ServerURL+"/kpi", http.StatusOK)
 	for _, want := range []string{
 		`Test Health KPIs`,
-		`N/A`,
+		`Repository Health Scorecard`,
 		`No data`,
-		`No triage or run completion data in this window`,
-		`No weekly trend data in this window`,
-		`No recurring failures`,
-		`Lane coverage:`,
+		`No active failure patterns`,
 	} {
 		if !strings.Contains(overviewHTML, want) {
 			t.Fatalf("empty /kpi missing %q", want)
@@ -70,10 +67,8 @@ func TestKPISSRPages_EmptyZeroDenominatorStates(t *testing.T) {
 	for _, want := range []string{
 		`PR E2E Signal Reliability`,
 		`N/A`,
-		`No settled red PR lanes to classify in this window`,
-		`No E2E red PR lanes`,
-		`Configured E2E lanes:`,
-		`Lane coverage:`,
+		`No aged (&gt;24h) red PR runs to classify in this window`,
+		`No E2E red PR runs`,
 	} {
 		if !strings.Contains(prsHTML, want) {
 			t.Fatalf("empty /kpi/prs missing %q", want)
@@ -265,23 +260,14 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 
 	secrets := []string{sentinelSecret1, sentinelSecret2}
 
-	// ---- Verify GET /kpi (200) ----
+	// ---- Verify GET /kpi (200 All Repos Scorecard) ----
 	ovHTML := getHTML(t, env.ServerURL+"/kpi", http.StatusOK)
 	for _, want := range []string{
 		`Test Health KPIs`,
-		`Main first-attempt pass rate`,
-		`PR false-red rate`,
-		`Flaky tests`,
-		`Recurring failures`,
-		`E2E PR run time`,
-		`at least 50.0%`,
-		`AI Triage &amp; Run Completion`,
-		`flaky-infra: 2 (100.0%)`,
-		`Weekly Trends`,
-		`Lane coverage:`,
+		`Repository Health Scorecard`,
+		`Web &amp; Server`,
+		`Mobile`,
 		`Active`,
-		`Quiet (`,
-		`Not enough runs`,
 		`Resurfaced`,
 		`/kpi/failures/` + sigActive.String(),
 		`href="/kpi/prs"`,
@@ -290,7 +276,36 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 			t.Fatalf("GET /kpi missing %q", want)
 		}
 	}
+	if strings.Contains(ovHTML, `Not enough runs`) {
+		t.Fatal("GET /kpi default active view must not emit 'Not enough runs'")
+	}
 	assertNoKPIGuardrailViolations(t, "GET /kpi", ovHTML, secrets)
+
+	// ---- Verify GET /kpi?show=all surfaces Quiet and Dormant states ----
+	ovAllHTML := getHTML(t, env.ServerURL+"/kpi?show=all", http.StatusOK)
+	for _, want := range []string{`Active`, `Quiet (`, `Dormant`, `Resurfaced`} {
+		if !strings.Contains(ovAllHTML, want) {
+			t.Fatalf("GET /kpi?show=all missing %q", want)
+		}
+	}
+	assertNoKPIGuardrailViolations(t, "GET /kpi?show=all", ovAllHTML, secrets)
+
+	// ---- Verify single-repo GET /kpi?repo=mattermost/mattermost (200) ----
+	ovWebHTML := getHTML(t, env.ServerURL+"/kpi?repo=mattermost/mattermost", http.StatusOK)
+	for _, want := range []string{
+		`Main pass rate`,
+		`PR false-red rate`,
+		`at least 50.0%`,
+		`Flaky tests`,
+		`E2E PR run time`,
+		`Lanes in Web &amp; Server`,
+		`Weekly Main Pass Rate`,
+	} {
+		if !strings.Contains(ovWebHTML, want) {
+			t.Fatalf("GET /kpi?repo=mattermost/mattermost missing %q", want)
+		}
+	}
+	assertNoKPIGuardrailViolations(t, "GET /kpi?repo=mattermost/mattermost", ovWebHTML, secrets)
 
 	// ---- Verify GET /kpi/prs (200) ----
 	prsHTML := getHTML(t, env.ServerURL+"/kpi/prs", http.StatusOK)
@@ -299,15 +314,12 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 		`at least 50.0%`,
 		`Went green on rerun`,
 		`Also failing elsewhere`,
-		`Other`,
-		`Configured E2E lanes:`,
-		`mattermost/mattermost:playwright-full`,
-		`Lane coverage:`,
+		`PR-specific / Unclassified`,
 		`Red now`,
 		`E2E red`,
 		`Failing on main`,
 		`#203`,
-		`Unsettled (&lt;24h)`,
+		`Recent (&lt;24h unsettled)`,
 		`/reports/mattermost/pr-203/`,
 	} {
 		if !strings.Contains(prsHTML, want) {
@@ -322,8 +334,8 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 		`TimeoutError`,
 		`waiting for #login-submit button`,
 		`e2e/login.spec.ts:42`,
-		`Daily Occurrences &amp; Rate`,
-		`14d vs prior 14d`,
+		`Daily Failures`,
+		`Impact &amp; 14d trend`,
 		`Affected Tests`,
 		`Auth &gt; active failure`,
 		`Affected Repositories`,
@@ -334,7 +346,6 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 		`flaky-infra`,
 		`Known infra timeout in login`,
 		`91%`,
-		`https://github.com/mattermost/mattermost/actions/runs/999`,
 		`Active`,
 	} {
 		if !strings.Contains(detailHTML, want) {
@@ -350,8 +361,8 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 	// ---- Verify filter query-param round-tripping ----
 	ovFiltered := getHTML(t, env.ServerURL+"/kpi?app=mattermost&window=14d&sort=rate_desc&page=1", http.StatusOK)
 	for _, want := range []string{
-		`<option value="mattermost" selected>`,
-		`<option value="14d" selected>`,
+		`class="kpi-repo-tab is-active">Web &amp; Server</a>`,
+		`class="kpi-pill is-active">14d</a>`,
 		`<option value="rate_desc" selected>`,
 		`href="/kpi/prs?app=mattermost&amp;window=14d"`,
 		`/kpi/failures/` + sigActive.String() + `?app=mattermost&amp;window=14d`,
@@ -364,8 +375,8 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 
 	prsFiltered := getHTML(t, env.ServerURL+"/kpi/prs?app=mattermost&window=14d&sort=age_desc&page=1", http.StatusOK)
 	for _, want := range []string{
-		`<option value="mattermost" selected>`,
-		`<option value="14d" selected>`,
+		`class="kpi-repo-tab is-active">Web &amp; Server</a>`,
+		`class="kpi-pill is-active">14d</a>`,
 		`<option value="age_desc" selected>`,
 		`href="/kpi?app=mattermost&amp;window=14d"`,
 	} {
@@ -375,10 +386,9 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 	}
 	assertNoKPIGuardrailViolations(t, "GET /kpi/prs filtered", prsFiltered, secrets)
 
-	// ---- Verify custom limit preservation in pagination links and filter form ----
+	// ---- Verify custom limit preservation in pagination links and nav pills ----
 	prsLimitP1 := getHTML(t, env.ServerURL+"/kpi/prs?limit=1", http.StatusOK)
 	for _, want := range []string{
-		`<input type="hidden" name="limit" value="1">`,
 		`href="/kpi?limit=1"`,
 		`href="/kpi/prs?limit=1"`,
 		`href="?limit=1&amp;page=2">Next</a>`,
@@ -392,7 +402,7 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 
 	prsLimitP2 := getHTML(t, env.ServerURL+"/kpi/prs?limit=1&page=2", http.StatusOK)
 	for _, want := range []string{
-		`<input type="hidden" name="limit" value="1">`,
+		`href="/kpi?limit=1"`,
 		`href="?limit=1">Previous</a>`,
 	} {
 		if !strings.Contains(prsLimitP2, want) {
@@ -402,22 +412,22 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 	assertNoKPIGuardrailViolations(t, "GET /kpi/prs?limit=1&page=2", prsLimitP2, secrets)
 
 	prsDefaultLimit := getHTML(t, env.ServerURL+"/kpi/prs?limit=50", http.StatusOK)
-	if strings.Contains(prsDefaultLimit, `name="limit"`) {
-		t.Fatal("GET /kpi/prs?limit=50 must not render hidden limit input")
+	if strings.Contains(prsDefaultLimit, `limit=50`) {
+		t.Fatal("GET /kpi/prs?limit=50 must omit default limit from links")
 	}
 	assertNoKPIGuardrailViolations(t, "GET /kpi/prs?limit=50", prsDefaultLimit, secrets)
 
-	ovLimitP1 := getHTML(t, env.ServerURL+"/kpi?limit=2", http.StatusOK)
+	ovLimitP1 := getHTML(t, env.ServerURL+"/kpi?limit=1", http.StatusOK)
 	for _, want := range []string{
-		`<input type="hidden" name="limit" value="2">`,
-		`href="?limit=2&amp;page=2">Next</a>`,
-		`href="/kpi/prs?limit=2"`,
+		`href="/kpi?limit=1"`,
+		`href="?limit=1&amp;page=2">Next</a>`,
+		`href="/kpi/prs?limit=1"`,
 	} {
 		if !strings.Contains(ovLimitP1, want) {
-			t.Fatalf("GET /kpi?limit=2 missing %q", want)
+			t.Fatalf("GET /kpi?limit=1 missing %q", want)
 		}
 	}
-	assertNoKPIGuardrailViolations(t, "GET /kpi?limit=2", ovLimitP1, secrets)
+	assertNoKPIGuardrailViolations(t, "GET /kpi?limit=1", ovLimitP1, secrets)
 
 	// ---- Verify 400 on invalid filter/sort/page (including int64 overflow) ----
 	for _, badPath := range []string{
@@ -449,8 +459,8 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 			t.Fatalf("GET /kpi?page=5 missing %q", want)
 		}
 	}
-	if strings.Contains(ovOutOfRange, "No recurring failures") {
-		t.Fatal("GET /kpi?page=5 with seeded failures must NOT say 'No recurring failures'")
+	if strings.Contains(ovOutOfRange, "No active failure patterns") {
+		t.Fatal("GET /kpi?page=5 with seeded failures must NOT say 'No active failure patterns'")
 	}
 	assertNoKPIGuardrailViolations(t, "GET /kpi?page=5", ovOutOfRange, secrets)
 
@@ -464,8 +474,8 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 			t.Fatalf("GET /kpi/prs?page=5 missing %q", want)
 		}
 	}
-	if strings.Contains(prsOutOfRange, "No E2E red PR lanes") {
-		t.Fatal("GET /kpi/prs?page=5 with seeded red PR lanes must NOT say 'No E2E red PR lanes'")
+	if strings.Contains(prsOutOfRange, "No E2E red PR runs") {
+		t.Fatal("GET /kpi/prs?page=5 with seeded red PR runs must NOT say 'No E2E red PR runs'")
 	}
 	assertNoKPIGuardrailViolations(t, "GET /kpi/prs?page=5", prsOutOfRange, secrets)
 }

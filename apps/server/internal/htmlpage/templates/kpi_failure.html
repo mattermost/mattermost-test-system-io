@@ -2,15 +2,14 @@
 <header class="kpi-page-header">
   <nav class="breadcrumb" aria-label="Breadcrumb">
     <span class="breadcrumb-item"><a href="{{.OverviewHref}}" class="breadcrumb-link">KPIs</a></span>
-    <span class="breadcrumb-item">{{template "icon-chevron-right"}}<a href="{{.OverviewHref}}" class="breadcrumb-link">Recurring failures</a></span>
-    <span class="breadcrumb-item">{{template "icon-chevron-right"}}<span class="breadcrumb-current">{{if .ErrorClass}}{{.ErrorClass}}{{else}}Signature{{end}}</span></span>
+    <span class="breadcrumb-item">{{template "icon-chevron-right"}}<span class="breadcrumb-current">{{if .ErrorClass}}{{.ErrorClass}}{{else}}Failure Pattern{{end}}</span></span>
   </nav>
 
   <div class="kpi-failure-hero">
     <div class="kpi-failure-title-row">
       <span class="{{.StateClass}}">{{.StateLabel}}</span>
-      {{if .IsMerged}}<span class="kpi-badge kpi-badge-neutral">Merged into canonical ({{.MergedCount}} patterns)</span>{{end}}
       <span class="kpi-badge kpi-badge-muted">Last seen <time datetime="{{.LastSeenISO}}" title="{{.LastSeenISO}}">{{.LastSeenRel}}</time></span>
+      <span class="kpi-badge kpi-badge-neutral tabular">Last {{.WindowDays}} days</span>
     </div>
     <h2 class="kpi-failure-message">{{.NormalizedMessage}}</h2>
     {{if or .ErrorClass .TopFrame}}
@@ -22,39 +21,25 @@
     {{if .SampleMessage}}
     <pre class="kpi-sample-msg">{{.SampleMessage}}</pre>
     {{end}}
-    <details class="kpi-disclosure kpi-tech-details">
-      <summary class="kpi-disclosure-summary">
-        <span>Technical details (Signature v{{.AlgoVersion}} · <span class="mono">{{.ShortFingerprint}}</span>)</span>
-        <span class="kpi-disclosure-hint">Show</span>
-      </summary>
-      <div class="kpi-tech-body">
-        <div><strong>Fingerprint:</strong> <span class="mono">{{.Fingerprint}}</span></div>
-        <div><strong>Normalizer version:</strong> <span class="mono">v{{.AlgoVersion}}</span></div>
-      </div>
-    </details>
   </div>
 </header>
 
-<section class="kpi-cards-grid kpi-failure-cards" aria-label="Failure impact and 14-day comparison">
+<section class="kpi-cards-grid" aria-label="Failure impact, origin, and triage verdict">
   <article class="kpi-card">
     <div class="kpi-card-head">
-      <h3 class="kpi-card-title">Failure impact</h3>
+      <h3 class="kpi-card-title">Impact &amp; 14d trend</h3>
       <div class="kpi-head-badges">
         <span class="kpi-badge kpi-badge-neutral tabular">{{.GroupCountText}}</span>
         {{if .IsLowSample}}<span class="kpi-badge kpi-badge-warn">Low sample</span>{{end}}
+        <span class="kpi-delta {{.Delta14dClass}} tabular">{{.Delta14d}}</span>
       </div>
     </div>
     <div class="kpi-card-value tabular">{{.WindowPrimaryValue}}</div>
     <p class="kpi-card-meta tabular">{{.WindowMeta}}</p>
-  </article>
-
-  <article class="kpi-card">
-    <div class="kpi-card-head">
-      <h3 class="kpi-card-title">14d vs prior 14d</h3>
-      <span class="kpi-delta {{.Delta14dClass}} tabular">{{.Delta14d}}</span>
-    </div>
-    <div class="kpi-card-value tabular">{{.Rate14d}}{{if ne .Rate14d "N/A"}} <span class="kpi-card-value-unit">14d</span>{{end}}</div>
-    <p class="kpi-card-meta tabular">Current 14d: {{.Current14dText}} · Prior 14d: {{.Prior14dText}}</p>
+    <dl class="kpi-card-substats">
+      <div><dt>Last 14d</dt><dd class="tabular">{{.Rate14d}} · {{.Current14dText}}</dd></div>
+      <div><dt>Prior 14d</dt><dd class="tabular">{{.Prior14dText}}</dd></div>
+    </dl>
   </article>
 
   <article class="kpi-card">
@@ -64,10 +49,15 @@
     </div>
     {{if .FirstSeen.HasData}}
     <div class="kpi-card-value kpi-card-value-sm"><time datetime="{{.FirstSeen.TimestampISO}}" title="{{.FirstSeen.TimestampISO}}">{{.FirstSeen.TimestampRel}}</time></div>
-    <p class="kpi-card-meta">{{if .FirstSeen.Repository}}{{.FirstSeen.Repository}}{{end}}{{if .FirstSeen.Lane}} · {{.FirstSeen.Lane}}{{end}}</p>
+    <p class="kpi-card-meta">{{if .FirstSeen.Repository}}{{.FirstSeen.Repository}}{{end}}{{if .FirstSeen.Lane}} · <span class="mono">{{.FirstSeen.Lane}}</span>{{end}}</p>
     <p class="kpi-card-note mono">{{if .FirstSeen.Branch}}{{.FirstSeen.Branch}}{{end}}{{if .FirstSeen.ShortSHA}} · {{.FirstSeen.ShortSHA}}{{end}}</p>
     {{else}}
     <p class="kpi-card-empty">No data — first-seen context unavailable</p>
+    {{end}}
+    {{if .PRNumbers}}
+    <div class="kpi-chip-list">
+      {{range .PRNumbers}}<span class="kpi-chip tabular">PR #{{.}}</span>{{end}}
+    </div>
     {{end}}
   </article>
 
@@ -78,14 +68,8 @@
     </div>
     {{if .LatestVerdict}}
     {{if .LatestVerdict.Summary}}<p class="kpi-verdict-summary">{{.LatestVerdict.Summary}}</p>{{end}}
-    <dl class="kpi-card-substats">
-      {{if .LatestVerdict.DecidedBy}}<div><dt>Decided by</dt><dd>{{.LatestVerdict.DecidedBy}}</dd></div>{{end}}
-      {{if .LatestVerdict.Rule}}<div><dt>Rule</dt><dd class="mono">{{.LatestVerdict.Rule}}</dd></div>{{end}}
-      {{if .LatestVerdict.Confidence}}<div><dt>Confidence</dt><dd class="tabular">{{.LatestVerdict.Confidence}}</dd></div>{{end}}
-      {{if .LatestVerdict.Model}}<div><dt>Model</dt><dd class="mono">{{.LatestVerdict.Model}}</dd></div>{{end}}
-    </dl>
     <p class="kpi-card-note">
-      <time datetime="{{.LatestVerdict.CreatedISO}}">{{.LatestVerdict.CreatedRel}}</time>
+      {{if .LatestVerdict.DecidedBy}}{{.LatestVerdict.DecidedBy}}{{end}}{{if .LatestVerdict.Confidence}} · {{.LatestVerdict.Confidence}}{{end}} · <time datetime="{{.LatestVerdict.CreatedISO}}">{{.LatestVerdict.CreatedRel}}</time>
       {{if .LatestVerdict.TriageURL}} · <a href="{{.LatestVerdict.TriageURL}}" class="kpi-inline-link" target="_blank" rel="noopener noreferrer">Triage run &rarr;</a>{{end}}
     </p>
     {{else}}
@@ -134,18 +118,21 @@
     </table>
   </div>
   {{end}}
+  {{if .SingleRepo}}
+  <div class="kpi-inline-strip">
+    <span><strong>Repository:</strong> {{.SingleRepo.Repository}} ({{.SingleRepo.App}})</span>
+    <span><strong>Lanes:</strong> <span class="mono">{{.SingleRepo.LanesSummary}}</span></span>
+    <span class="tabular"><strong>Impact:</strong> {{.SingleRepo.OccurrencesText}} · {{.SingleRepo.RatePer1k}}</span>
+  </div>
+  {{end}}
 </section>
 
+{{if gt (len .AffectedRepos) 1}}
 <section class="kpi-panel" aria-label="Affected repositories">
   <header class="kpi-panel-head">
     <h3 class="kpi-panel-title">Affected Repositories</h3>
     <span class="kpi-panel-subtitle tabular">{{.AffectedReposCountText}}</span>
   </header>
-  {{if not .AffectedRepos}}
-  <div class="empty-state empty-state-inline">
-    <p class="empty-hint">No affected repositories recorded in this window</p>
-  </div>
-  {{else}}
   <div class="kpi-table-scroll">
     <table class="kpi-table">
       <thead>
@@ -154,7 +141,7 @@
           <th>App</th>
           <th>Lanes</th>
           <th class="num">Failures</th>
-          <th class="num">Affected test runs</th>
+          <th class="num">Test runs</th>
           <th class="num">Rate</th>
         </tr>
       </thead>
@@ -172,21 +159,13 @@
       </tbody>
     </table>
   </div>
-  {{end}}
-  {{if .PRNumbers}}
-  <div class="kpi-pr-list">
-    <span class="kpi-filter-label">Related PRs:</span>
-    <div class="kpi-chip-list">
-      {{range .PRNumbers}}<span class="kpi-chip tabular">#{{.}}</span>{{end}}
-    </div>
-  </div>
-  {{end}}
 </section>
+{{end}}
 
-<section class="kpi-panel" aria-label="Daily occurrences and rate">
+<section class="kpi-panel" aria-label="Daily failure timeline">
   <header class="kpi-panel-head">
-    <h3 class="kpi-panel-title">Daily Occurrences &amp; Rate</h3>
-    <span class="kpi-panel-subtitle">{{.ActiveDaysText}} · Trailing 7d: {{.Trailing7dText}}</span>
+    <h3 class="kpi-panel-title">Daily Failures (Last {{.WindowDays}} days)</h3>
+    <span class="kpi-panel-subtitle">{{.ActiveDaysText}} · Trailing 7d: {{.Trailing7dText}} · Hover bars for daily details</span>
   </header>
   {{if not .HasDaily}}
   <div class="empty-state empty-state-inline">
@@ -205,39 +184,6 @@
       {{end}}
     </svg>
   </div>
-  {{if .ActiveDailyRows}}
-  <div class="kpi-table-scroll">
-    <table class="kpi-table">
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th class="num">Failures</th>
-          <th class="num">Total attempts</th>
-          <th class="num">CI runs</th>
-          <th class="num">Affected test runs</th>
-          <th class="num">Rate</th>
-        </tr>
-      </thead>
-      <tbody>
-        {{range .ActiveDailyRows}}
-        <tr>
-          <td class="mono tabular">{{.Date}}</td>
-          <td class="num tabular">{{.OccurrenceCount}}</td>
-          <td class="num tabular">{{.RawAttemptCount}}</td>
-          <td class="num tabular">{{.GroupCount}}</td>
-          <td class="num tabular">{{.AffectedTestRuns}}</td>
-          <td class="num tabular">{{.RatePer1k}}</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
-  {{else}}
-  <p class="kpi-muted-text">No failures recorded on any day in this window.</p>
-  {{end}}
-  {{if gt .InactiveDaysCount 0}}
-  <p class="kpi-card-note">{{.InactiveDaysCount}} quiet days with 0 failures are shown as baseline bars in the chart above.</p>
-  {{end}}
   {{end}}
 </section>
 {{end}}

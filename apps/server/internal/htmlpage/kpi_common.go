@@ -12,15 +12,21 @@ import (
 )
 
 const (
-	kpiNotAvailable    = "N/A"
-	kpiDeltaNeutral    = "kpi-delta-neutral"
-	kpiDeltaGood       = "kpi-delta-good"
-	kpiDeltaBad        = "kpi-delta-bad"
-	kpiBadgeGood       = "kpi-badge kpi-state-quiet"
-	kpiBadgeWarn       = "kpi-badge kpi-reason-elsewhere"
-	kpiBadgeBad        = "kpi-badge kpi-state-active"
-	kpiDefaultLimit    = 50
-	kpiMinRunsForPer1k = 50
+	kpiNotAvailable       = "N/A"
+	kpiDash               = "—"
+	kpiDeltaNeutral       = "kpi-delta-neutral"
+	kpiDeltaGood          = "kpi-delta-good"
+	kpiDeltaBad           = "kpi-delta-bad"
+	kpiBadgeGood          = "kpi-badge kpi-state-quiet"
+	kpiBadgeWarn          = "kpi-badge kpi-reason-elsewhere"
+	kpiBadgeBad           = "kpi-badge kpi-state-active"
+	kpiBadgeNeutral       = "kpi-badge kpi-badge-neutral"
+	kpiDefaultLimit       = 50
+	kpiMinRunsForPer1k    = 50
+	kpiMinSettledForDelta = 10
+	repoMattermostWeb     = "mattermost/mattermost"
+	repoMattermostMobile  = "mattermost/mattermost-mobile"
+	repoMattermostDesktop = "mattermost/desktop"
 )
 
 // KPIFilterOption represents one <option> in a KPI filter or sort dropdown.
@@ -28,6 +34,30 @@ type KPIFilterOption struct {
 	Value    string
 	Label    string
 	Selected bool
+}
+
+// KPIRepoTab represents one product/repository scope tab in the V2 KPI header.
+type KPIRepoTab struct {
+	Label  string
+	Repo   string
+	Href   string
+	Active bool
+}
+
+// KPIWindowPill represents a quick time-window selector pill (7d, 14d, 30d, 90d).
+type KPIWindowPill struct {
+	Value  string
+	Label  string
+	Href   string
+	Active bool
+}
+
+// KPIPlatformPill represents a platform selector pill (All, Android, iOS) on multi-platform repos.
+type KPIPlatformPill struct {
+	Value  string
+	Label  string
+	Href   string
+	Active bool
 }
 
 // KPIFilterState holds normalized active query parameters for KPI SSR links.
@@ -41,6 +71,7 @@ type KPIFilterState struct {
 	Sort        string
 	Page        int
 	Limit       int
+	ShowAll     bool
 	DefaultSort string
 	ActionPath  string
 	ResetHref   string
@@ -51,9 +82,15 @@ func (s KPIFilterState) HasCustomLimit() bool {
 	return s.Limit > 0 && s.Limit != kpiDefaultLimit
 }
 
-// KPIFilterBar holds all filter/sort dropdown options for KPI pages.
+// KPIFilterBar holds all filter/sort options and navigation pills for KPI pages.
 type KPIFilterBar struct {
 	State            KPIFilterState
+	RepoTabs         []KPIRepoTab
+	WindowPills      []KPIWindowPill
+	PlatformPills    []KPIPlatformPill
+	ShowPlatforms    bool
+	ShowLaneSelect   bool
+	IsSingleRepo     bool
 	Apps             []KPIFilterOption
 	Repos            []KPIFilterOption
 	Stages           []KPIFilterOption
@@ -86,10 +123,10 @@ var kpiOverviewSortOptions = []KPIFilterOption{
 }
 
 var kpiWindowOptions = []KPIFilterOption{
-	{Value: kpi.Window7d, Label: "Last 7 days"},
-	{Value: kpi.Window14d, Label: "Last 14 days"},
-	{Value: kpi.Window30d, Label: "Last 30 days"},
-	{Value: kpi.Window90d, Label: "Last 90 days"},
+	{Value: kpi.Window7d, Label: "7d"},
+	{Value: kpi.Window14d, Label: "14d"},
+	{Value: kpi.Window30d, Label: "30d"},
+	{Value: kpi.Window90d, Label: "90d"},
 }
 
 func kpiFilterStateFromParams(f kpi.FilterParams, actionPath, defaultSort string) KPIFilterState {
@@ -125,6 +162,38 @@ func kpiFilterStateFromParams(f kpi.FilterParams, actionPath, defaultSort string
 	}
 }
 
+func friendlyRepoName(repo string) string {
+	switch repo {
+	case repoMattermostWeb:
+		return "Web & Server"
+	case repoMattermostMobile:
+		return "Mobile"
+	case repoMattermostDesktop:
+		return "Desktop"
+	default:
+		if idx := strings.LastIndex(repo, "/"); idx >= 0 && idx+1 < len(repo) {
+			return repo[idx+1:]
+		}
+		return repo
+	}
+}
+
+func repoMatchesApp(repo, app string) bool {
+	if app == "" {
+		return false
+	}
+	switch repo {
+	case repoMattermostWeb:
+		return app == "mattermost"
+	case repoMattermostMobile:
+		return app == "mobile"
+	case repoMattermostDesktop:
+		return app == "desktop"
+	default:
+		return strings.EqualFold(repo, app) || strings.HasSuffix(strings.ToLower(repo), "/"+strings.ToLower(app))
+	}
+}
+
 func buildKPIFilterBar(
 	f kpi.FilterParams,
 	opts kpi.FilterOptions,
@@ -134,15 +203,88 @@ func buildKPIFilterBar(
 	state := kpiFilterStateFromParams(f, actionPath, defaultSort)
 
 	windows := make([]KPIFilterOption, len(kpiWindowOptions))
+	windowPills := make([]KPIWindowPill, len(kpiWindowOptions))
 	for i, w := range kpiWindowOptions {
 		w.Selected = w.Value == state.Window
 		windows[i] = w
+
+		wState := state
+		wState.Window = w.Value
+		windowPills[i] = KPIWindowPill{
+			Value:  w.Value,
+			Label:  w.Label,
+			Href:   kpiHref(actionPath, wState, 1, state.Sort, true),
+			Active: w.Selected,
+		}
 	}
 
 	sorts := make([]KPIFilterOption, len(sortOpts))
 	for i, s := range sortOpts {
 		s.Selected = s.Value == state.Sort
 		sorts[i] = s
+	}
+
+	isSingleRepo := state.Repo != "" || state.App != ""
+
+	repoList := make([]string, 0, len(opts.Repos)+1)
+	seenRepo := map[string]bool{}
+	for _, r := range opts.Repos {
+		if r != "" && !seenRepo[r] {
+			seenRepo[r] = true
+			repoList = append(repoList, r)
+		}
+	}
+	if state.Repo != "" && !seenRepo[state.Repo] {
+		repoList = append(repoList, state.Repo)
+	}
+
+	allState := KPIFilterState{
+		Window:      state.Window,
+		Limit:       state.Limit,
+		DefaultSort: state.DefaultSort,
+		ActionPath:  actionPath,
+		ResetHref:   actionPath,
+	}
+	repoTabs := []KPIRepoTab{{
+		Label:  "All Repos",
+		Href:   kpiHref(actionPath, allState, 1, "", false),
+		Active: !isSingleRepo,
+	}}
+	for _, r := range repoList {
+		rState := allState
+		rState.Repo = r
+		active := state.Repo == r || (state.Repo == "" && repoMatchesApp(r, state.App))
+		repoTabs = append(repoTabs, KPIRepoTab{
+			Label:  friendlyRepoName(r),
+			Repo:   r,
+			Href:   kpiHref(actionPath, rState, 1, "", false),
+			Active: active,
+		})
+	}
+
+	platformPills := make([]KPIPlatformPill, 0, len(opts.Platforms)+1)
+	if isSingleRepo && (len(opts.Platforms) > 0 || state.Platform != "") {
+		allPlatState := state
+		allPlatState.Platform = ""
+		platformPills = append(platformPills, KPIPlatformPill{
+			Value:  "",
+			Label:  "All",
+			Href:   kpiHref(actionPath, allPlatState, 1, state.Sort, true),
+			Active: state.Platform == "",
+		})
+		for _, p := range opts.Platforms {
+			if p == "" {
+				continue
+			}
+			pState := state
+			pState.Platform = p
+			platformPills = append(platformPills, KPIPlatformPill{
+				Value:  p,
+				Label:  formatPlatformLabel(p),
+				Href:   kpiHref(actionPath, pState, 1, state.Sort, true),
+				Active: state.Platform == p,
+			})
+		}
 	}
 
 	hasActive := state.App != "" || state.Repo != "" || state.Stage != "" ||
@@ -153,6 +295,12 @@ func buildKPIFilterBar(
 
 	return KPIFilterBar{
 		State:            state,
+		RepoTabs:         repoTabs,
+		WindowPills:      windowPills,
+		PlatformPills:    platformPills,
+		ShowPlatforms:    len(platformPills) > 0,
+		ShowLaneSelect:   isSingleRepo && (len(opts.Lanes) > 2 || state.Lane != ""),
+		IsSingleRepo:     isSingleRepo,
 		Apps:             buildStringFilterOptions(opts.Apps, state.App),
 		Repos:            buildStringFilterOptions(opts.Repos, state.Repo),
 		Stages:           buildStringFilterOptions(opts.Stages, state.Stage),
@@ -162,6 +310,17 @@ func buildKPIFilterBar(
 		Sorts:            sorts,
 		HasSorts:         len(sorts) > 0,
 		HasActiveFilters: hasActive,
+	}
+}
+
+func formatPlatformLabel(p string) string {
+	switch strings.ToLower(p) {
+	case "ios":
+		return "iOS"
+	case "android":
+		return "Android"
+	default:
+		return p
 	}
 }
 
@@ -195,6 +354,10 @@ func buildStringFilterOptions(values []string, selected string) []KPIFilterOptio
 // kpiQueryString constructs a canonical query string (or "" when all defaults)
 // so URL filters round-trip cleanly across pagination, sorting, and sub-tabs.
 func kpiQueryString(f KPIFilterState, page int, sort string, includeSort bool) string {
+	return kpiQueryStringWithShow(f, page, sort, includeSort, false)
+}
+
+func kpiQueryStringWithShow(f KPIFilterState, page int, sort string, includeSort, includeShow bool) string {
 	v := url.Values{}
 	if f.App != "" {
 		v.Set("app", f.App)
@@ -213,6 +376,9 @@ func kpiQueryString(f KPIFilterState, page int, sort string, includeSort bool) s
 	}
 	if f.Window != "" && f.Window != kpi.Window30d {
 		v.Set("window", f.Window)
+	}
+	if includeShow && f.ShowAll {
+		v.Set("show", "all")
 	}
 	if includeSort && sort != "" && sort != f.DefaultSort {
 		v.Set("sort", sort)
@@ -233,25 +399,16 @@ func kpiHref(base string, f KPIFilterState, page int, sort string, includeSort b
 	return base + kpiQueryString(f, page, sort, includeSort)
 }
 
+func kpiOverviewHref(f KPIFilterState, showAll bool) string {
+	return "/kpi" + kpiQueryStringWithShow(f, 1, f.Sort, true, showAll)
+}
+
 func kpiPageQuery(f KPIFilterState, page int) string {
-	q := kpiQueryString(f, page, f.Sort, true)
+	q := kpiQueryStringWithShow(f, page, f.Sort, true, f.ShowAll)
 	if q == "" {
 		return "?"
 	}
 	return q
-}
-
-func formatLaneCoverageSummary(cov kpi.LaneCoverage) string {
-	if cov.TotalLanes == 0 && cov.TotalRuns == 0 {
-		return "No matching runs in this window"
-	}
-	return fmt.Sprintf(
-		"%s across %s (%d orchestrated, %d upload-only)",
-		pluralize(cov.TotalRuns, "run", "runs"),
-		pluralize(cov.TotalLanes, "lane", "lanes"),
-		cov.OrchestratedLanes,
-		cov.UploadOnlyLanes,
-	)
 }
 
 func pluralWord(n int, singular, plural string) string {
@@ -263,13 +420,6 @@ func pluralWord(n int, singular, plural string) string {
 
 func pluralize(n int, singular, plural string) string {
 	return fmt.Sprintf("%d %s", n, pluralWord(n, singular, plural))
-}
-
-func shortFingerprint(fp string) string {
-	if len(fp) > 14 {
-		return fp[:8] + "…" + fp[len(fp)-4:]
-	}
-	return fp
 }
 
 // formatFailureRate avoids extrapolating small samples (<50 runs) into misleading per-1k rates.
@@ -333,38 +483,6 @@ func healthBadgeLowerGood(v *float64, goodMax, warnMax float64) (label, cssClass
 		return "Watch", kpiBadgeWarn
 	default:
 		return "Action needed", kpiBadgeBad
-	}
-}
-
-func humanizeCoverageNotes(notes []string) []string {
-	if len(notes) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(notes))
-	for _, n := range notes {
-		out = append(out, humanizeCoverageNote(n))
-	}
-	return out
-}
-
-func humanizeCoverageNote(note string) string {
-	switch {
-	case strings.Contains(note, "total_duration_ms"):
-		return "Upload-only jobs (such as mobile runs) don't report job-level retry or run-time telemetry, so they are excluded from zero-retry pass rate and median/p90 E2E duration."
-	case strings.Contains(note, "test_stats_json"):
-		return "Upload-only jobs determine pass/fail from uploaded test results because job-level retry history is unavailable."
-	case strings.Contains(note, "lower bound ('at least')"):
-		return "Lower bound ('at least'): excludes runs younger than 24h until settled and excludes failures resolved by pushing a new commit."
-	case strings.Contains(note, "always evaluates stage='main'"):
-		return "The stage filter does not apply to Main Health (always evaluates main-branch runs)."
-	case strings.Contains(note, "always evaluates stage='pr'"):
-		return "The stage filter does not apply to E2E PR run time (always evaluates PR runs)."
-	case strings.Contains(note, "always evaluates PR lanes"):
-		return "The stage filter does not apply to PR false-red rate (always evaluates pull-request runs)."
-	case strings.Contains(note, "always evaluates trailing 14d"):
-		return "The window filter does not apply to Flaky tests (always evaluates the trailing 14 days)."
-	default:
-		return note
 	}
 }
 
@@ -506,6 +624,30 @@ func formatSecondsDuration(sec int64) string {
 	return fmt.Sprintf("%dd %dh", days, remHours)
 }
 
+func formatPRFalseRedDelta(deltaPP *float64, curSettled, priorSettled int) (text, cssClass string) {
+	if deltaPP == nil || curSettled < kpiMinSettledForDelta || priorSettled < kpiMinSettledForDelta {
+		return "", ""
+	}
+	if *deltaPP > 0.05 {
+		return fmt.Sprintf("Up %.1f pts", *deltaPP), kpiDeltaBad
+	}
+	if *deltaPP < -0.05 {
+		return fmt.Sprintf("Down %.1f pts", -*deltaPP), kpiDeltaGood
+	}
+	return "No change", kpiDeltaNeutral
+}
+
+func humanizeVerdictLabel(raw string) string {
+	switch raw {
+	case "cleared":
+		return "Cleared"
+	case "kept_red":
+		return "Kept red"
+	default:
+		return raw
+	}
+}
+
 // mapFailureStateBadge guarantees we NEVER render "Fixed" and always pair text + color class.
 func mapFailureStateBadge(state string, quietDays *int) (label, cssClass string) {
 	switch state {
@@ -519,7 +661,7 @@ func mapFailureStateBadge(state string, quietDays *int) (label, cssClass string)
 		}
 		return kpi.FailureStateQuiet, kpiBadgeGood
 	default:
-		return kpi.FailureStateNotEnoughRuns, "kpi-badge kpi-state-not-enough-runs"
+		return "Dormant", "kpi-badge kpi-state-not-enough-runs"
 	}
 }
 

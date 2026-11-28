@@ -13,10 +13,10 @@ var kpiPRSortOptions = []KPIFilterOption{
 	{Value: kpi.SortAgeDesc, Label: "Oldest first"},
 	{Value: kpi.SortPRDesc, Label: "PR # high to low"},
 	{Value: kpi.SortLaneAsc, Label: "Lane A–Z"},
-	{Value: kpi.SortReasonAsc, Label: "Reason"},
+	{Value: kpi.SortReasonAsc, Label: "Cause"},
 }
 
-// KPIReasonMixSegment represents one reason category in the reason mix bar.
+// KPIReasonMixSegment represents one attribution category in the reason mix bar.
 type KPIReasonMixSegment struct {
 	Key        string
 	Label      string
@@ -27,56 +27,47 @@ type KPIReasonMixSegment struct {
 }
 
 // KPIRedPRRow represents one red PR E2E lane in the "Red now" queue.
-// Author names are intentionally omitted; status always says "E2E red" (never "blocked").
+// Author names are intentionally omitted; red statuses use "E2E red" (never "blocked").
 type KPIRedPRRow struct {
-	ReportGroupID     string
-	PRNumber          int
-	Repository        string
-	App               string
-	Lane              string
-	Platform          string
-	ShortSHA          string
-	StatusLabel       string
-	StatusClass       string
-	SettledLabel      string
-	SettledClass      string
-	AgeText           string
-	CreatedISO        string
-	ReasonLabel       string
-	ReasonClass       string
-	ElsewhereSummary  string
-	FailingOnMain     bool
-	OtherPRsCount     int
-	HasElsewhereMatch bool
-	TestsFailed       int
-	FailedSignatures  int
-	FailedSummary     string
-	RunURL            string
+	ReportGroupID string
+	PRNumber      int
+	Repository    string
+	RepoShort     string
+	Lane          string
+	Platform      string
+	ShortSHA      string
+	StatusLabel   string
+	StatusClass   string
+	CauseLabel    string
+	CauseClass    string
+	AgeText       string
+	CreatedISO    string
+	FailedSummary string
+	RunURL        string
 }
 
-// KPIPRsPage is the view model for GET /kpi/prs.
+// KPIPRsPage is the V2 view model for GET /kpi/prs.
 type KPIPRsPage struct {
 	Title                string
 	Site                 SiteInfo
 	Filters              KPIFilterBar
 	OverviewHref         string
 	PRsHref              string
+	ShowRepoBadge        bool
 	HasRateData          bool
+	HealthLabel          string
+	HealthClass          string
 	HeadlineRate         string
 	Delta                string
 	DeltaClass           string
 	SettledFalseRedLanes int
 	SettledRedLanes      int
 	UnsettledRedLanes    int
-	StillRedLanes        int
+	QueueSummary         string
 	SettledNote          string
 	ReasonMixTotal       int
 	ReasonMixTotalText   string
 	ReasonMix            []KPIReasonMixSegment
-	ConfiguredLanes      []kpi.ConfiguredE2ELane
-	ConfiguredLanesText  string
-	CoverageSummary      string
-	CoverageNotes        []string
 	HasLanes             bool
 	Lanes                []KPIRedPRRow
 	Total                int
@@ -114,24 +105,29 @@ func BuildKPIPRsPage(
 
 	headlineRate := kpiNotAvailable
 	hasRateData := false
-	if data.FalseRedRate != nil {
-		headlineRate = fmt.Sprintf("%s %.1f%%", qualifier, *data.FalseRedRate)
-		hasRateData = true
-	}
-
-	settledNote := fmt.Sprintf(
-		"Lower bound only: excludes red PR lanes fixed by pushing a new commit. Runs younger than %d hours are unsettled and excluded from the rate denominator.",
-		settledHours,
-	)
-
+	var healthLabel, healthClass string
 	reasonTotal := data.ReasonMix.Total
 	if reasonTotal == 0 {
 		reasonTotal = data.ReasonMix.WentGreenOnRerun + data.ReasonMix.FailingElsewhere + data.ReasonMix.Other
 	}
+	if data.FalseRedRate != nil {
+		headlineRate = fmt.Sprintf("%s %.1f%%", qualifier, *data.FalseRedRate)
+		hasRateData = true
+		if reasonTotal > 0 && data.ReasonMix.Other == reasonTotal {
+			healthLabel = "Unclassified"
+			healthClass = kpiBadgeNeutral
+		} else {
+			healthLabel, healthClass = healthBadgeLowerGood(data.FalseRedRate, 5, 15)
+		}
+	}
+
+	deltaText, deltaClass := formatPRFalseRedDelta(data.DeltaPP, data.SettledRedLanes, data.PriorSettledRedLanes)
+	settledNote := fmt.Sprintf("Settled >%dh runs; excludes failures resolved by pushing a new commit.", settledHours)
+
 	reasonSegments := []KPIReasonMixSegment{
 		buildReasonSegment(kpi.ReasonWentGreenOnRerun, "Went green on rerun", data.ReasonMix.WentGreenOnRerun, reasonTotal, "kpi-mix-rerun"),
 		buildReasonSegment(kpi.ReasonFailingElsewhere, "Also failing elsewhere", data.ReasonMix.FailingElsewhere, reasonTotal, "kpi-mix-elsewhere"),
-		buildReasonSegment(kpi.ReasonOther, "Other", data.ReasonMix.Other, reasonTotal, "kpi-mix-other"),
+		buildReasonSegment(kpi.ReasonOther, "PR-specific / Unclassified", data.ReasonMix.Other, reasonTotal, "kpi-mix-other"),
 	}
 
 	rows := make([]KPIRedPRRow, 0, len(data.Lanes))
@@ -143,15 +139,7 @@ func BuildKPIPRsPage(
 			statusClass = "kpi-badge kpi-reason-rerun"
 		}
 
-		settledLabel := fmt.Sprintf("Unsettled (<%dh)", settledHours)
-		settledClass := "kpi-badge kpi-badge-neutral"
-		if lane.Settled {
-			settledLabel = "Settled"
-			settledClass = "kpi-badge kpi-badge-muted"
-		}
-
-		reasonLabel, reasonClass := mapPRReasonBadge(lane.Reason)
-		elsewhereSummary, hasElsewhere := formatElsewhereMatch(lane.FailingOnMain, lane.OtherPRsCount)
+		causeLabel, causeClass := resolvePRCause(lane, settledHours)
 		createdISO, _ := formatKPITimestamp(lane.CreatedAt, now)
 		platform := ""
 		if lane.Platform != nil {
@@ -164,33 +152,30 @@ func BuildKPIPRsPage(
 		}
 
 		rows = append(rows, KPIRedPRRow{
-			ReportGroupID:     lane.ReportGroupID,
-			PRNumber:          lane.GHPRNumber,
-			Repository:        lane.Repository,
-			App:               lane.App,
-			Lane:              lane.Lane,
-			Platform:          platform,
-			ShortSHA:          shortSHA(lane.CommitSHA),
-			StatusLabel:       statusLabel,
-			StatusClass:       statusClass,
-			SettledLabel:      settledLabel,
-			SettledClass:      settledClass,
-			AgeText:           formatSecondsDuration(lane.AgeSeconds),
-			CreatedISO:        createdISO,
-			ReasonLabel:       reasonLabel,
-			ReasonClass:       reasonClass,
-			ElsewhereSummary:  elsewhereSummary,
-			FailingOnMain:     lane.FailingOnMain,
-			OtherPRsCount:     lane.OtherPRsCount,
-			HasElsewhereMatch: hasElsewhere,
-			TestsFailed:       lane.TestsFailed,
-			FailedSignatures:  lane.FailedSignatureCount,
-			FailedSummary:     pluralize(lane.TestsFailed, "test", "tests") + " · " + pluralize(lane.FailedSignatureCount, "pattern", "patterns"),
-			RunURL:            runHref,
+			ReportGroupID: lane.ReportGroupID,
+			PRNumber:      lane.GHPRNumber,
+			Repository:    lane.Repository,
+			RepoShort:     friendlyRepoName(lane.Repository),
+			Lane:          lane.Lane,
+			Platform:      platform,
+			ShortSHA:      shortSHA(lane.CommitSHA),
+			StatusLabel:   statusLabel,
+			StatusClass:   statusClass,
+			CauseLabel:    causeLabel,
+			CauseClass:    causeClass,
+			AgeText:       formatSecondsDuration(lane.AgeSeconds),
+			CreatedISO:    createdISO,
+			FailedSummary: pluralize(lane.TestsFailed, "test", "tests") + " · " + pluralize(lane.FailedSignatureCount, "error", "errors"),
+			RunURL:        runHref,
 		})
 	}
 
 	pag := buildKPIPagination(filterBar.State, data.Pagination.Page, data.Pagination.Limit, data.Pagination.Total, data.Pagination.TotalPages)
+	queueSummary := fmt.Sprintf(
+		"%d aged (>%dh) · %d recent (<%dh) · %s total",
+		data.SettledRedLanes, settledHours, data.UnsettledRedLanes, settledHours,
+		pluralize(data.Pagination.Total, "red PR run", "red PR runs"),
+	)
 
 	return KPIPRsPage{
 		Title:                "PR E2E · KPIs · Test System IO",
@@ -198,22 +183,21 @@ func BuildKPIPRsPage(
 		Filters:              filterBar,
 		OverviewHref:         overviewHref,
 		PRsHref:              prsHref,
+		ShowRepoBadge:        !filterBar.IsSingleRepo,
 		HasRateData:          hasRateData,
+		HealthLabel:          healthLabel,
+		HealthClass:          healthClass,
 		HeadlineRate:         headlineRate,
-		Delta:                formatDeltaPP(data.DeltaPP),
-		DeltaClass:           deltaClassLowerGood(data.DeltaPP),
+		Delta:                deltaText,
+		DeltaClass:           deltaClass,
 		SettledFalseRedLanes: data.SettledFalseRedLanes,
 		SettledRedLanes:      data.SettledRedLanes,
 		UnsettledRedLanes:    data.UnsettledRedLanes,
-		StillRedLanes:        data.StillRedLanes,
+		QueueSummary:         queueSummary,
 		SettledNote:          settledNote,
 		ReasonMixTotal:       reasonTotal,
-		ReasonMixTotalText:   pluralize(reasonTotal, "settled lane", "settled lanes"),
+		ReasonMixTotalText:   pluralize(reasonTotal, "aged red run", "aged red runs"),
 		ReasonMix:            reasonSegments,
-		ConfiguredLanes:      append([]kpi.ConfiguredE2ELane(nil), data.ConfiguredE2ELanes...),
-		ConfiguredLanesText:  pluralize(len(data.ConfiguredE2ELanes), "configured lane", "configured lanes"),
-		CoverageSummary:      formatLaneCoverageSummary(data.LaneCoverage),
-		CoverageNotes:        humanizeCoverageNotes(data.LaneCoverage.Notes),
 		HasLanes:             len(rows) > 0,
 		Lanes:                rows,
 		Total:                data.Pagination.Total,
@@ -228,6 +212,31 @@ func BuildKPIPRsPage(
 		PrevHref:             pag.PrevHref,
 		NextHref:             pag.NextHref,
 	}
+}
+
+func resolvePRCause(lane kpi.RedPRLaneRow, settledHours int) (label, cssClass string) {
+	if lane.WentGreenOnRerun {
+		return "Went green on rerun", "kpi-badge kpi-reason-rerun"
+	}
+	if lane.FailingOnMain && lane.OtherPRsCount > 0 {
+		return fmt.Sprintf("Failing on main + %d other PRs", lane.OtherPRsCount), kpiBadgeWarn
+	}
+	if lane.FailingOnMain {
+		return "Failing on main", kpiBadgeWarn
+	}
+	if lane.Reason == kpi.ReasonFailingElsewhere || lane.OtherPRsCount >= 3 {
+		return fmt.Sprintf("Failing on %d other PRs", lane.OtherPRsCount), kpiBadgeWarn
+	}
+	if !lane.Settled {
+		if lane.OtherPRsCount > 0 {
+			return fmt.Sprintf("Recent (<%dh) · seen on %s", settledHours, pluralize(lane.OtherPRsCount, "other PR", "other PRs")), kpiBadgeNeutral
+		}
+		return fmt.Sprintf("Recent (<%dh unsettled)", settledHours), kpiBadgeNeutral
+	}
+	if lane.OtherPRsCount > 0 {
+		return "Seen on " + pluralize(lane.OtherPRsCount, "other PR", "other PRs"), "kpi-badge kpi-reason-other"
+	}
+	return "PR-specific / Unclassified", "kpi-badge kpi-reason-other"
 }
 
 func buildReasonSegment(key, label string, count, total int, colorClass string) KPIReasonMixSegment {
@@ -247,31 +256,5 @@ func buildReasonSegment(key, label string, count, total int, colorClass string) 
 		SharePct:   fmt.Sprintf("%.1f%%", share),
 		WidthPct:   width,
 		ColorClass: colorClass,
-	}
-}
-
-func mapPRReasonBadge(reason string) (label, cssClass string) {
-	switch reason {
-	case kpi.ReasonWentGreenOnRerun:
-		return "Went green on rerun", "kpi-badge kpi-reason-rerun"
-	case kpi.ReasonFailingElsewhere:
-		return "Also failing elsewhere", kpiBadgeWarn
-	default:
-		return "Other", "kpi-badge kpi-reason-other"
-	}
-}
-
-func formatElsewhereMatch(failingOnMain bool, otherPRs int) (string, bool) {
-	switch {
-	case failingOnMain && otherPRs > 0:
-		return fmt.Sprintf("Failing on main + %d other PRs", otherPRs), true
-	case failingOnMain:
-		return "Failing on main", true
-	case otherPRs >= 3:
-		return fmt.Sprintf("Failing on %d other PRs", otherPRs), true
-	case otherPRs > 0:
-		return "Seen on " + pluralize(otherPRs, "other PR", "other PRs"), false
-	default:
-		return "No cross-PR/main match", false
 	}
 }

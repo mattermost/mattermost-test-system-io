@@ -99,6 +99,7 @@ func TestRenderKPIOverview_PopulatedAndGuardrails(t *testing.T) {
 			DeltaPP:              &deltaPP,
 			SettledRedLanes:      200,
 			SettledFalseRedLanes: 37,
+			PriorSettledRedLanes: 150,
 			UnsettledRedLanes:    5,
 		},
 		FlakyTests: kpi.FlakySummary{
@@ -208,28 +209,21 @@ func TestRenderKPIOverview_PopulatedAndGuardrails(t *testing.T) {
 		`href="/reports"`,
 		`href="/kpi`,
 		`class="site-nav-link is-active">KPIs</a>`,
+		`88.0%`,
 		`94.2%`,
-		`Lane pass (attempt 1)`,
 		`Zero-retry runs`,
 		`at least 18.5%`,
+		`Down 2.5 pts`,
 		`new-commit fixes excluded`,
-		`mattermost: 5`,
-		`Active: 1`,
-		`Resurfaced: 1`,
-		`Quiet: 1`,
-		`Not enough runs: 1`,
+		`Trailing 14d`,
+		`Active (2)`,
+		`All (4)`,
 		`14m 20s`,
 		`28m 5s`,
-		`75.0%`,
-		`80.0%`,
-		`50.0%`,
 		`90.0%`,
-		`flaky-infra: 4 (66.7%)`,
-		`2026-11-16`,
+		`1 timed out`,
 		`Quiet (9d)`,
 		`Resurfaced`,
-		`20.0 / 1k`,
-		`&#43;5.0 / 1k`,
 		`/kpi/failures/019a1234-5678-7abc-8def-0123456789ab?`,
 		`app=mattermost`,
 		`window=14d`,
@@ -239,7 +233,6 @@ func TestRenderKPIOverview_PopulatedAndGuardrails(t *testing.T) {
 		`@media (max-width: 639px)`,
 		`@media (min-width: 640px) and (max-width: 1023px)`,
 		`@media (min-width: 1024px)`,
-		`Upload-only lanes lack lease retry history.`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("RenderKPIOverview missing %q", want)
@@ -284,11 +277,10 @@ func TestRenderKPIOverview_EmptyAndZeroDenominators(t *testing.T) {
 	}
 	s := string(htmlBytes)
 	for _, want := range []string{
-		`N/A`,
+		`Repository Health Scorecard`,
 		`No data`,
-		`No triage or run completion data in this window`,
-		`No weekly trend data in this window`,
-		`No recurring failures`,
+		`No test runs recorded in this time window.`,
+		`No active failure patterns`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("empty KPI overview missing %q", want)
@@ -377,19 +369,18 @@ func TestRenderKPIPRs_PopulatedAndEmpty(t *testing.T) {
 
 	for _, want := range []string{
 		`at least 22.5%`,
-		`excludes red PR lanes fixed by pushing a new commit`,
-		`Runs younger than 24 hours are unsettled`,
+		`excludes failures resolved by pushing a new commit`,
 		`Went green on rerun`,
 		`Also failing elsewhere`,
-		`Other`,
+		`PR-specific / Unclassified`,
 		`12.5%`,
 		`10.0%`,
 		`77.5%`,
 		`E2E red`,
 		`#12345`,
 		`Failing on main &#43; 4 other PRs`,
-		`Unsettled (&lt;24h)`,
-		`mattermost/mattermost:e2e-rf-pr`,
+		`3 tests · 2 errors`,
+		`40 aged (&gt;24h) · 3 recent (&lt;24h) · 2 red PR runs total`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("RenderKPIPRs missing %q", want)
@@ -409,14 +400,14 @@ func TestRenderKPIPRs_PopulatedAndEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	es := string(emptyHTML)
-	if !strings.Contains(es, `N/A`) || !strings.Contains(es, `No settled red PR lanes to classify`) || !strings.Contains(es, `No E2E red PR lanes`) {
+	if !strings.Contains(es, `N/A`) || !strings.Contains(es, `No aged (&gt;24h) red PR runs to classify`) || !strings.Contains(es, `No E2E red PR runs`) {
 		t.Fatalf("empty PRs page missing expected empty states")
 	}
 }
 
 func TestBuildKPIOverviewAndPRs_PRFalseRedZeroSettledAndUnsettledStates(t *testing.T) {
 	now := time.Date(2026, 11, 26, 15, 0, 0, 0, time.UTC)
-	ovParams, err := kpi.ParseFailuresParams(url.Values{}, now)
+	ovParams, err := kpi.ParseFailuresParams(url.Values{"repo": {"mattermost/mattermost"}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,8 +432,8 @@ func TestBuildKPIOverviewAndPRs_PRFalseRedZeroSettledAndUnsettledStates(t *testi
 	for _, want := range []string{
 		`N/A`,
 		`No data`,
-		`3 unsettled (&lt;24h)`,
-		`No settled (&gt;24h) red lanes yet (3 unsettled); new-commit fixes excluded.`,
+		`3 recent (&lt;24h)`,
+		`3 recent red runs (&lt;24h unsettled); new-commit fixes excluded.`,
 	} {
 		if !strings.Contains(ovStr, want) {
 			t.Fatalf("unsettled overview missing %q", want)
@@ -463,7 +454,7 @@ func TestBuildKPIOverviewAndPRs_PRFalseRedZeroSettledAndUnsettledStates(t *testi
 	if err != nil {
 		t.Fatalf("RenderKPIOverview zero PR: %v", err)
 	}
-	if !strings.Contains(string(ovEmptyHTML), `No settled (&gt;24h) red PR lanes in window; new-commit fixes excluded.`) {
+	if !strings.Contains(string(ovEmptyHTML), `No settled (&gt;24h) red PR runs in window.`) {
 		t.Fatalf("zero-PR overview missing settled note")
 	}
 
@@ -528,12 +519,11 @@ func TestBuildKPIOverviewAndPRs_PRFalseRedZeroSettledAndUnsettledStates(t *testi
 	prStr := string(prHTML)
 	for _, want := range []string{
 		`N/A`,
-		`No data — no settled (&gt;24h) red PR lanes in this window`,
+		`No settled (&gt;24h) red PR runs in this window`,
 		`E2E red`,
 		`Failing on 3 other PRs`,
-		`Seen on 2 other PRs`,
-		`Also failing elsewhere`,
-		`Other`,
+		`Recent (&lt;24h) · seen on 2 other PRs`,
+		`PR-specific / Unclassified`,
 	} {
 		if !strings.Contains(prStr, want) {
 			t.Fatalf("PRs zero-settled missing %q", want)
@@ -635,7 +625,7 @@ func TestRenderKPIFailureDetail_XSSRedactionAndGuardrails(t *testing.T) {
 		`deadbee`,
 		`flaky-infra`,
 		`92%`,
-		`Not enough runs`,
+		`Dormant`,
 		`e2e/login.ts`,
 		`#1001`,
 	} {
@@ -777,8 +767,8 @@ func TestKPIPaginationOutOfRangeRecovery(t *testing.T) {
 				t.Fatalf("out-of-range overview missing %q", want)
 			}
 		}
-		if strings.Contains(s, "No recurring failures") {
-			t.Fatal("out-of-range overview must NOT say 'No recurring failures'")
+		if strings.Contains(s, "No active failure patterns") {
+			t.Fatal("out-of-range overview must NOT say 'No active failure patterns'")
 		}
 	})
 
@@ -822,7 +812,7 @@ func TestKPIPaginationOutOfRangeRecovery(t *testing.T) {
 		for _, want := range []string{
 			`57 E2E red PR lane runs`,
 			`Page 5 out of range`,
-			`No red PR lanes on page 5 (total 57 across 2 pages).`,
+			`No red PR runs on page 5 (total 57 across 2 pages).`,
 			`kpi-pagination`,
 			`href="?app=mattermost&amp;page=2&amp;sort=age_desc">Previous</a>`,
 			`<span class="btn-page is-disabled" aria-disabled="true">Next</span>`,
@@ -831,8 +821,8 @@ func TestKPIPaginationOutOfRangeRecovery(t *testing.T) {
 				t.Fatalf("out-of-range PRs missing %q", want)
 			}
 		}
-		if strings.Contains(s, "No E2E red PR lanes") {
-			t.Fatal("out-of-range PRs must NOT say 'No E2E red PR lanes'")
+		if strings.Contains(s, "No E2E red PR runs") {
+			t.Fatal("out-of-range PRs must NOT say 'No E2E red PR runs'")
 		}
 	})
 
@@ -975,7 +965,7 @@ func TestKPICustomLimitPreservation(t *testing.T) {
 		}
 		s := string(htmlBytes)
 		for _, want := range []string{
-			`<input type="hidden" name="limit" value="10">`,
+			`limit=10`,
 			`href="?app=mattermost&amp;limit=10&amp;sort=age_desc">Previous</a>`,
 			`href="?app=mattermost&amp;limit=10&amp;page=3&amp;sort=age_desc">Next</a>`,
 			`href="/kpi/prs" class="kpi-btn kpi-btn-ghost">Reset</a>`,
@@ -1025,7 +1015,7 @@ func TestKPICustomLimitPreservation(t *testing.T) {
 		}
 		s := string(htmlBytes)
 		for _, want := range []string{
-			`<input type="hidden" name="limit" value="100">`,
+			`href="/kpi?limit=100"`,
 			`href="?limit=100&amp;page=2">Next</a>`,
 			`href="/kpi" class="kpi-btn kpi-btn-ghost">Reset</a>`,
 		} {
@@ -1055,21 +1045,13 @@ func TestKPICustomLimitPreservation(t *testing.T) {
 		if got := kpiQueryString(KPIFilterState{}, 1, "", false); got != "" {
 			t.Fatalf("zero-value KPIFilterState kpiQueryString = %q, want empty", got)
 		}
-
-		htmlBytes, err := RenderKPIPRs(page)
-		if err != nil {
-			t.Fatalf("RenderKPIPRs: %v", err)
-		}
-		if strings.Contains(string(htmlBytes), `name="limit"`) {
-			t.Fatal("default limit=50 must not emit hidden limit input")
-		}
 	})
 }
 
 func TestRenderKPI_EngProdUXClarityAndSmallSamples(t *testing.T) {
 	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
 
-	// Small-sample failure detail: 3 failures in 3 test runs across 1 CI run, duplicate SampleMessage, 29 zero days + 1 active day.
+	// 1. Small-sample failure detail: 3 failures in 3 test runs across 1 CI run, duplicate SampleMessage, 30 days (no daily table, no SHA-256 box).
 	dailySeries := make([]kpi.FailureDailyPoint, 0, 30)
 	for d := 0; d < 30; d++ {
 		dt := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC).AddDate(0, 0, d).Format("2006-01-02")
@@ -1089,7 +1071,7 @@ func TestRenderKPI_EngProdUXClarityAndSmallSamples(t *testing.T) {
 
 	msg := "Assertion is false: id: mute-unmute is visible"
 	detail := kpi.FailureDetailResponse{
-		Filters:              kpi.FilterParams{Window: kpi.Window30d},
+		Filters:              kpi.FilterParams{Window: kpi.Window30d, WindowDays: 30},
 		RequestedSignatureID: "019a1234-5678-7abc-8def-0123456789ab",
 		CanonicalSignatureID: "019a1234-5678-7abc-8def-0123456789ab",
 		Fingerprint:          "f273fbcfb0ce0bbea78611817c57dcc214f532910bcfd29133b5e791ca1e949a",
@@ -1151,17 +1133,17 @@ func TestRenderKPI_EngProdUXClarityAndSmallSamples(t *testing.T) {
 	ds := string(detailHTMLBytes)
 
 	for _, want := range []string{
+		`Dormant`,
+		`Last 30 days`,
 		`100% (3 of 3)`,
 		`Low sample`,
 		`New in 14d`,
 		`3 failures`,
 		`1 CI run`,
-		`1 repository`,
-		`1 test`,
 		`1 active day`,
-		`2026-11-21`,
-		`29 quiet days with 0 failures are shown as baseline bars in the chart above.`,
-		`Technical details (Signature v2`,
+		`2026-11-21: 3 failures (100% (3 of 3), 3 test runs)`,
+		`Repository:`,
+		`mobile-main-maestro-android-e2e`,
 	} {
 		if !strings.Contains(ds, want) {
 			t.Fatalf("small-sample failure detail missing %q", want)
@@ -1170,73 +1152,118 @@ func TestRenderKPI_EngProdUXClarityAndSmallSamples(t *testing.T) {
 	for _, forbid := range []string{
 		`1000.0 / 1k`,
 		`class="kpi-sample-msg"`,
+		`Technical details`,
+		`Not enough runs`,
 		`1 runs`,
 		`1 groups`,
-		`1 repositories`,
 		`<td>2026-10-30</td>`,
-		`2026-11-20</td>`,
 	} {
 		if strings.Contains(ds, forbid) {
 			t.Fatalf("small-sample failure detail must not contain %q", forbid)
 		}
 	}
 	idxTests := strings.Index(ds, `Affected Tests`)
-	idxDaily := strings.Index(ds, `Daily Occurrences &amp; Rate`)
+	idxDaily := strings.Index(ds, `Daily Failures`)
 	if idxTests == -1 || idxDaily == -1 || idxTests > idxDaily {
-		t.Fatalf("expected Affected Tests (%d) to render before Daily Occurrences & Rate (%d)", idxTests, idxDaily)
+		t.Fatalf("expected Affected Tests (%d) to render before Daily Failures (%d)", idxTests, idxDaily)
 	}
 
-	// Coverage notes with raw SQL column names are humanized on /kpi and /kpi/prs.
+	// 2. Per-repo Scorecard on All Repos avoids blended fake averages & leaks zero raw column names.
 	ovParams, err := kpi.ParseFailuresParams(url.Values{}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
+	p50Web := 744097.5
+	p90Web := 1252457.0
 	ovHTMLBytes, err := RenderKPIOverview(BuildKPIOverviewPage(
 		SiteInfo{},
-		kpi.FilterOptions{},
+		kpi.FilterOptions{Repos: []string{"mattermost/mattermost", "mattermost/mattermost-mobile", "mattermost/desktop"}},
 		kpi.SummaryResponse{
 			Filters: ovParams,
-			LaneCoverage: kpi.LaneCoverage{
-				TotalLanes: 8, OrchestratedLanes: 4, UploadOnlyLanes: 4, TotalRuns: 12,
-				Notes: []string{"upload-only runs lack orchestration lease history and total_duration_ms; excluded from strict lane pass rate and p50/p90 E2E duration"},
+			MainPassRate: kpi.MainPassRate{
+				ByLane: []kpi.MainLaneRow{
+					{App: "mattermost", Repository: "mattermost/mattermost", Lane: "pw-main", LanesPassed: 11, LanesTotal: 11, StrictLanesPassed: 11, StrictLanesTotal: 11, FirstAttemptPassed: 1015, TestsTotal: 1026, OrchestratedRuns: 11},
+					{App: "mobile", Repository: "mattermost/mattermost-mobile", Lane: "mob-main", LanesPassed: 2, LanesTotal: 7, FirstAttemptPassed: 322, TestsTotal: 348, UploadOnlyRuns: 7},
+				},
+			},
+			E2EDuration: kpi.E2EDurationSummary{
+				P50Ms: &p50Web, P90Ms: &p90Web, SampleCount: 46,
+				ByLane: []kpi.DurationLaneRow{
+					{App: "mattermost", Repository: "mattermost/mattermost", Lane: "pw-pr", P50Ms: &p50Web, P90Ms: &p90Web, SampleCount: 46, OrchestratedRuns: 46},
+				},
+			},
+			FlakyTests: kpi.FlakySummary{
+				Count: 20,
+				ByApp: []kpi.AppFlakyCount{{App: "mattermost", Count: 3, Delta: intPtr(3)}, {App: "mobile", Count: 17}},
+			},
+			PRFalseRed: &kpi.PRFalseRedSummary{
+				IsLowerBound: true, RateQualifier: "at least", SettledAfterHours: 24,
+				SettledRedLanes: 23, PriorSettledRedLanes: 1, FalseRedRate: floatPtr(0), PriorFalseRedRate: floatPtr(100), DeltaPP: floatPtr(-100),
+				ReasonMix: kpi.PRFalseRedReasonMix{Other: 23, Total: 23},
 			},
 		},
-		kpi.FailuresResponse{Filters: ovParams},
+		kpi.FailuresResponse{
+			Filters: ovParams,
+			Summary: kpi.RecurringFailuresSummary{TotalSignatures: 349, ActiveCount: 167, NotEnoughRunsCount: 182},
+		},
 		now,
 	))
 	if err != nil {
-		t.Fatalf("RenderKPIOverview humanized coverage: %v", err)
+		t.Fatalf("RenderKPIOverview scorecard: %v", err)
 	}
 	ovs := string(ovHTMLBytes)
-	if strings.Contains(ovs, "total_duration_ms") || strings.Contains(ovs, "test_stats_json") {
-		t.Fatal("RenderKPIOverview leaked raw DB column name in coverage notes")
+	for _, want := range []string{
+		`Repository Health Scorecard`,
+		`Web &amp; Server`,
+		`100.0% (11/11)`,
+		`28.6% (2/7)`,
+		`12m 24s`,
+		`Active (167)`,
+		`All (349)`,
+	} {
+		if !strings.Contains(ovs, want) {
+			t.Fatalf("All Repos scorecard missing %q", want)
+		}
 	}
-	if !strings.Contains(ovs, "12 runs across 8 lanes (4 orchestrated, 4 upload-only)") {
-		t.Fatal("RenderKPIOverview missing humanized pluralized lane coverage summary")
+	for _, forbid := range []string{`total_duration_ms`, `test_stats_json`, `Not enough runs: 182`, `-100.0 pp`} {
+		if strings.Contains(ovs, forbid) {
+			t.Fatalf("All Repos scorecard must not contain %q", forbid)
+		}
 	}
 
-	prParams, err := kpi.ParsePRsRedParams(url.Values{}, now)
+	// 3. Single-repo PR E2E suppresses noisy -100.0 pp when prior_settled_red_lanes < 10 and labels 100% Other as Unclassified instead of Healthy.
+	prParams, err := kpi.ParsePRsRedParams(url.Values{"repo": {"mattermost/desktop"}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	prHTMLBytes, err := RenderKPIPRs(BuildKPIPRsPage(
 		SiteInfo{},
-		kpi.FilterOptions{},
+		kpi.FilterOptions{Repos: []string{"mattermost/mattermost", "mattermost/desktop"}},
 		kpi.PRRedResponse{
-			Filters: prParams,
-			LaneCoverage: kpi.LaneCoverage{
-				TotalLanes: 2, UploadOnlyLanes: 1, TotalRuns: 5,
-				Notes: []string{"upload-only runs use test_stats_json failed counts; orchestration lease history unavailable"},
-			},
+			Filters:              prParams,
+			SettledAfterHours:    24,
+			IsLowerBound:         true,
+			RateQualifier:        "at least",
+			FalseRedRate:         floatPtr(0),
+			PriorFalseRedRate:    floatPtr(100),
+			DeltaPP:              floatPtr(-100),
+			SettledRedLanes:      8,
+			PriorSettledRedLanes: 1,
+			ReasonMix:            kpi.PRFalseRedReasonMix{Other: 8, Total: 8},
 		},
 		now,
 	))
 	if err != nil {
-		t.Fatalf("RenderKPIPRs humanized coverage: %v", err)
+		t.Fatalf("RenderKPIPRs desktop noise suppression: %v", err)
 	}
 	prs := string(prHTMLBytes)
-	if strings.Contains(prs, "test_stats_json") || strings.Contains(prs, "total_duration_ms") {
-		t.Fatal("RenderKPIPRs leaked raw DB column name in coverage notes")
+	if !strings.Contains(prs, `Unclassified`) {
+		t.Fatal("expected Unclassified badge when ReasonMix is 100% Other")
+	}
+	for _, forbid := range []string{`-100.0 pp`, `Healthy`, `Configured E2E lanes:`, `test_stats_json`, `total_duration_ms`} {
+		if strings.Contains(prs, forbid) {
+			t.Fatalf("PRs page must not contain %q", forbid)
+		}
 	}
 }
 

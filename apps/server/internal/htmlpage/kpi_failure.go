@@ -14,9 +14,7 @@ import (
 type KPIFailureVerdictView struct {
 	Label      string
 	DecidedBy  string
-	Rule       string
 	Confidence string
-	Model      string
 	Summary    string
 	TriageURL  string
 	CreatedISO string
@@ -32,19 +30,8 @@ type KPIFailureFirstSeenView struct {
 	Lane         string
 	Branch       string
 	ShortSHA     string
-	CommitSHA    string
 	PRNumber     int
 	HasPR        bool
-}
-
-// KPIFailureDailyRow holds one day in the failure daily table/series.
-type KPIFailureDailyRow struct {
-	Date             string
-	OccurrenceCount  int
-	RawAttemptCount  int
-	GroupCount       int
-	AffectedTestRuns int
-	RatePer1k        string
 }
 
 // KPIFailureTestRow summarizes one affected test.
@@ -56,8 +43,6 @@ type KPIFailureTestRow struct {
 	Repository  string
 	Framework   string
 	FailCount   int
-	RunCount    int
-	GroupCount  int
 	RunsText    string
 	LastSeenISO string
 	LastSeenRel string
@@ -67,56 +52,35 @@ type KPIFailureTestRow struct {
 type KPIFailureRepoRow struct {
 	Repository      string
 	App             string
-	OccurrenceCount int
-	GroupCount      int
 	OccurrencesText string
 	AffectedRuns    int
 	RatePer1k       string
 	LanesSummary    string
 }
 
-// KPIFailureDetailPage is the view model for GET /kpi/failures/{id}.
+// KPIFailureDetailPage is the V2 view model for GET /kpi/failures/{id}.
 type KPIFailureDetailPage struct {
 	Title                  string
 	Site                   SiteInfo
 	Filters                KPIFilterState
 	OverviewHref           string
 	PRsHref                string
-	RequestedSignatureID   string
-	CanonicalSignatureID   string
-	IsMerged               bool
-	MergedCount            int
-	Fingerprint            string
-	ShortFingerprint       string
-	AlgoVersion            int
+	WindowDays             int
 	ErrorClass             string
 	NormalizedMessage      string
 	TopFrame               string
 	SampleMessage          string
 	StateLabel             string
 	StateClass             string
-	OccurrenceCount        int
-	RawAttemptCount        int
-	GroupCount             int
 	GroupCountText         string
-	AffectedTestCount      int
-	AffectedTestRuns       int
-	RatePer1k              string
 	IsLowSample            bool
 	WindowPrimaryValue     string
 	WindowMeta             string
 	Rate14d                string
-	Occ14d                 int
-	Runs14d                int
 	Current14dText         string
-	PriorRate14d           string
-	PriorOcc14d            int
-	PriorRuns14d           int
 	Prior14dText           string
 	Delta14d               string
 	Delta14dClass          string
-	Occ7d                  int
-	Runs7d                 int
 	Trailing7dText         string
 	LastSeenISO            string
 	LastSeenRel            string
@@ -125,14 +89,12 @@ type KPIFailureDetailPage struct {
 	HasDaily               bool
 	DailyBars              []KPIChartBar
 	DailyChartW            int
-	DailyRows              []KPIFailureDailyRow
-	ActiveDailyRows        []KPIFailureDailyRow
-	InactiveDaysCount      int
 	ActiveDaysText         string
 	AffectedTests          []KPIFailureTestRow
 	AffectedTestsCountText string
 	AffectedRepos          []KPIFailureRepoRow
 	AffectedReposCountText string
+	SingleRepo             *KPIFailureRepoRow
 	PRNumbers              []int
 }
 
@@ -143,14 +105,8 @@ func BuildKPIFailureDetailPage(site SiteInfo, d kpi.FailureDetailResponse, now t
 	prsHref := kpiHref("/kpi/prs", filterState, 1, "", false)
 
 	stateLabel, stateClass := mapFailureStateBadge(d.State, d.QuietDays)
-	errClass := ""
-	if d.ErrorClass != nil {
-		errClass = *d.ErrorClass
-	}
-	topFrame := ""
-	if d.TopFrame != nil {
-		topFrame = *d.TopFrame
-	}
+	errClass := derefString(d.ErrorClass)
+	topFrame := derefString(d.TopFrame)
 	sampleMsg := ""
 	if d.SampleMessage != nil {
 		trimmed := strings.TrimSpace(*d.SampleMessage)
@@ -174,7 +130,6 @@ func BuildKPIFailureDetailPage(site SiteInfo, d kpi.FailureDetailResponse, now t
 		Repository:   derefString(d.FirstSeen.Repository),
 		Lane:         derefString(d.FirstSeen.Lane),
 		Branch:       derefString(d.FirstSeen.Branch),
-		CommitSHA:    derefString(d.FirstSeen.CommitSHA),
 		ShortSHA:     shortSHA(derefString(d.FirstSeen.CommitSHA)),
 	}
 	if d.FirstSeen.GHPRNumber != nil && *d.FirstSeen.GHPRNumber > 0 {
@@ -188,17 +143,16 @@ func BuildKPIFailureDetailPage(site SiteInfo, d kpi.FailureDetailResponse, now t
 		vISO, vRel := formatKPITimestamp(v.CreatedAt, now)
 		conf := ""
 		if v.Confidence != nil {
-			conf = fmt.Sprintf("%.0f%%", *v.Confidence*100)
+			pct := *v.Confidence * 100
 			if *v.Confidence > 1.0 {
-				conf = fmt.Sprintf("%.0f%%", *v.Confidence)
+				pct = *v.Confidence
 			}
+			conf = fmt.Sprintf("%.0f%%", pct)
 		}
 		verdictView = &KPIFailureVerdictView{
-			Label:      v.Label,
+			Label:      humanizeVerdictLabel(v.Label),
 			DecidedBy:  derefString(v.DecidedBy),
-			Rule:       derefString(v.Rule),
 			Confidence: conf,
-			Model:      derefString(v.Model),
 			Summary:    derefString(v.Summary),
 			TriageURL:  safeExternalURL(v.TriageURL),
 			CreatedISO: vISO,
@@ -206,7 +160,7 @@ func BuildKPIFailureDetailPage(site SiteInfo, d kpi.FailureDetailResponse, now t
 		}
 	}
 
-	dailyBars, dailyW, dailyRows, activeDailyRows := buildFailureDailyChart(d.DailySeries)
+	dailyBars, dailyW, activeDays := buildFailureDailyBars(d.DailySeries)
 
 	tests := make([]KPIFailureTestRow, 0, len(d.AffectedTests))
 	for _, t := range d.AffectedTests {
@@ -223,8 +177,6 @@ func BuildKPIFailureDetailPage(site SiteInfo, d kpi.FailureDetailResponse, now t
 			Repository:  t.Repository,
 			Framework:   t.Framework,
 			FailCount:   t.FailCount,
-			RunCount:    t.RunCount,
-			GroupCount:  t.GroupCount,
 			RunsText:    runsText,
 			LastSeenISO: tISO,
 			LastSeenRel: tRel,
@@ -237,42 +189,44 @@ func BuildKPIFailureDetailPage(site SiteInfo, d kpi.FailureDetailResponse, now t
 		repos = append(repos, KPIFailureRepoRow{
 			Repository:      r.Repository,
 			App:             r.App,
-			OccurrenceCount: r.OccurrenceCount,
-			GroupCount:      r.GroupCount,
-			OccurrencesText: fmt.Sprintf("%s (%s)", pluralize(r.OccurrenceCount, "failure", "failures"), pluralize(r.GroupCount, "run", "runs")),
+			OccurrencesText: fmt.Sprintf("%s (%s)", pluralize(r.OccurrenceCount, "failure", "failures"), pluralize(r.GroupCount, "CI run", "CI runs")),
 			AffectedRuns:    r.AffectedRuns,
 			RatePer1k:       repoRate,
 			LanesSummary:    strings.Join(r.Lanes, ", "),
 		})
+	}
+	var singleRepo *KPIFailureRepoRow
+	if len(repos) == 1 {
+		cp := repos[0]
+		singleRepo = &cp
 	}
 
 	shortLabel := shortSignatureLabel(d.ErrorClass, d.NormalizedMessage)
 	rateText, isLowSample := formatFailureRate(d.RatePer1k, d.OccurrenceCount, d.AffectedTestRuns)
 	windowPrimaryValue := rateText
 	windowMeta := fmt.Sprintf(
-		"%s (%s) across %s · %s",
-		pluralize(d.OccurrenceCount, "occurrence", "occurrences"),
-		pluralize(d.RawAttemptCount, "raw attempt", "raw attempts"),
-		pluralize(d.AffectedTestRuns, "affected test run", "affected test runs"),
+		"%s across %s · %s",
+		pluralize(d.OccurrenceCount, "failure", "failures"),
+		pluralize(d.AffectedTestRuns, "test run", "test runs"),
 		pluralize(d.AffectedTestCount, "test", "tests"),
 	)
 	if isLowSample {
 		windowPrimaryValue = pluralize(d.OccurrenceCount, "failure", "failures")
-		windowMeta = fmt.Sprintf(
-			"%s across %s · %s",
-			rateText,
-			pluralize(d.AffectedTestCount, "test", "tests"),
-			pluralize(d.RawAttemptCount, "total attempt", "total attempts"),
-		)
+		windowMeta = fmt.Sprintf("%s · %s", rateText, pluralize(d.AffectedTestCount, "test", "tests"))
 	}
 
 	rate14d, _ := formatFailureRate(d.RatePer1k14d, d.Occurrences14d, d.AffectedRuns14d)
 	delta14d, delta14dClass := formatFailureDelta14d(d.DeltaRatePer1k, d.Occurrences14d, d.AffectedRuns14d, d.PriorOccurrences14d, d.PriorAffectedRuns14d)
 	cur14dText := fmt.Sprintf("%s in %s", pluralize(d.Occurrences14d, "failure", "failures"), pluralize(d.AffectedRuns14d, "run", "runs"))
-	prior14dText := "no runs"
+	prior14dText := "no prior runs"
 	if d.PriorAffectedRuns14d > 0 {
 		priorRate14d, _ := formatFailureRate(d.PriorRatePer1k14d, d.PriorOccurrences14d, d.PriorAffectedRuns14d)
 		prior14dText = fmt.Sprintf("%s (%s in %s)", priorRate14d, pluralize(d.PriorOccurrences14d, "failure", "failures"), pluralize(d.PriorAffectedRuns14d, "run", "runs"))
+	}
+
+	windowDays := d.Filters.WindowDays
+	if windowDays <= 0 {
+		windowDays = 30
 	}
 
 	return KPIFailureDetailPage{
@@ -281,57 +235,36 @@ func BuildKPIFailureDetailPage(site SiteInfo, d kpi.FailureDetailResponse, now t
 		Filters:                filterState,
 		OverviewHref:           overviewHref,
 		PRsHref:                prsHref,
-		RequestedSignatureID:   d.RequestedSignatureID,
-		CanonicalSignatureID:   d.CanonicalSignatureID,
-		IsMerged:               d.MergedIntoID != nil && *d.MergedIntoID != "",
-		MergedCount:            len(d.MergedSignatureIDs),
-		Fingerprint:            d.Fingerprint,
-		ShortFingerprint:       shortFingerprint(d.Fingerprint),
-		AlgoVersion:            d.AlgoVersion,
+		WindowDays:             windowDays,
 		ErrorClass:             errClass,
 		NormalizedMessage:      d.NormalizedMessage,
 		TopFrame:               topFrame,
 		SampleMessage:          sampleMsg,
 		StateLabel:             stateLabel,
 		StateClass:             stateClass,
-		OccurrenceCount:        d.OccurrenceCount,
-		RawAttemptCount:        d.RawAttemptCount,
-		GroupCount:             d.GroupCount,
 		GroupCountText:         pluralize(d.GroupCount, "CI run", "CI runs"),
-		AffectedTestCount:      d.AffectedTestCount,
-		AffectedTestRuns:       d.AffectedTestRuns,
-		RatePer1k:              formatRatePer1k(d.RatePer1k),
 		IsLowSample:            isLowSample,
 		WindowPrimaryValue:     windowPrimaryValue,
 		WindowMeta:             windowMeta,
 		Rate14d:                rate14d,
-		Occ14d:                 d.Occurrences14d,
-		Runs14d:                d.AffectedRuns14d,
 		Current14dText:         cur14dText,
-		PriorRate14d:           formatRatePer1k(d.PriorRatePer1k14d),
-		PriorOcc14d:            d.PriorOccurrences14d,
-		PriorRuns14d:           d.PriorAffectedRuns14d,
 		Prior14dText:           prior14dText,
 		Delta14d:               delta14d,
 		Delta14dClass:          delta14dClass,
-		Occ7d:                  d.Occurrences7d,
-		Runs7d:                 d.AffectedRuns7d,
 		Trailing7dText:         fmt.Sprintf("%s in %s", pluralize(d.Occurrences7d, "failure", "failures"), pluralize(d.AffectedRuns7d, "run", "runs")),
 		LastSeenISO:            lastISO,
 		LastSeenRel:            lastRel,
 		FirstSeen:              firstSeen,
 		LatestVerdict:          verdictView,
-		HasDaily:               len(dailyRows) > 0,
+		HasDaily:               len(dailyBars) > 0,
 		DailyBars:              dailyBars,
 		DailyChartW:            dailyW,
-		DailyRows:              dailyRows,
-		ActiveDailyRows:        activeDailyRows,
-		InactiveDaysCount:      len(dailyRows) - len(activeDailyRows),
-		ActiveDaysText:         pluralize(len(activeDailyRows), "active day", "active days"),
+		ActiveDaysText:         pluralize(activeDays, "active day", "active days"),
 		AffectedTests:          tests,
 		AffectedTestsCountText: pluralize(len(tests), "test", "tests"),
 		AffectedRepos:          repos,
 		AffectedReposCountText: pluralize(len(repos), "repository", "repositories"),
+		SingleRepo:             singleRepo,
 		PRNumbers:              append([]int(nil), d.PRNumbers...),
 	}
 }
@@ -343,14 +276,17 @@ func derefString(p *string) string {
 	return *p
 }
 
-func buildFailureDailyChart(series []kpi.FailureDailyPoint) (bars []KPIChartBar, chartW int, rows, activeRows []KPIFailureDailyRow) {
+func buildFailureDailyBars(series []kpi.FailureDailyPoint) (bars []KPIChartBar, chartW int, activeDays int) {
 	if len(series) == 0 {
-		return nil, 0, nil, nil
+		return nil, 0, 0
 	}
 	maxOcc := 1
 	for _, pt := range series {
 		if pt.OccurrenceCount > maxOcc {
 			maxOcc = pt.OccurrenceCount
+		}
+		if pt.OccurrenceCount > 0 {
+			activeDays++
 		}
 	}
 
@@ -363,23 +299,8 @@ func buildFailureDailyChart(series []kpi.FailureDailyPoint) (bars []KPIChartBar,
 		minBar = 3
 	)
 	bars = make([]KPIChartBar, 0, len(series))
-	rows = make([]KPIFailureDailyRow, 0, len(series))
-
 	for i, pt := range series {
 		rateText, _ := formatFailureRate(pt.RatePer1k, pt.OccurrenceCount, pt.AffectedTestRuns)
-		row := KPIFailureDailyRow{
-			Date:             pt.Date,
-			OccurrenceCount:  pt.OccurrenceCount,
-			RawAttemptCount:  pt.RawAttemptCount,
-			GroupCount:       pt.GroupCount,
-			AffectedTestRuns: pt.AffectedTestRuns,
-			RatePer1k:        rateText,
-		}
-		rows = append(rows, row)
-		if pt.OccurrenceCount > 0 {
-			activeRows = append(activeRows, row)
-		}
-
 		h := minBar
 		colorClass := "kpi-bar-empty"
 		if pt.OccurrenceCount > 0 {
@@ -410,5 +331,5 @@ func buildFailureDailyChart(series []kpi.FailureDailyPoint) (bars []KPIChartBar,
 	if chartW < 200 {
 		chartW = 200
 	}
-	return bars, chartW, rows, activeRows
+	return bars, chartW, activeDays
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
 
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
@@ -158,6 +159,29 @@ func LoadDatabaseURL() (string, error) {
 		DBName:     dbCfg.DBName,
 		DBSSLMode:  dbCfg.DBSSLMode,
 	})
+}
+
+// LoadStorageConfig loads .env (best-effort) and resolves only the TSIO_S3_*
+// object-store settings without requiring server-only settings like
+// TSIO_DATABASE_URL or TSIO_SESSION_SECRET. TSIO_S3_BUCKET is required.
+func LoadStorageConfig() (storage.Config, error) {
+	loadDotenv()
+
+	var s3Cfg struct {
+		Endpoint       string `env:"TSIO_S3_ENDPOINT"`
+		Region         string `env:"TSIO_S3_REGION" envDefault:"us-east-1"`
+		Bucket         string `env:"TSIO_S3_BUCKET"`
+		AccessKey      string `env:"TSIO_S3_ACCESS_KEY,unset"`
+		SecretKey      string `env:"TSIO_S3_SECRET_KEY,unset"`
+		ForcePathStyle bool   `env:"TSIO_S3_FORCE_PATH_STYLE" envDefault:"false"`
+	}
+	if err := env.Parse(&s3Cfg); err != nil {
+		return storage.Config{}, fmt.Errorf("parse s3 env: %w", err)
+	}
+	if s3Cfg.Bucket == "" {
+		return storage.Config{}, errors.New("TSIO_S3_BUCKET is not set")
+	}
+	return storage.Config(s3Cfg), nil
 }
 
 // assembleDatabaseURL builds a postgres:// DSN from the split TSIO_DB_* fields.

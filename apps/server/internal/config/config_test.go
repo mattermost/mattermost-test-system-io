@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 )
 
 func TestValidate_defaults(t *testing.T) {
@@ -219,5 +221,43 @@ func TestLoadDatabaseURL_splitFieldsWithoutServerSecrets(t *testing.T) {
 	want := "postgres://tsio:p%40ss%2Fw%3Aord@db.internal:5433/tsio?sslmode=disable"
 	if dsn != want {
 		t.Errorf("LoadDatabaseURL = %q, want %q", dsn, want)
+	}
+}
+
+func TestLoadStorageConfig_withoutServerSecrets(t *testing.T) {
+	t.Setenv("TSIO_DATABASE_URL", "")
+	t.Setenv("TSIO_SESSION_SECRET", "")
+	t.Setenv("TSIO_S3_ENDPOINT", "http://minio:9000")
+	t.Setenv("TSIO_S3_REGION", "")
+	t.Setenv("TSIO_S3_BUCKET", "reports")
+	t.Setenv("TSIO_S3_ACCESS_KEY", "ak")
+	t.Setenv("TSIO_S3_SECRET_KEY", "sk")
+	t.Setenv("TSIO_S3_FORCE_PATH_STYLE", "true")
+
+	cfg, err := LoadStorageConfig()
+	if err != nil {
+		t.Fatalf("LoadStorageConfig: %v", err)
+	}
+	want := storage.Config{
+		Endpoint: "http://minio:9000", Region: "us-east-1", Bucket: "reports",
+		AccessKey: "ak", SecretKey: "sk", ForcePathStyle: true,
+	}
+	if cfg != want {
+		t.Errorf("LoadStorageConfig = %+v, want %+v", cfg, want)
+	}
+}
+
+func TestLoadStorageConfig_requiresBucket(t *testing.T) {
+	t.Setenv("TSIO_S3_BUCKET", "")
+	if _, err := LoadStorageConfig(); err == nil || !strings.Contains(err.Error(), "TSIO_S3_BUCKET") {
+		t.Fatalf("expected TSIO_S3_BUCKET error, got %v", err)
+	}
+}
+
+func TestLoadStorageConfig_rejectsBadForcePathStyle(t *testing.T) {
+	t.Setenv("TSIO_S3_BUCKET", "reports")
+	t.Setenv("TSIO_S3_FORCE_PATH_STYLE", "maybe")
+	if _, err := LoadStorageConfig(); err == nil {
+		t.Fatal("expected parse error for invalid TSIO_S3_FORCE_PATH_STYLE")
 	}
 }

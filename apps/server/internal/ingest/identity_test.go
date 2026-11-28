@@ -193,34 +193,34 @@ func TestDeriveTestKey(t *testing.T) {
 }
 
 func TestEncodeAnnotations_SanitizesNULPreservesEscapedBackslash(t *testing.T) {
-	got := string(encodeAnnotations([]json.RawMessage{
+	got := string(EncodeAnnotations([]json.RawMessage{
 		json.RawMessage(`{"type":"issue","description":"bad\u0000desc","escaped":"keep\\u0000literal"}`),
 	}))
 	if strings.Contains(got, `\u0000`) && !strings.Contains(got, `keep\\u0000literal`) {
 		t.Fatalf("unexpected encoded annotations: %s", got)
 	}
 	if !strings.Contains(got, `"baddesc"`) || !strings.Contains(got, `"keep\\u0000literal"`) {
-		t.Fatalf("encodeAnnotations did not sanitize NUL / preserve escaped backslash cleanly: %s", got)
+		t.Fatalf("EncodeAnnotations did not sanitize NUL / preserve escaped backslash cleanly: %s", got)
 	}
 }
 
 func TestEncodeAnnotations_PreservesLargeNumbersAndRejectsTrailing(t *testing.T) {
-	got := string(encodeAnnotations([]json.RawMessage{
+	got := string(EncodeAnnotations([]json.RawMessage{
 		json.RawMessage(`{"id":9007199254740993,"note":"bad\u0000text"}`),
 	}))
 	if !strings.Contains(got, `"id":9007199254740993`) || !strings.Contains(got, `"badtext"`) {
-		t.Fatalf("encodeAnnotations lost numeric precision or failed sanitization: %s", got)
+		t.Fatalf("EncodeAnnotations lost numeric precision or failed sanitization: %s", got)
 	}
-	if trailing := string(encodeAnnotations([]json.RawMessage{
+	if trailing := string(EncodeAnnotations([]json.RawMessage{
 		json.RawMessage(`{"id":1} {"extra":2}`),
 	})); trailing != "[]" {
-		t.Fatalf("encodeAnnotations accepted trailing JSON token: %s", trailing)
+		t.Fatalf("EncodeAnnotations accepted trailing JSON token: %s", trailing)
 	}
 }
 
 func TestEncodeAnnotations_CleanKeyBeatsDirtyCollision(t *testing.T) {
 	for range 20 {
-		raw := encodeAnnotations([]json.RawMessage{
+		raw := EncodeAnnotations([]json.RawMessage{
 			json.RawMessage(`{"issue":"keep","issue\u0000":"drop","extra\u0000":"ok\u0000val"}`),
 		})
 		var anns []map[string]any
@@ -231,7 +231,7 @@ func TestEncodeAnnotations_CleanKeyBeatsDirtyCollision(t *testing.T) {
 			t.Fatalf("clean/non-colliding keys not preserved: %#v", anns[0])
 		}
 
-		dirtyOnly := encodeAnnotations([]json.RawMessage{
+		dirtyOnly := EncodeAnnotations([]json.RawMessage{
 			json.RawMessage(`{"issue\u0000":"first","issue\u0000\u0000":"second"}`),
 		})
 		var dirtyAnns []map[string]any
@@ -257,12 +257,12 @@ func TestCountStatuses_SanitizesFullTitle(t *testing.T) {
 }
 
 func TestEncodeAnnotations_SkipsOutOfRangeNumbersOnly(t *testing.T) {
-	got := string(encodeAnnotations([]json.RawMessage{
+	got := string(EncodeAnnotations([]json.RawMessage{
 		json.RawMessage(`{"type":"big","meta":{"n":[1e200000]}}`),
 		json.RawMessage(`{"type":"tiny","n":1e-16384}`),
 		json.RawMessage(`{"type":"exact","id":9007199254740993}`),
 	}))
 	if got != `[{"id":9007199254740993,"type":"exact"}]` {
-		t.Fatalf("encodeAnnotations = %s, want only the in-range annotation", got)
+		t.Fatalf("EncodeAnnotations = %s, want only the in-range annotation", got)
 	}
 }

@@ -412,14 +412,14 @@ func TestSEC11515_TwoPlatformMobileCase(t *testing.T) {
 
 	// 4. SSR GET /kpi?app=mobile&window=14d
 	mobileHTML := getRaw(t, env.ServerURL+"/kpi?app=mobile&window=14d")
-	for _, want := range []string{`mobile: 1`, `Trailing 14d`} {
+	for _, want := range []string{`1 flaky test`, `Trailing 14d`} {
 		if !strings.Contains(mobileHTML, want) {
 			t.Fatalf("SSR /kpi?app=mobile&window=14d missing %q", want)
 		}
 	}
 	iosHTML := getRaw(t, env.ServerURL+"/kpi?app=mobile&platform=ios&window=14d")
-	if strings.Contains(iosHTML, `mobile: 1`) {
-		t.Fatalf("SSR /kpi?app=mobile&platform=ios&window=14d must not show flaky mobile: 1")
+	if strings.Contains(iosHTML, `1 flaky test`) || !strings.Contains(iosHTML, `0 flaky tests`) {
+		t.Fatalf("SSR /kpi?app=mobile&platform=ios&window=14d must show 0 flaky tests")
 	}
 }
 
@@ -1574,26 +1574,49 @@ func TestSEC11515_HandComputedUnifiedKPIFixtureSuite(t *testing.T) {
 	ovHTML := getRaw(t, env.ServerURL+"/kpi")
 	assertNoSecretOrContextLeak(t, "unified SSR /kpi", ovHTML, []string{unifiedSecret}, true)
 	for _, want := range []string{
-		`60.0%`,
+		`Repository Health Scorecard`,
+		`Web &amp; Server`,
+		`Mobile`,
+		`Desktop`,
 		`at least 33.3%`,
-		`5m`,
-		`8m 40s`,
-		`18.2%`,
-		`20.0%`,
-		`50.0%`,
-		`93.8%`,
+		`4m 10s`,
+		`6m 10s`,
+		`10m`,
+		`Active (2)`,
+		`All (4)`,
 		`Active`,
-		`Quiet (10d)`,
-		`Not enough runs`,
 		`Resurfaced`,
-		`Lane coverage:`,
 	} {
 		if !strings.Contains(ovHTML, want) {
 			t.Fatalf("unified SSR /kpi missing %q", want)
 		}
 	}
+	if strings.Contains(ovHTML, `Not enough runs`) || strings.Contains(ovHTML, `Quiet (10d)`) {
+		t.Fatal("unified SSR /kpi default Active view must hide Quiet and Dormant/Not enough runs rows")
+	}
 	if strings.Contains(strings.ToLower(ovHTML), "blocked") || strings.Contains(ovHTML, "Fixed") {
 		t.Fatal("unified SSR /kpi violated copy guardrails")
+	}
+
+	ovAllHTML := getRaw(t, env.ServerURL+"/kpi?show=all")
+	assertNoSecretOrContextLeak(t, "unified SSR /kpi?show=all", ovAllHTML, []string{unifiedSecret}, true)
+	for _, want := range []string{`Quiet (10d)`, `Dormant`} {
+		if !strings.Contains(ovAllHTML, want) {
+			t.Fatalf("unified SSR /kpi?show=all missing %q", want)
+		}
+	}
+
+	ovWebHTML := getRaw(t, env.ServerURL+"/kpi?repo=mattermost/mattermost")
+	assertNoSecretOrContextLeak(t, "unified SSR /kpi?repo=mattermost/mattermost", ovWebHTML, []string{unifiedSecret}, true)
+	for _, want := range []string{
+		`Main pass rate`,
+		`4m 10s`,
+		`6m 10s`,
+		`Lanes in Web &amp; Server`,
+	} {
+		if !strings.Contains(ovWebHTML, want) {
+			t.Fatalf("unified SSR /kpi?repo=mattermost/mattermost missing %q", want)
+		}
 	}
 
 	prsHTML := getRaw(t, env.ServerURL+"/kpi/prs")
@@ -1604,7 +1627,6 @@ func TestSEC11515_HandComputedUnifiedKPIFixtureSuite(t *testing.T) {
 		`Also failing elsewhere`,
 		`E2E red`,
 		`#104`,
-		`Lane coverage:`,
 	} {
 		if !strings.Contains(prsHTML, want) {
 			t.Fatalf("unified SSR /kpi/prs missing %q", want)
@@ -1637,8 +1659,8 @@ func TestSEC11515_HandComputedUnifiedKPIFixtureSuite(t *testing.T) {
 	// Verify URL-persisted filters across all 3 SSR routes.
 	ovFiltered := getRaw(t, env.ServerURL+"/kpi?app=mattermost&window=14d&sort=rate_desc")
 	for _, want := range []string{
-		`<option value="mattermost" selected>`,
-		`<option value="14d" selected>`,
+		`class="kpi-repo-tab is-active">Web &amp; Server</a>`,
+		`class="kpi-pill is-active">14d</a>`,
 		`<option value="rate_desc" selected>`,
 		`href="/kpi/prs?app=mattermost&amp;window=14d"`,
 	} {
@@ -1648,8 +1670,8 @@ func TestSEC11515_HandComputedUnifiedKPIFixtureSuite(t *testing.T) {
 	}
 	prsFiltered := getRaw(t, env.ServerURL+"/kpi/prs?app=mattermost&window=14d&sort=age_desc")
 	for _, want := range []string{
-		`<option value="mattermost" selected>`,
-		`<option value="14d" selected>`,
+		`class="kpi-repo-tab is-active">Web &amp; Server</a>`,
+		`class="kpi-pill is-active">14d</a>`,
 		`<option value="age_desc" selected>`,
 		`href="/kpi?app=mattermost&amp;window=14d"`,
 	} {

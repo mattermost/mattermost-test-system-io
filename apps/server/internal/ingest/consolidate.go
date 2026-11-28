@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // Totals summarizes what Consolidate wrote to the DB, so the caller can
@@ -236,39 +238,42 @@ func basename(p string) string {
 // gave as `flaky` is flaky whatever its own status.
 func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, unique int) {
 	type group struct {
-		final      ExtractedCase
-		everFailed bool
+		statuses       []string
+		frameworkFlaky bool
 	}
 	byTitle := make(map[string]*group, len(cases))
 	order := make([]string, 0, len(cases))
 	for _, c := range cases {
-		isFailure := c.Status == StatusFailed || c.Status == StatusTimedOut
-		g, ok := byTitle[c.FullTitle]
-		if !ok {
-			g = &group{final: c, everFailed: isFailure}
-			byTitle[c.FullTitle] = g
-			order = append(order, c.FullTitle)
+		if strings.TrimSpace(c.FullTitle) == "" || c.Status == "" {
 			continue
 		}
-		g.final = c
-		g.everFailed = g.everFailed || isFailure
+		g, ok := byTitle[c.FullTitle]
+		if !ok {
+			g = &group{}
+			byTitle[c.FullTitle] = g
+			order = append(order, c.FullTitle)
+		}
+		g.statuses = append(g.statuses, c.Status)
+		if c.Outcome == StatusFlaky {
+			g.frameworkFlaky = true
+		}
 	}
 	for _, k := range order {
 		g := byTitle[k]
+		verdict := teststatus.TestVerdict(g.statuses, g.frameworkFlaky)
+		if verdict == "" {
+			continue
+		}
 		unique++
-		switch {
-		case g.final.Outcome == StatusFlaky || g.final.Status == StatusFlaky:
-			flaky++
-		case g.final.Status == StatusPassed && g.everFailed:
-			flaky++
-		case g.final.Status == StatusPassed:
+		switch verdict {
+		case teststatus.Passed:
 			passed++
-		case g.final.Status == StatusFailed, g.final.Status == StatusTimedOut:
+		case teststatus.Failed:
 			failed++
-		case g.final.Status == StatusSkipped:
+		case teststatus.Skipped:
 			skipped++
-		default:
-			passed++
+		case teststatus.Flaky:
+			flaky++
 		}
 	}
 	return

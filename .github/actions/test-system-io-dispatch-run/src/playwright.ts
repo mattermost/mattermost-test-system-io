@@ -20,7 +20,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
-import { deadlineLease, spawnWithDeadline } from "./spawn";
 import type { InvocationRecord, SpecResult, TestCaseResult, TestStatus } from "./types";
 
 export interface RunUnitConfig {
@@ -66,6 +65,7 @@ export async function runUnit(
   if (cfg.playwrightRetries > 0) args.push(`--retries=${cfg.playwrightRetries}`);
   args.push(...specPaths);
 
+  const { deadlineLease, spawnWithDeadline } = await import("./spawn");
   const startedAt = Date.now();
   const child = await spawnWithDeadline("npx", args, {
     cwd: cfg.playwrightDir,
@@ -134,6 +134,7 @@ interface PlaywrightSpec {
   tests?: PlaywrightTest[];
 }
 interface PlaywrightTest {
+  status?: string;
   results?: PlaywrightResult[];
 }
 interface PlaywrightAttachment {
@@ -202,13 +203,19 @@ export function aggregateSpec(
           // every Playwright execution so the dashboard can show the full
           // retry history.
           let everPassed = false;
+          let everFlaky = false;
           let everFailed = false;
           let everTimedOut = false;
           let everInterrupted = false;
           let everSkipped = false;
-          for (const r of t.results || []) {
+          const results = t.results || [];
+          if (results.length > 0 && t.status === "flaky") everFlaky = true;
+          for (const r of results) {
             const status = mapStatus(r.status);
-            if (status === "passed" || status === "flaky") everPassed = true;
+            if (status === "flaky") {
+              everFlaky = true;
+              everPassed = true;
+            } else if (status === "passed") everPassed = true;
             else if (status === "failed") everFailed = true;
             else if (status === "timedOut") everTimedOut = true;
             else if (status === "interrupted") everInterrupted = true;
@@ -235,11 +242,12 @@ export function aggregateSpec(
           }
 
           let testOutcome: TestStatus | null = null;
-          if (everPassed && (everFailed || everTimedOut || everInterrupted)) testOutcome = "flaky";
-          else if (everPassed) testOutcome = "passed";
+          if (everFlaky || (everPassed && (everFailed || everTimedOut || everInterrupted)))
+            testOutcome = "flaky";
           else if (everInterrupted) testOutcome = "interrupted";
           else if (everTimedOut) testOutcome = "timedOut";
           else if (everFailed) testOutcome = "failed";
+          else if (everPassed) testOutcome = "passed";
           else if (everSkipped) testOutcome = "skipped";
           if (testOutcome == null) continue;
           if (RANKS[testOutcome] > RANKS[worst]) worst = testOutcome;
@@ -252,7 +260,13 @@ export function aggregateSpec(
 
   if (cases.length === 0) {
     return {
-      result: { spec_path: specPath, status: "skipped", actual_duration_ms: 0, test_cases: [] },
+      result: {
+        spec_path: specPath,
+        status: "failed",
+        actual_duration_ms: 0,
+        error_message: "spec-did-not-run",
+        test_cases: [],
+      },
       screenshots: [],
     };
   }
@@ -272,7 +286,7 @@ export function aggregateSpec(
 }
 
 /** Maps a Playwright test or result status to test-system-io's status. */
-function mapStatus(s: string | undefined): TestStatus {
+export function mapStatus(s: string | undefined): TestStatus {
   switch (s) {
     case "expected":
     case "passed":
@@ -283,6 +297,7 @@ function mapStatus(s: string | undefined): TestStatus {
     case "flaky":
       return "flaky";
     case "skipped":
+    case "pending":
       return "skipped";
     case "timedOut":
       return "timedOut";

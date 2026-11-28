@@ -89,6 +89,34 @@ func TestCountStatuses_FlakyStatusWithoutOutcome(t *testing.T) {
 	}
 }
 
+func TestCountStatuses_CanonicalRules(t *testing.T) {
+	passed, failed, skipped, flaky, unique := countStatuses([]ExtractedCase{
+		{Title: "p", FullTitle: "s > p", Status: StatusPassed},
+		{Title: "fl", FullTitle: "s > fl", Status: StatusPassed},
+		{Title: "fl", FullTitle: "s > fl", Status: StatusFailed},
+		{Title: "int", FullTitle: "s > int", Status: StatusInterrupted},
+		{Title: "unk", FullTitle: "s > unk", Status: "unknown"},
+		{Title: "pend", FullTitle: "s > pend", Status: "pending"},
+		{Title: "notitle", FullTitle: "   ", Status: StatusPassed},
+		{Title: "nostatus", FullTitle: "s > nostatus", Status: ""},
+	})
+	if passed != 1 || failed != 2 || skipped != 1 || flaky != 1 || unique != 5 {
+		t.Fatalf("counts p=%d f=%d s=%d fl=%d u=%d, want 1/2/1/1/5", passed, failed, skipped, flaky, unique)
+	}
+	if got := mapPlaywrightStatus("pending"); got != StatusSkipped {
+		t.Fatalf("mapPlaywrightStatus(pending) = %q, want skipped", got)
+	}
+	if got := mapPlaywrightStatus("unknown"); got != StatusFailed {
+		t.Fatalf("mapPlaywrightStatus(unknown) = %q, want failed", got)
+	}
+	if got := detoxStatus("unknown"); got != StatusFailed {
+		t.Fatalf("detoxStatus(unknown) = %q, want failed", got)
+	}
+	if got := cypressStatus(cypressTest{State: "unknown"}); got != StatusFailed {
+		t.Fatalf("cypressStatus(unknown) = %q, want failed", got)
+	}
+}
+
 func TestExtractPlaywright_MetadataAndErrors(t *testing.T) {
 	body := []byte(`{
 		"suites": [{

@@ -523,8 +523,8 @@ func TestMigration000030BackfillsLeaseAndAttemptKinds(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = m.Close() })
 
-	if err := m.Steps(-1); err != nil {
-		t.Fatalf("migrate down 1 step (000030 -> 000029): %v", err)
+	if err := m.Migrate(29); err != nil {
+		t.Fatalf("migrate to 000029: %v", err)
 	}
 
 	runID := uuid.Must(uuid.NewV7())

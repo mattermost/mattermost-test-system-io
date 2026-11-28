@@ -24,6 +24,12 @@ func TestPassRatePercent(t *testing.T) {
 	if passRatePercent(&testStats{Passed: 9, Flaky: 1, Total: 10}) != 100 {
 		t.Fatal("expected 100%")
 	}
+	if got := passRatePercent(&testStats{Passed: 8, Flaky: 1, Failed: 1, Skipped: 5, Total: 15}); got != 90 {
+		t.Fatalf("passRatePercent with skipped = %d, want 90", got)
+	}
+	if got := passRatePercent(&testStats{Skipped: 4, Total: 4}); got != -1 {
+		t.Fatalf("passRatePercent all skipped = %d, want -1", got)
+	}
 }
 
 func TestParseProjectedTestStats(t *testing.T) {

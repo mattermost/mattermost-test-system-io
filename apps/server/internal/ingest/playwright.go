@@ -226,6 +226,8 @@ func mapPlaywrightStatus(resultStatus string) string {
 		return StatusPassed
 	case "failed", "unexpected":
 		return StatusFailed
+	case StatusFlaky:
+		return StatusFlaky
 	case StatusSkipped, cypressStatePending:
 		return StatusSkipped
 	case "timedOut":
@@ -233,7 +235,7 @@ func mapPlaywrightStatus(resultStatus string) string {
 	case "interrupted":
 		return StatusInterrupted
 	default:
-		return StatusPassed
+		return StatusFailed
 	}
 }
 

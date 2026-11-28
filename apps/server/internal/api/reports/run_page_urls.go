@@ -1,6 +1,10 @@
 package reports
 
-import "net/url"
+import (
+	"net/url"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
+)
 
 func runPageHref(urlPath, ghRunID, ghRunAttempt string) string {
 	if urlPath == "" {
@@ -45,9 +49,8 @@ func containsByte(s string, c byte) bool {
 }
 
 func passRatePercent(s *testStats) int {
-	if s == nil || s.Total <= 0 {
+	if s == nil {
 		return -1
 	}
-	passed := s.Passed + s.Flaky
-	return (passed * 100) / s.Total
+	return teststatus.PassRatePercent(s.Passed, s.Failed, s.Flaky)
 }

@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // CompleteOutcome summarizes the side-effects of a successful RecordCompletion
@@ -556,20 +558,24 @@ func isLateReport(now, deadline time.Time) bool {
 // mapStatusesToUnitState collapses a unit's per-spec statuses into the
 // narrower per-unit state enum:
 //
-//	any failed/timedOut/interrupted -> completed_fail
-//	else any passed/flaky           -> completed_pass
-//	else (all skipped)              -> completed_skipped
+//	empty or any failing status -> completed_fail
+//	else any passing status     -> completed_pass
+//	else (all skipped/pending)  -> completed_skipped
 func mapStatusesToUnitState(statuses []string) string {
-	hasPassOrFlaky := false
+	if len(statuses) == 0 {
+		return UnitStateCompletedFail
+	}
+	hasPass := false
 	for _, s := range statuses {
-		switch s {
-		case AttemptStatusFailed, AttemptStatusTimedOut, AttemptStatusInterrupted:
+		switch teststatus.ClassifyAttempt(s) {
+		case teststatus.ClassFail:
 			return UnitStateCompletedFail
-		case AttemptStatusPassed, AttemptStatusFlaky:
-			hasPassOrFlaky = true
+		case teststatus.ClassPass:
+			hasPass = true
+		case teststatus.ClassSkip:
 		}
 	}
-	if hasPassOrFlaky {
+	if hasPass {
 		return UnitStateCompletedPass
 	}
 	return UnitStateCompletedSkipped

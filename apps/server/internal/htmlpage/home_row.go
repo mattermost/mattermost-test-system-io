@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // HomeRunRow is one home list row (live or static).
@@ -240,12 +241,10 @@ func statusIconForRun(groupStatus string, orch *reports.HomeOrchView, total int,
 }
 
 func passRateDisplay(passed, failed, flaky int) string {
-	p := passed + flaky
-	total := p + failed
-	if total == 0 {
+	rate, ok := teststatus.PassRate(passed, failed, flaky)
+	if !ok {
 		return ""
 	}
-	rate := float64(p*100) / float64(total)
 	if rate == 100 {
 		return "100"
 	}

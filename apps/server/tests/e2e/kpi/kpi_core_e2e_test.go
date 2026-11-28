@@ -1690,6 +1690,374 @@ func TestKPI_RecurringFailuresCrossScopeFirstSeenAndLassoCycle(t *testing.T) {
 	}
 }
 
+func TestKPI_TriageSummaryWeeklyCoverageAndTestState(t *testing.T) {
+	env := testenv.Start(t, testenv.WithReaperDisabled())
+	ctx := t.Context()
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.UTC)
+
+	apiKey := env.IssueAPIKey(t, "kpi-triage-e2e")
+
+	tFlaky := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:ts-flaky", "TS > flaky")
+	tNewRecent := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:ts-new-recent", "TS > new recent")
+	tNewOneCommit := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:ts-new-one", "TS > new single commit")
+	tKnown := insertTest(t, ctx, env.Pool, "mattermost/mattermost", "playwright", "h:ts-known", "TS > known")
+	tMobile := insertTest(t, ctx, env.Pool, "mattermost/mattermost-mobile", "detox", "h:ts-mob", "TS > mobile split")
+
+	// Force older first_seen_at on tNewOneCommit and tKnown so tests.first_seen_at is >14d ago.
+	if _, err := env.Pool.Exec(ctx, `
+		UPDATE tests SET first_seen_at = $1 WHERE id IN ($2, $3, $4)
+	`, today.AddDate(0, 0, -25), tNewOneCommit, tKnown, tMobile); err != nil {
+		t.Fatalf("backdate tests.first_seen_at: %v", err)
+	}
+
+	var sigA, sigB uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO failure_signatures (fingerprint, algo_version, normalized_message, first_seen_at)
+		VALUES ($1, $2, 'triage sig A', $3) RETURNING id
+	`, strings.Repeat("c", 64), errorsig.AlgoVersion, today).Scan(&sigA); err != nil {
+		t.Fatalf("insert sigA: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO failure_signatures (fingerprint, algo_version, normalized_message, first_seen_at)
+		VALUES ($1, $2, 'triage sig B', $3) RETURNING id
+	`, strings.Repeat("d", 64), errorsig.AlgoVersion, today).Scan(&sigB); err != nil {
+		t.Fatalf("insert sigB: %v", err)
+	}
+
+	// Seed base verdict on another group so reused_from_id can reference it.
+	gSeedVerdict := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-seed", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "pr-seed", Commit: "seed-sha",
+		RunID: "seed-run", Attempt: "1", Stage: "pr", CreatedAt: today.AddDate(0, 0, -40),
+	})
+	var baseVerdictID uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO verdicts (report_group_id, repository, test_id, signature_id, label, error_context)
+		VALUES ($1, 'mattermost/mattermost', $2, $3, 'infra', '{"secret":"base_secret_never_leak"}'::jsonb)
+		RETURNING id
+	`, gSeedVerdict, tFlaky, sigA).Scan(&baseVerdictID); err != nil {
+		t.Fatalf("insert base verdict: %v", err)
+	}
+	mustRefresh(t, ctx, env.Pool, gSeedVerdict)
+
+	// ---- Current 30d runs for mattermost/mattermost ----
+	// 1. Failed completed run (triaged): 2 failed test occurrences (tFlaky with sigA, tNewRecent with sigB).
+	//    We attach 2 verdicts to gFail1: sigA (reused=true, label="infra") and sigB (reused=false, label="flaky-infra").
+	//    -> 1 failed run (triaged), 2 failed test occ (2 triaged), 2 verdicts (1 reused).
+	gFail1 := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-triage", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "pr-1", Commit: "tr-sha-1",
+		RunID: "tr-1", Attempt: "1", Stage: "pr", CreatedAt: today.AddDate(0, 0, -2),
+	})
+	rF1 := insertReport(t, ctx, env.Pool, gFail1, "e2e-triage", "")
+	sF1 := insertSuite(t, ctx, env.Pool, rF1, "Suite")
+	// tFlaky mixed on tr-sha-1 (failed + passed -> verdict='flaky', wait: failed_test_occurrences counts verdict='failed'!)
+	// Keep tFlaky verdict='failed' here so failed_test_occurrences counts both tFlaky & tNewRecent, and make tFlaky flaky across 2 other commits!
+	insertCaseWithSig(t, ctx, env.Pool, sF1, tFlaky, sigA, "flaky test", "failed", 0, 0)
+	insertCaseWithSig(t, ctx, env.Pool, sF1, tNewRecent, sigB, "new recent", "failed", 0, 1)
+	mustRefresh(t, ctx, env.Pool, gFail1)
+
+	vBody, _ := json.Marshal(map[string]any{
+		"repository":      "mattermost/mattermost",
+		"report_group_id": gFail1.String(),
+		"verdicts": []any{
+			map[string]any{
+				"test_id":        tFlaky.String(),
+				"signature_id":   sigA.String(),
+				"label":          "infra",
+				"reused_from_id": baseVerdictID.String(),
+				"error_context":  map[string]any{"token": "ghp_triage_secret_must_never_leak"},
+			},
+			map[string]any{
+				"test_id":       tNewRecent.String(),
+				"signature_id":  sigB.String(),
+				"label":         "flaky-infra",
+				"error_context": map[string]any{"password": "super_secret_password"},
+			},
+		},
+	})
+	vReq, _ := http.NewRequest(http.MethodPost, env.ServerURL+"/api/v1/verdicts", bytes.NewReader(vBody))
+	vReq.Header.Set("Content-Type", "application/json")
+	vReq.Header.Set("X-API-Key", apiKey)
+	vResp, err := http.DefaultClient.Do(vReq)
+	if err != nil {
+		t.Fatalf("post verdicts: %v", err)
+	}
+	vResp.Body.Close()
+	if vResp.StatusCode != http.StatusOK {
+		t.Fatalf("post verdicts status = %d, want 200", vResp.StatusCode)
+	}
+
+	// 2. Failed completed run (untriaged) in same week: 2 failed test occurrences.
+	gFail2 := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-triage", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "pr-2", Commit: "tr-sha-2",
+		RunID: "tr-2", Attempt: "1", Stage: "pr", CreatedAt: today.AddDate(0, 0, -1),
+	})
+	rF2 := insertReport(t, ctx, env.Pool, gFail2, "e2e-triage", "")
+	sF2 := insertSuite(t, ctx, env.Pool, rF2, "Suite")
+	insertCaseWithSig(t, ctx, env.Pool, sF2, tNewRecent, sigA, "new recent", "failed", 0, 0)
+	insertCaseWithSig(t, ctx, env.Pool, sF2, tKnown, sigB, "known", "failed", 0, 1)
+	mustRefresh(t, ctx, env.Pool, gFail2)
+
+	// 3. Cleanly completed passing run (group_status='completed', orch_status='completed').
+	gClean := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-triage", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "pr-3", Commit: "tr-sha-3",
+		RunID: "tr-3", Attempt: "1", Stage: "pr", CreatedAt: today.AddDate(0, 0, -1),
+	})
+	insertOrchRun(t, ctx, env.Pool, orchSeed{
+		Repo: "mattermost/mattermost", Commit: "tr-sha-3", RunID: "tr-3",
+		Name: "e2e-triage", Attempt: "1", Status: "completed", StartedAt: today.AddDate(0, 0, -1),
+	})
+	rClean := insertReport(t, ctx, env.Pool, gClean, "e2e-triage", "")
+	sClean := insertSuite(t, ctx, env.Pool, rClean, "Suite")
+	insertCase(t, ctx, env.Pool, sClean, tKnown, "known", "passed", 0, "", 0)
+	mustRefresh(t, ctx, env.Pool, gClean)
+
+	// 4. Timed-out run whose report_group finalized as 'completed' (must count as timed_out, NOT completed; is_red=true).
+	gTOCompleted := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-triage", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "pr-4", Commit: "tr-sha-4",
+		RunID: "tr-4", Attempt: "1", Stage: "pr", CreatedAt: today.AddDate(0, 0, -1),
+	})
+	insertOrchRun(t, ctx, env.Pool, orchSeed{
+		Repo: "mattermost/mattermost", Commit: "tr-sha-4", RunID: "tr-4",
+		Name: "e2e-triage", Attempt: "1", Status: "timed_out", StartedAt: today.AddDate(0, 0, -1),
+	})
+	mustRefresh(t, ctx, env.Pool, gTOCompleted)
+
+	// 5. Timed-out run whose report_group is still 'in_progress' (must count as timed_out, NOT in_progress / dropped; is_red=true).
+	gTOInProg := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-triage", Status: "in_progress",
+		Repo: "mattermost/mattermost", Branch: "pr-5", Commit: "tr-sha-5",
+		RunID: "tr-5", Attempt: "1", Stage: "pr", CreatedAt: today.AddDate(0, 0, -1),
+	})
+	insertOrchRun(t, ctx, env.Pool, orchSeed{
+		Repo: "mattermost/mattermost", Commit: "tr-sha-5", RunID: "tr-5",
+		Name: "e2e-triage", Attempt: "1", Status: "timed_out", StartedAt: today.AddDate(0, 0, -1),
+	})
+	mustRefresh(t, ctx, env.Pool, gTOInProg)
+
+	// 6. Incomplete upload run (group_status='incomplete', no failed tests).
+	gInc := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-triage", Status: "incomplete",
+		Repo: "mattermost/mattermost", Branch: "pr-6", Commit: "tr-sha-6",
+		RunID: "tr-6", Attempt: "1", Stage: "pr", CreatedAt: today.AddDate(0, 0, -1),
+	})
+	mustRefresh(t, ctx, env.Pool, gInc)
+
+	// 7. Truly in-progress run (group_status='in_progress', orch_status='in_progress').
+	gInProg := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-triage", Status: "in_progress",
+		Repo: "mattermost/mattermost", Branch: "pr-7", Commit: "tr-sha-7",
+		RunID: "tr-7", Attempt: "1", Stage: "pr", CreatedAt: today,
+	})
+	insertOrchRun(t, ctx, env.Pool, orchSeed{
+		Repo: "mattermost/mattermost", Commit: "tr-sha-7", RunID: "tr-7",
+		Name: "e2e-triage", Attempt: "1", Status: "in_progress", StartedAt: today,
+	})
+	mustRefresh(t, ctx, env.Pool, gInProg)
+
+	// Seed additional test executions/commits for /tests/{id}/state assertions:
+	// - tFlaky: 2 mixed commits in trailing 14d (tr-flk-1, tr-flk-2) -> state="flaky"
+	// - tNewOneCommit: 1 commit at -20d -> state="new" (total_commits <= 1)
+	// - tKnown: commit at -20d + commit at -1d (gFail2) -> 2 commits, first_seen=-25d -> state="known"
+	// - tMobile: 2 commits at -20d, -18d with ios pass & android fail -> state="known", is_flaky=false!
+	for idx := range 2 {
+		gFlk := insertGroup(t, ctx, env.Pool, groupSeed{
+			Framework: "playwright", Name: "e2e-triage", Status: "completed",
+			Repo: "mattermost/mattermost", Branch: "pr-flk", Commit: fmt.Sprintf("tr-flk-%d", idx),
+			RunID: fmt.Sprintf("tr-flk-%d", idx), Attempt: "1", Stage: "pr", CreatedAt: today.AddDate(0, 0, -3-idx),
+		})
+		rFlk := insertReport(t, ctx, env.Pool, gFlk, "e2e-triage", "")
+		sFlk := insertSuite(t, ctx, env.Pool, rFlk, "Suite")
+		insertCase(t, ctx, env.Pool, sFlk, tFlaky, "flaky test", "failed", 0, "", 0)
+		insertCase(t, ctx, env.Pool, sFlk, tFlaky, "flaky test", "passed", 1, "", 1)
+		mustRefresh(t, ctx, env.Pool, gFlk)
+	}
+	// Update tFlaky's latest verdict to be "flaky-infra" (higher created_at than POST /verdicts at now) with secret error_context.
+	if _, err := env.Pool.Exec(ctx, `
+		INSERT INTO verdicts (report_group_id, repository, test_id, signature_id, label, error_context, created_at)
+		VALUES ($1, 'mattermost/mattermost', $2, $3, 'flaky-infra', '{"secret":"test_state_secret_never_leak"}'::jsonb, $4)
+	`, gClean, tFlaky, sigA, now.Add(time.Minute)); err != nil {
+		t.Fatalf("insert latest test verdict: %v", err)
+	}
+
+	gOld1 := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "e2e-triage", Status: "completed",
+		Repo: "mattermost/mattermost", Branch: "pr-old-1", Commit: "tr-old-sha-1",
+		RunID: "tr-old-1", Attempt: "1", Stage: "pr", CreatedAt: today.AddDate(0, 0, -20),
+	})
+	rOld1 := insertReport(t, ctx, env.Pool, gOld1, "e2e-triage", "")
+	sOld1 := insertSuite(t, ctx, env.Pool, rOld1, "Suite")
+	insertCase(t, ctx, env.Pool, sOld1, tNewOneCommit, "new one", "passed", 0, "", 0)
+	insertCase(t, ctx, env.Pool, sOld1, tKnown, "known", "passed", 0, "", 1)
+	mustRefresh(t, ctx, env.Pool, gOld1)
+
+	for idx, dayOff := range []int{-20, -18} {
+		gMob := insertGroup(t, ctx, env.Pool, groupSeed{
+			Framework: "detox", Name: "detox-pr", Status: "completed",
+			Repo: "mattermost/mattermost-mobile", Branch: "pr-mob", Commit: fmt.Sprintf("tr-mob-%d", idx),
+			RunID: fmt.Sprintf("tr-mob-%d", idx), Attempt: "1", Stage: "pr", CreatedAt: today.AddDate(0, 0, dayOff),
+		})
+		rIOS := insertReport(t, ctx, env.Pool, gMob, "ios", "ios")
+		sIOS := insertSuite(t, ctx, env.Pool, rIOS, "Mobile")
+		insertCase(t, ctx, env.Pool, sIOS, tMobile, "mobile split", "passed", 0, "", 0)
+		rAnd := insertReport(t, ctx, env.Pool, gMob, "android", "android")
+		sAnd := insertSuite(t, ctx, env.Pool, rAnd, "Mobile")
+		insertCase(t, ctx, env.Pool, sAnd, tMobile, "mobile split", "failed", 0, "", 0)
+		mustRefresh(t, ctx, env.Pool, gMob)
+	}
+
+	// ---- Assert /api/v1/kpi/summary?app=mattermost&window=30d ----
+	// Total runs in 30d for mattermost:
+	// gFail1 (completed, red, triaged)
+	// gFail2 (completed, red, untriaged)
+	// gClean (completed, green)
+	// gTOCompleted (completed+timed_out -> timed_out, red, untriaged)
+	// gTOInProg (in_progress+timed_out -> timed_out, red, untriaged)
+	// gInc (incomplete, green)
+	// gInProg (in_progress, green)
+	// gFlk[0], gFlk[1] (2 completed, green because verdict=flaky -> is_red=false)
+	// gOld1 (completed, green)
+	// Total = 10 runs:
+	//   completed_runs = 5 (gFail1, gFail2, gClean, gFlk[0], gFlk[1], gOld1 -> wait: 6! Let's count: gFail1, gFail2, gClean, gFlk0, gFlk1, gOld1 = 6)
+	//   timed_out_runs = 2 (gTOCompleted, gTOInProg)
+	//   incomplete_runs = 1 (gInc)
+	//   in_progress_runs = 1 (gInProg)
+	//   total_runs = 10, denom = 10 - 1 = 9, completion_rate = 6 / 9 * 100 = 66.666667
+	// Failed runs: gFail1, gFail2, gTOCompleted, gTOInProg = 4; triaged runs = 1 (gFail1) => run_coverage_rate = 25.0
+	// Failed test occ: 2 (gFail1) + 2 (gFail2) = 4; triaged test occ = 2 (gFail1) => test_coverage_rate = 50.0
+	// Verdicts: 2 total (on gFail1), 1 reused => verdict_reuse_rate = 50.0
+	// Label mix: flaky-infra (1, 50%), infra (1, 50%), sorted alphabetically on tie.
+	rawSum := getRaw(t, env.ServerURL+"/api/v1/kpi/summary?app=mattermost&window=30d")
+	if strings.Contains(rawSum, "ghp_triage_secret_must_never_leak") ||
+		strings.Contains(rawSum, "super_secret_password") ||
+		strings.Contains(rawSum, "base_secret_never_leak") ||
+		strings.Contains(rawSum, "error_context") {
+		t.Fatal("/api/v1/kpi/summary leaked error_context")
+	}
+	var sum kpi.SummaryResponse
+	if err := json.Unmarshal([]byte(rawSum), &sum); err != nil {
+		t.Fatalf("unmarshal summary: %v", err)
+	}
+	if sum.Triage == nil {
+		t.Fatal("expected non-nil summary.triage")
+	}
+	tr := sum.Triage
+	assertNearPtr(t, "run_coverage_rate", tr.RunCoverageRate, 25.0, 1e-6)
+	assertNearPtr(t, "test_coverage_rate", tr.TestCoverageRate, 50.0, 1e-6)
+	assertNearPtr(t, "verdict_reuse_rate", tr.VerdictReuseRate, 50.0, 1e-6)
+	if tr.FailedRunsCount != 4 || tr.TriagedRunsCount != 1 || tr.FailedTestOccurrences != 4 || tr.TriagedTestOccurrences != 2 {
+		t.Fatalf("unexpected triage counts: %+v", tr)
+	}
+	if tr.VerdictsTotal != 2 || tr.VerdictsReused != 1 {
+		t.Fatalf("unexpected verdict counts: %+v", tr)
+	}
+	if len(tr.LabelMix) != 2 || tr.LabelMix[0].Label != "flaky-infra" || tr.LabelMix[0].Count != 1 ||
+		tr.LabelMix[1].Label != "infra" || tr.LabelMix[1].Count != 1 {
+		t.Fatalf("unexpected label_mix: %+v", tr.LabelMix)
+	}
+	assertNearPtr(t, "label_mix[0].share", &tr.LabelMix[0].Share, 50.0, 1e-6)
+	rc := tr.RunCompletion
+	if rc.TotalRuns != 10 || rc.CompletedRuns != 6 || rc.IncompleteRuns != 1 || rc.InProgressRuns != 1 || rc.TimedOutRuns != 2 {
+		t.Fatalf("unexpected run_completion: %+v", rc)
+	}
+	assertNearPtr(t, "completion_rate", rc.CompletionRate, 600.0/9.0, 1e-6)
+
+	hasWeeklyTriage := false
+	for _, wp := range sum.WeeklySeries {
+		if wp.TriageCoverageRate != nil {
+			hasWeeklyTriage = true
+			if *wp.TriageCoverageRate < 0 || *wp.TriageCoverageRate > 100 {
+				t.Fatalf("out-of-range weekly triage_coverage_rate: %v", *wp.TriageCoverageRate)
+			}
+		}
+	}
+	if !hasWeeklyTriage {
+		t.Fatal("expected at least one non-nil weekly_series[].triage_coverage_rate")
+	}
+
+	// Zero-denominator guards on empty filter slice.
+	emptySum := getJSON[kpi.SummaryResponse](t, env.ServerURL+"/api/v1/kpi/summary?lane=nonexistent-lane&window=30d")
+	if emptySum.Triage == nil {
+		t.Fatal("expected non-nil triage struct even on empty slice")
+	}
+	if emptySum.Triage.RunCoverageRate != nil ||
+		emptySum.Triage.TestCoverageRate != nil ||
+		emptySum.Triage.VerdictReuseRate != nil ||
+		emptySum.Triage.RunCompletion.CompletionRate != nil ||
+		len(emptySum.Triage.LabelMix) != 0 {
+		t.Fatalf("expected nil rates and empty label_mix on empty slice, got %+v", emptySum.Triage)
+	}
+
+	// ---- Assert GET /api/v1/tests/{id}/state ----
+	rawFlakyState := getRaw(t, env.ServerURL+"/api/v1/tests/"+tFlaky.String()+"/state")
+	if strings.Contains(rawFlakyState, "test_state_secret_never_leak") ||
+		strings.Contains(rawFlakyState, "ghp_triage_secret_must_never_leak") ||
+		strings.Contains(rawFlakyState, "error_context") {
+		t.Fatal("/api/v1/tests/{id}/state leaked error_context")
+	}
+	var stFlaky kpi.TestStateResponse
+	if err := json.Unmarshal([]byte(rawFlakyState), &stFlaky); err != nil {
+		t.Fatalf("unmarshal flaky test state: %v", err)
+	}
+	if stFlaky.State != kpi.TestStateFlaky || !stFlaky.IsFlaky || stFlaky.FlakyCommitCount14d != 2 {
+		t.Fatalf("flaky test state = %+v, want state=flaky is_flaky=true flaky_commit_count_14d=2", stFlaky)
+	}
+	if stFlaky.App != "mattermost" || stFlaky.TotalCommits != 3 || stFlaky.TotalRuns != 3 {
+		t.Fatalf("flaky test metadata = %+v, want app=mattermost commits=3 runs=3", stFlaky)
+	}
+	if stFlaky.LatestVerdictLabel == nil || *stFlaky.LatestVerdictLabel != "flaky-infra" {
+		gotLbl := "<nil>"
+		if stFlaky.LatestVerdictLabel != nil {
+			gotLbl = *stFlaky.LatestVerdictLabel
+		}
+		t.Fatalf("flaky latest_verdict_label = %q, want flaky-infra", gotLbl)
+	}
+
+	stNewRecent := getJSON[kpi.TestStateResponse](t, env.ServerURL+"/api/v1/tests/"+tNewRecent.String()+"/state")
+	if stNewRecent.State != kpi.TestStateNew || stNewRecent.IsFlaky || stNewRecent.TotalCommits != 2 {
+		t.Fatalf("new recent test state = %+v, want state=new is_flaky=false total_commits=2", stNewRecent)
+	}
+
+	stNewOne := getJSON[kpi.TestStateResponse](t, env.ServerURL+"/api/v1/tests/"+tNewOneCommit.String()+"/state")
+	if stNewOne.State != kpi.TestStateNew || stNewOne.IsFlaky || stNewOne.TotalCommits != 1 {
+		t.Fatalf("new 1-commit test state = %+v, want state=new is_flaky=false total_commits=1", stNewOne)
+	}
+
+	stKnown := getJSON[kpi.TestStateResponse](t, env.ServerURL+"/api/v1/tests/"+tKnown.String()+"/state?window=7d")
+	if stKnown.State != kpi.TestStateKnown || stKnown.IsFlaky || stKnown.TotalCommits != 3 || stKnown.TotalRuns != 3 {
+		t.Fatalf("known test state = %+v, want state=known is_flaky=false total_commits=3 total_runs=3", stKnown)
+	}
+
+	stMob := getJSON[kpi.TestStateResponse](t, env.ServerURL+"/api/v1/tests/"+tMobile.String()+"/state")
+	if stMob.State != kpi.TestStateKnown || stMob.IsFlaky || stMob.FlakyCommitCount14d != 0 || stMob.App != "mobile" {
+		t.Fatalf("mobile test state = %+v, want state=known is_flaky=false flaky_14d=0 app=mobile", stMob)
+	}
+
+	// 400 and 404 checks.
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/api/v1/tests/not-a-uuid/state", http.StatusBadRequest},
+		{"/api/v1/tests/" + uuid.NewString() + "/state", http.StatusNotFound},
+		{"/api/v1/tests/" + tKnown.String() + "/state?window=99d", http.StatusBadRequest},
+	} {
+		resp, gerr := http.Get(env.ServerURL + tc.path) //nolint:gosec
+		if gerr != nil {
+			t.Fatalf("GET %s: %v", tc.path, gerr)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Fatalf("GET %s status = %d, want %d", tc.path, resp.StatusCode, tc.want)
+		}
+	}
+}
+
 // ---- test helpers ----
 
 type groupSeed struct {

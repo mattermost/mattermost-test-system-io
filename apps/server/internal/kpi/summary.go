@@ -67,6 +67,11 @@ func (s *Store) QuerySummary(ctx context.Context, f FilterParams) (SummaryRespon
 		return SummaryResponse{}, err
 	}
 
+	triage, err := s.queryTriageSummary(ctx, f)
+	if err != nil {
+		return SummaryResponse{}, err
+	}
+
 	weekly, err := s.queryWeeklySeries(ctx, f)
 	if err != nil {
 		return SummaryResponse{}, err
@@ -81,6 +86,7 @@ func (s *Store) QuerySummary(ctx context.Context, f FilterParams) (SummaryRespon
 		WeeklySeries:      weekly,
 		PRFalseRed:        &prFalseRed,
 		RecurringFailures: recurring,
+		Triage:            triage,
 	}, nil
 }
 
@@ -581,6 +587,10 @@ func (s *Store) queryWeeklySeries(ctx context.Context, f FilterParams) ([]Weekly
 	if err != nil {
 		return nil, err
 	}
+	weeklyTriage, err := s.queryWeeklyTriageCoverage(ctx, f, weeks)
+	if err != nil {
+		return nil, err
+	}
 
 	series := make([]WeeklyPoint, 0, len(weeks))
 	for _, wStart := range weeks {
@@ -665,6 +675,7 @@ func (s *Store) queryWeeklySeries(ctx context.Context, f FilterParams) ([]Weekly
 
 		rfCount := weeklyFailures[pt.WeekStart]
 		pt.RecurringFailuresCount = &rfCount
+		pt.TriageCoverageRate = weeklyTriage[pt.WeekStart]
 
 		series = append(series, pt)
 	}

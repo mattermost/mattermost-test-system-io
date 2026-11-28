@@ -621,3 +621,122 @@ func TestPaginateRecurringFailures_OverflowAndBounds(t *testing.T) {
 		t.Fatalf("overflow page=MaxInt limit=50 got %+v, want non-nil empty slice", got)
 	}
 }
+
+func TestParseTestStateParams_Validation(t *testing.T) {
+	now := time.Date(2026, 11, 26, 15, 30, 0, 0, time.UTC)
+	p, err := ParseTestStateParams(url.Values{"app": {"webapp"}, "window": {"30d"}, "stage": {"pr"}}, now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.App != "webapp" || p.Window != Window30d || p.Stage != "pr" {
+		t.Fatalf("unexpected parsed params: %+v", p)
+	}
+	if _, err := ParseTestStateParams(url.Values{"window": {"5d"}}, now); err == nil {
+		t.Fatal("expected error for invalid window")
+	}
+	if _, err := ParseTestStateParams(url.Values{"stage": {"bogus"}}, now); err == nil {
+		t.Fatal("expected error for invalid stage")
+	}
+}
+
+func TestBuildTriageSummary_MetricsAndZeroDenominators(t *testing.T) {
+	t.Run("zero_denominators_return_nil_and_empty_label_mix", func(t *testing.T) {
+		got := buildTriageSummary(dailyTriageAgg{}, timedOutSplit{}, map[string]int{})
+		if got.RunCoverageRate != nil || got.TestCoverageRate != nil || got.VerdictReuseRate != nil || got.RunCompletion.CompletionRate != nil {
+			t.Fatalf("expected all nil rates for zero denominators, got %+v", got)
+		}
+		if got.LabelMix == nil || len(got.LabelMix) != 0 {
+			t.Fatalf("expected non-nil empty LabelMix, got %#v", got.LabelMix)
+		}
+	})
+
+	t.Run("timed_out_partition_avoids_double_count_and_drop", func(t *testing.T) {
+		// Suppose 5 total runs:
+		// - 2 completed (1 orch=completed, 1 orch=timed_out)
+		// - 1 incomplete (orch=null)
+		// - 2 in_progress (1 orch=in_progress, 1 orch=timed_out)
+		// So dl totals: total=5, completed=2, incomplete=1, in_progress=2
+		// timedOutSplit: total=2, completed=1, incomplete=0, in_progress=1
+		// Disjoint: completed=1, incomplete=1, in_progress=1, timed_out=2 (sum = 5!)
+		// completion_rate = 1 / (5 - 1) * 100 = 25.0%
+		agg := dailyTriageAgg{
+			totalRuns:              5,
+			completedRuns:          2,
+			incompleteRuns:         1,
+			inProgressRuns:         2,
+			failedRunsCount:        4,
+			triagedRunsCount:       3,
+			failedTestOccurrences:  10,
+			triagedTestOccurrences: 5,
+			verdictsTotal:          4,
+			verdictsReused:         1,
+		}
+		to := timedOutSplit{
+			total:      2,
+			completed:  1,
+			incomplete: 0,
+			inProgress: 1,
+		}
+		labels := map[string]int{
+			"product-bug": 1,
+			"infra":       2,
+			"flaky-infra": 1,
+		}
+		got := buildTriageSummary(agg, to, labels)
+		if got.RunCoverageRate == nil || *got.RunCoverageRate != 75.0 {
+			t.Fatalf("RunCoverageRate = %v, want 75.0", got.RunCoverageRate)
+		}
+		if got.TestCoverageRate == nil || *got.TestCoverageRate != 50.0 {
+			t.Fatalf("TestCoverageRate = %v, want 50.0", got.TestCoverageRate)
+		}
+		if got.VerdictReuseRate == nil || *got.VerdictReuseRate != 25.0 {
+			t.Fatalf("VerdictReuseRate = %v, want 25.0", got.VerdictReuseRate)
+		}
+		rc := got.RunCompletion
+		if rc.TotalRuns != 5 || rc.CompletedRuns != 1 || rc.IncompleteRuns != 1 || rc.InProgressRuns != 1 || rc.TimedOutRuns != 2 {
+			t.Fatalf("unexpected RunCompletion counts: %+v", rc)
+		}
+		if rc.CompletionRate == nil || *rc.CompletionRate != 25.0 {
+			t.Fatalf("CompletionRate = %v, want 25.0", rc.CompletionRate)
+		}
+		if len(got.LabelMix) != 3 {
+			t.Fatalf("LabelMix len = %d, want 3", len(got.LabelMix))
+		}
+		// Sorted by count DESC, label ASC: infra (2, 50%), flaky-infra (1, 25%), product-bug (1, 25%)
+		if got.LabelMix[0].Label != "infra" || got.LabelMix[0].Count != 2 || got.LabelMix[0].Share != 50.0 {
+			t.Fatalf("LabelMix[0] = %+v, want infra/2/50", got.LabelMix[0])
+		}
+		if got.LabelMix[1].Label != "flaky-infra" || got.LabelMix[2].Label != "product-bug" {
+			t.Fatalf("LabelMix tie-break order = %+v", got.LabelMix)
+		}
+	})
+}
+
+func TestClassifyTestState(t *testing.T) {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	curFrom14d, _, _, _ := WindowBounds(now, TrendWindowDays) // 2026-11-13 00:00:00 UTC
+
+	// Flaky takes precedence even if newly seen.
+	state, flaky := classifyTestState(2, 2, now.Add(-24*time.Hour), curFrom14d)
+	if state != TestStateFlaky || !flaky {
+		t.Fatalf("got (%q, %v), want (flaky, true)", state, flaky)
+	}
+
+	// New: within trailing 14d (exact boundary curFrom14d inclusive) even with >= 2 commits.
+	state, flaky = classifyTestState(1, 3, curFrom14d, curFrom14d)
+	if state != TestStateNew || flaky {
+		t.Fatalf("boundary inclusive got (%q, %v), want (new, false)", state, flaky)
+	}
+
+	// New: older than 14d, but <= 1 commit.
+	state, flaky = classifyTestState(0, 1, curFrom14d.Add(-24*time.Hour), curFrom14d)
+	if state != TestStateNew || flaky {
+		t.Fatalf("single commit got (%q, %v), want (new, false)", state, flaky)
+	}
+
+	// Known: older than 14d AND >= 2 commits AND < 2 flaky commits.
+	state, flaky = classifyTestState(1, 2, curFrom14d.Add(-time.Second), curFrom14d)
+	if state != TestStateKnown || flaky {
+		t.Fatalf("known got (%q, %v), want (known, false)", state, flaky)
+	}
+}

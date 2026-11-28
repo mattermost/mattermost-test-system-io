@@ -17,6 +17,9 @@ func (s *Store) QueryFlaky(ctx context.Context, f FilterParams) (FlakyResponse, 
 	if s == nil || s.Pool == nil {
 		return FlakyResponse{}, errors.New("kpi store pool is nil")
 	}
+	if err := validatePaginationParams(f); err != nil {
+		return FlakyResponse{}, err
+	}
 
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
@@ -247,6 +250,9 @@ func (s *Store) queryFlakyTestRows(ctx context.Context, q dbQuerier, f FilterPar
 	fmt.Fprintf(&where, "c.metric_date >= %s AND c.metric_date <= %s", fromPH, toPH)
 	where.WriteString(appendCommitFilters(b, "c", f))
 
+	if err := validatePaginationParams(f); err != nil {
+		return nil, err
+	}
 	orderBy := flakyOrderByClause(f.Sort)
 	limitPH := b.add(f.Limit)
 	offsetPH := b.add(offset)

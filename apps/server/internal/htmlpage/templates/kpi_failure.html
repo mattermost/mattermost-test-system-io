@@ -1,0 +1,189 @@
+{{define "kpi-failure-content"}}
+<header class="kpi-page-header">
+  <nav class="breadcrumb" aria-label="Breadcrumb">
+    <span class="breadcrumb-item"><a href="{{.OverviewHref}}" class="breadcrumb-link">KPIs</a></span>
+    <span class="breadcrumb-item">{{template "icon-chevron-right"}}<span class="breadcrumb-current">{{if .ErrorClass}}{{.ErrorClass}}{{else}}Failure Pattern{{end}}</span></span>
+  </nav>
+
+  <div class="kpi-failure-hero">
+    <div class="kpi-failure-title-row">
+      <span class="{{.StateClass}}">{{.StateLabel}}</span>
+      <span class="kpi-badge kpi-badge-muted">Last seen <time datetime="{{.LastSeenISO}}" title="{{.LastSeenISO}}">{{.LastSeenRel}}</time></span>
+      <span class="kpi-badge kpi-badge-neutral tabular">Last {{.WindowDays}} days</span>
+    </div>
+    <h2 class="kpi-failure-message">{{.NormalizedMessage}}</h2>
+    {{if or .ErrorClass .TopFrame}}
+    <div class="kpi-failure-meta">
+      {{if .ErrorClass}}<span><strong>Class:</strong> <span class="mono">{{.ErrorClass}}</span></span>{{end}}
+      {{if .TopFrame}}<span><strong>Location:</strong> <span class="mono">{{.TopFrame}}</span></span>{{end}}
+    </div>
+    {{end}}
+    {{if .SampleMessage}}
+    <pre class="kpi-sample-msg">{{.SampleMessage}}</pre>
+    {{end}}
+  </div>
+</header>
+
+<section class="kpi-cards-grid" aria-label="Failure impact, origin, and triage verdict">
+  <article class="kpi-card">
+    <div class="kpi-card-head">
+      <h3 class="kpi-card-title">Impact &amp; 14d trend</h3>
+      <div class="kpi-head-badges">
+        <span class="kpi-badge kpi-badge-neutral tabular">{{.GroupCountText}}</span>
+        {{if .IsLowSample}}<span class="kpi-badge kpi-badge-warn">Low sample</span>{{end}}
+        <span class="kpi-delta {{.Delta14dClass}} tabular">{{.Delta14d}}</span>
+      </div>
+    </div>
+    <div class="kpi-card-value tabular">{{.WindowPrimaryValue}}</div>
+    <p class="kpi-card-meta tabular">{{.WindowMeta}}</p>
+    <dl class="kpi-card-substats">
+      <div><dt>Last 14d</dt><dd class="tabular">{{.Rate14d}} · {{.Current14dText}}</dd></div>
+      <div><dt>Prior 14d</dt><dd class="tabular">{{.Prior14dText}}</dd></div>
+    </dl>
+  </article>
+
+  <article class="kpi-card">
+    <div class="kpi-card-head">
+      <h3 class="kpi-card-title">First seen</h3>
+      {{if .FirstSeen.HasPR}}<span class="kpi-badge kpi-badge-neutral tabular">PR #{{.FirstSeen.PRNumber}}</span>{{end}}
+    </div>
+    {{if .FirstSeen.HasData}}
+    <div class="kpi-card-value kpi-card-value-sm"><time datetime="{{.FirstSeen.TimestampISO}}" title="{{.FirstSeen.TimestampISO}}">{{.FirstSeen.TimestampRel}}</time></div>
+    <p class="kpi-card-meta">{{if .FirstSeen.Repository}}{{.FirstSeen.Repository}}{{end}}{{if .FirstSeen.Lane}} · <span class="mono">{{.FirstSeen.Lane}}</span>{{end}}</p>
+    <p class="kpi-card-note mono">{{if .FirstSeen.Branch}}{{.FirstSeen.Branch}}{{end}}{{if .FirstSeen.ShortSHA}} · {{.FirstSeen.ShortSHA}}{{end}}</p>
+    {{else}}
+    <p class="kpi-card-empty">No data — first-seen context unavailable</p>
+    {{end}}
+    {{if .PRNumbers}}
+    <div class="kpi-chip-list">
+      {{range .PRNumbers}}<span class="kpi-chip tabular">PR #{{.}}</span>{{end}}
+    </div>
+    {{end}}
+  </article>
+
+  <article class="kpi-card">
+    <div class="kpi-card-head">
+      <h3 class="kpi-card-title">Latest AI triage verdict</h3>
+      {{if .LatestVerdict}}<span class="kpi-badge kpi-verdict-badge">{{.LatestVerdict.Label}}</span>{{else}}<span class="kpi-badge kpi-badge-muted">Untriaged</span>{{end}}
+    </div>
+    {{if .LatestVerdict}}
+    {{if .LatestVerdict.Summary}}<p class="kpi-verdict-summary">{{.LatestVerdict.Summary}}</p>{{end}}
+    <p class="kpi-card-note">
+      {{if .LatestVerdict.DecidedBy}}{{.LatestVerdict.DecidedBy}}{{end}}{{if .LatestVerdict.Confidence}} · {{.LatestVerdict.Confidence}}{{end}} · <time datetime="{{.LatestVerdict.CreatedISO}}">{{.LatestVerdict.CreatedRel}}</time>
+      {{if .LatestVerdict.TriageURL}} · <a href="{{.LatestVerdict.TriageURL}}" class="kpi-inline-link" target="_blank" rel="noopener noreferrer">Triage run &rarr;</a>{{end}}
+    </p>
+    {{else}}
+    <p class="kpi-card-empty">No triage verdict recorded yet.</p>
+    {{end}}
+  </article>
+</section>
+
+<section class="kpi-panel" aria-label="Affected tests">
+  <header class="kpi-panel-head">
+    <h3 class="kpi-panel-title">Affected Tests</h3>
+    <span class="kpi-panel-subtitle tabular">{{.AffectedTestsCountText}}</span>
+  </header>
+  {{if not .AffectedTests}}
+  <div class="empty-state empty-state-inline">
+    <p class="empty-hint">No affected tests recorded in this window</p>
+  </div>
+  {{else}}
+  <div class="kpi-table-scroll">
+    <table class="kpi-table">
+      <thead>
+        <tr>
+          <th>Test</th>
+          <th>Repository</th>
+          <th>Framework</th>
+          <th class="num">Failures</th>
+          <th class="num">CI runs</th>
+          <th class="num">Last seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .AffectedTests}}
+        <tr>
+          <td class="kpi-sig-cell">
+            <div class="kpi-lane-name">{{.Title}}</div>
+            <div class="kpi-sig-meta mono">{{.File}}{{if .ZephyrKey}} · {{.ZephyrKey}}{{end}}</div>
+          </td>
+          <td>{{.Repository}}</td>
+          <td>{{.Framework}}</td>
+          <td class="num tabular">{{.FailCount}}</td>
+          <td class="num tabular">{{.RunsText}}</td>
+          <td class="num tabular"><time datetime="{{.LastSeenISO}}">{{.LastSeenRel}}</time></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{if .SingleRepo}}
+  <div class="kpi-inline-strip">
+    <span><strong>Repository:</strong> {{.SingleRepo.Repository}} ({{.SingleRepo.App}})</span>
+    <span><strong>Lanes:</strong> <span class="mono">{{.SingleRepo.LanesSummary}}</span></span>
+    <span class="tabular"><strong>Impact:</strong> {{.SingleRepo.OccurrencesText}} · {{.SingleRepo.RatePer1k}}</span>
+  </div>
+  {{end}}
+</section>
+
+{{if gt (len .AffectedRepos) 1}}
+<section class="kpi-panel" aria-label="Affected repositories">
+  <header class="kpi-panel-head">
+    <h3 class="kpi-panel-title">Affected Repositories</h3>
+    <span class="kpi-panel-subtitle tabular">{{.AffectedReposCountText}}</span>
+  </header>
+  <div class="kpi-table-scroll">
+    <table class="kpi-table">
+      <thead>
+        <tr>
+          <th>Repository</th>
+          <th>App</th>
+          <th>Lanes</th>
+          <th class="num">Failures</th>
+          <th class="num">Test runs</th>
+          <th class="num">Rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .AffectedRepos}}
+        <tr>
+          <td>{{.Repository}}</td>
+          <td>{{.App}}</td>
+          <td class="mono">{{.LanesSummary}}</td>
+          <td class="num tabular">{{.OccurrencesText}}</td>
+          <td class="num tabular">{{.AffectedRuns}}</td>
+          <td class="num tabular">{{.RatePer1k}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}
+
+<section class="kpi-panel" aria-label="Daily failure timeline">
+  <header class="kpi-panel-head">
+    <h3 class="kpi-panel-title">Daily Failures (Last {{.WindowDays}} days)</h3>
+    <span class="kpi-panel-subtitle">{{.ActiveDaysText}} · Trailing 7d: {{.Trailing7dText}} · Hover bars for daily details</span>
+  </header>
+  {{if not .HasDaily}}
+  <div class="empty-state empty-state-inline">
+    <p class="empty-hint">No daily history in this window</p>
+  </div>
+  {{else}}
+  <div class="kpi-chart-wrap">
+    <svg class="kpi-bar-svg" viewBox="0 0 {{.DailyChartW}} 106" role="img" aria-label="Daily failure occurrences chart">
+      <line x1="8" y1="84" x2="{{sub .DailyChartW 8}}" y2="84" class="kpi-chart-axis"/>
+      {{range .DailyBars}}
+      <g>
+        <title>{{.Tooltip}}</title>
+        <rect x="{{.X}}" y="{{.Y}}" width="{{.Width}}" height="{{.Height}}" rx="2" class="kpi-chart-bar {{.ColorClass}}"/>
+        <text x="{{add .X (div .Width 2)}}" y="99" text-anchor="middle" class="kpi-chart-label">{{.Label}}</text>
+      </g>
+      {{end}}
+    </svg>
+  </div>
+  {{end}}
+</section>
+{{end}}

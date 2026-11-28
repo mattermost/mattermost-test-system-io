@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestParseSummaryParams_DefaultsAndValidation(t *testing.T) {
@@ -738,5 +739,65 @@ func TestClassifyTestState(t *testing.T) {
 	state, flaky = classifyTestState(1, 2, curFrom14d.Add(-time.Second), curFrom14d)
 	if state != TestStateKnown || flaky {
 		t.Fatalf("known got (%q, %v), want (known, false)", state, flaky)
+	}
+}
+
+func TestPaginationOverflowValidation(t *testing.T) {
+	now := time.Date(2026, 11, 26, 15, 30, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"valid_max_page", "1000000", true},
+		{"over_max_page", "1000001", false},
+		{"int64_offset_overflow", "999999999999999999", false},
+		{"int64_max", "9223372036854775807", false},
+		{"zero", "0", false},
+		{"negative", "-1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := url.Values{"page": {tc.raw}}
+			for _, fn := range []struct {
+				label string
+				parse func(url.Values, time.Time) (FilterParams, error)
+			}{
+				{"failure_detail", ParseFailureDetailParams},
+				{"failures", ParseFailuresParams},
+				{"prs_red", ParsePRsRedParams},
+				{"flaky", ParseFlakyParams},
+			} {
+				p, err := fn.parse(q, now)
+				if tc.want {
+					if err != nil {
+						t.Fatalf("%s(%q): unexpected error %v", fn.label, tc.raw, err)
+					}
+					if p.Page != maxPage {
+						t.Fatalf("%s(%q): page = %d, want %d", fn.label, tc.raw, p.Page, maxPage)
+					}
+				} else if !errors.Is(err, ErrValidation) {
+					t.Fatalf("%s(%q): err = %v, want ErrValidation", fn.label, tc.raw, err)
+				}
+			}
+		})
+	}
+
+	// Defense-in-depth: store query methods reject overflowing/invalid pagination even if called directly.
+	store := &Store{Pool: new(pgxpool.Pool)}
+	for _, bad := range []FilterParams{
+		{Page: 999999999999999999, Limit: 50},
+		{Page: 0, Limit: 50},
+		{Page: 1, Limit: 0},
+	} {
+		if _, err := store.QueryFailures(t.Context(), bad); !errors.Is(err, ErrValidation) {
+			t.Fatalf("QueryFailures(%+v): err = %v, want ErrValidation", bad, err)
+		}
+		if _, err := store.QueryPRsRed(t.Context(), bad); !errors.Is(err, ErrValidation) {
+			t.Fatalf("QueryPRsRed(%+v): err = %v, want ErrValidation", bad, err)
+		}
+		if _, err := store.QueryFlaky(t.Context(), bad); !errors.Is(err, ErrValidation) {
+			t.Fatalf("QueryFlaky(%+v): err = %v, want ErrValidation", bad, err)
+		}
 	}
 }

@@ -391,18 +391,20 @@ type PRFalseRedLaneRow struct {
 
 // PRFalseRedSummary holds KPI 2 headline lower-bound ("at least") metrics for GET /api/v1/kpi/summary.
 type PRFalseRedSummary struct {
-	IsLowerBound         bool                `json:"is_lower_bound"`
-	RateQualifier        string              `json:"rate_qualifier"`
-	SettledAfterHours    int                 `json:"settled_after_hours"`
-	FalseRedRate         *float64            `json:"false_red_rate"`
-	PriorFalseRedRate    *float64            `json:"prior_false_red_rate"`
-	DeltaPP              *float64            `json:"delta_pp"`
-	SettledRedLanes      int                 `json:"settled_red_lanes"`
-	SettledFalseRedLanes int                 `json:"settled_false_red_lanes"`
-	UnsettledRedLanes    int                 `json:"unsettled_red_lanes"`
-	ReasonMix            PRFalseRedReasonMix `json:"reason_mix"`
-	ByLane               []PRFalseRedLaneRow `json:"by_lane"`
-	LaneCoverage         LaneCoverage        `json:"lane_coverage"`
+	IsLowerBound              bool                `json:"is_lower_bound"`
+	RateQualifier             string              `json:"rate_qualifier"`
+	SettledAfterHours         int                 `json:"settled_after_hours"`
+	FalseRedRate              *float64            `json:"false_red_rate"`
+	PriorFalseRedRate         *float64            `json:"prior_false_red_rate"`
+	DeltaPP                   *float64            `json:"delta_pp"`
+	SettledRedLanes           int                 `json:"settled_red_lanes"`
+	SettledFalseRedLanes      int                 `json:"settled_false_red_lanes"`
+	PriorSettledRedLanes      int                 `json:"prior_settled_red_lanes"`
+	PriorSettledFalseRedLanes int                 `json:"prior_settled_false_red_lanes"`
+	UnsettledRedLanes         int                 `json:"unsettled_red_lanes"`
+	ReasonMix                 PRFalseRedReasonMix `json:"reason_mix"`
+	ByLane                    []PRFalseRedLaneRow `json:"by_lane"`
+	LaneCoverage              LaneCoverage        `json:"lane_coverage"`
 }
 
 // ConfiguredE2ELane identifies one configured PR E2E lane.
@@ -443,23 +445,25 @@ type RedPRLaneRow struct {
 
 // PRRedResponse is the wire shape for GET /api/v1/kpi/prs/red.
 type PRRedResponse struct {
-	Filters              FilterParams        `json:"filters"`
-	WindowDays           int                 `json:"window_days"`
-	SettledAfterHours    int                 `json:"settled_after_hours"`
-	IsLowerBound         bool                `json:"is_lower_bound"`
-	RateQualifier        string              `json:"rate_qualifier"`
-	FalseRedRate         *float64            `json:"false_red_rate"`
-	PriorFalseRedRate    *float64            `json:"prior_false_red_rate"`
-	DeltaPP              *float64            `json:"delta_pp"`
-	SettledRedLanes      int                 `json:"settled_red_lanes"`
-	SettledFalseRedLanes int                 `json:"settled_false_red_lanes"`
-	UnsettledRedLanes    int                 `json:"unsettled_red_lanes"`
-	StillRedLanes        int                 `json:"still_red_lanes"`
-	ReasonMix            PRFalseRedReasonMix `json:"reason_mix"`
-	ConfiguredE2ELanes   []ConfiguredE2ELane `json:"configured_e2e_lanes"`
-	LaneCoverage         LaneCoverage        `json:"lane_coverage"`
-	Pagination           Pagination          `json:"pagination"`
-	Lanes                []RedPRLaneRow      `json:"lanes"`
+	Filters                   FilterParams        `json:"filters"`
+	WindowDays                int                 `json:"window_days"`
+	SettledAfterHours         int                 `json:"settled_after_hours"`
+	IsLowerBound              bool                `json:"is_lower_bound"`
+	RateQualifier             string              `json:"rate_qualifier"`
+	FalseRedRate              *float64            `json:"false_red_rate"`
+	PriorFalseRedRate         *float64            `json:"prior_false_red_rate"`
+	DeltaPP                   *float64            `json:"delta_pp"`
+	SettledRedLanes           int                 `json:"settled_red_lanes"`
+	SettledFalseRedLanes      int                 `json:"settled_false_red_lanes"`
+	PriorSettledRedLanes      int                 `json:"prior_settled_red_lanes"`
+	PriorSettledFalseRedLanes int                 `json:"prior_settled_false_red_lanes"`
+	UnsettledRedLanes         int                 `json:"unsettled_red_lanes"`
+	StillRedLanes             int                 `json:"still_red_lanes"`
+	ReasonMix                 PRFalseRedReasonMix `json:"reason_mix"`
+	ConfiguredE2ELanes        []ConfiguredE2ELane `json:"configured_e2e_lanes"`
+	LaneCoverage              LaneCoverage        `json:"lane_coverage"`
+	Pagination                Pagination          `json:"pagination"`
+	Lanes                     []RedPRLaneRow      `json:"lanes"`
 }
 
 // RecurringFailuresSummary summarizes recurring failure counts by state.

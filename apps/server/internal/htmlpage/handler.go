@@ -2,15 +2,18 @@ package htmlpage
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
@@ -19,6 +22,7 @@ import (
 type Handler struct {
 	Pool   *pgxpool.Pool
 	Orch   *orchestration.Store
+	KPI    *kpi.Store
 	Site   SiteInfo
 	Logger *slog.Logger
 	// Fallback serves run paths with no dispatch record (uploaded-only reports).
@@ -298,6 +302,156 @@ func (h *Handler) ServeRunDispatchLiveFragment(w http.ResponseWriter, r *http.Re
 		Total:    total,
 		Terminal: !live,
 	})
+}
+
+// ServeKPIOverview serves GET /kpi.
+func (h *Handler) ServeKPIOverview(w http.ResponseWriter, r *http.Request) {
+	if h.KPI == nil || h.KPI.Pool == nil {
+		http.Error(w, "kpi pages unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	now := h.KPI.NowTime()
+	failuresParams, err := kpi.ParseFailuresParams(r.URL.Query(), now)
+	if err != nil {
+		if errors.Is(err, kpi.ErrValidation) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "invalid query", http.StatusBadRequest)
+		return
+	}
+	summaryParams := failuresParams
+	summaryParams.Sort = kpi.SortLaneAsc
+
+	opts, err := h.KPI.LoadFilterOptions(r.Context(), summaryParams)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi filter options failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to load kpi filters", http.StatusInternalServerError)
+		return
+	}
+	summary, err := h.KPI.QuerySummary(r.Context(), summaryParams)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi summary failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to load kpi summary", http.StatusInternalServerError)
+		return
+	}
+	showAll := strings.TrimSpace(r.URL.Query().Get("show")) == "all"
+	failures, err := h.KPI.QueryFailuresFiltered(r.Context(), failuresParams, !showAll)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi failures failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to load recurring failures", http.StatusInternalServerError)
+		return
+	}
+
+	page := BuildKPIOverviewPageWithShow(h.Site, opts, summary, failures, now, showAll)
+	html, err := RenderKPIOverview(page)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi overview render failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to render page", http.StatusInternalServerError)
+		return
+	}
+	writeHTML(w, html)
+}
+
+// ServeKPIPRs serves GET /kpi/prs.
+func (h *Handler) ServeKPIPRs(w http.ResponseWriter, r *http.Request) {
+	if h.KPI == nil || h.KPI.Pool == nil {
+		http.Error(w, "kpi pages unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	now := h.KPI.NowTime()
+	params, err := kpi.ParsePRsRedParams(r.URL.Query(), now)
+	if err != nil {
+		if errors.Is(err, kpi.ErrValidation) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "invalid query", http.StatusBadRequest)
+		return
+	}
+	opts, err := h.KPI.LoadFilterOptions(r.Context(), params)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi prs filter options failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to load kpi filters", http.StatusInternalServerError)
+		return
+	}
+
+	prResp, err := h.KPI.QueryPRsRed(r.Context(), params)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi prs failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to load pr e2e metrics", http.StatusInternalServerError)
+		return
+	}
+
+	page := BuildKPIPRsPage(h.Site, opts, prResp, now)
+	html, err := RenderKPIPRs(page)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi prs render failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to render page", http.StatusInternalServerError)
+		return
+	}
+	writeHTML(w, html)
+}
+
+// ServeKPIFailureDetail serves GET /kpi/failures/{id}.
+func (h *Handler) ServeKPIFailureDetail(w http.ResponseWriter, r *http.Request) {
+	if h.KPI == nil || h.KPI.Pool == nil {
+		http.Error(w, "kpi pages unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	rawID := strings.TrimSpace(chi.URLParam(r, "id"))
+	sigID, err := uuid.Parse(rawID)
+	if err != nil {
+		http.Error(w, "invalid failure signature id", http.StatusBadRequest)
+		return
+	}
+	now := h.KPI.NowTime()
+	params, err := kpi.ParseFailureDetailParams(r.URL.Query(), now)
+	if err != nil {
+		if errors.Is(err, kpi.ErrValidation) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "invalid query", http.StatusBadRequest)
+		return
+	}
+	detail, err := h.KPI.QueryFailureDetail(r.Context(), sigID, params)
+	if err != nil {
+		if errors.Is(err, kpi.ErrNotFound) {
+			http.Error(w, "failure signature not found", http.StatusNotFound)
+			return
+		}
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi failure detail failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to load failure signature", http.StatusInternalServerError)
+		return
+	}
+
+	page := BuildKPIFailureDetailPage(h.Site, detail, now)
+	html, err := RenderKPIFailureDetail(page)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi failure detail render failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to render page", http.StatusInternalServerError)
+		return
+	}
+	writeHTML(w, html)
 }
 
 // writeHTML writes a rendered html/template page.

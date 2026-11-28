@@ -3122,6 +3122,8 @@ components:
         delta_pp: { type: number, nullable: true }
         settled_red_lanes: { type: integer }
         settled_false_red_lanes: { type: integer }
+        prior_settled_red_lanes: { type: integer }
+        prior_settled_false_red_lanes: { type: integer }
         unsettled_red_lanes: { type: integer }
         reason_mix: { $ref: '#/components/schemas/KPIPRFalseRedReasonMix' }
         by_lane:
@@ -3222,6 +3224,8 @@ components:
         delta_pp: { type: number, nullable: true }
         settled_red_lanes: { type: integer }
         settled_false_red_lanes: { type: integer }
+        prior_settled_red_lanes: { type: integer }
+        prior_settled_false_red_lanes: { type: integer }
         unsettled_red_lanes: { type: integer }
         still_red_lanes: { type: integer }
         reason_mix: { $ref: '#/components/schemas/KPIPRFalseRedReasonMix' }

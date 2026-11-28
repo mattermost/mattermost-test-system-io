@@ -4,19 +4,27 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>{{if .Run}}{{.Run.Title}}{{else if .Repo}}{{.Repo.Title}}{{else}}{{.Home.Title}}{{end}}</title>
+  <title>{{if .KPIOverview}}{{.KPIOverview.Title}}{{else if .KPIPRs}}{{.KPIPRs.Title}}{{else if .KPIFailure}}{{.KPIFailure.Title}}{{else if .Run}}{{.Run.Title}}{{else if .Repo}}{{.Repo.Title}}{{else}}{{.Home.Title}}{{end}}</title>
   <style>{{.CSS}}</style>
 </head>
-<body class="page{{if .Run}} page-run{{end}}">
+<body class="page{{if .Run}} page-run{{end}}{{if .IsKPI}} page-kpi{{end}}">
   <header class="site-header">
     <div class="site-header-shell">
       <div class="site-header-bar">
-        <h1 class="site-title"><a href="/">Mattermost Test System IO</a></h1>
+        <div class="site-brand">
+          <h1 class="site-title"><a href="/">Mattermost Test System IO</a></h1>
+          <nav class="site-nav" aria-label="Primary navigation">
+            <a href="/reports" class="site-nav-link{{if not .IsKPI}} is-active{{end}}">Reports</a>
+            <a href="/kpi" class="site-nav-link{{if .IsKPI}} is-active{{end}}">KPIs</a>
+          </nav>
+        </div>
         <div class="site-header-actions">
+          {{if .ShowLiveStatus}}
           <button type="button" id="connection-status" class="connection-status" title="Connecting..." aria-label="Connection status">
             <span class="connection-ping hidden" id="connection-ping"></span>
             <span class="connection-dot" id="connection-dot"></span>
           </button>
+          {{end}}
           {{if .Site.GitHubOAuthEnabled}}
           <a href="/api/v1/auth/github" class="btn-signin">
             <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" x2="3" y1="12" y2="12"/></svg>
@@ -39,7 +47,13 @@
     </div>
   </header>
   <main class="site-main" id="tsio-page-main"{{if .Repo}} data-repository="{{.Repo.RepoSlug}}"{{else if .Run}} data-orch-repository="{{.Run.Identity.Repository}}" data-orch-commit="{{.Run.Identity.CommitSHA}}" data-orch-gh-run-id="{{.Run.Identity.GHRunID}}" data-orch-name="{{.Run.Identity.Name}}" data-orch-gh-run-attempt="{{.Run.Identity.GHRunAttempt}}" data-orch-live="{{if .Run.IsLive}}1{{else}}0{{end}}" data-orch-page="{{.Run.UnitPage}}"{{end}}>
-    {{if .Run}}
+    {{if .KPIOverview}}
+    {{template "kpi-overview-content" .KPIOverview}}
+    {{else if .KPIPRs}}
+    {{template "kpi-prs-content" .KPIPRs}}
+    {{else if .KPIFailure}}
+    {{template "kpi-failure-content" .KPIFailure}}
+    {{else if .Run}}
     {{template "run-content" .Run}}
     {{else if .Repo}}
     {{template "repo-content" .Repo}}

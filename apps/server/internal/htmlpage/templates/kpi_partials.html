@@ -1,0 +1,64 @@
+{{define "kpi-subnav"}}
+<nav class="kpi-subnav" aria-label="KPI sections">
+  <a href="{{.OverviewHref}}" class="kpi-subnav-link{{if eq .Active "overview"}} is-active{{end}}">Overview</a>
+  <a href="{{.PRsHref}}" class="kpi-subnav-link{{if eq .Active "prs"}} is-active{{end}}">PR E2E</a>
+</nav>
+{{end}}
+
+{{define "kpi-filter-bar"}}
+<section class="kpi-nav-bar" aria-label="KPI navigation and time window">
+  <div class="kpi-nav-row">
+    <nav class="kpi-repo-tabs" aria-label="Repository scope">
+      {{range .RepoTabs}}
+      <a href="{{.Href}}" class="kpi-repo-tab{{if .Active}} is-active{{end}}">{{.Label}}</a>
+      {{end}}
+    </nav>
+    <div class="kpi-nav-right">
+      <nav class="kpi-pill-group" aria-label="Time window">
+        {{range .WindowPills}}
+        <a href="{{.Href}}" class="kpi-pill{{if .Active}} is-active{{end}}">{{.Label}}</a>
+        {{end}}
+      </nav>
+      {{if .HasActiveFilters}}
+      <a href="{{.State.ResetHref}}" class="kpi-btn kpi-btn-ghost">Reset</a>
+      {{end}}
+    </div>
+  </div>
+  {{if or .ShowPlatforms .ShowLaneSelect}}
+  <div class="kpi-subfilter-row">
+    {{if .ShowPlatforms}}
+    <nav class="kpi-pill-group" aria-label="Platform filter">
+      <span class="kpi-filter-inline-label">Platform:</span>
+      {{range .PlatformPills}}
+      <a href="{{.Href}}" class="kpi-pill{{if .Active}} is-active{{end}}">{{.Label}}</a>
+      {{end}}
+    </nav>
+    {{end}}
+    {{if .ShowLaneSelect}}
+    <label class="kpi-inline-select-wrap">
+      <span class="kpi-filter-inline-label">Lane:</span>
+      <select name="lane" class="kpi-filter-select kpi-inline-select" data-kpi-filter="lane" aria-label="Filter by lane">
+        <option value=""{{if not .State.Lane}} selected{{end}}>All lanes</option>
+        {{range .Lanes}}
+        <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </label>
+    {{end}}
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+{{define "kpi-sort-select"}}
+{{if .HasSorts}}
+<label class="kpi-inline-select-wrap">
+  <span class="kpi-filter-inline-label">Sort:</span>
+  <select name="sort" class="kpi-filter-select kpi-inline-select" data-kpi-filter="sort" aria-label="Sort results">
+    {{range .Sorts}}
+    <option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+    {{end}}
+  </select>
+</label>
+{{end}}
+{{end}}

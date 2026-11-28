@@ -9,6 +9,8 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
+const ratePerfect = "rate-perfect"
+
 func TestRenderHomeEmpty(t *testing.T) {
 	html, err := RenderHome(HomePage{
 		Title: "Test System IO",
@@ -51,7 +53,7 @@ func TestRenderHomeWithLiveAndStatic(t *testing.T) {
 				RowNum: 1, Href: "/reports/r/x", Name: "orchestration-demo-cypress",
 				RepositoryName: "repo-name", Branch: "main", ShortSHA: "b111183",
 				CreatedAt: "2026-01-01T00:00:00Z", CreatedAtRel: "10m ago", StatusIcon: "passed", HasStats: true,
-				Passed: 19, Total: 20, PassRate: "100", PassRateClass: "rate-perfect",
+				Passed: 19, Total: 20, PassRate: "100", PassRateClass: ratePerfect,
 				SpecTotal: 451, SpecPass: 449, SpecFail: 1, SpecSkipped: 1,
 				Region: "home-static", IsNew: true,
 			},
@@ -148,7 +150,7 @@ func TestRenderHomeWithStaticRunOnly(t *testing.T) {
 			RowNum: 1, Href: "/reports/r/x", Name: "orchestration-demo-cypress",
 			RepositoryName: "repo-name", Branch: "main", ShortSHA: "b111183",
 			CreatedAtRel: "5m ago", StatusIcon: "passed", HasStats: true,
-			Passed: 19, Total: 20, PassRate: "100", PassRateClass: "rate-perfect",
+			Passed: 19, Total: 20, PassRate: "100", PassRateClass: ratePerfect,
 			Region: "home-static",
 		}},
 		RowStart: 1,
@@ -238,20 +240,36 @@ func TestMapHomeRowsRespectsStatusRule(t *testing.T) {
 	}
 	legStatic := mapStaticRun(staticIn, teststatus.RuleLegacy)
 	shrStatic := mapStaticRun(staticIn, teststatus.RuleShared)
-	if legStatic.PassRate != "60" || shrStatic.PassRate != "90" {
-		t.Fatalf("mapStaticRun PassRate legacy=%q shared=%q, want 60 / 90", legStatic.PassRate, shrStatic.PassRate)
+	if legStatic.PassRate != "90" || shrStatic.PassRate != "90" {
+		t.Fatalf("mapStaticRun PassRate legacy=%q shared=%q, want 90 / 90", legStatic.PassRate, shrStatic.PassRate)
 	}
 
-	// Unclassified legacy tests (Total > Passed+Failed+Flaky+Skipped) still count in legacy denominator.
-	orchStatic := reports.HomeStaticRun{
-		Name:    "run-orch-static",
-		Passed:  2,
-		Failed:  2,
-		Skipped: 1,
-		Total:   8,
+	// Live prod Row 1 regression: 1483 passed, 0 failed, 2 flaky, 65 skipped -> "100" / rate-perfect under both rules.
+	prodRow1 := reports.HomeStaticRun{
+		Name:    "prod-row-1",
+		Passed:  1483,
+		Failed:  0,
+		Flaky:   2,
+		Skipped: 65,
+		Total:   1550,
 	}
-	if got := mapStaticRun(orchStatic, teststatus.RuleLegacy).PassRate; got != "25" {
-		t.Fatalf("mapStaticRun legacy with unclassified Total=8 got %q, want 25", got)
+	for _, rule := range []teststatus.Rule{teststatus.RuleLegacy, teststatus.RuleShared} {
+		got := mapStaticRun(prodRow1, rule)
+		if got.PassRate != "100" || got.PassRateClass != ratePerfect {
+			t.Fatalf("mapStaticRun(%s) prodRow1 = (%q, %q), want (100, rate-perfect)", rule, got.PassRate, got.PassRateClass)
+		}
+	}
+
+	// All-skipped run hides pass rate ("") under both rules.
+	allSkipped := reports.HomeStaticRun{
+		Name:    "all-skipped",
+		Skipped: 4,
+		Total:   4,
+	}
+	for _, rule := range []teststatus.Rule{teststatus.RuleLegacy, teststatus.RuleShared} {
+		if got := mapStaticRun(allSkipped, rule).PassRate; got != "" {
+			t.Fatalf("mapStaticRun(%s) allSkipped PassRate = %q, want empty", rule, got)
+		}
 	}
 
 	liveIn := reports.HomeLiveRun{
@@ -264,8 +282,14 @@ func TestMapHomeRowsRespectsStatusRule(t *testing.T) {
 	}
 	legLive := mapLiveRun(liveIn, teststatus.RuleLegacy)
 	shrLive := mapLiveRun(liveIn, teststatus.RuleShared)
-	if legLive.PassRate != "60" || shrLive.PassRate != "90" {
-		t.Fatalf("mapLiveRun PassRate legacy=%q shared=%q, want 60 / 90", legLive.PassRate, shrLive.PassRate)
+	if legLive.PassRate != "90" || shrLive.PassRate != "90" {
+		t.Fatalf("mapLiveRun PassRate legacy=%q shared=%q, want 90 / 90", legLive.PassRate, shrLive.PassRate)
+	}
+
+	// Unclassified remainder (Total > Passed+Failed+Flaky+Skipped) must fail closed in PassRate.
+	unclassified := reports.HomeStaticRun{Name: "unclassified", Passed: 1, Total: 4}
+	if got := mapStaticRun(unclassified, teststatus.RuleLegacy); got.PassRate != "25" || got.PassRateClass == ratePerfect {
+		t.Fatalf("unclassified remainder = (%q, %q), want (25, rate-fail)", got.PassRate, got.PassRateClass)
 	}
 }
 

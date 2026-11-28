@@ -1,24 +1,24 @@
 # SEC-11524: Error Signature Normalizer & Top-50 Validation Report
 
 **Ticket:** `SEC-11524` (Phase 1)  
-**Package:** `apps/server/internal/errorsig` (`AlgoVersion = 1`)  
+**Package:** `apps/server/internal/errorsig` (`AlgoVersion = 2`)  
 **Corpus:** `apps/server/internal/errorsig/testdata/golden_corpus.json`  
-**Status:** `algo_version = 1` frozen for `SEC-11519`
+**Status:** `algo_version = 2` frozen for `SEC-11519`
 
 ---
 
-## 1. Frozen `algo_version = 1` Decision
+## 1. Frozen `algo_version = 2` Decision
 
-**Decision:** **`top_frame` is EXCLUDED from the `fingerprint` SHA-256 hash in `algo_version = 1`**, and **`top_frame` is ALWAYS extracted and stored unhashed** on `failure_signatures.top_frame`.
+**Decision:** **`frame_file(top_frame)` (with `:line[:col]` stripped) is INCLUDED in the `fingerprint` SHA-256 hash in `algo_version = 2`**, and **`top_frame` (including `:line[:col]`) is ALWAYS extracted and stored unhashed** on `failure_signatures.top_frame`.
 
 ```text
-fingerprint = sha256(algo_version + "|" + error_class + "|" + normalized_message)
+fingerprint = sha256(algo_version + "|" + error_class + "|" + normalized_message + "|" + frame_file(top_frame))
 ```
 
-### Rationale for `SEC-11519`
-1. **Preserves cross-test root-cause grouping ("one root cause across 40 tests -> one signature row"):** Hashing `top_frame` splits shared infrastructure, backend, and helper failures (such as `ECONNREFUSED`, `502 Bad Gateway`, `StatusRuntimeException: UNAVAILABLE`, `DetoxRuntimeError`, `Target page, context or browser has been closed`, and `spec-did-not-run`) into per-spec and per-line signatures (`22` false splits across `54` validation failures).
-2. **Protects AI triage verdict reuse (`SEC-11517` / `SEC-11514`) and KPI #4 accuracy:** When a spec line shifts in a later commit or a shared failure hits multiple specs, excluding `top_frame` from the hash keeps the `fingerprint` stable so cached verdicts hit and recurring-failure counts aggregate accurately.
-3. **Keeps call-site context without hash fragmentation:** `ExtractTopFrame` always scans `ErrorStack` first and falls back to `ErrorMessage` lines after line 1 (critical for Detox and Maestro where `ingest` stores `ErrorStack = nil`), skipping runtime frames (`node_modules/`, `node:internal/`, `playwright-core/`, `__cypress/runner/`, `maestro.orchestra.*`, `java.lang.*`, `io.grpc.*`) and storing the normalized app frame in `failure_signatures.top_frame`. The `2` false merges observed on generic assertions (`AssertionError: expected false to be true`, `Error: expect(received).toBe(expected)`) remain inspectable via `top_frame` and can be refined in a future `algo_version = 2` using `merged_into_id` lineage if production data warrants it.
+### Live-Prod 592-Failure Validation Findings & Rationale
+1. **Prevents over-merging of generic Playwright assertions (live prod finding):** Against 592 live production failures, excluding `top_frame` completely merged **19 unrelated specs** onto a single signature for generic assertions (`Error: expect(locator).toBeVisible() failed`, `TimeoutError: locator.click: Timeout <dur> exceeded.`). Including normalized `frame_file(top_frame)` separates distinct failing spec files while keeping `AlgoVersion = 2` stable across `:line[:col]` shifts inside the same spec file.
+2. **Eliminates separator-prefixed short hex over-splitting (live prod finding):** Dynamic 6–15 char hex suffixes preceded by `-`, `_`, or `.` containing both a digit and a hex letter (such as `ABAC-RemoveRule-a1b2c3d` — which previously split 18 ways — and `@test-user_name.3295f9`) are normalized to `<sep><hex>` without altering CSS selectors or normal English words.
+3. **Keeps call-site line context without line-shift fragmentation:** `ExtractTopFrame` always scans `ErrorStack` first and falls back to `ErrorMessage` lines after line 1 (critical for Detox and Maestro where `ingest` stores `ErrorStack = nil`), skipping runtime frames (`node_modules/`, `node:internal/`, `playwright-core/`, `__cypress/runner/`, `maestro.orchestra.*`, `java.lang.*`, `io.grpc.*`) and storing the full normalized app frame (with `:line[:col]`) in `failure_signatures.top_frame`.
 
 ---
 
@@ -33,35 +33,35 @@ fingerprint = sha256(algo_version + "|" + error_class + "|" + normalized_message
 
 ---
 
-## 3. Quantitative Comparison: `without_top_frame` vs `with_top_frame`
+## 3. Quantitative Comparison: `frame_file` vs `with_top_frame`
 
 Measured by `TestTop50ValidationComparison` (`go test -race -v ./internal/errorsig/...`):
 
-| Metric | `without_top_frame` (`algo_version=1`) | `with_top_frame` (candidate) |
+| Metric | `frame_file` (`algo_version=2`) | `with_top_frame` (full `:line:col`) |
 |---|---:|---:|
 | Validation samples | 54 | 54 |
 | Ground-truth root-cause clusters | 25 | 25 |
-| Distinct signatures produced | **23** | **47** |
-| Signatures per failure | **0.426** | **0.870** |
-| False splits (clusters split across >1 signature) | **0** | **22** |
-| False merges (unrelated clusters sharing 1 signature) | **2** | **0** |
-| Total clustering errors (`splits + merges`) | **2** | **22** |
+| Distinct signatures produced | **43** | **47** |
+| Signatures per failure | **0.796** | **0.870** |
+| False splits (clusters split across >1 signature) | **18** | **22** |
+| False merges (unrelated clusters sharing 1 signature) | **0** | **0** |
+| Total clustering errors (`splits + merges`) | **18** | **22** |
 
 ### Top-50 Split / Merge Review
 
-| Cluster Pattern | Samples | Frameworks | `without_top_frame` | `with_top_frame` | Assessment |
+| Cluster Pattern | Samples | Frameworks | `frame_file` | `with_top_frame` | Assessment |
 |---|---:|---|---|---|---|
-| `econnrefused_server` | 4 | Playwright | 1 signature | 4 signatures (+3 splits) | Hashing `top_frame` splits 1 server-down root cause per spec file |
-| `api_502_bad_gateway` | 4 | Cypress | 1 signature | 4 signatures (+3 splits) | Hashing `top_frame` splits 1 backend 502 per calling spec |
-| `maestro_grpc_unavailable` | 4 | Maestro | 1 signature | 4 signatures (+3 splits) | Hashing `top_frame` splits 1 gRPC outage per YAML flow |
-| `detox_server_connect` | 4 | Detox | 1 signature | 4 signatures (+3 splits) | Hashing `top_frame` splits 1 Detox daemon failure per `.e2e.js` |
-| `browser_target_closed` | 3 | Playwright | 1 signature | 3 signatures (+2 splits) | Hashing `top_frame` splits 1 browser crash per spec |
-| `post_textbox_timeout` | 3 | Playwright | 1 signature | 3 signatures (+2 splits) | Hashing `top_frame` splits across line shifts (`:39` vs `:45`) and specs |
-| `cypress_login_input_timeout` | 3 | Cypress | 1 signature | 3 signatures (+2 splits) | Hashing `top_frame` splits across line shifts and specs |
-| `detox_channel_list_missing` | 3 | Detox | 1 signature | 3 signatures (+2 splits) | Hashing `top_frame` splits across line shifts and specs |
-| `maestro_signin_timeout` | 3 | Maestro | 1 signature | 3 signatures (+2 splits) | Hashing `top_frame` splits across line shifts and YAML flows |
-| `generic_assert_channels` vs `generic_assert_threads` | 2 | Playwright, Cypress | Merged (1 sig, +1 merge) | 2 signatures (0 merges) | Generic `AssertionError: expected false to be true` merges without `top_frame` |
-| `generic_expect_reply` vs `generic_expect_emoji` | 2 | Detox | Merged (1 sig, +1 merge) | 2 signatures (0 merges) | Generic `Error: expect(received).toBe(expected)` merges without `top_frame` |
+| `econnrefused_server` | 4 | Playwright | 4 signatures (+3 splits) | 4 signatures (+3 splits) | Different spec files remain distinct |
+| `api_502_bad_gateway` | 4 | Cypress | 4 signatures (+3 splits) | 4 signatures (+3 splits) | Different spec files remain distinct |
+| `maestro_grpc_unavailable` | 4 | Maestro | 4 signatures (+3 splits) | 4 signatures (+3 splits) | Different YAML flows remain distinct |
+| `detox_server_connect` | 4 | Detox | 4 signatures (+3 splits) | 4 signatures (+3 splits) | Different `.e2e.js` files remain distinct |
+| `browser_target_closed` | 3 | Playwright | 3 signatures (+2 splits) | 3 signatures (+2 splits) | Different spec files remain distinct |
+| `post_textbox_timeout` | 3 | Playwright | 2 signatures (+1 split) | 3 signatures (+2 splits) | Line shifts (`:39` vs `:45`) in same spec merge under `frame_file` |
+| `cypress_login_input_timeout` | 3 | Cypress | 2 signatures (+1 split) | 3 signatures (+2 splits) | Line shifts in same spec merge under `frame_file` |
+| `detox_channel_list_missing` | 3 | Detox | 2 signatures (+1 split) | 3 signatures (+2 splits) | Line shifts in same spec merge under `frame_file` |
+| `maestro_signin_timeout` | 3 | Maestro | 2 signatures (+1 split) | 3 signatures (+2 splits) | Line shifts in same YAML flow merge under `frame_file` |
+| `generic_assert_channels` vs `generic_assert_threads` | 2 | Playwright, Cypress | 2 signatures (0 merges) | 2 signatures (0 merges) | Generic `AssertionError: expected false to be true` stays separated by spec file |
+| `generic_expect_reply` vs `generic_expect_emoji` | 2 | Detox | 2 signatures (0 merges) | 2 signatures (0 merges) | Generic `Error: expect(received).toBe(expected)` stays separated by spec file |
 | Fallback clusters (`spec-did-not-run`, `timeout`, `interrupted`, `no-error:*`) | 14 | All 4 | 7 signatures (0 splits) | 7 signatures (0 splits) | Empty stack traces leave `top_frame == ""`, identical in both modes |
 | Unique single-occurrence failures | 5 | Playwright, Cypress, Maestro | 5 signatures | 5 signatures | Identical in both modes |
 
@@ -87,7 +87,7 @@ Measured by `TestTop50ValidationComparison` (`go test -race -v ./internal/errors
    - HTTP/HTTPS/WS/WSS URLs -> `<url>`
    - Temp paths (`/tmp/...`, `/private/tmp/...`, `/var/folders/...`, Windows `Temp\...`) -> `<tmp>`
    - CI workspace prefixes (`/home/runner/work/<org>/<repo>/`, `/Users/runner/work/<org>/<repo>/`, `/github/workspace/`) -> `<repo>/`
-   - Hex IDs (`0x...`, >=16 hex chars, and 26-char Mattermost alphanumeric IDs containing digits) -> `<hex>`
+   - Hex IDs (`0x...`, >=16 hex chars, separator-prefixed `[-_.]` 6–15 char hex tokens with >=1 digit and >=1 hex letter, and 26-char Mattermost alphanumeric IDs containing digits) -> `<hex>`
    - Durations (`ms`, `us`, `ns`, `s`, `m`) -> `<dur>`
    - Standalone numbers -> `<num>`
 3. **Stable selector preservation:** Protects Playwright locators (`getByTestId(...)`, `getByRole(...)`, `getByText(...)`, `getByLabel(...)`, `getByPlaceholder(...)`, `locator(...)`), Detox matchers (`by.id(...)`, `by.text(...)`, `by.label(...)`), bracketed attribute selectors (`[data-testid="..."]`), `data-testid`/`data-cy`/`data-test`/`data-qa`/`id` attributes, `:nth-child(N)` / `.nth(N)`, and CSS `#id`/`.class` identifiers before numeric/hex normalization.

@@ -25,6 +25,30 @@ CREATE TABLE failure_signatures (
 );
 
 -- Indexes on test_cases(test_id) and test_cases(signature_id) are deferred to SEC-11506.
+-- Add columns first, then attach NOT VALID foreign keys and validate separately
+-- so PostgreSQL avoids an ACCESS EXCLUSIVE table scan on test_cases.
 ALTER TABLE test_cases
-    ADD COLUMN test_id      uuid REFERENCES tests(id),
-    ADD COLUMN signature_id uuid REFERENCES failure_signatures(id);
+    ADD COLUMN IF NOT EXISTS test_id      uuid,
+    ADD COLUMN IF NOT EXISTS signature_id uuid;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'test_cases_test_id_fkey'
+          AND conrelid = 'test_cases'::regclass
+    ) THEN
+        ALTER TABLE test_cases
+            ADD CONSTRAINT test_cases_test_id_fkey
+            FOREIGN KEY (test_id) REFERENCES tests(id) NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'test_cases_signature_id_fkey'
+          AND conrelid = 'test_cases'::regclass
+    ) THEN
+        ALTER TABLE test_cases
+            ADD CONSTRAINT test_cases_signature_id_fkey
+            FOREIGN KEY (signature_id) REFERENCES failure_signatures(id) NOT VALID;
+    END IF;
+END $$;

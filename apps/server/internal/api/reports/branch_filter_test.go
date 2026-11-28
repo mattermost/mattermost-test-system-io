@@ -71,9 +71,34 @@ func TestClassifyBranchFilterRow(t *testing.T) {
 	if !ok || kind != branchKindPR {
 		t.Fatalf("kind=%d", kind)
 	}
+	if _, _, ok = classifyBranchFilterRow("pr-+123", nil); ok {
+		t.Fatal("pr-+123 with leading plus must not match PR branch")
+	}
 	kind, sawMain, ok = classifyBranchFilterRow("main", nil)
 	if !ok || kind != branchKindMainMaster || !sawMain {
 		t.Fatalf("kind=%d sawMain=%v", kind, sawMain)
+	}
+}
+
+func TestParsePRBranchStrictDigits(t *testing.T) {
+	valid := map[string]int{
+		"pr-1":          1,
+		"PR-3891":       3891,
+		"pr-0042":       42,
+		"pr-2147483647": 2147483647,
+	}
+	for in, want := range valid {
+		got, ok := parsePRBranch(in)
+		if !ok || got != want {
+			t.Fatalf("parsePRBranch(%q) = (%d, %v), want (%d, true)", in, got, ok, want)
+		}
+	}
+	for _, invalid := range []string{
+		"", "pr-", "pr-0", "pr-000", "pr-+123", "pr--123", "pr-12a", "pr- 12", "pr-2147483648", "main",
+	} {
+		if got, ok := parsePRBranch(invalid); ok {
+			t.Fatalf("parsePRBranch(%q) = (%d, true), want false", invalid, got)
+		}
 	}
 }
 

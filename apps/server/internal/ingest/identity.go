@@ -18,23 +18,64 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
-var zephyrKeyRE = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(MM-T\d+)(?:$|[^a-z0-9])`)
+var zephyrKeyRE = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(MM\s*-\s*T([1-9]\d*[a-z]?)(?:([_-]\d+))?)(?:$|[^a-z0-9])`)
 
-// ExtractZephyrKey extracts the canonical uppercase Zephyr test key (e.g.
-// "MM-T5294" from "MM-T5294_3" or "@mm-t5294"), checking title, fullTitle,
+type zephyrMatch struct {
+	base string
+	full string
+}
+
+func findZephyrMatches(s string) []zephyrMatch {
+	var out []zephyrMatch
+	for pos := 0; pos < len(s); {
+		loc := zephyrKeyRE.FindStringSubmatchIndex(s[pos:])
+		if loc == nil {
+			break
+		}
+		base := "MM-T" + strings.ToUpper(s[pos+loc[4]:pos+loc[5]])
+		full := base
+		if loc[6] >= 0 {
+			full += s[pos+loc[6] : pos+loc[7]]
+		}
+		out = append(out, zephyrMatch{base: base, full: full})
+		pos += loc[3]
+	}
+	return out
+}
+
+func summarizeZephyrMatches(matches []zephyrMatch) (base, full string, multiBase bool) {
+	if len(matches) == 0 {
+		return "", "", false
+	}
+	base, full = matches[0].base, matches[0].full
+	for _, m := range matches[1:] {
+		if m.base != base {
+			return base, full, true
+		}
+	}
+	return base, full, false
+}
+
+func extractZephyrIdentity(fullTitle, title string, tags []string) (base, full string, multiBase bool) {
+	for _, s := range []string{title, fullTitle} {
+		if matches := findZephyrMatches(sanitizeUTF8(s)); len(matches) > 0 {
+			return summarizeZephyrMatches(matches)
+		}
+	}
+	var tagMatches []zephyrMatch
+	for _, tag := range tags {
+		tagMatches = append(tagMatches, findZephyrMatches(sanitizeUTF8(tag))...)
+	}
+	return summarizeZephyrMatches(tagMatches)
+}
+
+// ExtractZephyrKey extracts the canonical uppercase base Zephyr test key
+// (e.g. "MM-T5294" from "MM-T5294_3" or "@mm-t5294", "MM-T1257" from
+// "MM - T1257", "MM-T2530A" from "MM-T2530a"), checking title, fullTitle,
 // and tags in precedence order. Returns "" when no Zephyr key is present.
 func ExtractZephyrKey(fullTitle, title string, tags []string) string {
-	for _, s := range []string{title, fullTitle} {
-		if m := zephyrKeyRE.FindStringSubmatch(sanitizeUTF8(s)); len(m) == 2 {
-			return strings.ToUpper(m[1])
-		}
-	}
-	for _, tag := range tags {
-		if m := zephyrKeyRE.FindStringSubmatch(sanitizeUTF8(tag)); len(m) == 2 {
-			return strings.ToUpper(m[1])
-		}
-	}
-	return ""
+	base, _, _ := extractZephyrIdentity(fullTitle, title, tags)
+	return base
 }
 
 func sanitizeUTF8(s string) string {
@@ -80,9 +121,13 @@ func NormalizeTestTitle(title string) string {
 // DeriveTestKey computes the stable per-repository test identity key and
 // optional Zephyr key. Project and platform are intentionally excluded so the
 // same logical test maps to one tests row across browsers and OS targets.
+// Substep/variant suffixes are preserved in test_key (e.g. "zephyr:MM-T3409_1"),
+// while titles with multiple distinct base Zephyr keys fall back to a content
+// hash for test_key while still reporting the first base zephyr_key.
 func DeriveTestKey(repository, file, fullTitle, title string, tags []string) (testKey, zephyrKey string) {
-	if zk := ExtractZephyrKey(fullTitle, title, tags); zk != "" {
-		return "zephyr:" + zk, zk
+	base, full, multiBase := extractZephyrIdentity(fullTitle, title, tags)
+	if base != "" && !multiBase {
+		return "zephyr:" + full, base
 	}
 	normRepo := strings.TrimSpace(sanitizeUTF8(repository))
 	normFile := NormalizeTestFile(file)
@@ -91,7 +136,7 @@ func DeriveTestKey(repository, file, fullTitle, title string, tags []string) (te
 		normTitle = NormalizeTestTitle(title)
 	}
 	sum := sha256.Sum256([]byte(normRepo + "\x00" + normFile + "\x00" + normTitle))
-	return "h:" + hex.EncodeToString(sum[:]), ""
+	return "h:" + hex.EncodeToString(sum[:]), base
 }
 
 // IdentityMeta provides the report-level context needed to derive and persist
@@ -136,7 +181,7 @@ type sigUpsertRow struct {
 	firstSeen time.Time
 }
 
-// ResolveCaseIdentities derives test_key and algo_version=1 failure signatures
+// ResolveCaseIdentities derives test_key and algo_version=2 failure signatures
 // for each case, bulk-upserts unique tests and failure_signatures inside tx in
 // deterministic sorted order, and returns one TestIdentity per input case.
 //

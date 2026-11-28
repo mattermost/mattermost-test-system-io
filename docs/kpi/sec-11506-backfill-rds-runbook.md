@@ -23,9 +23,10 @@ fields) and two partial indexes that migrations deliberately do **not** create.
    If `MaxAllocatedStorage` is null, enable autoscaling (or grow storage)
    before starting. Autoscaling triggers at <10% free and then waits ≥6 h
    before it can grow again, so do not rely on it mid-run.
-3. **Deploy migration `000033` first** so the `tests` / `failure_signatures`
+3. **Deploy migration `000033` (and `000034`) first** so the `tests` / `failure_signatures`
    tables and `test_cases.{test_id,signature_id}` columns already exist and
-   live uploads populate them.
+   live uploads populate them. Migrations `000033` and `000034` deploy cleanly
+   together onto an unpopulated `tests` / `failure_signatures` schema.
 4. **Fresh post-`000033` snapshot** (`aws rds create-db-snapshot`) and record
    its id. Live CI uploads keep landing during the backfill, so restoring this
    snapshot loses them (see §5). For a clean restore point, briefly pause
@@ -70,12 +71,22 @@ tsioctl backfill \
 - **S3 errors:** a missing object is logged, counted in `s3_files_missing`,
   and the report falls back to DB fields. Any other S3 error aborts the run
   without advancing the checkpoint; rerun once S3 is healthy.
-- **Done when** these return 0 (a checkpointed rerun trivially scans nothing):
-  ```sql
-  SELECT count(*) FROM test_cases WHERE test_id IS NULL;
-  SELECT count(*) FROM test_cases
-  WHERE signature_id IS NULL AND status NOT IN ('passed', 'flaky', 'skipped', 'pending');
-  ```
+- **Done when** both of the following hold:
+  1. A dry-run DB check reports `stage_groups_updated: 0`, `reports_updated: 0`, and `cases_updated: 0` (the partial indexes `WHERE test_id IS NOT NULL` / `WHERE signature_id IS NOT NULL` cannot answer full-table `IS NULL` counts without a sequential scan):
+     ```bash
+     tsioctl backfill --dry-run --skip-s3 --format json
+     ```
+     For a bounded SQL spot-check over a specific report window (joined through `reports` / `suites` so PostgreSQL uses `reports(created_at)` + `suites(report_id)` instead of scanning `test_cases`):
+     ```sql
+     SELECT count(*)
+     FROM reports r
+     JOIN suites s ON s.report_id = r.id
+     JOIN test_cases tc ON tc.suite_id = s.id
+     WHERE r.created_at >= '<window_start>' AND r.created_at < '<window_end>'
+       AND (tc.test_id IS NULL
+            OR (tc.signature_id IS NULL AND tc.status NOT IN ('passed', 'flaky', 'skipped', 'pending')));
+     ```
+  2. Review `s3_files_missing` and stderr S3 warnings (`s3 json unusable`, `s3 json yielded no suites`); if restoring missing S3 objects afterward, re-run that scope with `--force --skip-stage` using a fresh `--checkpoint-file` (or accept the missing S3 enrichment).
 - **Known limitation:** `failure_signatures.first_seen_report_group_id` is set
   only when NULL, to the first report (by id, i.e. chronological) that the
   backfill touches. Signatures already attributed to a newer live group are not
@@ -126,7 +137,9 @@ still maintained on every write but never used for reads, and
 SELECT c.relname, i.indisvalid, i.indisready
 FROM pg_index i
 JOIN pg_class c ON c.oid = i.indexrelid
-WHERE c.relname IN ('test_cases_test_id_idx', 'test_cases_signature_id_idx');
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = current_schema()
+  AND c.relname IN ('test_cases_test_id_idx', 'test_cases_signature_id_idx');
 ```
 
 Both rows must show `indisvalid = t`. For any invalid index, rebuild it:

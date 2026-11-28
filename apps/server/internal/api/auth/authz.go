@@ -91,6 +91,16 @@ func RequireAuthz(mode AuthzMode, logger *slog.Logger) func(http.Handler) http.H
 	}
 }
 
+// NormalizeRepository trims surrounding whitespace and repeated trailing
+// case-insensitive ".git" suffixes from a repository slug.
+func NormalizeRepository(repo string) string {
+	repo = strings.TrimSpace(repo)
+	for len(repo) > 4 && strings.EqualFold(repo[len(repo)-4:], ".git") {
+		repo = strings.TrimSpace(repo[:len(repo)-4])
+	}
+	return repo
+}
+
 // CheckRepoAccess binds OIDC tokens to their repository. Admins and AuthzOff
 // bypass. A mismatch is logged and, in AuthzEnforce, returns
 // apiroot.ErrForbidden. Call it before any DB write.
@@ -98,7 +108,9 @@ func CheckRepoAccess(mode AuthzMode, logger *slog.Logger, sub Subject, targetRep
 	if mode == AuthzOff || sub.Role == policy.RoleAdmin || sub.Kind != "oidc" {
 		return nil
 	}
-	if sub.Repository != "" && strings.EqualFold(sub.Repository, strings.TrimSpace(targetRepo)) {
+	subRepo := NormalizeRepository(sub.Repository)
+	target := NormalizeRepository(targetRepo)
+	if subRepo != "" && strings.EqualFold(subRepo, target) {
 		return nil
 	}
 	if logger == nil {

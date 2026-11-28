@@ -17,7 +17,7 @@ import (
 )
 
 // AlgoVersion is the frozen error signature algorithm version for SEC-11524 / SEC-11519.
-const AlgoVersion int16 = 1
+const AlgoVersion int16 = 2
 
 const (
 	maxNormalizedRunes = 500
@@ -66,19 +66,21 @@ var (
 
 	errClassRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_.]*):(?:\s|$)`)
 
-	uuidRE      = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	isoTSRE     = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b`)
-	urlRE       = regexp.MustCompile(`(?:https?|wss?)://[^\s"'<>)\]]+`)
-	winTmpRE    = regexp.MustCompile(`[A-Za-z]:\\Users\\[^\\\s]+\\AppData\\Local\\Temp\\[^\s"')]+`)
-	unixTmpRE   = regexp.MustCompile(`(?:/private)?/tmp/[^\s"')]+|/var/folders/[^\s"')]+`)
-	ghWorkRE    = regexp.MustCompile(`(?:/home/runner|/Users/runner)/work/[^/\s]+/[^/\s]+/|/github/workspace/`)
-	winWorkRE   = regexp.MustCompile(`[A-Za-z]:\\a\\[^\\\s]+\\[^\\\s]+\\`)
-	prefixedHex = regexp.MustCompile(`\b0x[0-9a-fA-F]+\b`)
-	longHexRE   = regexp.MustCompile(`\b[0-9a-fA-F]{16,}\b`)
-	mmIDRE      = regexp.MustCompile(`\b[a-z0-9]{26}\b`)
-	durRE       = regexp.MustCompile(`\b(?:\d+(?:\.\d+)?\s*(?:ms|us|µs|ns|h|m|s))+\b`)
-	numRE       = regexp.MustCompile(`\b\d+(?:\.\d+)?\b`)
-	wsRE        = regexp.MustCompile(`\s+`)
+	uuidRE         = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+	isoTSRE        = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b`)
+	urlRE          = regexp.MustCompile(`(?:https?|wss?)://[^\s"'<>)\]]+`)
+	winTmpRE       = regexp.MustCompile(`[A-Za-z]:\\Users\\[^\\\s]+\\AppData\\Local\\Temp\\[^\s"')]+`)
+	unixTmpRE      = regexp.MustCompile(`(?:/private)?/tmp/[^\s"')]+|/var/folders/[^\s"')]+`)
+	ghWorkRE       = regexp.MustCompile(`(?:/home/runner|/Users/runner)/work/[^/\s]+/[^/\s]+/|/github/workspace/`)
+	winWorkRE      = regexp.MustCompile(`[A-Za-z]:\\a\\[^\\\s]+\\[^\\\s]+\\`)
+	prefixedHex    = regexp.MustCompile(`\b0x[0-9a-fA-F]+\b`)
+	longHexRE      = regexp.MustCompile(`\b[0-9a-fA-F]{16,}\b`)
+	sepHexRE       = regexp.MustCompile(`([-_.])([0-9a-fA-F]{6,15})(?:$|[^0-9a-zA-Z])`)
+	mmIDRE         = regexp.MustCompile(`\b[a-z0-9]{26}\b`)
+	durRE          = regexp.MustCompile(`\b(?:\d+(?:\.\d+)?\s*(?:ms|us|µs|ns|h|m|s))+\b`)
+	numRE          = regexp.MustCompile(`\b\d+(?:\.\d+)?\b`)
+	wsRE           = regexp.MustCompile(`\s+`)
+	frameLineColRE = regexp.MustCompile(`:\d+(?::\d+)?(\)?)$`)
 
 	// Selector patterns protected before replacing numbers/hex so stable test IDs,
 	// roles, CSS IDs/classes, and nth selectors remain intact.
@@ -115,9 +117,9 @@ var runtimeFrameSubstrings = []string{
 	"okhttp3.",
 }
 
-// Compute returns the frozen algo_version=1 failure signature.
+// Compute returns the frozen algo_version=2 failure signature.
 // TopFrame is always extracted and populated on the returned Signature,
-// while Fingerprint hashes (AlgoVersion, ErrorClass, NormalizedMessage).
+// while Fingerprint hashes (AlgoVersion, ErrorClass, NormalizedMessage, frameFile(TopFrame)).
 func Compute(in Input) Signature {
 	return ComputeWithOptions(in, false)
 }
@@ -210,6 +212,7 @@ func NormalizeMessage(raw string) string {
 
 	s = prefixedHex.ReplaceAllString(s, phHex)
 	s = longHexRE.ReplaceAllString(s, phHex)
+	s = replaceSepHex(s)
 	s = mmIDRE.ReplaceAllStringFunc(s, func(tok string) string {
 		if hasDigit(tok) {
 			return phHex
@@ -460,11 +463,17 @@ func fallbackForEmpty(status, framework string) string {
 	}
 }
 
+func frameFile(topFrame string) string {
+	_, loc, _ := splitFrame(topFrame)
+	return frameLineColRE.ReplaceAllString(loc, "$1")
+}
+
 func hashSignature(sig Signature, includeTopFrame bool) string {
-	payload := strconv.Itoa(int(sig.AlgoVersion)) + "|" + sig.ErrorClass + "|" + sig.NormalizedMessage
+	frame := frameFile(sig.TopFrame)
 	if includeTopFrame {
-		payload += "|" + sig.TopFrame
+		frame = sig.TopFrame
 	}
+	payload := strconv.Itoa(int(sig.AlgoVersion)) + "|" + sig.ErrorClass + "|" + sig.NormalizedMessage + "|" + frame
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])
 }
@@ -524,6 +533,39 @@ func hasDigit(s string) bool {
 		}
 	}
 	return false
+}
+
+func hasHexLetter(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if (s[i] >= 'a' && s[i] <= 'f') || (s[i] >= 'A' && s[i] <= 'F') {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceSepHex(s string) string {
+	var b strings.Builder
+	pos := 0
+	for pos < len(s) {
+		loc := sepHexRE.FindStringSubmatchIndex(s[pos:])
+		if loc == nil {
+			break
+		}
+		tokStart, tokEnd := pos+loc[4], pos+loc[5]
+		if tok := s[tokStart:tokEnd]; hasDigit(tok) && hasHexLetter(tok) {
+			b.WriteString(s[pos : pos+loc[3]])
+			b.WriteString(phHex)
+		} else {
+			b.WriteString(s[pos:tokEnd])
+		}
+		pos = tokEnd
+	}
+	if b.Len() == 0 {
+		return s
+	}
+	b.WriteString(s[pos:])
+	return b.String()
 }
 
 func truncateRunes(s string, limit int) string {

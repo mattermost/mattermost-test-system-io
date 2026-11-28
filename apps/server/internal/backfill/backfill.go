@@ -266,14 +266,9 @@ func (r *runner) casesBatch(ctx context.Context) (int, error) {
 		  AND ($2::text = '' OR g.repository = $2)
 		  AND ($3::timestamptz IS NULL OR r.created_at >= $3)
 		  AND ($4::timestamptz IS NULL OR r.created_at < $4)
-		  AND ($6::boolean OR EXISTS (
-		      SELECT 1 FROM suites s JOIN test_cases tc ON tc.suite_id = s.id
-		      WHERE s.report_id = r.id
-		        AND (tc.test_id IS NULL OR (tc.signature_id IS NULL
-		             AND tc.status NOT IN ('passed', 'flaky', 'skipped', 'pending')))))
 		ORDER BY r.id
 		LIMIT $5
-	`, r.sum.LastReportID, r.opts.Repository, r.opts.Since, r.opts.Until, r.opts.BatchSize, r.opts.Force)
+	`, r.sum.LastReportID, r.opts.Repository, r.opts.Since, r.opts.Until, r.opts.BatchSize)
 	if err != nil {
 		return 0, fmt.Errorf("select reports: %w", err)
 	}
@@ -328,6 +323,10 @@ func (r *runner) backfillReport(ctx context.Context, rep reportRow) error {
 	if err != nil {
 		return err
 	}
+	if !needsBackfill(cases, r.opts.Force) {
+		r.sum.ReportsSkipped++
+		return nil
+	}
 	ext, err := r.loadExtracted(ctx, rep)
 	if err != nil {
 		return err
@@ -346,6 +345,18 @@ func (r *runner) backfillReport(ctx context.Context, rep reportRow) error {
 	r.sum.CasesUpdated += len(p.dirty)
 	r.sum.CasesEnrichedFromS3 += p.enriched
 	return nil
+}
+
+func needsBackfill(cases []dbCase, force bool) bool {
+	if force {
+		return len(cases) > 0
+	}
+	for _, c := range cases {
+		if c.TestID == nil || (c.SignatureID == nil && teststatus.IsFail(c.Status)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *runner) loadCases(ctx context.Context, reportID uuid.UUID) ([]dbCase, error) {

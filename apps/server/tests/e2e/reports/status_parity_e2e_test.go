@@ -109,12 +109,12 @@ func TestStatusParity_GoSQLAPISSRAndUpload(t *testing.T) {
 		t.Fatalf("Go SpecVerdict(nil) = %q, want failed (spec-did-not-run)", sv)
 	}
 
-	// 2. SQL tsio_test_verdict() verification across all attempt shapes.
+	// 2. SQL tsio_test_verdict() verification across all attempt shapes (1-arg and 2-arg framework_flaky).
 	ctx := context.Background()
 	for _, ft := range fixture {
 		var sqlVerdict *string
 		if ft.attempts == nil {
-			err := env.Pool.QueryRow(ctx, `SELECT tsio_test_verdict('{}'::text[])`).Scan(&sqlVerdict)
+			err := env.Pool.QueryRow(ctx, `SELECT tsio_test_verdict('{}'::text[], $1::boolean)`, ft.frameworkFlaky).Scan(&sqlVerdict)
 			if err != nil {
 				t.Fatalf("SQL tsio_test_verdict empty: %v", err)
 			}
@@ -123,17 +123,28 @@ func TestStatusParity_GoSQLAPISSRAndUpload(t *testing.T) {
 			}
 			continue
 		}
-		err := env.Pool.QueryRow(ctx, `SELECT tsio_test_verdict($1::text[])`, ft.attempts).Scan(&sqlVerdict)
+		err := env.Pool.QueryRow(ctx, `SELECT tsio_test_verdict($1::text[], $2::boolean)`, ft.attempts, ft.frameworkFlaky).Scan(&sqlVerdict)
 		if err != nil {
-			t.Fatalf("SQL tsio_test_verdict(%v): %v", ft.attempts, err)
+			t.Fatalf("SQL tsio_test_verdict(%v, %v): %v", ft.attempts, ft.frameworkFlaky, err)
 		}
 		if sqlVerdict == nil || *sqlVerdict != ft.wantVerdict {
-			t.Fatalf("SQL tsio_test_verdict(%v) = %v, want %q", ft.attempts, sqlVerdict, ft.wantVerdict)
+			t.Fatalf("SQL tsio_test_verdict(%v, %v) = %v, want %q", ft.attempts, ft.frameworkFlaky, sqlVerdict, ft.wantVerdict)
 		}
+	}
+	// Verify framework_flaky=true promotes a single 'passed' attempt to 'flaky', matching Go TestVerdict.
+	var fwFlakyVerdict *string
+	if err := env.Pool.QueryRow(ctx, `SELECT tsio_test_verdict(ARRAY['passed'], true)`).Scan(&fwFlakyVerdict); err != nil || fwFlakyVerdict == nil || *fwFlakyVerdict != teststatus.Flaky {
+		t.Fatalf("SQL tsio_test_verdict(['passed'], true) = (%v, %v), want flaky", fwFlakyVerdict, err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT tsio_test_verdict(ARRAY['passed'])`).Scan(&fwFlakyVerdict); err != nil || fwFlakyVerdict == nil || *fwFlakyVerdict != teststatus.Passed {
+		t.Fatalf("SQL tsio_test_verdict(['passed']) = (%v, %v), want passed", fwFlakyVerdict, err)
 	}
 	var nullVerdict *string
 	if err := env.Pool.QueryRow(ctx, `SELECT tsio_test_verdict(NULL::text[])`).Scan(&nullVerdict); err != nil || nullVerdict != nil {
 		t.Fatalf("SQL tsio_test_verdict(NULL) = (%v, %v), want (nil, nil)", nullVerdict, err)
+	}
+	if err := env.Pool.QueryRow(ctx, `SELECT tsio_test_verdict(NULL::text[], true)`).Scan(&nullVerdict); err != nil || nullVerdict != nil {
+		t.Fatalf("SQL tsio_test_verdict(NULL, true) = (%v, %v), want (nil, nil)", nullVerdict, err)
 	}
 
 	// 3. Orchestration begin -> checkout -> complete (with empty-spec + edge test_cases).

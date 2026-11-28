@@ -48,6 +48,14 @@ func TestMigration000033_UpDownAndNoTestCasesIndex(t *testing.T) {
 	}
 	rows.Close()
 
+	down34SQL, err := migrations.FS.ReadFile("000034_validate_test_cases_fks.down.sql")
+	if err != nil {
+		t.Fatalf("read 000034 down migration: %v", err)
+	}
+	up34SQL, err := migrations.FS.ReadFile("000034_validate_test_cases_fks.up.sql")
+	if err != nil {
+		t.Fatalf("read 000034 up migration: %v", err)
+	}
 	downSQL, err := migrations.FS.ReadFile("000033_tests_and_failure_signatures.down.sql")
 	if err != nil {
 		t.Fatalf("read down migration: %v", err)
@@ -57,6 +65,9 @@ func TestMigration000033_UpDownAndNoTestCasesIndex(t *testing.T) {
 		t.Fatalf("read up migration: %v", err)
 	}
 
+	if _, err := env.Pool.Exec(ctx, string(down34SQL)); err != nil {
+		t.Fatalf("exec 000034 down migration: %v", err)
+	}
 	if _, err := env.Pool.Exec(ctx, string(downSQL)); err != nil {
 		t.Fatalf("exec down migration: %v", err)
 	}
@@ -71,6 +82,9 @@ func TestMigration000033_UpDownAndNoTestCasesIndex(t *testing.T) {
 
 	if _, err := env.Pool.Exec(ctx, string(upSQL)); err != nil {
 		t.Fatalf("re-exec up migration: %v", err)
+	}
+	if _, err := env.Pool.Exec(ctx, string(up34SQL)); err != nil {
+		t.Fatalf("re-exec 000034 up migration: %v", err)
 	}
 	if err := env.Pool.QueryRow(ctx, `SELECT to_regclass('public.tests'), to_regclass('public.failure_signatures')`).Scan(&testsReg, &sigsReg); err != nil {
 		t.Fatalf("check recreated tables: %v", err)
@@ -343,9 +357,9 @@ func TestIngestTestIDsAndFailureSignatures_AllFrameworks(t *testing.T) {
 		t.Fatalf("passed case should have NULL signature_id, got %v", pwCases[1].sigID)
 	}
 
-	// [2] renders sidebar failed with same normalized error at different top_frame -> shares signature_id!
-	if pwCases[2].sigID == nil || *pwCases[2].sigID != *pwCases[0].sigID {
-		t.Fatalf("different top_frame should share algo_version=1 signature_id: %v vs %v", pwCases[2].sigID, pwCases[0].sigID)
+	// [2] renders sidebar failed with same normalized error in a different spec file -> distinct signature_id.
+	if pwCases[2].sigID == nil || *pwCases[2].sigID == *pwCases[0].sigID {
+		t.Fatalf("different spec file should not merge signature_id: %v vs %v", pwCases[2].sigID, pwCases[0].sigID)
 	}
 	if !strings.HasPrefix(*pwCases[2].testKey, "h:") {
 		t.Fatalf("non-zephyr test_key = %q, want h:...", *pwCases[2].testKey)
@@ -382,12 +396,12 @@ func TestIngestTestIDsAndFailureSignatures_AllFrameworks(t *testing.T) {
 		t.Fatalf("cy failed case sigID=%v errorClass=%v", cyCases[1].sigID, cyCases[1].errorClass)
 	}
 
-	// Detox: [0] failed retry + [1] passed final share zephyr:MM-T5294 and stripped repo-relative file.
+	// Detox: [0] failed retry + [1] passed final share zephyr:MM-T5294_3 (with base zephyr_key MM-T5294) and stripped repo-relative file.
 	dtCases := loadCases(dt.uploadID)
 	if len(dtCases) != 2 {
 		t.Fatalf("detox len = %d, want 2", len(dtCases))
 	}
-	if *dtCases[0].testID != *dtCases[1].testID || *dtCases[0].testKey != "zephyr:MM-T5294" || *dtCases[0].zephyrKey != "MM-T5294" {
+	if *dtCases[0].testID != *dtCases[1].testID || *dtCases[0].testKey != "zephyr:MM-T5294_3" || *dtCases[0].zephyrKey != "MM-T5294" {
 		t.Fatalf("detox test identity mismatch: key=%q zephyr=%q", *dtCases[0].testKey, *dtCases[0].zephyrKey)
 	}
 	if *dtCases[0].testFile != "e2e/detox/test/search.e2e.ts" {

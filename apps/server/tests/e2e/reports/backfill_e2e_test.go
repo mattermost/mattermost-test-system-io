@@ -87,10 +87,12 @@ type hookStore struct {
 	storage.ObjectStore
 	key    string
 	before func()
+	gets   int
 }
 
-func (h hookStore) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
-	if key == h.key {
+func (h *hookStore) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectMeta, error) {
+	h.gets++
+	if key == h.key && h.before != nil {
 		h.before()
 	}
 	return h.ObjectStore.Get(ctx, key)
@@ -309,12 +311,17 @@ func TestBackfill_StagesCasesDryRunAndIdempotency(t *testing.T) {
 		t.Fatalf("missing-S3 fallback = %+v", mf)
 	}
 
-	again, err := backfill.Run(ctx, env.Pool, env.Store, backfill.Options{})
+	counting := &hookStore{ObjectStore: env.Store}
+	again, err := backfill.Run(ctx, env.Pool, counting, backfill.Options{})
 	if err != nil {
 		t.Fatalf("re-run: %v", err)
 	}
-	if again.ReportsScanned != 0 || again.CasesUpdated != 0 || again.StageGroupsUpdated != 0 {
+	if again.ReportsScanned != 4 || again.ReportsSkipped != 4 || again.ReportsUpdated != 0 ||
+		again.CasesUpdated != 0 || again.S3FilesParsed != 0 || again.StageGroupsUpdated != 0 {
 		t.Fatalf("re-run not idempotent: %+v", again)
+	}
+	if counting.gets != 0 {
+		t.Fatalf("re-run triggered %d Store.Get calls, want 0", counting.gets)
 	}
 }
 
@@ -410,7 +417,7 @@ func TestBackfill_PartialS3FallbackAndConcurrentWritesWin(t *testing.T) {
 
 	raceCase := bfCases(t, env, race.uploadID)["MM-T101 logs in"].id
 	var liveTestID, liveSigID uuid.UUID
-	store := hookStore{ObjectStore: env.Store, key: bfJSONKey(t, env, race.uploadID), before: func() {
+	store := &hookStore{ObjectStore: env.Store, key: bfJSONKey(t, env, race.uploadID), before: func() {
 		if err := env.Pool.QueryRow(ctx, `
 			WITH t AS (
 				INSERT INTO tests (repository, framework, test_key, file, full_title)

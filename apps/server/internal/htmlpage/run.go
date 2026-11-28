@@ -340,7 +340,7 @@ func applyRunSummary(base *RunPage, snap *orchestration.RunWithUnits, rule tests
 	base.TestFlaky = tcFlaky
 	base.TestSkipped = tcSkipped
 	base.TestTotal = tcTotal
-	if rate := passRateDisplayWithRule(tcPassed, tcFailed, tcFlaky, tcSkipped, rule); rate != "" {
+	if rate := passRateDisplay(tcPassed, tcFailed, tcFlaky); rate != "" {
 		base.PassRate = rate
 		base.PassRateClass = passRateColorClass(rate)
 	}

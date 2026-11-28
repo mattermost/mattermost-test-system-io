@@ -168,3 +168,26 @@ func TestIsObjectNotFound(t *testing.T) {
 		}
 	}
 }
+
+func TestNeedsBackfill(t *testing.T) {
+	id := uuid.New()
+	if needsBackfill(nil, false) || needsBackfill(nil, true) {
+		t.Fatal("empty report should not need backfill")
+	}
+	done := []dbCase{
+		{Status: "passed", TestID: &id},
+		{Status: "failed", TestID: &id, SignatureID: &id},
+	}
+	if needsBackfill(done, false) {
+		t.Fatal("fully populated report should not need backfill")
+	}
+	if !needsBackfill(done, true) {
+		t.Fatal("force=true should need backfill when cases exist")
+	}
+	if !needsBackfill([]dbCase{{Status: "passed", TestID: nil}}, false) {
+		t.Fatal("missing test_id should need backfill")
+	}
+	if !needsBackfill([]dbCase{{Status: "failed", TestID: &id, SignatureID: nil}}, false) {
+		t.Fatal("failing case missing signature_id should need backfill")
+	}
+}

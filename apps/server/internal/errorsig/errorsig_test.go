@@ -118,9 +118,9 @@ func TestGoldenCorpus(t *testing.T) {
 	}
 }
 
-func TestVersion1FingerprintEncodingPinned(t *testing.T) {
-	// Pinned SHA-256 of "1|TimeoutError|TimeoutError: waiting for #submit-1 after <dur>"
-	const wantFingerprint = "c2eb0c2f07af26d8414e9c5252f5795fb8063a86d3e6d5564d60795ec568d474"
+func TestVersion2FingerprintEncodingPinned(t *testing.T) {
+	// Pinned SHA-256 of "2|TimeoutError|TimeoutError: waiting for #submit-1 after <dur>|specs/login.spec.ts"
+	const wantFingerprint = "0cd85473d914edeb96a6476beeb8179f7b831db581496e8ab2911cfd1a8eab03"
 
 	sig := Compute(Input{
 		Framework:    "playwright",
@@ -129,8 +129,8 @@ func TestVersion1FingerprintEncodingPinned(t *testing.T) {
 		ErrorStack:   "    at specs/login.spec.ts:10:2",
 	})
 
-	if sig.AlgoVersion != 1 {
-		t.Fatalf("AlgoVersion = %d, want 1", sig.AlgoVersion)
+	if sig.AlgoVersion != 2 {
+		t.Fatalf("AlgoVersion = %d, want 2", sig.AlgoVersion)
 	}
 	if sig.ErrorClass != "TimeoutError" {
 		t.Fatalf("ErrorClass = %q, want TimeoutError", sig.ErrorClass)
@@ -143,6 +143,26 @@ func TestVersion1FingerprintEncodingPinned(t *testing.T) {
 	}
 	if sig.Fingerprint != wantFingerprint {
 		t.Fatalf("Fingerprint = %s, want pinned %s", sig.Fingerprint, wantFingerprint)
+	}
+
+	// Line-number shift in the same spec file preserves fingerprint; different spec file separates it.
+	shifted := Compute(Input{
+		Framework:    "playwright",
+		Status:       "failed",
+		ErrorMessage: "TimeoutError: waiting for #submit-1 after 3000ms",
+		ErrorStack:   "    at specs/login.spec.ts:99:5",
+	})
+	if shifted.Fingerprint != sig.Fingerprint {
+		t.Fatalf("line shift changed fingerprint: %s vs %s", shifted.Fingerprint, sig.Fingerprint)
+	}
+	otherFile := Compute(Input{
+		Framework:    "playwright",
+		Status:       "failed",
+		ErrorMessage: "TimeoutError: waiting for #submit-1 after 3000ms",
+		ErrorStack:   "    at specs/other.spec.ts:10:2",
+	})
+	if otherFile.Fingerprint == sig.Fingerprint {
+		t.Fatalf("different spec file collided on fingerprint %s", otherFile.Fingerprint)
 	}
 }
 
@@ -164,13 +184,18 @@ func TestNormalizeMessageUTF8TruncationAndDeterminism(t *testing.T) {
 	}
 	s1 := Compute(in)
 	in.ErrorMessage = "Error: request to https://host-2.example/other failed for 11111111-2222-3333-4444-555555555555"
-	in.ErrorStack = "    at specs/b.spec.ts:99:1"
+	in.ErrorStack = "    at specs/a.spec.ts:99:1"
 	s2 := Compute(in)
 	if s1.Fingerprint != s2.Fingerprint {
-		t.Errorf("expected same fingerprint across dynamic values, got %s vs %s", s1.Fingerprint, s2.Fingerprint)
+		t.Errorf("expected same fingerprint across dynamic values and line shift, got %s vs %s", s1.Fingerprint, s2.Fingerprint)
 	}
 	if s1.SampleMessage == s2.SampleMessage {
 		t.Errorf("expected SampleMessage to preserve raw first line, got identical %q", s1.SampleMessage)
+	}
+	in.ErrorStack = "    at specs/b.spec.ts:99:1"
+	s3 := Compute(in)
+	if s1.Fingerprint == s3.Fingerprint {
+		t.Errorf("expected different fingerprint across spec files, got identical %s", s1.Fingerprint)
 	}
 }
 
@@ -180,12 +205,12 @@ func TestTop50ValidationComparison(t *testing.T) {
 		t.Fatalf("validation_samples = %d, want >= 50", len(corpus.ValidationSamples))
 	}
 
-	withoutTF := evaluateCorpus(corpus.ValidationSamples, false)
+	withFile := evaluateCorpus(corpus.ValidationSamples, false)
 	withTF := evaluateCorpus(corpus.ValidationSamples, true)
 
-	t.Logf("samples=%d clusters=%d | without_top_frame: sigs=%d splits=%d merges=%d | with_top_frame: sigs=%d splits=%d merges=%d",
-		withoutTF.TotalSamples, withoutTF.DistinctClusters,
-		withoutTF.DistinctSignatures, withoutTF.FalseSplits, withoutTF.FalseMerges,
+	t.Logf("samples=%d clusters=%d | frame_file: sigs=%d splits=%d merges=%d | with_top_frame: sigs=%d splits=%d merges=%d",
+		withFile.TotalSamples, withFile.DistinctClusters,
+		withFile.DistinctSignatures, withFile.FalseSplits, withFile.FalseMerges,
 		withTF.DistinctSignatures, withTF.FalseSplits, withTF.FalseMerges,
 	)
 
@@ -206,16 +231,16 @@ func TestTop50ValidationComparison(t *testing.T) {
 	}
 	t.Logf("framework totals=%v fallbacks=%v", totalByFW, noErrByFW)
 
-	if withoutTF.FalseSplits != 0 {
-		t.Errorf("without_top_frame false splits = %d, want 0", withoutTF.FalseSplits)
+	if withFile.FalseMerges != 0 {
+		t.Errorf("frame_file false merges = %d, want 0", withFile.FalseMerges)
 	}
-	if withTF.FalseSplits <= withoutTF.FalseSplits {
-		t.Errorf("expected with_top_frame to produce more false splits than without_top_frame (%d vs %d)",
-			withTF.FalseSplits, withoutTF.FalseSplits)
+	if withTF.FalseSplits <= withFile.FalseSplits {
+		t.Errorf("expected with_top_frame to produce more false splits than frame_file (%d vs %d)",
+			withTF.FalseSplits, withFile.FalseSplits)
 	}
-	if withoutTF.FalseSplits+withoutTF.FalseMerges >= withTF.FalseSplits+withTF.FalseMerges {
-		t.Errorf("expected without_top_frame total clustering errors (%d) < with_top_frame (%d)",
-			withoutTF.FalseSplits+withoutTF.FalseMerges, withTF.FalseSplits+withTF.FalseMerges)
+	if withFile.FalseSplits+withFile.FalseMerges >= withTF.FalseSplits+withTF.FalseMerges {
+		t.Errorf("expected frame_file total clustering errors (%d) < with_top_frame (%d)",
+			withFile.FalseSplits+withFile.FalseMerges, withTF.FalseSplits+withTF.FalseMerges)
 	}
 }
 
@@ -439,6 +464,11 @@ func TestEdgeCaseRegressions(t *testing.T) {
 			Status:     "failed",
 			ErrorStack: "    at " + testFrameA,
 		})
+		noErrAShift := Compute(Input{
+			Framework:  "playwright",
+			Status:     "failed",
+			ErrorStack: "specs/a.spec.ts:99:1",
+		})
 		noErrB := Compute(Input{
 			Framework:  "playwright",
 			Status:     "failed",
@@ -447,8 +477,11 @@ func TestEdgeCaseRegressions(t *testing.T) {
 		if noErrA.Fallback != noErrPlaywright || noErrB.Fallback != noErrPlaywright {
 			t.Errorf("unexpected fallbacks: %q, %q", noErrA.Fallback, noErrB.Fallback)
 		}
-		if noErrA.Fingerprint != noErrB.Fingerprint {
-			t.Errorf("stack-only default fingerprint differed across filenames: %s vs %s", noErrA.Fingerprint, noErrB.Fingerprint)
+		if noErrA.Fingerprint != noErrAShift.Fingerprint {
+			t.Errorf("stack-only default fingerprint differed across line shift: %s vs %s", noErrA.Fingerprint, noErrAShift.Fingerprint)
+		}
+		if noErrA.Fingerprint == noErrB.Fingerprint {
+			t.Errorf("stack-only default fingerprint collided across filenames: %s", noErrA.Fingerprint)
 		}
 		if noErrA.TopFrame != testFrameA || noErrB.TopFrame != "specs/b.spec.ts:99:1" {
 			t.Errorf("unexpected top frames: %q, %q", noErrA.TopFrame, noErrB.TopFrame)
@@ -636,6 +669,63 @@ func TestEdgeCaseRegressions(t *testing.T) {
 		}
 		if copyNumTimedOut.TopFrame != "C:/Program Files (x86)/App/specs/a (1).spec.ts:10:2" {
 			t.Errorf("timedOut copy-number TopFrame = %q", copyNumTimedOut.TopFrame)
+		}
+	})
+
+	t.Run("sep_prefixed_hex_and_generic_playwright_separation", func(t *testing.T) {
+		got := NormalizeMessage("Error: ABAC-RemoveRule-a1b2c3d failed for @test-user_name.3295f9 and user-abcdef vs user-123456")
+		want := "Error: ABAC-RemoveRule-<hex> failed for @test-user_name.<hex> and user-abcdef vs user-<num>"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+		s1 := Compute(Input{
+			Framework:    "playwright",
+			Status:       "failed",
+			ErrorMessage: "Error: expect(locator).toBeVisible() failed",
+			ErrorStack:   "    at e2e-tests/playwright/specs/a.spec.ts:12:4",
+		})
+		s2 := Compute(Input{
+			Framework:    "playwright",
+			Status:       "failed",
+			ErrorMessage: "Error: expect(locator).toBeVisible() failed",
+			ErrorStack:   "    at e2e-tests/playwright/specs/a.spec.ts:45:9",
+		})
+		s3 := Compute(Input{
+			Framework:    "playwright",
+			Status:       "failed",
+			ErrorMessage: "Error: expect(locator).toBeVisible() failed",
+			ErrorStack:   "    at e2e-tests/playwright/specs/b.spec.ts:12:4",
+		})
+		if s1.Fingerprint != s2.Fingerprint {
+			t.Errorf("same spec line shift split fingerprint: %s vs %s", s1.Fingerprint, s2.Fingerprint)
+		}
+		if s1.Fingerprint == s3.Fingerprint {
+			t.Errorf("different spec files merged generic assertion: %s", s1.Fingerprint)
+		}
+
+		// Wrapper callee prefix (e.g. Context.eval (...)) hashes the same frame file
+		// as a bare frame under Compute, while ComputeWithOptions(in, true) distinguishes them.
+		bareIn := Input{
+			Framework:    "playwright",
+			Status:       "failed",
+			ErrorMessage: "Error: expect(locator).toBeVisible() failed",
+			ErrorStack:   "    at specs/a.spec.ts:10:2",
+		}
+		wrappedIn := Input{
+			Framework:    "playwright",
+			Status:       "failed",
+			ErrorMessage: "Error: expect(locator).toBeVisible() failed",
+			ErrorStack:   "    at Context.eval (specs/a.spec.ts:99:5)",
+		}
+		bareSig, wrappedSig := Compute(bareIn), Compute(wrappedIn)
+		if bareSig.Fingerprint != wrappedSig.Fingerprint {
+			t.Errorf("callee wrapper changed default fingerprint: %s vs %s", bareSig.Fingerprint, wrappedSig.Fingerprint)
+		}
+		if wrappedSig.TopFrame != "Context.eval (specs/a.spec.ts:99:5)" {
+			t.Errorf("TopFrame mutated: %q", wrappedSig.TopFrame)
+		}
+		if ComputeWithOptions(bareIn, true).Fingerprint == ComputeWithOptions(wrappedIn, true).Fingerprint {
+			t.Errorf("expected full top_frame mode to distinguish bare vs wrapped frame")
 		}
 	})
 }

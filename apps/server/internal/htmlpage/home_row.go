@@ -81,7 +81,7 @@ func mapLiveRun(r reports.HomeLiveRun, rule teststatus.Rule) HomeRunRow {
 	return row
 }
 
-func mapStaticRun(r reports.HomeStaticRun, rule teststatus.Rule) HomeRunRow {
+func mapStaticRun(r reports.HomeStaticRun, _ teststatus.Rule) HomeRunRow {
 	row := HomeRunRow{
 		Href:           r.Href,
 		Name:           r.Name,
@@ -106,11 +106,7 @@ func mapStaticRun(r reports.HomeStaticRun, rule teststatus.Rule) HomeRunRow {
 		row.Flaky = r.Flaky
 		row.Skipped = r.Skipped
 		row.Total = r.Total
-		other := r.Skipped
-		if rem := r.Total - (r.Passed + r.Failed + r.Flaky + r.Skipped); rem > 0 {
-			other += rem
-		}
-		if rate := passRateDisplayWithRule(r.Passed, r.Failed, r.Flaky, other, rule); rate != "" {
+		if rate := passRateDisplayForTotals(r.Total, r.Passed, r.Failed, r.Flaky, r.Skipped); rate != "" {
 			row.PassRate = rate
 			row.PassRateClass = passRateColorClass(rate)
 		}
@@ -154,7 +150,7 @@ func fillSpecProgress(row *HomeRunRow, orch *reports.HomeOrchView) {
 	}
 }
 
-func fillStatsFromOrchView(row *HomeRunRow, orch *reports.HomeOrchView, rule teststatus.Rule) {
+func fillStatsFromOrchView(row *HomeRunRow, orch *reports.HomeOrchView, _ teststatus.Rule) {
 	if orch == nil || orch.Tests == nil || orch.Tests.Total <= 0 {
 		return
 	}
@@ -166,11 +162,7 @@ func fillStatsFromOrchView(row *HomeRunRow, orch *reports.HomeOrchView, rule tes
 	row.Skipped = t.Skipped
 	row.Total = t.Total
 	row.HasFailed = t.Failed > 0
-	other := t.Skipped
-	if rem := t.Total - (t.Passed + t.Failed + t.Flaky + t.Skipped); rem > 0 {
-		other += rem
-	}
-	if rate := passRateDisplayWithRule(t.Passed, t.Failed, t.Flaky, other, rule); rate != "" {
+	if rate := passRateDisplayForTotals(t.Total, t.Passed, t.Failed, t.Flaky, t.Skipped); rate != "" {
 		row.PassRate = rate
 		row.PassRateClass = passRateColorClass(rate)
 	}
@@ -248,21 +240,16 @@ func statusIconForRun(groupStatus string, orch *reports.HomeOrchView, total int,
 	return statusPassed
 }
 
-func passRateDisplayWithRule(passed, failed, flaky, skipped int, rule teststatus.Rule) string {
-	var (
-		rate float64
-		ok   bool
-	)
-	if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
-		rate, ok = teststatus.PassRate(passed, failed, flaky)
-	} else {
-		pass := passed + flaky
-		denom := pass + failed + skipped
-		if denom > 0 {
-			rate = float64(pass*100) / float64(denom)
-			ok = true
-		}
+func passRateDisplayForTotals(total, passed, failed, flaky, skipped int) string {
+	// Fail closed: any unclassified remainder outside known buckets counts as failed.
+	if rem := total - (passed + failed + flaky + skipped); rem > 0 {
+		failed += rem
 	}
+	return passRateDisplay(passed, failed, flaky)
+}
+
+func passRateDisplay(passed, failed, flaky int) string {
+	rate, ok := teststatus.PassRate(passed, failed, flaky)
 	if !ok {
 		return ""
 	}
@@ -270,10 +257,6 @@ func passRateDisplayWithRule(passed, failed, flaky, skipped int, rule teststatus
 		return "100"
 	}
 	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1f", math.Floor(rate*10)/10), "0"), ".")
-}
-
-func passRateDisplay(passed, failed, flaky int) string {
-	return passRateDisplayWithRule(passed, failed, flaky, 0, teststatus.RuleShared)
 }
 
 func passRateColorClass(rate string) string {

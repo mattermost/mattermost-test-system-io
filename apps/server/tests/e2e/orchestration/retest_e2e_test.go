@@ -4,9 +4,18 @@
 package orchestratione2e
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/tests/e2e/testenv"
 )
 
 // failResults builds a results array marking every spec as failed.
@@ -312,6 +321,226 @@ func TestRetestDisabledNoSecondAttempt(t *testing.T) {
 		if extra.StatusCode != http.StatusConflict {
 			t.Fatalf("post-completion checkout: status = %d, want 409; body=%s",
 				extra.StatusCode, readBodyString(extra))
+		}
+	}
+}
+
+// TestRetestLeaseExpiryRestoresCompletedFailAndAllowsSecondWorkerRetest verifies
+// that when a worker leases a retest unit and lets the lease expire, the reaper
+// restores the unit to state='completed_fail' (NOT 'pending'), increments
+// completed_fail_count and retest_eligible_count while keeping pending_count==0,
+// and a second worker can subsequently check out the retest unit and complete the run.
+func TestRetestLeaseExpiryRestoresCompletedFailAndAllowsSecondWorkerRetest(t *testing.T) {
+	env, tok := startEnv(t)
+
+	units := []string{
+		"tests/retest-expire.spec.ts",
+	}
+	beginResp := postJSON(t, env, tok, "/api/v1/orchestration/begin",
+		beginRunBody(units, map[string]any{
+			"repository":       defaultRepository + ".git",
+			"retest_on_fail":   true,
+			"retest_budget":    1,
+			"lease_timeout_ms": 15_000,
+			"idle_timeout_ms":  60_000,
+		}))
+	expectStatus(t, beginResp, http.StatusCreated)
+
+	// Worker A checks out fresh unit 0 (using bare defaultRepository without .git)
+	// and reports failed (fail_count=1 <= budget=1).
+	checkA := postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+		checkoutBody("playwright-shard-A", "job-retest-exp-A", 1))
+	expectStatus(t, checkA, http.StatusOK)
+	completeA := postJSON(t, env, tok, "/api/v1/orchestration/complete",
+		completeBody("playwright-shard-A", "job-retest-exp-A", failResults(units)))
+	expectStatus(t, completeA, http.StatusOK)
+
+	// Worker B checks out the retest unit (is_retest=true), then its lease expires.
+	checkB := postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+		checkoutBody("playwright-shard-B", "job-retest-exp-B", 1))
+	bodyB := expectStatus(t, checkB, http.StatusOK)
+	if !bodyB["is_retest"].(bool) {
+		t.Fatalf("worker B checkout: is_retest=false, want true")
+	}
+
+	// Explicitly backdate Worker B's retest lease deadline so Workers A and C
+	// never race a 1s timeout under heavy CI load.
+	if _, err := env.Pool.Exec(context.Background(), `
+		UPDATE leases
+		   SET deadline = now() - interval '10 seconds'
+		 WHERE gh_job_id = 'job-retest-exp-B' AND released_at IS NULL
+	`); err != nil {
+		t.Fatalf("backdate worker B retest lease deadline: %v", err)
+	}
+
+	// Wait for the reaper to expire Worker B's retest lease and restore completed_fail + retest_eligible.
+	pollUntil(t, 5*time.Second, 100*time.Millisecond, "retest lease to expire back to completed_fail", func() bool {
+		stat := getJSON(t, env, tok, statusURL(identity(nil)))
+		if stat.StatusCode != http.StatusOK {
+			return false
+		}
+		b := decodeJSON(t, stat)
+		c := counts(t, b)
+		return c["leased"] == 0 && c["completed_fail"] == 1 && c["retest_eligible"] == 1 && c["pending"] == 0
+	})
+
+	// Worker C checks out the restored retest unit (is_retest=true) and passes it.
+	checkC := postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+		checkoutBody("playwright-shard-C", "job-retest-exp-C", 1))
+	bodyC := expectStatus(t, checkC, http.StatusOK)
+	if !bodyC["is_retest"].(bool) || len(bodyC["units"].([]any)) != 1 {
+		t.Fatalf("worker C checkout: is_retest=%v units=%v, want true and 1 unit", bodyC["is_retest"], bodyC["units"])
+	}
+
+	completeC := postJSON(t, env, tok, "/api/v1/orchestration/complete",
+		completeBody("playwright-shard-C", "job-retest-exp-C", passResults(units)))
+	expectStatus(t, completeC, http.StatusOK)
+
+	finalBody := expectStatus(t, getJSON(t, env, tok, statusURL(identity(nil))), http.StatusOK)
+	if finalBody["status"] != "completed" {
+		t.Fatalf("final status = %v, want completed", finalBody["status"])
+	}
+	fc := counts(t, finalBody)
+	if fc["completed_pass"] != 1 || fc["completed_fail"] != 0 || fc["retest_eligible"] != 0 || fc["pending"] != 0 {
+		t.Fatalf("final counts = %s, want pass=1 all others 0", fmtCounts(fc))
+	}
+}
+
+func postJSONRaw(serverURL, token, path string, body any) (int, string, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return 0, "", err
+	}
+	req, err := http.NewRequest(http.MethodPost, serverURL+path, bytes.NewReader(raw))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, "", err
+	}
+	return resp.StatusCode, string(b), nil
+}
+
+// TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock stresses concurrent
+// run timeout (Store.MarkRunTimedOut) and worker completion (RecordCompletion)
+// on the same run to verify lock ordering (leases -> dispatch_units -> orchestration_runs)
+// produces zero 40P01 deadlocks and that fresh completions prevent idle timeout.
+func TestConcurrentMarkRunTimedOutAndRecordCompletionNoDeadlock(t *testing.T) {
+	env, tok := startEnv(t, testenv.WithReaperDisabled())
+	ctx := context.Background()
+
+	// 1. Fresh activity prevents stale idle timeout.
+	{
+		idMap := identity(map[string]any{"gh_run_id": "ci-run-idle-recheck"})
+		units := []string{"tests/ir-0.spec.ts", "tests/ir-1.spec.ts"}
+		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/begin", merge(beginRunBody(units, map[string]any{
+			"lease_timeout_ms": 60_000,
+			"idle_timeout_ms":  60_000,
+		}), idMap)), http.StatusCreated)
+		for w := range len(units) {
+			expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+				merge(checkoutBody(fmt.Sprintf("ir-w-%d", w), fmt.Sprintf("job-ir-%d", w), 1), idMap)), http.StatusOK)
+		}
+		irRunID := runUUID(t, env, idMap)
+		if _, err := env.Pool.Exec(ctx, `
+			UPDATE orchestration_runs SET last_activity_at = now() - interval '10 minutes' WHERE id = $1
+		`, irRunID); err != nil {
+			t.Fatalf("backdate idleRecheckRun: %v", err)
+		}
+		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete",
+			merge(completeBody("ir-w-0", "job-ir-0", passResults([]string{units[0]})), idMap)), http.StatusOK)
+
+		if timedOut, err := env.Orchestrator.MarkRunTimedOut(ctx, irRunID); err != nil || timedOut {
+			t.Fatalf("MarkRunTimedOut after activity refresh = (timedOut=%v, err=%v), want (false, nil)", timedOut, err)
+		}
+		if st := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)["status"]; st != "in_progress" {
+			t.Fatalf("run status after activity refresh = %v, want in_progress", st)
+		}
+		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/complete",
+			merge(completeBody("ir-w-1", "job-ir-1", passResults([]string{units[1]})), idMap)), http.StatusOK)
+	}
+
+	// 2. Concurrent MarkRunTimedOut vs worker /complete with zero 40P01 deadlocks.
+	for iter := range 10 {
+		runIDStr := fmt.Sprintf("ci-run-deadlock-%d", iter)
+		idMap := identity(map[string]any{"gh_run_id": runIDStr})
+		units := []string{"tests/dl-0.spec.ts", "tests/dl-1.spec.ts"}
+		expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/begin", merge(beginRunBody(units, map[string]any{
+			"lease_timeout_ms": 60_000,
+			"idle_timeout_ms":  1000,
+		}), idMap)), http.StatusCreated)
+		for w := range len(units) {
+			expectStatus(t, postJSON(t, env, tok, "/api/v1/orchestration/checkout",
+				merge(checkoutBody(fmt.Sprintf("worker-%d", w), fmt.Sprintf("job-dl-%d-%d", iter, w), 1), idMap)), http.StatusOK)
+		}
+		curRunID := runUUID(t, env, idMap)
+		if _, err := env.Pool.Exec(ctx, `
+			UPDATE orchestration_runs SET last_activity_at = now() - interval '10 minutes' WHERE id = $1
+		`, curRunID); err != nil {
+			t.Fatalf("backdate last_activity_at: %v", err)
+		}
+
+		startCh := make(chan struct{})
+		var wg sync.WaitGroup
+		errCh := make(chan string, len(units)+1)
+		var timedOut bool
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-startCh
+			var err error
+			timedOut, err = env.Orchestrator.MarkRunTimedOut(ctx, curRunID)
+			if err != nil {
+				errCh <- fmt.Sprintf("iter=%d MarkRunTimedOut err=%v", iter, err)
+			}
+		}()
+		for w := range len(units) {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				<-startCh
+				cmp := merge(completeBody(fmt.Sprintf("worker-%d", w), fmt.Sprintf("job-dl-%d-%d", iter, w), passResults([]string{units[w]})), idMap)
+				code, body, err := postJSONRaw(env.ServerURL, tok, "/api/v1/orchestration/complete", cmp)
+				if err != nil {
+					errCh <- fmt.Sprintf("iter=%d worker=%d request err=%v", iter, w, err)
+					return
+				}
+				if code != http.StatusOK || strings.Contains(body, "40P01") {
+					errCh <- fmt.Sprintf("iter=%d worker=%d status=%d body=%s", iter, w, code, body)
+				}
+			}(w)
+		}
+		close(startCh)
+		wg.Wait()
+		close(errCh)
+		for e := range errCh {
+			t.Fatalf("unexpected error/deadlock during concurrent timeout+complete: %s", e)
+		}
+
+		statBody := expectStatus(t, getJSON(t, env, tok, statusURL(idMap)), http.StatusOK)
+		st := statBody["status"]
+		c := counts(t, statBody)
+		if c["pending"] != 0 || c["leased"] != 0 || c["completed_pass"]+c["abandoned"] != len(units) {
+			t.Fatalf("iter=%d inconsistent counts after concurrent timeout+complete: %s", iter, fmtCounts(c))
+		}
+		if timedOut {
+			if st != "timed_out" || c["abandoned"] < 1 {
+				t.Fatalf("iter=%d MarkRunTimedOut=true but status=%v counts=%s, want timed_out with abandoned>=1", iter, st, fmtCounts(c))
+			}
+		} else {
+			if st != "completed" || c["completed_pass"] != len(units) || c["abandoned"] != 0 {
+				t.Fatalf("iter=%d MarkRunTimedOut=false but status=%v counts=%s, want completed with pass=%d abandoned=0", iter, st, fmtCounts(c), len(units))
+			}
 		}
 	}
 }

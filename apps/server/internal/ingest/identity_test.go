@@ -52,10 +52,10 @@ func TestExtractZephyrKey(t *testing.T) {
 			want:      "MM-T100",
 		},
 		{
-			name:      "rejects embedded alphanumeric tokens and missing digits",
-			fullTitle: "fooMM-T12 MM-T12bar MM-T",
-			title:     "fooMM-T12 MM-T12bar MM-T",
-			tags:      []string{"XMM-T99"},
+			name:      "rejects embedded alphanumeric tokens, zero key, and missing digits",
+			fullTitle: "fooMM-T12 MM-T12bar MM-T MM-T0 MM-T00",
+			title:     "fooMM-T12 MM-T12bar MM-T MM-T0 MM-T00",
+			tags:      []string{"XMM-T99", "@MM-T0"},
 			want:      "",
 		},
 		{
@@ -82,6 +82,30 @@ func TestExtractZephyrKey(t *testing.T) {
 			title:     "test",
 			tags:      []string{"@MM-T\x00123"},
 			want:      "MM-T123",
+		},
+		{
+			name:      "spaces around hyphen",
+			fullTitle: "Suite > MM - T1257 test",
+			title:     "MM - T1257 test",
+			want:      "MM-T1257",
+		},
+		{
+			name:      "letter variant uppercased",
+			fullTitle: "Suite > MM-T5797a test",
+			title:     "MM-T5797a test",
+			want:      "MM-T5797A",
+		},
+		{
+			name:      "dash numeric substep extracts base key",
+			fullTitle: "Suite > MM-T5523-1 test",
+			title:     "MM-T5523-1 test",
+			want:      "MM-T5523",
+		},
+		{
+			name:      "multiple distinct keys returns first base key",
+			fullTitle: "Suite > MM-T1945 MM-T1946 multi",
+			title:     "MM-T1945 MM-T1946 multi",
+			want:      "MM-T1945",
 		},
 	}
 	for _, tc := range cases {
@@ -137,14 +161,37 @@ func TestNormalizeTestTitle(t *testing.T) {
 }
 
 func TestDeriveTestKey(t *testing.T) {
-	// Zephyr-keyed test stays stable across file moves and title rewording.
+	// Zephyr-keyed test stays stable across file moves and title rewording,
+	// while preserving substep/variant suffixes in test_key.
 	k1, z1 := DeriveTestKey("mattermost/mattermost", "a.spec.ts", "Suite > MM-T5294_3 old title", "MM-T5294_3 old title", nil)
-	k2, z2 := DeriveTestKey("mattermost/mattermost", "b.spec.ts", "Suite > new title", "new title", []string{"@mm-t5294"})
-	if k1 != "zephyr:MM-T5294" || z1 != "MM-T5294" {
-		t.Fatalf("got (%q, %q), want (zephyr:MM-T5294, MM-T5294)", k1, z1)
+	k2, z2 := DeriveTestKey("mattermost/mattermost", "b.spec.ts", "Suite > MM-T5294_3 new title", "MM-T5294_3 new title", nil)
+	if k1 != "zephyr:MM-T5294_3" || z1 != "MM-T5294" {
+		t.Fatalf("got (%q, %q), want (zephyr:MM-T5294_3, MM-T5294)", k1, z1)
 	}
 	if k1 != k2 || z1 != z2 {
-		t.Fatalf("zephyr key drifted across rename/tag: (%q,%q) vs (%q,%q)", k1, z1, k2, z2)
+		t.Fatalf("zephyr key drifted across rename: (%q,%q) vs (%q,%q)", k1, z1, k2, z2)
+	}
+
+	// Substeps and letter variants do not collapse onto each other.
+	kSub1, zSub1 := DeriveTestKey("mattermost/mattermost", "a.spec.ts", "MM-T3409_1 step 1", "MM-T3409_1 step 1", nil)
+	kSub2, zSub2 := DeriveTestKey("mattermost/mattermost", "a.spec.ts", "MM-T3409_2 step 2", "MM-T3409_2 step 2", nil)
+	kDash, zDash := DeriveTestKey("mattermost/mattermost", "a.spec.ts", "MM-T5523-1 step 1", "MM-T5523-1 step 1", nil)
+	kVar, zVar := DeriveTestKey("mattermost/mattermost", "a.spec.ts", "MM-T2530a variant", "MM-T2530a variant", nil)
+	kSpace, zSpace := DeriveTestKey("mattermost/mattermost", "a.spec.ts", "MM - T1257 spaced", "MM - T1257 spaced", nil)
+	if kSub1 != "zephyr:MM-T3409_1" || zSub1 != "MM-T3409" ||
+		kSub2 != "zephyr:MM-T3409_2" || zSub2 != "MM-T3409" ||
+		kDash != "zephyr:MM-T5523-1" || zDash != "MM-T5523" ||
+		kVar != "zephyr:MM-T2530A" || zVar != "MM-T2530A" ||
+		kSpace != "zephyr:MM-T1257" || zSpace != "MM-T1257" {
+		t.Fatalf("unexpected substep/variant keys: (%q,%q) (%q,%q) (%q,%q) (%q,%q) (%q,%q)",
+			kSub1, zSub1, kSub2, zSub2, kDash, zDash, kVar, zVar, kSpace, zSpace)
+	}
+
+	// Multiple distinct base Zephyr keys in the same title fall back to hash test_key
+	// while still returning the first base zephyr_key for reporting.
+	kMulti, zMulti := DeriveTestKey("mattermost/mattermost", "a.spec.ts", "Suite > MM-T1945 MM-T1946 combined", "MM-T1945 MM-T1946 combined", nil)
+	if !strings.HasPrefix(kMulti, "h:") || len(kMulti) != 66 || zMulti != "MM-T1945" {
+		t.Fatalf("multi-key DeriveTestKey = (%q, %q), want (h:<sha256>, MM-T1945)", kMulti, zMulti)
 	}
 
 	// Non-Zephyr test uses h:<sha256> and is invariant under path/whitespace normalization

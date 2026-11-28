@@ -268,7 +268,7 @@ func RefreshGroupRollups(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 		if err := replaceGroupRollupsTx(ctx, tx, g, orch, verdicts, platforms, allSlice, perPlatformSlices); err != nil {
 			return err
 		}
-		if err := replaceGroupSignatureRollupsTx(ctx, tx, g); err != nil {
+		if err := replaceGroupSignatureRollupsTx(ctx, tx, g, results); err != nil {
 			return err
 		}
 		if err := applyTestExecDeltasTx(ctx, tx, deltas); err != nil {
@@ -902,7 +902,7 @@ func computeGroupFlags(
 		if isAttempt1 && isCompleted {
 			att1Pass = sc.TestsFailed == 0 && (sc.TestsPassed+sc.TestsFlaky > 0)
 		}
-	} else if isAll {
+	} else if isAll || numPlatforms == 1 {
 		isRed = statsPayload.Failed > 0
 		if isAttempt1 && isCompleted {
 			att1Pass = statsPayload.Failed == 0 && statsPayload.Total > 0
@@ -960,7 +960,7 @@ func replaceGroupRollupsTx(
 		_, execErr := tx.Exec(ctx, `
 			INSERT INTO kpi_group_rollups (
 				report_group_id, is_all_platforms, platform, metric_date, group_created_at,
-				repository, app, framework, stage, lane, commit_sha, gh_run_attempt, gh_pr_number,
+				repository, app, framework, stage, lane, commit_sha, gh_run_id, gh_run_attempt, gh_pr_number,
 				group_status, has_orchestration, orch_status, is_completed, is_red,
 				is_attempt1, is_attempt1_passed, is_attempt1_strict_passed, has_retried_unit,
 				total_duration_ms,
@@ -971,19 +971,19 @@ func replaceGroupRollupsTx(
 				test_counts, updated_at
 			) VALUES (
 				$1, $2, $3, $4, $5,
-				$6, $7, $8, $9, $10, $11, $12, $13,
-				$14, $15, $16, $17, $18,
-				$19, $20, $21, $22,
-				$23,
-				$24, $25, $26, $27, $28,
-				$29, $30, $31,
-				$32, $33,
-				$34, $35, $36, $37,
-				$38, now()
+				$6, $7, $8, $9, $10, $11, $12, $13, $14,
+				$15, $16, $17, $18, $19,
+				$20, $21, $22, $23,
+				$24,
+				$25, $26, $27, $28, $29,
+				$30, $31, $32,
+				$33, $34,
+				$35, $36, $37, $38,
+				$39, now()
 			)
 		`,
 			g.ID, isAll, platform, g.MetricDate, g.CreatedAt,
-			g.Repository, g.App, g.Framework, g.Stage, g.Lane, g.CommitSHA, g.GHRunAttempt, g.GHPRNumber,
+			g.Repository, g.App, g.Framework, g.Stage, g.Lane, g.CommitSHA, g.GHRunID, g.GHRunAttempt, g.GHPRNumber,
 			g.Status, orch.HasOrchestration, orch.OrchStatus, isCompleted, flags.IsRed,
 			isAttempt1, flags.IsAttempt1Passed, flags.IsAttempt1StrictPassed, orch.HasRetriedUnit,
 			orch.TotalDurationMs,
@@ -1019,34 +1019,71 @@ func replaceGroupRollupsTx(
 	return nil
 }
 
-func replaceGroupSignatureRollupsTx(ctx context.Context, tx pgx.Tx, g groupRow) error {
+func replaceGroupSignatureRollupsTx(ctx context.Context, tx pgx.Tx, g groupRow, results []testResultRow) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM kpi_group_signature_rollups WHERE report_group_id = $1`, g.ID); err != nil {
 		return fmt.Errorf("delete kpi_group_signature_rollups: %w", err)
 	}
+
+	type platformSigKey struct {
+		Platform    string
+		SignatureID uuid.UUID
+	}
+	failedSigs := map[platformSigKey]struct{}{}
+	for _, r := range results {
+		if r.Verdict != "failed" {
+			continue
+		}
+		for _, sid := range r.SignatureIDs {
+			failedSigs[platformSigKey{Platform: r.Platform, SignatureID: sid}] = struct{}{}
+		}
+	}
+	failedPlatforms := make([]string, 0, len(failedSigs))
+	failedSigIDs := make([]uuid.UUID, 0, len(failedSigs))
+	for k := range failedSigs {
+		failedPlatforms = append(failedPlatforms, k.Platform)
+		failedSigIDs = append(failedSigIDs, k.SignatureID)
+	}
+
 	_, err := tx.Exec(ctx, `
+		WITH sigs AS (
+			SELECT
+				COALESCE(NULLIF(r.platform, ''), NULLIF($6, ''), '') AS platform,
+				tc.signature_id,
+				COUNT(DISTINCT (tc.test_id, COALESCE(tc.project, '')))::integer AS occurrence_count,
+				COUNT(*)::integer AS raw_attempt_count,
+				ARRAY_AGG(DISTINCT tc.test_id) AS affected_test_ids,
+				MAX(COALESCE(s.start_time, r.start_time, r.created_at, g.created_at)) AS last_seen_at
+			FROM test_cases tc
+			JOIN suites s ON s.id = tc.suite_id
+			JOIN reports r ON r.id = s.report_id
+			JOIN report_groups g ON g.id = r.report_group_id
+			WHERE g.id = $1
+			  AND tc.test_id IS NOT NULL
+			  AND tc.signature_id IS NOT NULL
+			GROUP BY COALESCE(NULLIF(r.platform, ''), NULLIF($6, ''), ''), tc.signature_id
+		)
 		INSERT INTO kpi_group_signature_rollups (
 			report_group_id, platform, signature_id,
 			metric_date, repository, app, stage, lane, gh_pr_number,
-			occurrence_count, raw_attempt_count, affected_test_ids, last_seen_at
+			occurrence_count, raw_attempt_count, affected_test_ids, has_failed_test, last_seen_at
 		)
 		SELECT
 			$1,
-			COALESCE(NULLIF(r.platform, ''), NULLIF($6, ''), '') AS platform,
-			tc.signature_id,
+			sigs.platform,
+			sigs.signature_id,
 			$2, $3, $4, $5, $7, $8,
-			COUNT(DISTINCT (tc.test_id, COALESCE(tc.project, '')))::integer,
-			COUNT(*)::integer,
-			ARRAY_AGG(DISTINCT tc.test_id),
-			MAX(COALESCE(s.start_time, r.start_time, r.created_at, g.created_at))
-		FROM test_cases tc
-		JOIN suites s ON s.id = tc.suite_id
-		JOIN reports r ON r.id = s.report_id
-		JOIN report_groups g ON g.id = r.report_group_id
-		WHERE g.id = $1
-		  AND tc.test_id IS NOT NULL
-		  AND tc.signature_id IS NOT NULL
-		GROUP BY COALESCE(NULLIF(r.platform, ''), NULLIF($6, ''), ''), tc.signature_id
-	`, g.ID, g.MetricDate, g.Repository, g.App, g.Stage, g.Platform, g.Lane, g.GHPRNumber)
+			sigs.occurrence_count,
+			sigs.raw_attempt_count,
+			sigs.affected_test_ids,
+			EXISTS (
+				SELECT 1
+				FROM UNNEST($9::text[], $10::uuid[]) AS fs(platform, signature_id)
+				WHERE fs.platform = sigs.platform
+				  AND fs.signature_id = sigs.signature_id
+			),
+			sigs.last_seen_at
+		FROM sigs
+	`, g.ID, g.MetricDate, g.Repository, g.App, g.Stage, g.Platform, g.Lane, g.GHPRNumber, failedPlatforms, failedSigIDs)
 	if err != nil {
 		return fmt.Errorf("insert kpi_group_signature_rollups: %w", err)
 	}

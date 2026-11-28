@@ -53,6 +53,15 @@ func (s *Store) QuerySummary(ctx context.Context, f FilterParams) (SummaryRespon
 		return SummaryResponse{}, err
 	}
 
+	var prFalseRedNotes []string
+	if f.Stage != "" && f.Stage != "pr" {
+		prFalseRedNotes = append(prFalseRedNotes, fmt.Sprintf("stage=%q filter ignored for KPI 2: pr_false_red always evaluates PR lanes (gh_pr_number > 0)", f.Stage))
+	}
+	prFalseRed, err := s.queryPRFalseRedSummary(ctx, f, prFalseRedNotes)
+	if err != nil {
+		return SummaryResponse{}, err
+	}
+
 	weekly, err := s.queryWeeklySeries(ctx, f)
 	if err != nil {
 		return SummaryResponse{}, err
@@ -65,6 +74,7 @@ func (s *Store) QuerySummary(ctx context.Context, f FilterParams) (SummaryRespon
 		FlakyTests:   flakySummary,
 		E2EDuration:  e2eDuration,
 		WeeklySeries: weekly,
+		PRFalseRed:   &prFalseRed,
 	}, nil
 }
 
@@ -550,6 +560,9 @@ func (s *Store) queryE2EDurationByLane(ctx context.Context, f FilterParams) ([]D
 }
 
 func (s *Store) queryWeeklySeries(ctx context.Context, f FilterParams) ([]WeeklyPoint, error) {
+	refNow := s.effectiveRefNow(f)
+	settledCutoff := refNow.Add(-settledAfterHours * time.Hour)
+
 	firstWeek := truncateToUTCWeekMonday(f.CurFromDate)
 	lastWeek := truncateToUTCWeekMonday(f.CurToDate)
 
@@ -632,6 +645,12 @@ func (s *Store) queryWeeklySeries(ctx context.Context, f FilterParams) ([]Weekly
 		).Scan(&pt.E2EP50Ms, &pt.E2EP90Ms, &pt.E2ESampleCount); err != nil {
 			return nil, fmt.Errorf("weekly e2e duration: %w", err)
 		}
+
+		falseRedCount, settledRedCount, err := s.queryPRFalseRedRateForDates(ctx, f, sliceFrom, sliceTo, settledCutoff)
+		if err != nil {
+			return nil, fmt.Errorf("weekly pr false-red rate: %w", err)
+		}
+		pt.PRFalseRedRate = pctPtr(falseRedCount, settledRedCount)
 
 		series = append(series, pt)
 	}

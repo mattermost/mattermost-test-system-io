@@ -42,6 +42,14 @@ func TestRunContext_MigrationBackfillAndAppsSeed(t *testing.T) {
 		}
 	}
 
+	down37SQL, err := migrations.FS.ReadFile("000037_kpi_e2e_lanes.down.sql")
+	if err != nil {
+		t.Fatalf("read 000037 down migration: %v", err)
+	}
+	up37SQL, err := migrations.FS.ReadFile("000037_kpi_e2e_lanes.up.sql")
+	if err != nil {
+		t.Fatalf("read 000037 up migration: %v", err)
+	}
 	down36SQL, err := migrations.FS.ReadFile("000036_kpi_rollups.down.sql")
 	if err != nil {
 		t.Fatalf("read 000036 down migration: %v", err)
@@ -57,6 +65,9 @@ func TestRunContext_MigrationBackfillAndAppsSeed(t *testing.T) {
 	upSQL, err := migrations.FS.ReadFile("000032_run_context.up.sql")
 	if err != nil {
 		t.Fatalf("read up migration: %v", err)
+	}
+	if _, err := env.Pool.Exec(t.Context(), string(down37SQL)); err != nil {
+		t.Fatalf("exec 000037 down migration: %v", err)
 	}
 	if _, err := env.Pool.Exec(t.Context(), string(down36SQL)); err != nil {
 		t.Fatalf("exec 000036 down migration: %v", err)
@@ -101,6 +112,9 @@ func TestRunContext_MigrationBackfillAndAppsSeed(t *testing.T) {
 	}
 	if _, err := env.Pool.Exec(t.Context(), string(up36SQL)); err != nil {
 		t.Fatalf("re-exec 000036 up migration: %v", err)
+	}
+	if _, err := env.Pool.Exec(t.Context(), string(up37SQL)); err != nil {
+		t.Fatalf("re-exec 000037 up migration: %v", err)
 	}
 
 	for _, s := range seeds {

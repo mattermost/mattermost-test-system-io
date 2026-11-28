@@ -12,6 +12,8 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 )
 
+const wantBadRequestCode = "BAD_REQUEST"
+
 func TestSummaryValidationErrors(t *testing.T) {
 	// Non-nil dummy pool pointer is never dereferenced when validation fails first.
 	h := &Handlers{Store: &kpi.Store{Pool: new(pgxpool.Pool)}}
@@ -37,8 +39,8 @@ func TestSummaryValidationErrors(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
 			t.Fatalf("%s: unmarshal error body: %v", u, err)
 		}
-		if errBody.Code != "BAD_REQUEST" {
-			t.Fatalf("%s: error code = %q, want BAD_REQUEST", u, errBody.Code)
+		if errBody.Code != wantBadRequestCode {
+			t.Fatalf("%s: error code = %q, want %s", u, errBody.Code, wantBadRequestCode)
 		}
 	}
 }
@@ -69,15 +71,43 @@ func TestFlakyValidationErrors(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
 			t.Fatalf("%s: unmarshal error body: %v", u, err)
 		}
-		if errBody.Code != "BAD_REQUEST" {
-			t.Fatalf("%s: error code = %q, want BAD_REQUEST", u, errBody.Code)
+		if errBody.Code != wantBadRequestCode {
+			t.Fatalf("%s: error code = %q, want %s", u, errBody.Code, wantBadRequestCode)
+		}
+	}
+}
+
+func TestPRsRedValidationErrors(t *testing.T) {
+	h := &Handlers{Store: &kpi.Store{Pool: new(pgxpool.Pool)}}
+
+	badURLs := []string{
+		"/api/v1/kpi/prs/red?window=5d",
+		"/api/v1/kpi/prs/red?stage=bogus",
+		"/api/v1/kpi/prs/red?sort=duration_desc",
+		"/api/v1/kpi/prs/red?page=0",
+		"/api/v1/kpi/prs/red?limit=200",
+		"/api/v1/kpi/prs/red?window=%ZZ",
+	}
+	for _, u := range badURLs {
+		req := httptest.NewRequest(http.MethodGet, u, nil)
+		rec := httptest.NewRecorder()
+		h.PRsRed(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400 (body=%s)", u, rec.Code, rec.Body.String())
+		}
+		var errBody api.Error
+		if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+			t.Fatalf("%s: unmarshal error body: %v", u, err)
+		}
+		if errBody.Code != wantBadRequestCode {
+			t.Fatalf("%s: error code = %q, want %s", u, errBody.Code, wantBadRequestCode)
 		}
 	}
 }
 
 func TestNilStoreReturnsInternalError(t *testing.T) {
 	h := &Handlers{}
-	for _, fn := range []http.HandlerFunc{h.Summary, h.Flaky} {
+	for _, fn := range []http.HandlerFunc{h.Summary, h.Flaky, h.PRsRed} {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/kpi/summary", nil)
 		rec := httptest.NewRecorder()
 		fn(rec, req)

@@ -89,6 +89,10 @@ type Config struct {
 
 	CORSAllowedOrigins []string `env:"TSIO_CORS_ALLOWED_ORIGINS" envSeparator:","`
 
+	// Optional comma-separated E2E lane override for KPI 2 (PR false-red rate).
+	// Entries may be "owner/repo:lane" or "lane". When unset, uses kpi_e2e_lanes.
+	KPIE2ELanes []string `env:"TSIO_KPI_E2E_LANES" envSeparator:","`
+
 	// Client-facing tunables surfaced via GET /api/v1/config.
 	UploadTimeoutMs int  `env:"TSIO_UPLOAD_TIMEOUT_MS" envDefault:"3600000"` // 1h
 	HTMLViewEnabled bool `env:"TSIO_HTML_VIEW_ENABLED" envDefault:"true"`

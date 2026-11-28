@@ -102,6 +102,24 @@ func TestLoad_readsEnv(t *testing.T) {
 	if cfg.StatusRule != "legacy" {
 		t.Errorf("StatusRule default = %q, want legacy", cfg.StatusRule)
 	}
+	if len(cfg.KPIE2ELanes) != 0 {
+		t.Errorf("KPIE2ELanes default = %v, want empty", cfg.KPIE2ELanes)
+	}
+}
+
+func TestLoad_kpiE2ELanes(t *testing.T) {
+	t.Setenv("TSIO_DATABASE_URL", "postgres://user:pass@localhost/db?sslmode=disable")
+	t.Setenv("TSIO_S3_BUCKET", "reports")
+	t.Setenv("TSIO_SESSION_SECRET", "test-secret")
+	t.Setenv("TSIO_KPI_E2E_LANES", "mattermost/mattermost:playwright-full,desktop-pr")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.KPIE2ELanes) != 2 || cfg.KPIE2ELanes[0] != "mattermost/mattermost:playwright-full" || cfg.KPIE2ELanes[1] != "desktop-pr" {
+		t.Fatalf("KPIE2ELanes = %v", cfg.KPIE2ELanes)
+	}
 }
 
 func TestLoad_statusRule(t *testing.T) {

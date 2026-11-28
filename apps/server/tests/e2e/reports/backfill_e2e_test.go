@@ -118,6 +118,8 @@ func startBackfillEnv(t *testing.T, uploads ...[4]string) (*testenv.Env, []shard
 	// finalizeResults marks report_groups complete before calling
 	// refreshGroupSummaryBestEffort -> kpi.RefreshGroupRollupsBestEffort; wait
 	// for async rollup refresh to finish before stripping test_cases/signatures.
+	// Note: Register already sets kpi_rollups_refreshed_at synchronously, so check
+	// version and staleness against updated_at / last_upload_at rather than IS NULL alone.
 	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for {

@@ -3,6 +3,7 @@ package kpi
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -32,6 +33,11 @@ func ParseSummaryParams(q url.Values, now time.Time) (FilterParams, error) {
 // ParseFlakyParams parses and validates query parameters for GET /api/v1/kpi/flaky.
 func ParseFlakyParams(q url.Values, now time.Time) (FilterParams, error) {
 	return parseParams(q, now, Window14d, SortFlakyCommitsDesc, isValidFlakySort, true)
+}
+
+// ParsePRsRedParams parses and validates query parameters for GET /api/v1/kpi/prs/red.
+func ParsePRsRedParams(q url.Values, now time.Time) (FilterParams, error) {
+	return parseParams(q, now, Window30d, SortCreatedDesc, isValidPRRedSort, true)
 }
 
 func parseParams(
@@ -102,6 +108,9 @@ func parseParams(
 			}
 			limit = n
 		}
+		if err := validatePaginationParams(FilterParams{Page: page, Limit: limit}); err != nil {
+			return FilterParams{}, err
+		}
 	}
 
 	curFrom, curTo, priorFrom, priorTo := WindowBounds(now, days)
@@ -123,6 +132,13 @@ func parseParams(
 		PriorFromDate: priorFrom,
 		PriorToDate:   priorTo,
 	}, nil
+}
+
+func validatePaginationParams(f FilterParams) error {
+	if f.Page < 1 || f.Limit < 1 || f.Page-1 > math.MaxInt/f.Limit {
+		return fmt.Errorf("%w: invalid pagination page=%d limit=%d", ErrValidation, f.Page, f.Limit)
+	}
+	return nil
 }
 
 // WindowDays returns the number of UTC days in a window literal.
@@ -185,6 +201,15 @@ func isValidSummarySort(s string) bool {
 func isValidFlakySort(s string) bool {
 	switch s {
 	case SortFlakyCommitsDesc, SortFlakeRateDesc, SortTotalRunsDesc, SortLastFlakyDesc, SortNameAsc:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidPRRedSort(s string) bool {
+	switch s {
+	case SortCreatedDesc, SortAgeDesc, SortPRDesc, SortLaneAsc, SortReasonAsc:
 		return true
 	default:
 		return false

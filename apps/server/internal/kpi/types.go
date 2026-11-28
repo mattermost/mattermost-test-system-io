@@ -20,6 +20,8 @@ type Store struct {
 	Pool *pgxpool.Pool
 	// Now overrides time.Now in tests when non-nil.
 	Now func() time.Time
+	// E2ELanes optionally overrides kpi_e2e_lanes ("owner/repo:lane" or "lane" entries).
+	E2ELanes []string
 }
 
 // NowTime returns the current UTC time (honoring Store.Now when set).
@@ -58,6 +60,21 @@ const (
 	SortTotalRunsDesc    = "total_runs_desc"
 	SortLastFlakyDesc    = "last_flaky_desc"
 	SortNameAsc          = "name_asc"
+)
+
+// Supported sort literals for /kpi/prs/red.
+const (
+	SortCreatedDesc = "created_desc"
+	SortAgeDesc     = "age_desc"
+	SortPRDesc      = "pr_desc"
+	SortReasonAsc   = "reason_asc"
+)
+
+// Attribution reason literals for red PR E2E lanes (KPI 2).
+const (
+	ReasonWentGreenOnRerun = "went_green_on_rerun"
+	ReasonFailingElsewhere = "failing_elsewhere"
+	ReasonOther            = "other"
 )
 
 // FilterParams holds validated query filters shared across KPI endpoints.
@@ -217,7 +234,7 @@ type SummaryResponse struct {
 	FlakyTests        FlakySummary       `json:"flaky_tests"`
 	E2EDuration       E2EDurationSummary `json:"e2e_duration"`
 	WeeklySeries      []WeeklyPoint      `json:"weekly_series"`
-	PRFalseRed        any                `json:"pr_false_red"`
+	PRFalseRed        *PRFalseRedSummary `json:"pr_false_red"`
 	RecurringFailures any                `json:"recurring_failures"`
 	Triage            any                `json:"triage"`
 }
@@ -261,4 +278,101 @@ type FlakyResponse struct {
 	LaneCoverage    LaneCoverage    `json:"lane_coverage"`
 	Pagination      Pagination      `json:"pagination"`
 	Tests           []FlakyTestRow  `json:"tests"`
+}
+
+// PRFalseRedReasonMix breaks down settled (>24h) red PR E2E lanes by primary attribution reason.
+type PRFalseRedReasonMix struct {
+	WentGreenOnRerun int `json:"went_green_on_rerun"`
+	FailingElsewhere int `json:"failing_elsewhere"`
+	Other            int `json:"other"`
+	Total            int `json:"total"`
+}
+
+// PRFalseRedLaneRow breaks down KPI 2 by configured PR E2E lane.
+type PRFalseRedLaneRow struct {
+	App                  string   `json:"app"`
+	Repository           string   `json:"repository"`
+	Lane                 string   `json:"lane"`
+	FalseRedRate         *float64 `json:"false_red_rate"`
+	SettledRedLanes      int      `json:"settled_red_lanes"`
+	SettledFalseRedLanes int      `json:"settled_false_red_lanes"`
+	UnsettledRedLanes    int      `json:"unsettled_red_lanes"`
+	WentGreenOnRerun     int      `json:"went_green_on_rerun"`
+	FailingElsewhere     int      `json:"failing_elsewhere"`
+	Other                int      `json:"other"`
+	OrchestratedRuns     int      `json:"orchestrated_runs"`
+	UploadOnlyRuns       int      `json:"upload_only_runs"`
+}
+
+// PRFalseRedSummary holds KPI 2 headline lower-bound ("at least") metrics for GET /api/v1/kpi/summary.
+type PRFalseRedSummary struct {
+	IsLowerBound         bool                `json:"is_lower_bound"`
+	RateQualifier        string              `json:"rate_qualifier"`
+	SettledAfterHours    int                 `json:"settled_after_hours"`
+	FalseRedRate         *float64            `json:"false_red_rate"`
+	PriorFalseRedRate    *float64            `json:"prior_false_red_rate"`
+	DeltaPP              *float64            `json:"delta_pp"`
+	SettledRedLanes      int                 `json:"settled_red_lanes"`
+	SettledFalseRedLanes int                 `json:"settled_false_red_lanes"`
+	UnsettledRedLanes    int                 `json:"unsettled_red_lanes"`
+	ReasonMix            PRFalseRedReasonMix `json:"reason_mix"`
+	ByLane               []PRFalseRedLaneRow `json:"by_lane"`
+	LaneCoverage         LaneCoverage        `json:"lane_coverage"`
+}
+
+// ConfiguredE2ELane identifies one configured PR E2E lane.
+type ConfiguredE2ELane struct {
+	Repository string `json:"repository"`
+	Lane       string `json:"lane"`
+}
+
+// RedPRLaneRow represents one red PR E2E lane execution returned by GET /api/v1/kpi/prs/red.
+// Author names are intentionally omitted.
+type RedPRLaneRow struct {
+	ReportGroupID                 string    `json:"report_group_id"`
+	Repository                    string    `json:"repository"`
+	App                           string    `json:"app"`
+	Lane                          string    `json:"lane"`
+	Branch                        string    `json:"branch"`
+	GHPRNumber                    int       `json:"gh_pr_number"`
+	CommitSHA                     string    `json:"commit_sha"`
+	GHRunID                       string    `json:"gh_run_id"`
+	GHRunAttempt                  string    `json:"gh_run_attempt"`
+	Platform                      *string   `json:"platform"`
+	Framework                     string    `json:"framework"`
+	HasOrchestration              bool      `json:"has_orchestration"`
+	OrchStatus                    *string   `json:"orch_status"`
+	CreatedAt                     time.Time `json:"created_at"`
+	AgeSeconds                    int64     `json:"age_seconds"`
+	Settled                       bool      `json:"settled"`
+	StillRed                      bool      `json:"still_red"`
+	WentGreenOnRerun              bool      `json:"went_green_on_rerun"`
+	FailingOnMain                 bool      `json:"failing_on_main"`
+	OtherPRsCount                 int       `json:"other_prs_count"`
+	AllSignaturesFailingElsewhere bool      `json:"all_signatures_failing_elsewhere"`
+	FailedSignatureCount          int       `json:"failed_signature_count"`
+	TestsFailed                   int       `json:"tests_failed"`
+	Reason                        string    `json:"reason"`
+	RunURL                        string    `json:"run_url"`
+}
+
+// PRRedResponse is the wire shape for GET /api/v1/kpi/prs/red.
+type PRRedResponse struct {
+	Filters              FilterParams        `json:"filters"`
+	WindowDays           int                 `json:"window_days"`
+	SettledAfterHours    int                 `json:"settled_after_hours"`
+	IsLowerBound         bool                `json:"is_lower_bound"`
+	RateQualifier        string              `json:"rate_qualifier"`
+	FalseRedRate         *float64            `json:"false_red_rate"`
+	PriorFalseRedRate    *float64            `json:"prior_false_red_rate"`
+	DeltaPP              *float64            `json:"delta_pp"`
+	SettledRedLanes      int                 `json:"settled_red_lanes"`
+	SettledFalseRedLanes int                 `json:"settled_false_red_lanes"`
+	UnsettledRedLanes    int                 `json:"unsettled_red_lanes"`
+	StillRedLanes        int                 `json:"still_red_lanes"`
+	ReasonMix            PRFalseRedReasonMix `json:"reason_mix"`
+	ConfiguredE2ELanes   []ConfiguredE2ELane `json:"configured_e2e_lanes"`
+	LaneCoverage         LaneCoverage        `json:"lane_coverage"`
+	Pagination           Pagination          `json:"pagination"`
+	Lanes                []RedPRLaneRow      `json:"lanes"`
 }

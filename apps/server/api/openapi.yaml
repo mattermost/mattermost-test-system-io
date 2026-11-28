@@ -1353,6 +1353,36 @@ paths:
               schema: { $ref: '#/components/schemas/KPIFlakyResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
 
+  /api/v1/kpi/prs/red:
+    get:
+      tags: [kpi]
+      summary: Get red PR E2E lanes, attribution reason mix, and settled lower-bound false-red rate
+      operationId: kpiPRsRed
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/KpiApp'
+        - $ref: '#/components/parameters/KpiRepo'
+        - $ref: '#/components/parameters/KpiStage'
+        - $ref: '#/components/parameters/KpiLane'
+        - $ref: '#/components/parameters/KpiPlatform'
+        - $ref: '#/components/parameters/KpiWindow'
+        - in: query
+          name: sort
+          required: false
+          schema:
+            type: string
+            enum: [created_desc, age_desc, pr_desc, lane_asc, reason_asc]
+            default: created_desc
+        - $ref: '#/components/parameters/KpiPage'
+        - $ref: '#/components/parameters/KpiLimit'
+      responses:
+        '200':
+          description: Red PR E2E lanes and settled lower-bound false-red rate
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KPIPRRedResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
 components:
   securitySchemes:
     apiKey:
@@ -1423,7 +1453,7 @@ components:
       schema:
         type: string
         enum: [7d, 14d, 30d, 90d]
-      description: Lookback window (`30d` default on `/summary`, `14d` default on `/flaky`).
+      description: Lookback window (`30d` default on `/summary` and `/prs/red`, `14d` default on `/flaky`).
     KpiPage:
       in: query
       name: page
@@ -2858,7 +2888,7 @@ components:
 
     KPISummaryResponse:
       type: object
-      required: [filters, lane_coverage, main_pass_rate, flaky_tests, e2e_duration, weekly_series]
+      required: [filters, lane_coverage, main_pass_rate, flaky_tests, e2e_duration, weekly_series, pr_false_red]
       properties:
         filters: { $ref: '#/components/schemas/KPIFilters' }
         lane_coverage: { $ref: '#/components/schemas/KPILaneCoverage' }
@@ -2869,9 +2899,7 @@ components:
           type: array
           items: { $ref: '#/components/schemas/KPIWeeklyPoint' }
         pr_false_red:
-          type: object
-          additionalProperties: true
-          nullable: true
+          $ref: '#/components/schemas/KPIPRFalseRedSummary'
         recurring_failures:
           type: object
           additionalProperties: true
@@ -2947,6 +2975,180 @@ components:
         tests:
           type: array
           items: { $ref: '#/components/schemas/KPIFlakyTestRow' }
+
+    KPIPRFalseRedReasonMix:
+      type: object
+      required: [went_green_on_rerun, failing_elsewhere, other, total]
+      properties:
+        went_green_on_rerun: { type: integer }
+        failing_elsewhere: { type: integer }
+        other: { type: integer }
+        total: { type: integer }
+
+    KPIPRFalseRedLaneRow:
+      type: object
+      required:
+        - app
+        - repository
+        - lane
+        - false_red_rate
+        - settled_red_lanes
+        - settled_false_red_lanes
+        - unsettled_red_lanes
+        - went_green_on_rerun
+        - failing_elsewhere
+        - other
+        - orchestrated_runs
+        - upload_only_runs
+      properties:
+        app: { type: string }
+        repository: { type: string }
+        lane: { type: string }
+        false_red_rate: { type: number, nullable: true }
+        settled_red_lanes: { type: integer }
+        settled_false_red_lanes: { type: integer }
+        unsettled_red_lanes: { type: integer }
+        went_green_on_rerun: { type: integer }
+        failing_elsewhere: { type: integer }
+        other: { type: integer }
+        orchestrated_runs: { type: integer }
+        upload_only_runs: { type: integer }
+
+    KPIPRFalseRedSummary:
+      type: object
+      required:
+        - is_lower_bound
+        - rate_qualifier
+        - settled_after_hours
+        - false_red_rate
+        - prior_false_red_rate
+        - delta_pp
+        - settled_red_lanes
+        - settled_false_red_lanes
+        - unsettled_red_lanes
+        - reason_mix
+        - by_lane
+        - lane_coverage
+      properties:
+        is_lower_bound: { type: boolean }
+        rate_qualifier: { type: string }
+        settled_after_hours: { type: integer }
+        false_red_rate: { type: number, nullable: true }
+        prior_false_red_rate: { type: number, nullable: true }
+        delta_pp: { type: number, nullable: true }
+        settled_red_lanes: { type: integer }
+        settled_false_red_lanes: { type: integer }
+        unsettled_red_lanes: { type: integer }
+        reason_mix: { $ref: '#/components/schemas/KPIPRFalseRedReasonMix' }
+        by_lane:
+          type: array
+          items: { $ref: '#/components/schemas/KPIPRFalseRedLaneRow' }
+        lane_coverage: { $ref: '#/components/schemas/KPILaneCoverage' }
+
+    KPIConfiguredE2ELane:
+      type: object
+      required: [repository, lane]
+      properties:
+        repository: { type: string }
+        lane: { type: string }
+
+    KPIRedPRLaneRow:
+      type: object
+      required:
+        - report_group_id
+        - repository
+        - app
+        - lane
+        - branch
+        - gh_pr_number
+        - commit_sha
+        - gh_run_id
+        - gh_run_attempt
+        - platform
+        - framework
+        - has_orchestration
+        - orch_status
+        - created_at
+        - age_seconds
+        - settled
+        - still_red
+        - went_green_on_rerun
+        - failing_on_main
+        - other_prs_count
+        - all_signatures_failing_elsewhere
+        - failed_signature_count
+        - tests_failed
+        - reason
+        - run_url
+      properties:
+        report_group_id: { type: string, format: uuid }
+        repository: { type: string }
+        app: { type: string }
+        lane: { type: string }
+        branch: { type: string }
+        gh_pr_number: { type: integer }
+        commit_sha: { type: string }
+        gh_run_id: { type: string }
+        gh_run_attempt: { type: string }
+        platform: { type: string, nullable: true }
+        framework: { type: string }
+        has_orchestration: { type: boolean }
+        orch_status: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        age_seconds: { type: integer, format: int64 }
+        settled: { type: boolean }
+        still_red: { type: boolean }
+        went_green_on_rerun: { type: boolean }
+        failing_on_main: { type: boolean }
+        other_prs_count: { type: integer }
+        all_signatures_failing_elsewhere: { type: boolean }
+        failed_signature_count: { type: integer }
+        tests_failed: { type: integer }
+        reason: { type: string, enum: [went_green_on_rerun, failing_elsewhere, other] }
+        run_url: { type: string }
+
+    KPIPRRedResponse:
+      type: object
+      required:
+        - filters
+        - window_days
+        - settled_after_hours
+        - is_lower_bound
+        - rate_qualifier
+        - false_red_rate
+        - prior_false_red_rate
+        - delta_pp
+        - settled_red_lanes
+        - settled_false_red_lanes
+        - unsettled_red_lanes
+        - still_red_lanes
+        - reason_mix
+        - configured_e2e_lanes
+        - lane_coverage
+        - pagination
+        - lanes
+      properties:
+        filters: { $ref: '#/components/schemas/KPIFilters' }
+        window_days: { type: integer }
+        settled_after_hours: { type: integer }
+        is_lower_bound: { type: boolean }
+        rate_qualifier: { type: string }
+        false_red_rate: { type: number, nullable: true }
+        prior_false_red_rate: { type: number, nullable: true }
+        delta_pp: { type: number, nullable: true }
+        settled_red_lanes: { type: integer }
+        settled_false_red_lanes: { type: integer }
+        unsettled_red_lanes: { type: integer }
+        still_red_lanes: { type: integer }
+        reason_mix: { $ref: '#/components/schemas/KPIPRFalseRedReasonMix' }
+        configured_e2e_lanes:
+          type: array
+          items: { $ref: '#/components/schemas/KPIConfiguredE2ELane' }
+        lane_coverage: { $ref: '#/components/schemas/KPILaneCoverage' }
+        pagination: { $ref: '#/components/schemas/KPIPagination' }
+        lanes:
+          type: array
+          items: { $ref: '#/components/schemas/KPIRedPRLaneRow' }
 
     Error:
       type: object

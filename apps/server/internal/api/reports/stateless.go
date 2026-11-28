@@ -39,6 +39,7 @@ import (
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/db"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/ingest"
 )
 
@@ -55,6 +56,7 @@ type beginBody struct {
 	Branch               string `json:"branch"`
 	GHPRNumber           *int   `json:"gh_pr_number,omitempty"`
 	TotalReportsExpected int    `json:"total_reports_expected"`
+	RunContext
 }
 
 type declaredFile struct {
@@ -78,6 +80,7 @@ type registerBody struct {
 	JSONFiles            []declaredFile  `json:"json_files"`
 	Screenshots          []declaredFile  `json:"screenshots"`
 	EnvironmentMetadata  json.RawMessage `json:"environment_metadata,omitempty"`
+	RunContext
 }
 
 // ---------- handlers ----------
@@ -115,12 +118,18 @@ func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 			"total_reports_expected is required and must be > 0")
 		return
 	}
+	body.Normalize()
+	if body.Stage != "" && !IsValidRunStage(body.Stage) {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST",
+			fmt.Sprintf("invalid stage %q", body.Stage))
+		return
+	}
 	runAttempt := firstNonEmptyStr(body.GHRunAttempt, "1")
 	total := body.TotalReportsExpected
 
 	groupID, created, err := upsertReportGroup(r.Context(), h.Pool,
 		body.Repository, body.Commit, body.GHRunID, runAttempt, body.Framework,
-		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, &total, nil)
+		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, &total, nil, body.RunContext)
 	if err != nil {
 		if errors.Is(err, errExpectedReportsMismatch) {
 			api.WriteErrorCode(w, http.StatusConflict, "EXPECTED_REPORTS_MISMATCH",
@@ -174,6 +183,12 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 			"total_reports_expected, when supplied, must be > 0")
 		return
 	}
+	body.Normalize()
+	if body.Stage != "" && !IsValidRunStage(body.Stage) {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST",
+			fmt.Sprintf("invalid stage %q", body.Stage))
+		return
+	}
 	runAttempt := firstNonEmptyStr(body.GHRunAttempt, "1")
 
 	var env json.RawMessage
@@ -182,7 +197,7 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	groupID, created, err := upsertReportGroup(r.Context(), h.Pool,
 		body.Repository, body.Commit, body.GHRunID, runAttempt, body.Framework,
-		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, body.TotalReportsExpected, env)
+		body.Name, body.RunGroup, body.Branch, body.GHPRNumber, body.TotalReportsExpected, env, body.RunContext)
 	if err != nil {
 		if errors.Is(err, errExpectedReportsMismatch) {
 			api.WriteErrorCode(w, http.StatusConflict, "EXPECTED_REPORTS_MISMATCH",
@@ -235,15 +250,16 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	err = h.Pool.QueryRow(r.Context(), `
 		INSERT INTO reports (report_group_id, name, status, gh_job_id, gh_job_name,
 		                     json_upload_status, screenshots_upload_status,
-		                     uploaded_by_api_key_id, uploaded_by_oidc_subject)
-		VALUES ($1,$2,'processing',$3,$4,'started',$5,$6,$7)
+		                     uploaded_by_api_key_id, uploaded_by_oidc_subject, platform)
+		VALUES ($1,$2,'processing',$3,$4,'started',$5,$6,$7,NULLIF($8,''))
 		ON CONFLICT (report_group_id, gh_job_id) WHERE gh_job_id IS NOT NULL
 		  DO UPDATE SET status='processing',
 		                gh_job_name=EXCLUDED.gh_job_name,
+		                platform=COALESCE(NULLIF(EXCLUDED.platform, ''), reports.platform),
 		                updated_at=now()
 		RETURNING id, (xmax = 0) AS created
 	`, groupID, name, jobID, jobName,
-		ssStartedIf(len(acceptedSS)), apiKeyID, oidcSub).Scan(&reportID, &reportCreated)
+		ssStartedIf(len(acceptedSS)), apiKeyID, oidcSub, body.Platform).Scan(&reportID, &reportCreated)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return
@@ -602,34 +618,68 @@ func bumpGroupLastUpload(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 func upsertReportGroup(
 	ctx context.Context, pool *pgxpool.Pool,
 	repository, commit, runID, runAttempt, framework, name, runGroup, branch string,
-	prNumber *int, totalReportsExpected *int, env json.RawMessage,
+	prNumber *int, totalReportsExpected *int, env json.RawMessage, runCtx RunContext,
 ) (uuid.UUID, bool, error) {
 	var id uuid.UUID
 	var created bool
-	var storedTotal *int
-	var storedRunGroup *string
 	runGroupArg := strings.TrimSpace(runGroup)
-	err := pool.QueryRow(ctx, `
-		INSERT INTO report_groups (framework, name, run_group, repository, branch, commit_sha, gh_run_id, gh_run_attempt, gh_pr_number, total_reports_expected, environment_metadata)
-		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9,$10, NULLIF($11::text,'')::jsonb)
-		ON CONFLICT (repository, commit_sha, gh_run_id, name, gh_run_attempt)
-		  DO UPDATE SET updated_at = now(),
-		                branch = CASE WHEN report_groups.branch = '' THEN EXCLUDED.branch ELSE report_groups.branch END,
-		                gh_pr_number = COALESCE(report_groups.gh_pr_number, EXCLUDED.gh_pr_number),
-		                environment_metadata = COALESCE(report_groups.environment_metadata, EXCLUDED.environment_metadata),
-		                run_group = COALESCE(report_groups.run_group, EXCLUDED.run_group)
-		RETURNING id, (xmax = 0) AS created, total_reports_expected, run_group
-	`, framework, name, runGroupArg, repository, branch, commit, runID, runAttempt, prNumber, totalReportsExpected, string(env)).Scan(&id, &created, &storedTotal, &storedRunGroup)
+	runCtx.Normalize()
+	explicitStage := runCtx.Stage != ""
+	resolvedStage := ResolveRunStage(runCtx.Stage, runCtx.EventName, branch, prNumber)
+	err := db.InTx(ctx, pool, func(tx pgx.Tx) error {
+		var storedTotal *int
+		var storedRunGroup *string
+		err := tx.QueryRow(ctx, `
+			INSERT INTO report_groups (
+				framework, name, run_group, repository, branch, commit_sha, gh_run_id, gh_run_attempt,
+				gh_pr_number, total_reports_expected, environment_metadata,
+				stage, event_name, base_ref, head_ref, platform, server_version, app_version, edition
+			)
+			VALUES (
+				$1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,
+				$9,$10,NULLIF($11::text,'')::jsonb,
+				$12,NULLIF($13,''),NULLIF($14,''),NULLIF($15,''),NULLIF($16,''),NULLIF($17,''),NULLIF($18,''),NULLIF($19,'')
+			)
+			ON CONFLICT (repository, commit_sha, gh_run_id, name, gh_run_attempt)
+			  DO UPDATE SET updated_at = now(),
+			                branch = CASE WHEN report_groups.branch = '' THEN EXCLUDED.branch ELSE report_groups.branch END,
+			                gh_pr_number = COALESCE(report_groups.gh_pr_number, EXCLUDED.gh_pr_number),
+			                environment_metadata = COALESCE(report_groups.environment_metadata, EXCLUDED.environment_metadata),
+			                run_group = COALESCE(report_groups.run_group, EXCLUDED.run_group),
+			                stage = CASE
+			                    WHEN ($20 AND EXCLUDED.stage <> 'other')
+			                      OR (report_groups.stage = 'other' AND EXCLUDED.stage <> 'other')
+			                    THEN EXCLUDED.stage
+			                    ELSE report_groups.stage
+			                END,
+			                event_name = COALESCE(NULLIF(report_groups.event_name, ''), EXCLUDED.event_name),
+			                base_ref = COALESCE(NULLIF(report_groups.base_ref, ''), EXCLUDED.base_ref),
+			                head_ref = COALESCE(NULLIF(report_groups.head_ref, ''), EXCLUDED.head_ref),
+			                platform = COALESCE(NULLIF(report_groups.platform, ''), EXCLUDED.platform),
+			                server_version = COALESCE(NULLIF(report_groups.server_version, ''), EXCLUDED.server_version),
+			                app_version = COALESCE(NULLIF(report_groups.app_version, ''), EXCLUDED.app_version),
+			                edition = COALESCE(NULLIF(report_groups.edition, ''), EXCLUDED.edition)
+			RETURNING id, (xmax = 0) AS created, total_reports_expected, run_group
+		`, framework, name, runGroupArg, repository, branch, commit, runID, runAttempt,
+			prNumber, totalReportsExpected, string(env),
+			resolvedStage, runCtx.EventName, runCtx.BaseRef, runCtx.HeadRef,
+			runCtx.Platform, runCtx.ServerVersion, runCtx.AppVersion, runCtx.Edition, explicitStage,
+		).Scan(&id, &created, &storedTotal, &storedRunGroup)
+		if err != nil {
+			return fmt.Errorf("upsert report_group: %w", err)
+		}
+		if !created && totalReportsExpected != nil && storedTotal != nil && *storedTotal != *totalReportsExpected {
+			return fmt.Errorf("%w: requested=%d stored=%d",
+				errExpectedReportsMismatch, *totalReportsExpected, *storedTotal)
+		}
+		if !created && runGroupArg != "" && storedRunGroup != nil && *storedRunGroup != "" && *storedRunGroup != runGroupArg {
+			return fmt.Errorf("%w: requested=%s stored=%s",
+				errRunGroupMismatch, runGroupArg, *storedRunGroup)
+		}
+		return nil
+	})
 	if err != nil {
-		return uuid.Nil, false, fmt.Errorf("upsert report_group: %w", err)
-	}
-	if !created && totalReportsExpected != nil && storedTotal != nil && *storedTotal != *totalReportsExpected {
-		return uuid.Nil, false, fmt.Errorf("%w: requested=%d stored=%d",
-			errExpectedReportsMismatch, *totalReportsExpected, *storedTotal)
-	}
-	if !created && runGroupArg != "" && storedRunGroup != nil && *storedRunGroup != "" && *storedRunGroup != runGroupArg {
-		return uuid.Nil, false, fmt.Errorf("%w: requested=%s stored=%s",
-			errRunGroupMismatch, runGroupArg, *storedRunGroup)
+		return uuid.Nil, false, err
 	}
 	return id, created, nil
 }

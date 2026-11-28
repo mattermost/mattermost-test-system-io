@@ -15,6 +15,7 @@ import * as path from "node:path";
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { fetchWithAuthRetry, getBearer } from "./auth";
+import { resolveRegisterContext, stripBlankRunContext } from "./context";
 import { runUnit as runPlaywrightUnit } from "./playwright";
 import { runUnit as runCypressUnit } from "./cypress";
 import { runUnit as runDetoxUnit } from "./detox";
@@ -110,6 +111,7 @@ export async function run(): Promise<void> {
   // inside the step's timeout-minutes window.
   const deadlineMinutes = parseDeadlineMinutes(core.getInput("deadline-minutes"));
   const deadlineAt = deadlineAtFrom(Date.now(), deadlineMinutes);
+  const platformInput = core.getInput("platform");
 
   let compositeIdentity: CompositeIdentity;
   try {
@@ -118,6 +120,15 @@ export async function run(): Promise<void> {
     throw new Error(`composite-identity is not valid JSON: ${(e as Error).message}`);
   }
   normalizeCompositeIdentity(compositeIdentity);
+  const runContext = resolveRegisterContext(
+    {
+      platform: platformInput,
+      framework,
+      maestroPlatform,
+      detoxConfig,
+    },
+    compositeIdentity,
+  );
 
   // resolved.name is the GitHub Jobs API's composed display name (may
   // differ from ghJobName for nested workflow_call chains) — persist it,
@@ -186,6 +197,7 @@ export async function run(): Promise<void> {
       ghJobName: resolvedJobName,
       framework,
       compositeIdentity,
+      runContext,
     };
     try {
       await uploadShard(uploadCfg, invocations);
@@ -880,12 +892,10 @@ function intInput(name: string, fallback: number): number {
 
 /**
  * normalizeCompositeIdentity coerces gh_pr_number to a number when it
- * arrived as a string. Shell-built composite-identity payloads (jq
- * `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
- * identityFields.GHPRNumber is *int and json.Decode rejects the string
- * form, surfacing as a 400 BAD_REQUEST "invalid JSON body" on every
- * orchestration endpoint. Normalizing once here keeps the rest of the
- * action body-agnostic.
+ * arrived as a string and strips empty/whitespace RunContext fields.
+ * Shell-built composite-identity payloads (jq `--arg pr "${PR_NUMBER}"`)
+ * emit empty strings or stringified numbers; stripping blank RunContext
+ * fields once keeps /checkout, /complete, and /no-work payloads clean.
  */
 function normalizeCompositeIdentity(c: CompositeIdentity): void {
   if (typeof c.gh_pr_number === "string") {
@@ -896,6 +906,7 @@ function normalizeCompositeIdentity(c: CompositeIdentity): void {
       delete c.gh_pr_number;
     }
   }
+  stripBlankRunContext(c);
 }
 
 /**

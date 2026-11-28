@@ -13,6 +13,7 @@
 import * as path from "node:path";
 import * as core from "@actions/core";
 import { setCommitStatus } from "./commit-status";
+import { resolveRunContext, stripBlankRunContext, type RunContext } from "./context";
 import { discoverCypressSpecs, parseTagList, type CypressFilters } from "./cypress";
 import {
   discoverDetoxSpecs,
@@ -28,7 +29,7 @@ import { discoverPlaywrightSpecs } from "./playwright";
 import { buildReportURL } from "./report_url";
 import { retryFetch, safeText } from "./retry-fetch";
 
-interface CompositeIdentity {
+interface CompositeIdentity extends RunContext {
   repository: string;
   commit_sha: string;
   gh_run_id: string;
@@ -105,6 +106,19 @@ export async function run(): Promise<void> {
     throw new Error(`composite-identity is not valid JSON: ${(e as Error).message}`);
   }
   normalizeCompositeIdentity(compositeIdentity);
+  const runContext = resolveRunContext(
+    {
+      stage: core.getInput("stage"),
+      eventName: core.getInput("event-name"),
+      baseRef: core.getInput("base-ref"),
+      headRef: core.getInput("head-ref"),
+      platform: core.getInput("platform"),
+      serverVersion: core.getInput("server-version"),
+      appVersion: core.getInput("app-version"),
+      edition: core.getInput("edition"),
+    },
+    compositeIdentity,
+  );
 
   const durations =
     durationBaseBranch && (framework === "playwright" || framework === "cypress")
@@ -218,6 +232,7 @@ export async function run(): Promise<void> {
 
   const beginBody: Record<string, unknown> = {
     ...compositeIdentity,
+    ...runContext,
     framework,
     lease_timeout_ms: leaseTimeoutMs,
     idle_timeout_ms: idleTimeoutMs,
@@ -261,7 +276,9 @@ export async function run(): Promise<void> {
     {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
-      body: JSON.stringify(identityForReports(compositeIdentity, framework, totalReportsExpected)),
+      body: JSON.stringify(
+        identityForReports(compositeIdentity, framework, totalReportsExpected, runContext),
+      ),
     },
     "reports/begin",
   );
@@ -354,6 +371,7 @@ function identityForReports(
   c: CompositeIdentity,
   framework: string,
   totalReportsExpected: number,
+  runContext: RunContext,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     repository: c.repository,
@@ -364,6 +382,7 @@ function identityForReports(
     name: c.name,
     branch: c.branch,
     total_reports_expected: totalReportsExpected,
+    ...runContext,
   };
   if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;
   return body;
@@ -388,12 +407,10 @@ function intInput(name: string, fallback: number): number {
 
 /**
  * normalizeCompositeIdentity coerces gh_pr_number to a number when it
- * arrived as a string. Shell-built composite-identity payloads (jq
- * `--arg pr "${PR_NUMBER}"`) emit it as a string, but the server's
- * identityFields.GHPRNumber is *int and json.Decode rejects the string
- * form, surfacing as a 400 BAD_REQUEST "invalid JSON body" on every
- * orchestration endpoint. Normalizing once here keeps the rest of the
- * action body-agnostic.
+ * arrived as a string and strips empty/whitespace RunContext fields.
+ * Shell-built composite-identity payloads (jq `--arg pr "${PR_NUMBER}"`)
+ * emit empty strings or stringified numbers, which would otherwise fail
+ * server JSON decoding or OpenAPI RunContext validation (e.g. `stage: ""`).
  */
 function normalizeCompositeIdentity(c: CompositeIdentity): void {
   if (typeof c.gh_pr_number === "string") {
@@ -404,4 +421,5 @@ function normalizeCompositeIdentity(c: CompositeIdentity): void {
       delete c.gh_pr_number;
     }
   }
+  stripBlankRunContext(c);
 }

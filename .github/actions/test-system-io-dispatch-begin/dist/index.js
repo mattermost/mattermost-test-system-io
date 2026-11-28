@@ -26038,6 +26038,63 @@ function truncateDescription(s) {
   return `${s.slice(0, DESCRIPTION_MAX - 1)}\u2026`;
 }
 
+// src/context.ts
+var RUN_CONTEXT_KEYS = [
+  "stage",
+  "event_name",
+  "base_ref",
+  "head_ref",
+  "platform",
+  "server_version",
+  "app_version",
+  "edition"
+];
+function nonEmpty(value) {
+  const trimmed = typeof value === "string" ? value.trim() : void 0;
+  return trimmed ? trimmed : void 0;
+}
+function stripBlankRunContext(identity) {
+  for (const key of RUN_CONTEXT_KEYS) {
+    const val = identity[key];
+    if (typeof val !== "string") {
+      delete identity[key];
+      continue;
+    }
+    const trimmed = val.trim();
+    if (!trimmed) {
+      delete identity[key];
+    } else {
+      identity[key] = trimmed;
+    }
+  }
+}
+function resolveRunContext(inputs, identity, env = process.env) {
+  const out = {};
+  const pairs = [
+    ["stage", nonEmpty(inputs.stage) ?? nonEmpty(identity.stage)],
+    [
+      "event_name",
+      nonEmpty(inputs.eventName) ?? nonEmpty(identity.event_name) ?? nonEmpty(env.GITHUB_EVENT_NAME)
+    ],
+    [
+      "base_ref",
+      nonEmpty(inputs.baseRef) ?? nonEmpty(identity.base_ref) ?? nonEmpty(env.GITHUB_BASE_REF)
+    ],
+    [
+      "head_ref",
+      nonEmpty(inputs.headRef) ?? nonEmpty(identity.head_ref) ?? nonEmpty(env.GITHUB_HEAD_REF)
+    ],
+    ["platform", nonEmpty(inputs.platform) ?? nonEmpty(identity.platform)],
+    ["server_version", nonEmpty(inputs.serverVersion) ?? nonEmpty(identity.server_version)],
+    ["app_version", nonEmpty(inputs.appVersion) ?? nonEmpty(identity.app_version)],
+    ["edition", nonEmpty(inputs.edition) ?? nonEmpty(identity.edition)]
+  ];
+  for (const [key, val] of pairs) {
+    if (val !== void 0) out[key] = val;
+  }
+  return out;
+}
+
 // src/cypress.ts
 var fs3 = __toESM(require("fs"));
 var path = __toESM(require("path"));
@@ -26731,6 +26788,19 @@ async function run() {
     throw new Error(`composite-identity is not valid JSON: ${e.message}`);
   }
   normalizeCompositeIdentity(compositeIdentity);
+  const runContext = resolveRunContext(
+    {
+      stage: getInput("stage"),
+      eventName: getInput("event-name"),
+      baseRef: getInput("base-ref"),
+      headRef: getInput("head-ref"),
+      platform: getInput("platform"),
+      serverVersion: getInput("server-version"),
+      appVersion: getInput("app-version"),
+      edition: getInput("edition")
+    },
+    compositeIdentity
+  );
   const durations = durationBaseBranch && (framework === "playwright" || framework === "cypress") ? await loadDurationHints({
     baseURL,
     repository: compositeIdentity.repository,
@@ -26823,6 +26893,7 @@ async function run() {
   setSecret(bearer);
   const beginBody = {
     ...compositeIdentity,
+    ...runContext,
     framework,
     lease_timeout_ms: leaseTimeoutMs,
     idle_timeout_ms: idleTimeoutMs,
@@ -26860,7 +26931,9 @@ async function run() {
     {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}` },
-      body: JSON.stringify(identityForReports(compositeIdentity, framework, totalReportsExpected))
+      body: JSON.stringify(
+        identityForReports(compositeIdentity, framework, totalReportsExpected, runContext)
+      )
     },
     "reports/begin"
   );
@@ -26920,7 +26993,7 @@ async function loadDurationHints(opts) {
     return /* @__PURE__ */ new Map();
   }
 }
-function identityForReports(c, framework, totalReportsExpected) {
+function identityForReports(c, framework, totalReportsExpected, runContext) {
   const body = {
     repository: c.repository,
     commit: c.commit_sha,
@@ -26929,7 +27002,8 @@ function identityForReports(c, framework, totalReportsExpected) {
     framework,
     name: c.name,
     branch: c.branch,
-    total_reports_expected: totalReportsExpected
+    total_reports_expected: totalReportsExpected,
+    ...runContext
   };
   if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;
   return body;
@@ -26956,6 +27030,7 @@ function normalizeCompositeIdentity(c) {
       delete c.gh_pr_number;
     }
   }
+  stripBlankRunContext(c);
 }
 
 // src/index.ts

@@ -82,9 +82,10 @@ type groupDTO struct {
 	GHRunAttempt         string
 	GHPRNumber           *int
 	EnvironmentMetadata  *json.RawMessage
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	LastUploadAt         time.Time
+	RunContext
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	LastUploadAt time.Time
 }
 
 // reportEntryDTO is a per-job upload inside a report_group.
@@ -94,6 +95,7 @@ type reportEntryDTO struct {
 	Status    string
 	GHJobID   *string
 	GHJobName *string
+	Platform  *string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -102,6 +104,7 @@ const reportGroupSelectCols = `
 	id, framework, name, run_group, status, total_reports_expected,
 	repository, branch, commit_sha,
 	gh_run_id, gh_run_attempt, gh_pr_number, environment_metadata,
+	stage, event_name, base_ref, head_ref, platform, server_version, app_version, edition,
 	created_at, updated_at, last_upload_at
 `
 
@@ -109,6 +112,7 @@ const reportGroupSelectColsPrefixed = `
 	g.id, g.framework, g.name, g.run_group, g.status, g.total_reports_expected,
 	g.repository, g.branch, g.commit_sha,
 	g.gh_run_id, g.gh_run_attempt, g.gh_pr_number, g.environment_metadata,
+	g.stage, g.event_name, g.base_ref, g.head_ref, g.platform, g.server_version, g.app_version, g.edition,
 	g.created_at, g.updated_at, g.last_upload_at
 `
 
@@ -116,10 +120,12 @@ func scanGroup(s interface{ Scan(dst ...any) error }) (groupDTO, error) {
 	var g groupDTO
 	var runGroup *string
 	var env []byte
+	var eventName, baseRef, headRef, platform, serverVersion, appVersion, edition *string
 	if err := s.Scan(
 		&g.ID, &g.Framework, &g.Name, &runGroup, &g.Status, &g.TotalReportsExpected,
 		&g.Repository, &g.Branch, &g.CommitSHA,
 		&g.GHRunID, &g.GHRunAttempt, &g.GHPRNumber, &env,
+		&g.Stage, &eventName, &baseRef, &headRef, &platform, &serverVersion, &appVersion, &edition,
 		&g.CreatedAt, &g.UpdatedAt, &g.LastUploadAt,
 	); err != nil {
 		return groupDTO{}, err
@@ -131,6 +137,13 @@ func scanGroup(s interface{ Scan(dst ...any) error }) (groupDTO, error) {
 		raw := json.RawMessage(env)
 		g.EnvironmentMetadata = &raw
 	}
+	g.EventName = derefOrEmpty(eventName)
+	g.BaseRef = derefOrEmpty(baseRef)
+	g.HeadRef = derefOrEmpty(headRef)
+	g.Platform = derefOrEmpty(platform)
+	g.ServerVersion = derefOrEmpty(serverVersion)
+	g.AppVersion = derefOrEmpty(appVersion)
+	g.Edition = derefOrEmpty(edition)
 	return g, nil
 }
 
@@ -149,7 +162,7 @@ func fetchGroup(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) (groupDTO
 
 func fetchGroupReports(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) ([]reportEntryDTO, error) {
 	rows, err := pool.Query(ctx, `
-		SELECT id, name, status, gh_job_id, gh_job_name, created_at, updated_at
+		SELECT id, name, status, gh_job_id, gh_job_name, platform, created_at, updated_at
 		FROM reports WHERE report_group_id = $1 ORDER BY created_at
 	`, groupID)
 	if err != nil {
@@ -159,7 +172,7 @@ func fetchGroupReports(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUI
 	out := make([]reportEntryDTO, 0)
 	for rows.Next() {
 		var e reportEntryDTO
-		if err := rows.Scan(&e.ID, &e.Name, &e.Status, &e.GHJobID, &e.GHJobName, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Name, &e.Status, &e.GHJobID, &e.GHJobName, &e.Platform, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
 import { fetchWithAuthRetry, getBearer } from "./auth";
+import type { RunContext } from "./context";
 import { imageContentType } from "./mime";
 import { shardJsonParts } from "./shard";
 import type {
@@ -28,6 +29,7 @@ export interface UploadConfig {
   ghJobName: string;
   framework: string;
   compositeIdentity: CompositeIdentity;
+  runContext?: RunContext;
 }
 
 export async function uploadShard(
@@ -59,7 +61,7 @@ export async function uploadShard(
   }
 
   const regBody: Record<string, unknown> = {
-    ...identityFields(cfg.compositeIdentity, cfg.framework),
+    ...identityFields(cfg.compositeIdentity, cfg.framework, cfg.runContext),
     gh_job_id: cfg.ghJobId,
     gh_job_name: cfg.ghJobName,
     json_files: jsonParts.map((p) => ({ path: p.relPath, size: p.size })),
@@ -156,7 +158,11 @@ function listImages(root: string): UploadPart[] {
   return out;
 }
 
-function identityFields(c: CompositeIdentity, framework: string): Record<string, unknown> {
+function identityFields(
+  c: CompositeIdentity,
+  framework: string,
+  runContext?: RunContext,
+): Record<string, unknown> {
   const body: Record<string, unknown> = {
     repository: c.repository,
     commit: c.commit_sha,
@@ -165,6 +171,7 @@ function identityFields(c: CompositeIdentity, framework: string): Record<string,
     framework,
     name: c.name,
     branch: c.branch,
+    ...runContext,
   };
   if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;
   return body;

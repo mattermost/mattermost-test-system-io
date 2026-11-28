@@ -118,6 +118,7 @@ type beginUnitBody struct {
 
 type beginRunBody struct {
 	identityFields
+	reports.RunContext
 	PlaywrightProject    string          `json:"playwright_project"`
 	LeaseTimeoutMs       int64           `json:"lease_timeout_ms"`
 	IdleTimeoutMs        int64           `json:"idle_timeout_ms"`
@@ -204,6 +205,13 @@ func (h *Handlers) BeginRun(w http.ResponseWriter, r *http.Request) {
 			"total_reports_expected is required and must be > 0")
 		return
 	}
+	body.Normalize()
+	if body.Stage != "" && !reports.IsValidRunStage(body.Stage) {
+		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST",
+			fmt.Sprintf("invalid stage %q", body.Stage))
+		return
+	}
+	resolvedStage := reports.ResolveRunStage(body.Stage, body.EventName, body.Branch, body.GHPRNumber)
 	options := orchestration.BeginRunOptions{
 		LeaseTimeoutMs:       body.LeaseTimeoutMs,
 		IdleTimeoutMs:        body.IdleTimeoutMs,
@@ -213,6 +221,17 @@ func (h *Handlers) BeginRun(w http.ResponseWriter, r *http.Request) {
 		PlaywrightProject:    body.PlaywrightProject,
 		Branch:               body.Branch,
 		GHPRNumber:           body.GHPRNumber,
+		RunContext: orchestration.RunContext{
+			Stage:         resolvedStage,
+			ExplicitStage: body.Stage != "",
+			EventName:     body.EventName,
+			BaseRef:       body.BaseRef,
+			HeadRef:       body.HeadRef,
+			Platform:      body.Platform,
+			ServerVersion: body.ServerVersion,
+			AppVersion:    body.AppVersion,
+			Edition:       body.Edition,
+		},
 	}
 	owner := ownerFromSubject(subject)
 	if owner.OIDCSubject == nil && owner.APIKeyID == nil {

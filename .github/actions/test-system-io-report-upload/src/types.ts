@@ -4,7 +4,9 @@
  * and /reports/upload need.
  */
 
-export interface CompositeIdentity {
+import type { RunContext } from "./context";
+
+export interface CompositeIdentity extends RunContext {
   repository: string;
   commit_sha: string;
   gh_run_id: string;
@@ -16,7 +18,7 @@ export interface CompositeIdentity {
   gh_pr_number?: number | string;
 }
 
-export interface ReportsBeginBody {
+export interface ReportsBeginBody extends RunContext {
   repository: string;
   commit: string;
   gh_run_id: string;

@@ -61,6 +61,47 @@ inputs:
       upload entirely.
     required: false
     default: ""
+  stage:
+    description: >
+      Explicit CI run stage (`pr`, `main`, `release`, `nightly`, `manual`, `other`).
+      When empty, the server resolves stage from `event-name`, `branch`, or `gh_pr_number`.
+    required: false
+    default: ""
+  event-name:
+    description: >
+      GitHub event name (defaults to `GITHUB_EVENT_NAME` environment variable).
+    required: false
+    default: ""
+  base-ref:
+    description: >
+      Target base ref for pull requests (defaults to `GITHUB_BASE_REF` environment variable).
+    required: false
+    default: ""
+  head-ref:
+    description: >
+      Source head ref for pull requests (defaults to `GITHUB_HEAD_REF` environment variable).
+    required: false
+    default: ""
+  platform:
+    description: >
+      Target execution platform (e.g. `linux`, `ios`, `android`, `macos`, `windows`).
+    required: false
+    default: ""
+  server-version:
+    description: >
+      Mattermost server version under test.
+    required: false
+    default: ""
+  app-version:
+    description: >
+      Mattermost mobile/desktop app version under test.
+    required: false
+    default: ""
+  edition:
+    description: >
+      Mattermost edition under test (e.g. `enterprise`, `team`).
+    required: false
+    default: ""
 
 runs:
   using: node24

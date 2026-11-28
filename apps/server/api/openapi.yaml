@@ -1372,23 +1372,25 @@ components:
             total: { type: integer }
 
     ReportSummary:
-      type: object
-      required: [id, short_id, name, status, framework, repository, branch, commit, gh_run_id, gh_run_attempt, created_at]
-      properties:
-        id: { type: string, format: uuid }
-        short_id: { type: string }
-        name: { type: string }
-        status: { type: string, enum: [in_progress, completed] }
-        framework: { type: string, enum: [playwright, cypress, detox, maestro] }
-        test_stats: { $ref: '#/components/schemas/TestStats' }
-        orchestration: { $ref: '#/components/schemas/OrchestrationSummary' }
-        repository: { type: string }
-        branch: { type: string }
-        commit: { type: string }
-        gh_run_id: { type: string }
-        gh_pr_number: { type: integer }
-        gh_run_attempt: { type: string }
-        created_at: { type: string, format: date-time }
+      allOf:
+        - $ref: '#/components/schemas/RunContext'
+        - type: object
+          required: [id, short_id, name, status, framework, repository, branch, commit, gh_run_id, gh_run_attempt, created_at]
+          properties:
+            id: { type: string, format: uuid }
+            short_id: { type: string }
+            name: { type: string }
+            status: { type: string, enum: [in_progress, completed] }
+            framework: { type: string, enum: [playwright, cypress, detox, maestro] }
+            test_stats: { $ref: '#/components/schemas/TestStats' }
+            orchestration: { $ref: '#/components/schemas/OrchestrationSummary' }
+            repository: { type: string }
+            branch: { type: string }
+            commit: { type: string }
+            gh_run_id: { type: string }
+            gh_pr_number: { type: integer }
+            gh_run_attempt: { type: string }
+            created_at: { type: string, format: date-time }
 
     ReportEntry:
       type: object
@@ -1398,6 +1400,7 @@ components:
         short_id: { type: string }
         gh_job_id: { type: string }
         gh_job_name: { type: string }
+        platform: { type: string, nullable: true }
         display_name: { type: string }
         status: { type: string, enum: [pending, processing, complete, failed] }
         created_at: { type: string, format: date-time }
@@ -1427,21 +1430,23 @@ components:
         offset: { type: integer }
 
     IndividualReportSummary:
-      type: object
-      required: [id, short_id, report_group_id, name, status, created_at]
-      properties:
-        id: { type: string }
-        short_id: { type: string }
-        report_group_id: { type: string }
-        name: { type: string }
-        status: { type: string }
-        repository: { type: string }
-        branch: { type: string }
-        commit: { type: string }
-        test_stats: { $ref: '#/components/schemas/TestStats' }
-        orchestration: { $ref: '#/components/schemas/OrchestrationSummary' }
-        duration_ms: { type: integer }
-        created_at: { type: string, format: date-time }
+      allOf:
+        - $ref: '#/components/schemas/RunContext'
+        - type: object
+          required: [id, short_id, report_group_id, name, status, created_at]
+          properties:
+            id: { type: string }
+            short_id: { type: string }
+            report_group_id: { type: string }
+            name: { type: string }
+            status: { type: string }
+            repository: { type: string }
+            branch: { type: string }
+            commit: { type: string }
+            test_stats: { $ref: '#/components/schemas/TestStats' }
+            orchestration: { $ref: '#/components/schemas/OrchestrationSummary' }
+            duration_ms: { type: integer }
+            created_at: { type: string, format: date-time }
 
     IndividualReportListResponse:
       type: object
@@ -1455,24 +1460,26 @@ components:
         offset: { type: integer }
 
     RunEntry:
-      type: object
-      required: [report_id, framework, name, status, branch, commit, short_sha, gh_run_attempt, created_at, url_path]
-      properties:
-        report_id: { type: string }
-        framework: { type: string }
-        name: { type: string }
-        status: { type: string }
-        branch: { type: string }
-        commit: { type: string }
-        short_sha: { type: string }
-        run_number: { type: string }
-        gh_run_attempt: { type: string }
-        gh_run_id: { type: string }
-        gh_pr_number: { type: integer }
-        test_stats: { $ref: '#/components/schemas/TestStats' }
-        orchestration: { $ref: '#/components/schemas/OrchestrationSummary' }
-        created_at: { type: string, format: date-time }
-        url_path: { type: string }
+      allOf:
+        - $ref: '#/components/schemas/RunContext'
+        - type: object
+          required: [report_id, framework, name, status, branch, commit, short_sha, gh_run_attempt, created_at, url_path]
+          properties:
+            report_id: { type: string }
+            framework: { type: string }
+            name: { type: string }
+            status: { type: string }
+            branch: { type: string }
+            commit: { type: string }
+            short_sha: { type: string }
+            run_number: { type: string }
+            gh_run_attempt: { type: string }
+            gh_run_id: { type: string }
+            gh_pr_number: { type: integer }
+            test_stats: { $ref: '#/components/schemas/TestStats' }
+            orchestration: { $ref: '#/components/schemas/OrchestrationSummary' }
+            created_at: { type: string, format: date-time }
+            url_path: { type: string }
 
     RepositoryGroup:
       type: object
@@ -1710,19 +1717,36 @@ components:
           type: array
           items: { $ref: '#/components/schemas/SearchSuiteResult' }
 
-    ReportGroupKey:
+    RunContext:
       type: object
-      required: [repository, commit, gh_run_id, framework, name]
       properties:
-        repository: { type: string, minLength: 1, description: "GitHub 'owner/repo' slug." }
-        commit: { type: string, minLength: 1 }
-        gh_run_id: { type: string, minLength: 1 }
-        gh_run_attempt: { type: string, description: "Defaults to '1' when omitted." }
-        framework: { type: string, enum: [playwright, cypress, detox, maestro] }
-        name: { type: string, minLength: 1 }
-        run_group: { type: string }
-        branch: { type: string }
-        gh_pr_number: { type: integer, nullable: true }
+        stage:
+          type: string
+          enum: [pr, main, release, nightly, manual, other]
+          nullable: true
+        event_name: { type: string, nullable: true }
+        base_ref: { type: string, nullable: true }
+        head_ref: { type: string, nullable: true }
+        platform: { type: string, nullable: true }
+        server_version: { type: string, nullable: true }
+        app_version: { type: string, nullable: true }
+        edition: { type: string, nullable: true }
+
+    ReportGroupKey:
+      allOf:
+        - $ref: '#/components/schemas/RunContext'
+        - type: object
+          required: [repository, commit, gh_run_id, framework, name]
+          properties:
+            repository: { type: string, minLength: 1, description: "GitHub 'owner/repo' slug." }
+            commit: { type: string, minLength: 1 }
+            gh_run_id: { type: string, minLength: 1 }
+            gh_run_attempt: { type: string, description: "Defaults to '1' when omitted." }
+            framework: { type: string, enum: [playwright, cypress, detox, maestro] }
+            name: { type: string, minLength: 1 }
+            run_group: { type: string }
+            branch: { type: string }
+            gh_pr_number: { type: integer, nullable: true }
 
     ReportBeginRequest:
       allOf:
@@ -1853,6 +1877,7 @@ components:
     BeginRunRequest:
       allOf:
         - $ref: '#/components/schemas/CompositeIdentity'
+        - $ref: '#/components/schemas/RunContext'
         - type: object
           required: [dispatch_units, total_reports_expected]
           properties:

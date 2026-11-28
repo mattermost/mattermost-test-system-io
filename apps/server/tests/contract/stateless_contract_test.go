@@ -130,6 +130,8 @@ func TestStatelessUploadContract(t *testing.T) {
 		"repository": "mattermost/contract", "commit": "0123456789abcdef", "gh_run_id": "42",
 		"gh_run_attempt": "1", "framework": "playwright", "name": "contract", "branch": "main",
 		"gh_pr_number": 7, "run_group": "g1", "total_reports_expected": 2,
+		"stage": "nightly", "event_name": "schedule", "base_ref": "main", "head_ref": "feat/ctx",
+		"platform": "linux", "server_version": "10.5.0", "app_version": "2.25.0", "edition": "enterprise",
 	}
 	raw := exchange(t, c, http.MethodPost, "/api/v1/reports/begin", ct, jsonBody(t, begin), auth, http.StatusOK, true)
 	var b struct {
@@ -153,11 +155,15 @@ func TestStatelessUploadContract(t *testing.T) {
 		// Handler-level 400 (spec-valid shape, bad value): total must be > 0 in the spec too, so skip request validation.
 		bad["total_reports_expected"] = 0
 		exchange(t, c, http.MethodPost, "/api/v1/reports/begin", ct, jsonBody(t, bad), auth, http.StatusBadRequest, false)
+		bad["total_reports_expected"] = 2
+		bad["stage"] = "bogus"
+		exchange(t, c, http.MethodPost, "/api/v1/reports/begin", ct, jsonBody(t, bad), auth, http.StatusBadRequest, false)
 	})
 
 	reg := map[string]any{
 		"repository": "mattermost/contract", "commit": "0123456789abcdef", "gh_run_id": "42",
 		"gh_run_attempt": "1", "framework": "playwright", "name": "contract", "branch": "main",
+		"platform":  "linux",
 		"gh_job_id": "job-1", "gh_job_name": "shard 1",
 		"json_files": []any{
 			map[string]any{"path": "results.json", "size": 10},
@@ -211,5 +217,27 @@ func TestStatelessUploadContract(t *testing.T) {
 
 	t.Run("legacy upload is retired", func(t *testing.T) {
 		exchange(t, c, http.MethodPost, "/api/v1/reports", "text/plain", []byte("x"), auth, http.StatusGone, true)
+	})
+
+	t.Run("detail and list responses with run context conform", func(t *testing.T) {
+		exchange(t, c, http.MethodGet, "/api/v1/reports/"+b.ReportID, "", nil, nil, http.StatusOK, false)
+		exchange(t, c, http.MethodGet, "/api/v1/reports", "", nil, nil, http.StatusOK, false)
+		exchange(t, c, http.MethodGet, "/api/v1/reports/grouped", "", nil, nil, http.StatusOK, false)
+		exchange(t, c, http.MethodGet, "/api/v1/reports/individual", "", nil, nil, http.StatusOK, false)
+	})
+
+	t.Run("orchestration begin with run context", func(t *testing.T) {
+		orchReq := map[string]any{
+			"repository": "mattermost/contract", "commit_sha": "fedcba9876543210",
+			"gh_run_id": "99", "gh_run_attempt": "1", "framework": "playwright",
+			"name": "orch-ctx", "branch": "main", "total_reports_expected": 1,
+			"dispatch_units": []any{map[string]any{"spec_path": "a.spec.ts"}},
+			"stage":          "manual", "event_name": "workflow_dispatch",
+			"platform": "linux", "edition": "enterprise",
+		}
+		exchange(t, c, http.MethodPost, "/api/v1/orchestration/begin", ct, jsonBody(t, orchReq), auth, http.StatusCreated, true)
+		orchReq["gh_run_id"] = "100"
+		orchReq["stage"] = "invalid"
+		exchange(t, c, http.MethodPost, "/api/v1/orchestration/begin", ct, jsonBody(t, orchReq), auth, http.StatusBadRequest, false)
 	})
 }

@@ -208,3 +208,75 @@ func ResolveBranchFilter(requested string, options []BranchFilterOption) string 
 	}
 	return ""
 }
+
+// Valid run stages persisted on report_groups.stage.
+const (
+	RunStagePR      = "pr"
+	RunStageMain    = "main"
+	RunStageRelease = "release"
+	RunStageNightly = "nightly"
+	RunStageManual  = "manual"
+	RunStageOther   = "other"
+)
+
+// RunContext carries optional CI run context metadata attached to a report group.
+type RunContext struct {
+	Stage         string `json:"stage,omitempty"`
+	EventName     string `json:"event_name,omitempty"`
+	BaseRef       string `json:"base_ref,omitempty"`
+	HeadRef       string `json:"head_ref,omitempty"`
+	Platform      string `json:"platform,omitempty"`
+	ServerVersion string `json:"server_version,omitempty"`
+	AppVersion    string `json:"app_version,omitempty"`
+	Edition       string `json:"edition,omitempty"`
+}
+
+// Normalize trims leading and trailing whitespace from every context field.
+func (c *RunContext) Normalize() {
+	c.Stage = strings.TrimSpace(c.Stage)
+	c.EventName = strings.TrimSpace(c.EventName)
+	c.BaseRef = strings.TrimSpace(c.BaseRef)
+	c.HeadRef = strings.TrimSpace(c.HeadRef)
+	c.Platform = strings.TrimSpace(c.Platform)
+	c.ServerVersion = strings.TrimSpace(c.ServerVersion)
+	c.AppVersion = strings.TrimSpace(c.AppVersion)
+	c.Edition = strings.TrimSpace(c.Edition)
+}
+
+// IsValidRunStage reports whether s is a valid report_groups.stage value.
+func IsValidRunStage(s string) bool {
+	switch s {
+	case RunStagePR, RunStageMain, RunStageRelease, RunStageNightly, RunStageManual, RunStageOther:
+		return true
+	default:
+		return false
+	}
+}
+
+// ResolveRunStage resolves the canonical stage from an explicit stage,
+// GitHub event name, or branch/PR classification via classifyBranchFilterRow.
+func ResolveRunStage(explicitStage, eventName, branch string, prNum *int) string {
+	if s := strings.TrimSpace(explicitStage); IsValidRunStage(s) {
+		return s
+	}
+	switch strings.ToLower(strings.TrimSpace(eventName)) {
+	case "schedule":
+		return RunStageNightly
+	case "workflow_dispatch":
+		return RunStageManual
+	case "pull_request", "pull_request_target", "merge_group":
+		return RunStagePR
+	}
+	kind, _, ok := classifyBranchFilterRow(branch, prNum)
+	if ok {
+		switch kind {
+		case branchKindPR:
+			return RunStagePR
+		case branchKindMainMaster:
+			return RunStageMain
+		case branchKindRelease:
+			return RunStageRelease
+		}
+	}
+	return RunStageOther
+}

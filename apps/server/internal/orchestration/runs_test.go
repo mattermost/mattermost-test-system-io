@@ -145,3 +145,24 @@ func TestSentinelErrorsAreSelfIdentical(t *testing.T) {
 		t.Fatal("ErrPartialReport not identical to itself")
 	}
 }
+
+func TestBeginRunOptions_RunContextFields(t *testing.T) {
+	t.Parallel()
+	opts := BeginRunOptions{
+		TotalReportsExpected: 2,
+		RunContext: RunContext{
+			Stage:         "nightly",
+			ExplicitStage: true,
+			EventName:     "schedule",
+			BaseRef:       "main",
+			HeadRef:       "feat/ctx",
+			Platform:      "linux",
+			ServerVersion: "10.5.0",
+			AppVersion:    "2.25.0",
+			Edition:       "enterprise",
+		},
+	}
+	if opts.TotalReportsExpected != 2 || opts.RunContext.Stage != "nightly" || !opts.RunContext.ExplicitStage || opts.RunContext.Edition != "enterprise" {
+		t.Fatalf("unexpected RunContext: %+v", opts.RunContext)
+	}
+}

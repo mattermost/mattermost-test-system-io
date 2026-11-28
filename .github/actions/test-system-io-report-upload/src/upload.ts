@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
 import { fetchWithAuthRetry, getBearer } from "./auth";
+import type { RunContext } from "./context";
 import type {
   CompositeIdentity,
   ReportsBeginBody,
@@ -26,6 +27,7 @@ export interface UploadConfig {
   framework: string;
   totalReportsExpected: number;
   compositeIdentity: CompositeIdentity;
+  runContext?: RunContext;
 }
 
 /** Soft caps so one gateway timeout does not redo a huge multipart body. */
@@ -49,6 +51,7 @@ export async function uploadShard(
     cfg.compositeIdentity,
     cfg.framework,
     cfg.totalReportsExpected,
+    cfg.runContext,
   );
 
   const beginRes = await postJSON<ReportsBeginResponseBody>(
@@ -228,6 +231,7 @@ function identityForReports(
   c: CompositeIdentity,
   framework: string,
   totalReportsExpected: number,
+  runContext?: RunContext,
 ): ReportsBeginBody {
   const body: ReportsBeginBody = {
     repository: c.repository,
@@ -238,6 +242,7 @@ function identityForReports(
     name: c.name,
     branch: c.branch,
     total_reports_expected: totalReportsExpected,
+    ...runContext,
   };
   if (c.run_group) body.run_group = c.run_group;
   if (c.gh_pr_number != null) body.gh_pr_number = c.gh_pr_number;

@@ -1,9 +1,12 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,12 +43,29 @@ type Totals struct {
 // basename match; successful matches update report_screenshots.case_id so
 // the per-spec screenshot lookup in SuiteSpecs is cheap.
 //
-// The write is transactional so partial failures don't leave orphan rows.
+// Test identities and failure signatures are resolved and committed first in a
+// short dedicated READ COMMITTED transaction so shared `tests` row locks are
+// released before inserting suites, test_cases, and screenshot links.
 func Consolidate(
 	ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID,
 	suites []ExtractedSuite, reportStart, reportEnd *time.Time,
 ) (Totals, error) {
 	screenshotsByBasename, err := loadScreenshotsByBasename(ctx, pool, reportID)
+	if err != nil {
+		return Totals{}, err
+	}
+	meta, err := loadReportMeta(ctx, pool, reportID)
+	if err != nil {
+		return Totals{}, err
+	}
+
+	caseInputs, suiteOffsets := buildCaseIdentityInputs(suites)
+	// Defer first_seen_report_group_id until the main transaction commits
+	// test_cases so a Phase-2 failure never leaves attribution pointing to a
+	// report group with zero linked cases.
+	identityMeta := meta
+	identityMeta.ReportGroupID = uuid.Nil
+	identities, err := resolveCaseIdentitiesTx(ctx, pool, identityMeta, caseInputs)
 	if err != nil {
 		return Totals{}, err
 	}
@@ -87,47 +107,19 @@ func Consolidate(
 			                    start_time, ordinal)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 			RETURNING id
-		`, reportID, s.Title, s.FilePath, suiteDuration,
+		`, reportID, sanitizeUTF8(s.Title), sanitizeUTF8Ptr(s.FilePath), suiteDuration,
 			suiteUnique, suitePassed, suiteFailed, suiteSkipped, suiteFlaky,
 			s.StartTime, i).Scan(&suiteID)
 		if err != nil {
 			return Totals{}, fmt.Errorf("insert suite %q: %w", s.Title, err)
 		}
 
-		for _, c := range s.Cases {
-			// Resolve each attachment path to an uploaded screenshot (if any)
-			// before serializing. This populates s3_key/missing on the
-			// attachment JSON and queues the report_screenshots→test_case
-			// link that happens after the INSERT.
-			resolved := make([]ExtractedAttachment, len(c.Attachments))
-			var perCaseLinks []uuid.UUID
-			for i, a := range c.Attachments {
-				resolved[i] = a
-				if sh, ok := screenshotsByBasename[basename(a.Path)]; ok {
-					k := sh.s3Key
-					resolved[i].S3Key = &k
-					resolved[i].Missing = false
-					perCaseLinks = append(perCaseLinks, sh.id)
-				} else {
-					resolved[i].Missing = true
-				}
-			}
-			attachmentsJSON := encodeAttachments(resolved)
-			tagsJSON := encodeJSONArray(c.Tags)
-			annotationsJSON := encodeJSONArray(c.Annotations)
-			var caseID uuid.UUID
-			if err := tx.QueryRow(ctx, `
-				INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, duration_ms,
-				                        error_message, error_stack, project, tags, annotations, attachments, ordinal)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-				RETURNING id
-			`, suiteID, c.Title, c.FullTitle, c.Status, c.RetryCount, c.DurationMs,
-				c.ErrorMessage, c.ErrorStack, c.Project, tagsJSON, annotationsJSON, attachmentsJSON, c.Sequence).Scan(&caseID); err != nil {
-				return Totals{}, fmt.Errorf("insert test_case %q: %w", c.Title, err)
-			}
-			for _, sid := range perCaseLinks {
-				linked[sid] = caseID
-			}
+		offset := suiteOffsets[i]
+		if err := insertSuiteCasesTx(
+			ctx, tx, suiteID, s.Cases, identities[offset:offset+len(s.Cases)],
+			screenshotsByBasename, linked,
+		); err != nil {
+			return Totals{}, err
 		}
 
 		totals.Suites++
@@ -175,6 +167,10 @@ func Consolidate(
 			caseID, screenshotID); err != nil {
 			return Totals{}, fmt.Errorf("link screenshot %s: %w", screenshotID, err)
 		}
+	}
+
+	if err := attributeFailureSignaturesTx(ctx, tx, meta.ReportGroupID, identities); err != nil {
+		return Totals{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -244,17 +240,19 @@ func countStatuses(cases []ExtractedCase) (passed, failed, skipped, flaky, uniqu
 	byTitle := make(map[string]*group, len(cases))
 	order := make([]string, 0, len(cases))
 	for _, c := range cases {
-		if strings.TrimSpace(c.FullTitle) == "" || c.Status == "" {
+		fullTitle := sanitizeUTF8(c.FullTitle)
+		status := sanitizeUTF8(c.Status)
+		if strings.TrimSpace(fullTitle) == "" || status == "" {
 			continue
 		}
-		g, ok := byTitle[c.FullTitle]
+		g, ok := byTitle[fullTitle]
 		if !ok {
 			g = &group{}
-			byTitle[c.FullTitle] = g
-			order = append(order, c.FullTitle)
+			byTitle[fullTitle] = g
+			order = append(order, fullTitle)
 		}
-		g.statuses = append(g.statuses, c.Status)
-		if c.Outcome == StatusFlaky {
+		g.statuses = append(g.statuses, status)
+		if sanitizeUTF8(c.Outcome) == StatusFlaky {
 			g.frameworkFlaky = true
 		}
 	}
@@ -288,21 +286,91 @@ func encodeAttachments(atts []ExtractedAttachment) any {
 	out := make([]map[string]any, 0, len(atts))
 	for _, a := range atts {
 		m := map[string]any{
-			"path":     a.Path,
+			"path":     sanitizeUTF8(a.Path),
 			"retry":    a.Retry,
 			"sequence": a.Sequence,
 			"missing":  a.Missing,
 		}
 		if a.ContentType != nil {
-			m["content_type"] = *a.ContentType
+			m["content_type"] = sanitizeUTF8(*a.ContentType)
 		}
 		if a.S3Key != nil {
-			m["s3_key"] = *a.S3Key
+			m["s3_key"] = sanitizeUTF8(*a.S3Key)
 		}
 		out = append(out, m)
 	}
 	b, _ := json.Marshal(out)
 	return b
+}
+
+func encodeTags(tags []string) []byte {
+	if len(tags) == 0 {
+		return []byte("[]")
+	}
+	clean := make([]string, len(tags))
+	for i, t := range tags {
+		clean[i] = sanitizeUTF8(t)
+	}
+	return encodeJSONArray(clean)
+}
+
+func encodeAnnotations(anns []json.RawMessage) []byte {
+	if len(anns) == 0 {
+		return []byte("[]")
+	}
+	out := make([]any, 0, len(anns))
+	for _, raw := range anns {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			return []byte("[]")
+		}
+		var trailing any
+		if err := dec.Decode(&trailing); err != io.EOF {
+			return []byte("[]")
+		}
+		if _, ok := canonicalJSONValue(v); !ok {
+			continue // a number outside PostgreSQL numeric range would abort the jsonb insert
+		}
+		out = append(out, sanitizeJSONValue(v))
+	}
+	return encodeJSONArray(out)
+}
+
+func sanitizeJSONValue(v any) any {
+	switch x := v.(type) {
+	case string:
+		return sanitizeUTF8(x)
+	case []any:
+		for i, elem := range x {
+			x[i] = sanitizeJSONValue(elem)
+		}
+		return x
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		var dirty []string
+		for k, val := range x {
+			if sanitizeUTF8(k) == k {
+				out[k] = sanitizeJSONValue(val)
+			} else {
+				dirty = append(dirty, k)
+			}
+		}
+		if len(dirty) > 0 {
+			// Preserve already-clean keys and resolve dirty-key collisions deterministically.
+			slices.Sort(dirty)
+			for _, k := range dirty {
+				cleanK := sanitizeUTF8(k)
+				if _, exists := out[cleanK]; !exists {
+					out[cleanK] = sanitizeJSONValue(x[k])
+				}
+			}
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // encodeJSONArray returns a non-null JSON array blob for NOT NULL jsonb columns.
@@ -315,4 +383,182 @@ func encodeJSONArray[T any](items []T) []byte {
 		return []byte("[]")
 	}
 	return b
+}
+
+// resolveCaseIdentitiesTx commits test and signature upserts in a short
+// dedicated READ COMMITTED transaction so shared `tests` row locks are not
+// held across suite, test_case, and screenshot writes.
+func resolveCaseIdentitiesTx(
+	ctx context.Context, pool *pgxpool.Pool, meta IdentityMeta, caseInputs []CaseIdentityInput,
+) ([]TestIdentity, error) {
+	if len(caseInputs) == 0 {
+		return nil, nil
+	}
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return nil, fmt.Errorf("begin identity tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	identities, err := ResolveCaseIdentities(ctx, tx, meta, caseInputs)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit identity tx: %w", err)
+	}
+	return identities, nil
+}
+
+func loadReportMeta(ctx context.Context, pool *pgxpool.Pool, reportID uuid.UUID) (IdentityMeta, error) {
+	var meta IdentityMeta
+	err := pool.QueryRow(ctx, `
+		SELECT r.report_group_id, g.repository, g.framework, r.created_at
+		FROM reports r
+		JOIN report_groups g ON g.id = r.report_group_id
+		WHERE r.id = $1
+	`, reportID).Scan(&meta.ReportGroupID, &meta.Repository, &meta.Framework, &meta.SeenAt)
+	if err != nil {
+		return IdentityMeta{}, fmt.Errorf("fetch report metadata: %w", err)
+	}
+	return meta, nil
+}
+
+func buildCaseIdentityInputs(suites []ExtractedSuite) ([]CaseIdentityInput, []int) {
+	total := 0
+	for _, s := range suites {
+		total += len(s.Cases)
+	}
+	inputs := make([]CaseIdentityInput, 0, total)
+	offsets := make([]int, len(suites))
+	for si, s := range suites {
+		offsets[si] = len(inputs)
+		file := derefString(s.FilePath)
+		for _, c := range s.Cases {
+			inputs = append(inputs, CaseIdentityInput{
+				File:         file,
+				Title:        c.Title,
+				FullTitle:    c.FullTitle,
+				Tags:         c.Tags,
+				Status:       sanitizeUTF8(c.Status),
+				ErrorMessage: derefString(c.ErrorMessage),
+				ErrorStack:   derefString(c.ErrorStack),
+				StartTime:    c.StartTime,
+			})
+		}
+	}
+	return inputs, offsets
+}
+
+func insertSuiteCasesTx(
+	ctx context.Context, tx pgx.Tx, suiteID uuid.UUID, cases []ExtractedCase,
+	identities []TestIdentity, screenshotsByBasename map[string]stagedScreenshot,
+	linked map[uuid.UUID]uuid.UUID,
+) error {
+	if len(cases) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	perCaseLinks := make([][]uuid.UUID, len(cases))
+	for ci, c := range cases {
+		// Resolve each attachment path to an uploaded screenshot before serializing
+		// and queue the report_screenshots→test_case link after the batch INSERT.
+		resolved := make([]ExtractedAttachment, len(c.Attachments))
+		for ai, a := range c.Attachments {
+			resolved[ai] = a
+			cleanPath := sanitizeUTF8(a.Path)
+			if sh, ok := screenshotsByBasename[basename(cleanPath)]; ok {
+				k := sh.s3Key
+				resolved[ai].S3Key = &k
+				resolved[ai].Missing = false
+				perCaseLinks[ci] = append(perCaseLinks[ci], sh.id)
+			} else {
+				resolved[ai].Missing = true
+			}
+		}
+		batch.Queue(`
+			INSERT INTO test_cases (
+				suite_id, title, full_title, status, retry_count, duration_ms,
+				error_message, error_stack, project, tags, annotations, attachments,
+				ordinal, test_id, signature_id
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+			RETURNING id
+		`, suiteID, sanitizeUTF8(c.Title), sanitizeUTF8(c.FullTitle), sanitizeUTF8(c.Status), c.RetryCount, c.DurationMs,
+			sanitizeUTF8Ptr(c.ErrorMessage), sanitizeUTF8Ptr(c.ErrorStack), sanitizeUTF8Ptr(c.Project),
+			encodeTags(c.Tags), encodeAnnotations(c.Annotations), encodeAttachments(resolved),
+			c.Sequence, identities[ci].TestID, identities[ci].SignatureID)
+	}
+	br := tx.SendBatch(ctx, batch)
+	for ci, c := range cases {
+		var caseID uuid.UUID
+		if err := br.QueryRow().Scan(&caseID); err != nil {
+			_ = br.Close()
+			return fmt.Errorf("insert test_case %q: %w", c.Title, err)
+		}
+		for _, sid := range perCaseLinks[ci] {
+			linked[sid] = caseID
+		}
+	}
+	if err := br.Close(); err != nil {
+		return fmt.Errorf("close test_cases batch: %w", err)
+	}
+	return nil
+}
+
+func attributeFailureSignaturesTx(
+	ctx context.Context, tx pgx.Tx, reportGroupID uuid.UUID, identities []TestIdentity,
+) error {
+	if reportGroupID == uuid.Nil || len(identities) == 0 {
+		return nil
+	}
+	seen := make(map[uuid.UUID]struct{})
+	sigIDs := make([]uuid.UUID, 0)
+	for _, id := range identities {
+		if id.SignatureID == nil || *id.SignatureID == uuid.Nil {
+			continue
+		}
+		if _, ok := seen[*id.SignatureID]; ok {
+			continue
+		}
+		seen[*id.SignatureID] = struct{}{}
+		sigIDs = append(sigIDs, *id.SignatureID)
+	}
+	if len(sigIDs) == 0 {
+		return nil
+	}
+	// Lock in id order so concurrent consolidations cannot deadlock. NO KEY
+	// UPDATE, not UPDATE: it must not conflict with the FK KEY SHARE locks our
+	// own and sibling shards' test_cases inserts already hold on these rows.
+	rows, err := tx.Query(ctx, `
+		SELECT id FROM failure_signatures
+		WHERE id = ANY($1::uuid[]) AND first_seen_report_group_id IS NULL
+		ORDER BY id
+		FOR NO KEY UPDATE
+	`, sigIDs)
+	if err != nil {
+		return fmt.Errorf("lock failure_signatures: %w", err)
+	}
+	lockedIDs, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return fmt.Errorf("lock failure_signatures: %w", err)
+	}
+	if len(lockedIDs) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE failure_signatures
+		SET first_seen_report_group_id = $1
+		WHERE id = ANY($2::uuid[]) AND first_seen_report_group_id IS NULL
+	`, reportGroupID, lockedIDs); err != nil {
+		return fmt.Errorf("attribute failure_signatures: %w", err)
+	}
+	return nil
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }

@@ -1,7 +1,9 @@
 package ingest
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"time"
 )
 
@@ -196,15 +198,30 @@ func mergeAnnotations(groups ...[]json.RawMessage) []json.RawMessage {
 	seen := map[string]struct{}{}
 	for _, g := range groups {
 		for _, raw := range g {
+			dec := json.NewDecoder(bytes.NewReader(raw))
+			dec.UseNumber()
 			var v map[string]any
-			if err := json.Unmarshal(raw, &v); err != nil || v == nil {
+			if err := dec.Decode(&v); err != nil || v == nil {
+				continue
+			}
+			var trailing any
+			if err := dec.Decode(&trailing); err != io.EOF {
+				continue
+			}
+			// Dedup on canonical numbers ({"id":1} == {"id":1.0}) but keep the first spelling.
+			cv, ok := canonicalJSONValue(v)
+			if !ok {
+				continue
+			}
+			key, err := json.Marshal(cv)
+			if err != nil {
 				continue
 			}
 			canon, err := json.Marshal(v)
 			if err != nil {
 				continue
 			}
-			k := string(canon)
+			k := string(key)
 			if _, ok := seen[k]; ok {
 				continue
 			}

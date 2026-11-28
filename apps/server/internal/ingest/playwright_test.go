@@ -219,17 +219,38 @@ func TestMergeAnnotations_SkipsNonObjects(t *testing.T) {
 			json.RawMessage(`true`),
 			json.RawMessage(`["arr"]`),
 			json.RawMessage(`{invalid`),
-			json.RawMessage(`{"type":"issue","description":"SEC-1"}`),
+			json.RawMessage(`{"type":"trailing"}{"extra":1}`),
+			json.RawMessage(`{"type":"issue","description":"SEC-1","id":9007199254740993}`),
 		},
 		[]json.RawMessage{
-			json.RawMessage(`{"description":"SEC-1","type":"issue"}`),
+			json.RawMessage(`{"description":"SEC-1","id":9007199254740993,"type":"issue"}`),
 			json.RawMessage(`{"type":"slow"}`),
 		},
 	)
 	want := []string{
-		`{"description":"SEC-1","type":"issue"}`,
+		`{"description":"SEC-1","id":9007199254740993,"type":"issue"}`,
 		`{"type":"slow"}`,
 	}
+	if len(got) != len(want) {
+		t.Fatalf("len(got) = %d (%s), want %d (%v)", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Errorf("got[%d] = %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func TestMergeAnnotations_CanonicalNumberDedupAndRange(t *testing.T) {
+	got := mergeAnnotations([]json.RawMessage{
+		json.RawMessage(`{"id":1}`),
+		json.RawMessage(`{"id":1.0}`),
+		json.RawMessage(`{"id":1e0}`),
+		json.RawMessage(`{"id":9007199254740993}`),
+		json.RawMessage(`{"id":9007199254740992}`),
+		json.RawMessage(`{"id":[{"n":1e200000}]}`),
+	})
+	want := []string{`{"id":1}`, `{"id":9007199254740993}`, `{"id":9007199254740992}`}
 	if len(got) != len(want) {
 		t.Fatalf("len(got) = %d (%s), want %d (%v)", len(got), got, len(want), want)
 	}

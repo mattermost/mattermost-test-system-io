@@ -91,7 +91,8 @@ type registerBody struct {
 // to surface workflow misconfigurations rather than silently keeping the
 // first-wins value.
 func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
-	if _, err := authapi.SubjectFromContext(r.Context()); err != nil {
+	sub, err := authapi.SubjectFromContext(r.Context())
+	if err != nil {
 		api.WriteError(w, r, api.ErrUnauthorized)
 		return
 	}
@@ -100,7 +101,12 @@ func (h *Handlers) Begin(w http.ResponseWriter, r *http.Request) {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
 		return
 	}
+	body.Repository = strings.TrimSpace(body.Repository)
 	if err := validateGroupKey(body.Repository, body.Commit, body.GHRunID, body.Framework, body.Name, body.Branch); err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, sub, body.Repository); err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
@@ -154,7 +160,12 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		api.WriteErrorCode(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
 		return
 	}
+	body.Repository = strings.TrimSpace(body.Repository)
 	if err := validateGroupKey(body.Repository, body.Commit, body.GHRunID, body.Framework, body.Name, body.Branch); err != nil {
+		api.WriteError(w, r, err)
+		return
+	}
+	if err := authapi.CheckRepoAccess(h.AuthzMode, h.Logger, sub, body.Repository); err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
@@ -265,7 +276,8 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 // part of the multipart body to S3 and records a report_json_files row per
 // accepted file.
 func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
-	if _, err := authapi.SubjectFromContext(r.Context()); err != nil {
+	sub, err := authapi.SubjectFromContext(r.Context())
+	if err != nil {
 		api.WriteError(w, r, api.ErrUnauthorized)
 		return
 	}
@@ -279,7 +291,11 @@ func (h *Handlers) UploadJSON(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrBadRequest)
 		return
 	}
-	if err := requireReportInGroup(r.Context(), h.Pool, groupID, reportID); err != nil {
+	repository, err := requireReportInGroup(r.Context(), h.Pool, groupID, reportID)
+	if err == nil {
+		err = authapi.CheckRepoAccess(h.AuthzMode, h.Logger, sub, repository)
+	}
+	if err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
@@ -481,7 +497,8 @@ func (h *Handlers) resultsNotRead(groupID, reportID uuid.UUID, reason string) {
 
 // UploadScreenshots serves POST /api/v1/reports/upload/{rid}/{uid}/screenshots.
 func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
-	if _, err := authapi.SubjectFromContext(r.Context()); err != nil {
+	sub, err := authapi.SubjectFromContext(r.Context())
+	if err != nil {
 		api.WriteError(w, r, api.ErrUnauthorized)
 		return
 	}
@@ -495,7 +512,11 @@ func (h *Handlers) UploadScreenshots(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, r, api.ErrBadRequest)
 		return
 	}
-	if err := requireReportInGroup(r.Context(), h.Pool, groupID, reportID); err != nil {
+	repository, err := requireReportInGroup(r.Context(), h.Pool, groupID, reportID)
+	if err == nil {
+		err = authapi.CheckRepoAccess(h.AuthzMode, h.Logger, sub, repository)
+	}
+	if err != nil {
 		api.WriteError(w, r, err)
 		return
 	}
@@ -757,18 +778,17 @@ func actorFromContext(ctx context.Context) string {
 	return ""
 }
 
-func requireReportInGroup(ctx context.Context, pool *pgxpool.Pool, groupID, reportID uuid.UUID) error {
-	var exists bool
-	err := pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM reports WHERE id=$1 AND report_group_id=$2)`,
-		reportID, groupID).Scan(&exists)
-	if err != nil {
-		return err
+func requireReportInGroup(ctx context.Context, pool *pgxpool.Pool, groupID, reportID uuid.UUID) (string, error) {
+	var repository string
+	err := pool.QueryRow(ctx, `
+		SELECT g.repository FROM reports r
+		JOIN report_groups g ON g.id = r.report_group_id
+		WHERE r.id=$1 AND r.report_group_id=$2`,
+		reportID, groupID).Scan(&repository)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", api.ErrNotFound
 	}
-	if !exists {
-		return api.ErrNotFound
-	}
-	return nil
+	return repository, err
 }
 
 // streamJSONFiles reads `files` parts from the multipart body, writes each to

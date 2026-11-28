@@ -22,6 +22,9 @@ type Subject struct {
 	OIDCSubject string
 	OIDCClaims  *authoidc.Claims
 	Role        policy.Role
+	// Repository is the repository an OIDC token was minted for; empty for
+	// API keys and human sessions.
+	Repository string
 }
 
 // ErrNotAuthenticated indicates neither an X-API-Key, a Bearer token, nor a
@@ -100,6 +103,7 @@ func resolve(
 			OIDCSubject: claims.Subject,
 			OIDCClaims:  &claims,
 			Role:        role,
+			Repository:  claims.Repository,
 		}, true
 	}
 
@@ -107,7 +111,7 @@ func resolve(
 	if c, err := r.Cookie(session.CookieName); err == nil && sessions != nil {
 		sess, err := sessions.Verify(r.Context(), c.Value)
 		if err == nil {
-			return Subject{Kind: "session", UserID: sess.UserID, Role: policy.RoleViewer}, true
+			return Subject{Kind: "session", UserID: sess.UserID, Role: policy.Role(sess.UserRole)}, true
 		}
 	}
 

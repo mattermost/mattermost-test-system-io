@@ -38,6 +38,8 @@ type Session struct {
 	IssuedAt   time.Time
 	ExpiresAt  time.Time
 	LastSeenAt time.Time
+	// UserRole is the owning user's role (users.role), set by Verify only.
+	UserRole string
 }
 
 // Manager issues and verifies sessions.
@@ -74,14 +76,15 @@ func (m *Manager) Issue(ctx context.Context, userID uuid.UUID, ip, userAgent str
 func (m *Manager) Verify(ctx context.Context, token string) (Session, error) {
 	hash := hashToken(token)
 	const q = `
-		SELECT id, user_id, issued_at, expires_at, last_seen_at
-		FROM sessions
-		WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
+		SELECT s.id, s.user_id, s.issued_at, s.expires_at, s.last_seen_at, u.role
+		FROM sessions s
+		JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
 		LIMIT 1
 	`
 	var s Session
 	err := m.Pool.QueryRow(ctx, q, hash).
-		Scan(&s.ID, &s.UserID, &s.IssuedAt, &s.ExpiresAt, &s.LastSeenAt)
+		Scan(&s.ID, &s.UserID, &s.IssuedAt, &s.ExpiresAt, &s.LastSeenAt, &s.UserRole)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}

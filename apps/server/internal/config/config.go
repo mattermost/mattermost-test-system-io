@@ -67,6 +67,9 @@ type Config struct {
 	// HTTP admin endpoint instead. Example: "mattermost/*=uploader".
 	BootstrapOIDCPolicies string `env:"TSIO_BOOTSTRAP_OIDC_POLICIES"`
 
+	// Route-role and token-repository checks: off | log-only | enforce.
+	AuthzMode string `env:"TSIO_AUTHZ_MODE" envDefault:"log-only"`
+
 	// Path the OpenAPI request validator loads at startup. Relative paths are
 	// resolved against the process cwd. Production images set this to an
 	// absolute path so the file is discoverable regardless of WORKDIR.
@@ -180,6 +183,11 @@ func (c Config) validate() error {
 	case "json", "text":
 	default:
 		return fmt.Errorf("invalid TSIO_LOG_FORMAT %q (want json|text)", c.LogFormat)
+	}
+	switch c.AuthzMode {
+	case "off", "log-only", "enforce":
+	default:
+		return fmt.Errorf("invalid TSIO_AUTHZ_MODE %q (want off|log-only|enforce)", c.AuthzMode)
 	}
 	if c.MaxUploadBytes <= 0 {
 		return errors.New("TSIO_MAX_UPLOAD_BYTES must be > 0")

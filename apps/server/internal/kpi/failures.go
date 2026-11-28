@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	failureHistoryMaxDays = 365
-	maxSignatureMergeHops = 32
+	failureHistoryMaxDays         = 365
+	maxSignatureMergeHops         = 32
+	maxFailureDetailAffectedTests = 100
 )
 
 // canonicalRootExprSQL resolves the canonical signature UUID from a terminal sig_up row:
@@ -48,6 +49,16 @@ func (s *Store) QueryFailuresFiltered(ctx context.Context, f FilterParams, activ
 	if err := validatePaginationParams(f); err != nil {
 		return FailuresResponse{}, err
 	}
+	extra := "all"
+	if activeOnly {
+		extra = "active"
+	}
+	return cachedQuery(ctx, s, filterCacheKey("failures", f, extra), func(ctx context.Context) (FailuresResponse, error) {
+		return s.queryFailuresFilteredUncached(ctx, f, activeOnly)
+	})
+}
+
+func (s *Store) queryFailuresFilteredUncached(ctx context.Context, f FilterParams, activeOnly bool) (FailuresResponse, error) {
 
 	cov, err := s.queryLaneCoverage(ctx, f, "", true, nil)
 	if err != nil {
@@ -111,6 +122,12 @@ func (s *Store) QueryFailureDetail(ctx context.Context, sigID uuid.UUID, f Filte
 	if s == nil || s.Pool == nil {
 		return FailureDetailResponse{}, errors.New("kpi store pool is nil")
 	}
+	return cachedQuery(ctx, s, filterCacheKey("faildetail", f, sigID.String()), func(ctx context.Context) (FailureDetailResponse, error) {
+		return s.queryFailureDetailUncached(ctx, sigID, f)
+	})
+}
+
+func (s *Store) queryFailureDetailUncached(ctx context.Context, sigID uuid.UUID, f FilterParams) (FailureDetailResponse, error) {
 
 	fam, found, err := s.loadSignatureFamilyByID(ctx, sigID)
 	if err != nil {
@@ -586,7 +603,8 @@ func (s *Store) computeRecurringFailures(ctx context.Context, f FilterParams) ([
 }
 
 func failureHistoryStart(f FilterParams) time.Time {
-	historyFrom := f.CurToDate.AddDate(0, 0, -failureHistoryMaxDays)
+	historyDays := max(f.WindowDays+30, 90)
+	historyFrom := f.CurToDate.AddDate(0, 0, -historyDays)
 	if f.CurFromDate.Before(historyFrom) {
 		return f.CurFromDate
 	}
@@ -1230,11 +1248,27 @@ func (s *Store) loadAffectedTestsMetadata(
 	if len(testIDs) == 0 {
 		return []FailureAffectedTest{}, nil
 	}
+	selected := testIDs
+	if len(selected) > maxFailureDetailAffectedTests {
+		selected = append([]uuid.UUID(nil), testIDs...)
+		sort.Slice(selected, func(i, j int) bool {
+			gi, gj := groupCounts[selected[i]], groupCounts[selected[j]]
+			if gi != gj {
+				return gi > gj
+			}
+			ri, rj := runCounts[selected[i]], runCounts[selected[j]]
+			if ri != rj {
+				return ri > rj
+			}
+			return selected[i].String() < selected[j].String()
+		})
+		selected = selected[:maxFailureDetailAffectedTests]
+	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT id, test_key, zephyr_key, file, full_title, repository, framework
 		  FROM tests
 		 WHERE id = ANY($1)
-	`, testIDs)
+	`, selected)
 	if err != nil {
 		return nil, fmt.Errorf("load affected tests metadata: %w", err)
 	}

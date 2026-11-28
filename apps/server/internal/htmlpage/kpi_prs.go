@@ -146,8 +146,7 @@ func BuildKPIPRsPage(
 			platform = *lane.Platform
 		}
 		runHref := strings.TrimSpace(lane.RunURL)
-		isSameOrigin := strings.HasPrefix(runHref, "/") && !strings.HasPrefix(runHref, "//") && !strings.HasPrefix(runHref, "/\\")
-		if runHref == "" || (!isSameOrigin && !strings.HasPrefix(runHref, "https://") && !strings.HasPrefix(runHref, "http://")) {
+		if !isSafeLocalReportHref(runHref) {
 			runHref = "/reports"
 		}
 

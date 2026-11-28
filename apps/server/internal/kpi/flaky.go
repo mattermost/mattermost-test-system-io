@@ -20,6 +20,12 @@ func (s *Store) QueryFlaky(ctx context.Context, f FilterParams) (FlakyResponse, 
 	if err := validatePaginationParams(f); err != nil {
 		return FlakyResponse{}, err
 	}
+	return cachedQuery(ctx, s, filterCacheKey("flaky", f, ""), func(ctx context.Context) (FlakyResponse, error) {
+		return s.queryFlakyUncached(ctx, f)
+	})
+}
+
+func (s *Store) queryFlakyUncached(ctx context.Context, f FilterParams) (FlakyResponse, error) {
 
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
@@ -291,6 +297,39 @@ func (s *Store) queryFlakyTestRows(ctx context.Context, q dbQuerier, f FilterPar
 			 GROUP BY ca.test_id, ca.project, ca.platform
 			HAVING COUNT(*) FILTER (WHERE ca.is_mixed) >= 2
 		),
+		scored AS (
+			SELECT
+				ta.test_id,
+				t.test_key,
+				t.zephyr_key,
+				t.file,
+				t.full_title,
+				ta.repository,
+				NULLIF(ta.app, '') AS app,
+				t.framework,
+				ta.project,
+				ta.platform,
+				ta.flaky_commit_count,
+				ta.total_commit_count,
+				ta.total_runs,
+				CASE
+					WHEN ta.total_commit_count > 0
+					THEN (ta.flaky_commit_count::double precision * 100.0) / ta.total_commit_count::double precision
+					ELSE 0.0
+				END AS flake_rate,
+				ta.last_flaky_at,
+				ta.last_commit_sha
+			  FROM test_agg ta
+			  JOIN tests t ON t.id = ta.test_id
+		),
+		paged AS (
+			SELECT
+				ROW_NUMBER() OVER (ORDER BY `+orderBy+`) AS rn,
+				s.*
+			  FROM scored s
+			 ORDER BY `+orderBy+`
+			 LIMIT `+limitPH+` OFFSET `+offsetPH+`
+		),
 		test_lanes AS (
 			SELECT
 				ca.test_id,
@@ -298,37 +337,33 @@ func (s *Store) queryFlakyTestRows(ctx context.Context, q dbQuerier, f FilterPar
 				ca.platform,
 				COALESCE(ARRAY_AGG(DISTINCT l.lane ORDER BY l.lane), '{}'::text[]) AS lanes
 			  FROM commit_agg ca
+			  JOIN paged p
+			    ON p.test_id = ca.test_id AND p.project = ca.project AND p.platform = ca.platform
 			 CROSS JOIN LATERAL UNNEST(ca.commit_lanes) AS l(lane)
 			 GROUP BY ca.test_id, ca.project, ca.platform
 		)
 		SELECT
-			ta.test_id::text,
-			t.test_key,
-			t.zephyr_key,
-			t.file,
-			t.full_title,
-			ta.repository,
-			NULLIF(ta.app, ''),
-			t.framework,
-			NULLIF(ta.project, ''),
-			NULLIF(ta.platform, ''),
-			ta.flaky_commit_count,
-			ta.total_commit_count,
-			ta.total_runs,
-			CASE
-				WHEN ta.total_commit_count > 0
-				THEN (ta.flaky_commit_count::double precision * 100.0) / ta.total_commit_count::double precision
-				ELSE 0.0
-			END AS flake_rate,
-			ta.last_flaky_at,
-			ta.last_commit_sha,
+			p.test_id::text,
+			p.test_key,
+			p.zephyr_key,
+			p.file,
+			p.full_title,
+			p.repository,
+			p.app,
+			p.framework,
+			NULLIF(p.project, ''),
+			NULLIF(p.platform, ''),
+			p.flaky_commit_count,
+			p.total_commit_count,
+			p.total_runs,
+			p.flake_rate,
+			p.last_flaky_at,
+			p.last_commit_sha,
 			COALESCE(tl.lanes, '{}'::text[])
-		  FROM test_agg ta
-		  JOIN tests t ON t.id = ta.test_id
+		  FROM paged p
 		  LEFT JOIN test_lanes tl
-		    ON tl.test_id = ta.test_id AND tl.project = ta.project AND tl.platform = ta.platform
-		 ORDER BY `+orderBy+`
-		 LIMIT `+limitPH+` OFFSET `+offsetPH,
+		    ON tl.test_id = p.test_id AND tl.project = p.project AND tl.platform = p.platform
+		 ORDER BY p.rn ASC`,
 		b.args...,
 	)
 	if err != nil {
@@ -363,14 +398,14 @@ func safePageOffset(page, limit int) (int, bool) {
 func flakyOrderByClause(sortBy string) string {
 	switch sortBy {
 	case SortFlakeRateDesc:
-		return "flake_rate DESC, ta.flaky_commit_count DESC, ta.total_runs DESC, ta.test_id ASC, ta.platform ASC, ta.project ASC"
+		return "flake_rate DESC, flaky_commit_count DESC, total_runs DESC, test_id ASC, platform ASC, project ASC"
 	case SortTotalRunsDesc:
-		return "ta.total_runs DESC, ta.flaky_commit_count DESC, ta.test_id ASC, ta.platform ASC, ta.project ASC"
+		return "total_runs DESC, flaky_commit_count DESC, test_id ASC, platform ASC, project ASC"
 	case SortLastFlakyDesc:
-		return "ta.last_flaky_at DESC, ta.flaky_commit_count DESC, ta.test_id ASC, ta.platform ASC, ta.project ASC"
+		return "last_flaky_at DESC, flaky_commit_count DESC, test_id ASC, platform ASC, project ASC"
 	case SortNameAsc:
-		return "t.full_title ASC, ta.platform ASC, ta.project ASC, ta.test_id ASC"
+		return "full_title ASC, platform ASC, project ASC, test_id ASC"
 	default: // SortFlakyCommitsDesc
-		return "ta.flaky_commit_count DESC, flake_rate DESC, ta.total_runs DESC, ta.test_id ASC, ta.platform ASC, ta.project ASC"
+		return "flaky_commit_count DESC, flake_rate DESC, total_runs DESC, test_id ASC, platform ASC, project ASC"
 	}
 }

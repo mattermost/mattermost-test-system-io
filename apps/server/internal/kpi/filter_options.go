@@ -23,6 +23,12 @@ func (s *Store) LoadFilterOptions(ctx context.Context, f FilterParams) (FilterOp
 	if s == nil || s.Pool == nil {
 		return FilterOptions{}, errors.New("kpi store pool is nil")
 	}
+	return cachedQuery(ctx, s, filterCacheKey("filteropts", f, ""), func(ctx context.Context) (FilterOptions, error) {
+		return s.loadFilterOptionsUncached(ctx, f)
+	})
+}
+
+func (s *Store) loadFilterOptionsUncached(ctx context.Context, f FilterParams) (FilterOptions, error) {
 
 	opts := FilterOptions{
 		Apps:      []string{},

@@ -19,6 +19,9 @@ var ErrValidation = errors.New("invalid KPI query parameter")
 // ErrNotFound indicates a requested KPI resource (such as a signature ID) does not exist.
 var ErrNotFound = errors.New("kpi resource not found")
 
+// ErrOverloaded indicates the KPI read concurrency bulkhead rejected or timed out the request.
+var ErrOverloaded = errors.New("kpi store overloaded")
+
 const (
 	maxAppLen      = 64
 	maxRepoLen     = 256
@@ -26,7 +29,7 @@ const (
 	maxPlatformLen = 64
 	defaultLimit   = 50
 	maxLimit       = 100
-	maxPage        = 1_000_000
+	maxPage        = 1000
 )
 
 // ParseSummaryParams parses and validates query parameters for GET /api/v1/kpi/summary.

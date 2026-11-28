@@ -80,6 +80,9 @@ type Deps struct {
 	// HTTP wiring
 	CORSAllowedOrigins []string
 	KPIE2ELanes        []string
+	KPICacheTTL        time.Duration
+	KPIMaxConcurrent   int
+	KPIRateLimitPerMin int
 	OpenAPISpecPath    string // path to openapi.yaml (absolute or relative to cwd)
 	PostLoginRedirect  string
 
@@ -142,8 +145,15 @@ func Build(d Deps) chi.Router {
 		Logger:    d.Logger,
 		AuthzMode: authzMode,
 	}
+	kpiStore := &kpi.Store{
+		Pool:                 d.Pool,
+		E2ELanes:             d.KPIE2ELanes,
+		CacheTTL:             d.KPICacheTTL,
+		MaxConcurrentQueries: d.KPIMaxConcurrent,
+	}
+	kpiLimiter := apimw.NewIPRateLimiter(d.KPIRateLimitPerMin, 0)
 	kpiH := &kpiapi.Handlers{
-		Store:  &kpi.Store{Pool: d.Pool, E2ELanes: d.KPIE2ELanes},
+		Store:  kpiStore,
 		Logger: d.Logger,
 	}
 	wsH := &wsapi.Handler{Hub: d.Hub}
@@ -216,13 +226,16 @@ func Build(d Deps) chi.Router {
 		// --- Public: AI triage verdict lookup ---
 		r.Get("/verdicts/by-signature/{fingerprint}", verdictsH.BySignature)
 
-		// --- Public: KPI read endpoints ---
-		r.Get("/kpi/summary", kpiH.Summary)
-		r.Get("/kpi/flaky", kpiH.Flaky)
-		r.Get("/kpi/prs/red", kpiH.PRsRed)
-		r.Get("/kpi/failures", kpiH.Failures)
-		r.Get("/kpi/failures/{id}", kpiH.FailureDetail)
-		r.Get("/tests/{id}/state", kpiH.TestState)
+		// --- Public: KPI read endpoints (rate-limited + cached + bulkhead protected) ---
+		r.Group(func(r chi.Router) {
+			r.Use(kpiLimiter.Middleware)
+			r.Get("/kpi/summary", kpiH.Summary)
+			r.Get("/kpi/flaky", kpiH.Flaky)
+			r.Get("/kpi/prs/red", kpiH.PRsRed)
+			r.Get("/kpi/failures", kpiH.Failures)
+			r.Get("/kpi/failures/{id}", kpiH.FailureDetail)
+			r.Get("/tests/{id}/state", kpiH.TestState)
+		})
 
 		// --- Public: WebSocket (anonymous; the dashboard never attaches creds) ---
 		r.Get("/ws", wsH.Events)
@@ -293,7 +306,7 @@ func Build(d Deps) chi.Router {
 		htmlH := &htmlpage.Handler{
 			Pool: d.Pool,
 			Orch: d.OrchestrationStore,
-			KPI:  &kpi.Store{Pool: d.Pool, E2ELanes: d.KPIE2ELanes},
+			KPI:  kpiStore,
 			Site: htmlpage.SiteInfo{
 				ServerVersion:      d.Version,
 				CommitSHA:          d.CommitSHA,
@@ -308,9 +321,12 @@ func Build(d Deps) chi.Router {
 		}
 		r.Get("/", htmlH.ServeHome)
 		r.Get("/reports", htmlH.ServeHome)
-		r.Get("/kpi", htmlH.ServeKPIOverview)
-		r.Get("/kpi/prs", htmlH.ServeKPIPRs)
-		r.Get("/kpi/failures/{id}", htmlH.ServeKPIFailureDetail)
+		r.Group(func(r chi.Router) {
+			r.Use(kpiLimiter.Middleware)
+			r.Get("/kpi", htmlH.ServeKPIOverview)
+			r.Get("/kpi/prs", htmlH.ServeKPIPRs)
+			r.Get("/kpi/failures/{id}", htmlH.ServeKPIFailureDetail)
+		})
 		r.Get("/reports/fragment/home-live", htmlH.ServeHomeLiveFragment)
 		r.Get("/reports/fragment/run-dispatch-live", htmlH.ServeRunDispatchLiveFragment)
 		r.Get("/reports/{repo}/{branch}/{sha}/{name}", htmlH.ServeRun)

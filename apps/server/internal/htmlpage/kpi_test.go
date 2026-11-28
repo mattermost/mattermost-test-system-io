@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 )
@@ -1268,3 +1269,74 @@ func TestRenderKPI_EngProdUXClarityAndSmallSamples(t *testing.T) {
 }
 
 func floatTimePtr(t time.Time) *time.Time { return &t }
+
+func TestKPIURLAndPaginationHardening(t *testing.T) {
+	// safeExternalURL rejects control characters and non-HTTP(S) schemes.
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{"https://github.com/mattermost/mattermost/issues/1", "https://github.com/mattermost/mattermost/issues/1"},
+		{"https://github.com/a\nb", ""},
+		{"http://example.com/\tfoo", ""},
+		{"javascript:alert(1)", ""},
+		{"https://", ""},
+	} {
+		raw := tc.raw
+		if got := safeExternalURL(&raw); got != tc.want {
+			t.Errorf("safeExternalURL(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+
+	// isSafeLocalReportHref rejects external hosts and control chars.
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{"/", true},
+		{"/reports/mattermost/main/abcdef1/e2e", true},
+		{"https://evil.example/reports/1", false},
+		{"//evil.example/reports/1", false},
+		{"/\t/reports/1", false},
+		{"/other/path", false},
+	} {
+		if got := isSafeLocalReportHref(tc.raw); got != tc.want {
+			t.Errorf("isSafeLocalReportHref(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+
+	// BuildKPIPRsPage falls back to /reports when RunURL is external.
+	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	prParams, _ := kpi.ParsePRsRedParams(url.Values{}, now)
+	prsPage := BuildKPIPRsPage(SiteInfo{}, kpi.FilterOptions{}, kpi.PRRedResponse{
+		Filters: prParams,
+		Lanes: []kpi.RedPRLaneRow{
+			{ReportGroupID: "rg-ext", GHPRNumber: 9, Repository: "mattermost/mattermost", Lane: "e2e", RunURL: "https://phish.example/evil", CreatedAt: now},
+		},
+	}, now)
+	if len(prsPage.Lanes) != 1 || prsPage.Lanes[0].RunURL != "/reports" {
+		t.Fatalf("external RunURL not neutralized: %+v", prsPage.Lanes)
+	}
+
+	// ServeHome, ServeRepo, and ServeKPIOverview reject overflowing pages & malformed queries with 400.
+	h := &Handler{
+		Pool: new(pgxpool.Pool),
+		KPI:  &kpi.Store{Pool: new(pgxpool.Pool)},
+	}
+	r := chi.NewRouter()
+	r.Get("/", h.ServeHome)
+	r.Get("/reports/{repo}", h.ServeRepo)
+	r.Get("/kpi", h.ServeKPIOverview)
+
+	for _, path := range []string{
+		"/?page=1001",
+		"/reports/mattermost?page=1001",
+		"/kpi?window=%ZZ",
+	} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("GET %s status = %d, want 400", path, rec.Code)
+		}
+	}
+}

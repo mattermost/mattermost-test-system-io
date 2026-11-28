@@ -24,6 +24,8 @@ import (
 // Per-pod, in-memory. Pod restarts cold-start; a single missed cache hit
 // is fine. Cross-pod consistency is not required — the cache merely
 // shapes load, not authoritative state.
+const groupedCacheMaxEntries = 512
+
 type groupedCache struct {
 	ttl time.Duration
 
@@ -86,7 +88,32 @@ func (c *groupedCache) get(
 			return nil, ctx.Err()
 		}
 	}
-	// Cache miss: install a pending entry, release the lock, compute.
+	// Cache miss: bound entry map size before inserting so high-cardinality filters
+	// cannot grow memory without limit.
+	if len(c.entries) >= groupedCacheMaxEntries {
+		now := time.Now()
+		var oldestKey string
+		var oldestExp time.Time
+		hasOldest := false
+		for k, cur := range c.entries {
+			select {
+			case <-cur.done:
+				if !now.Before(cur.expiresAt) || cur.err != nil {
+					delete(c.entries, k)
+					continue
+				}
+				if !hasOldest || cur.expiresAt.Before(oldestExp) {
+					oldestKey = k
+					oldestExp = cur.expiresAt
+					hasOldest = true
+				}
+			default:
+			}
+		}
+		if len(c.entries) >= groupedCacheMaxEntries && hasOldest {
+			delete(c.entries, oldestKey)
+		}
+	}
 	e := &groupedCacheEntry{done: make(chan struct{})}
 	c.entries[key] = e
 	c.mu.Unlock()

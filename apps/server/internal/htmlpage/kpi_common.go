@@ -670,10 +670,36 @@ func safeExternalURL(raw *string) string {
 		return ""
 	}
 	u := strings.TrimSpace(*raw)
-	if strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") {
-		return u
+	if u == "" || hasASCIIControl(u) {
+		return ""
 	}
-	return ""
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return ""
+	}
+	return u
+}
+
+func isSafeLocalReportHref(raw string) bool {
+	if raw == "" || hasASCIIControl(raw) {
+		return false
+	}
+	if raw != "/" && !strings.HasPrefix(raw, "/reports/") {
+		return false
+	}
+	return !strings.HasPrefix(raw, "//") && !strings.HasPrefix(raw, "/\\")
+}
+
+func hasASCIIControl(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func formatKPITimestamp(t time.Time, now time.Time) (iso, rel string) {

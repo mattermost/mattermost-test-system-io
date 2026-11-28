@@ -4,6 +4,7 @@ package kpi
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,6 +23,17 @@ type Store struct {
 	Now func() time.Time
 	// E2ELanes optionally overrides kpi_e2e_lanes ("owner/repo:lane" or "lane" entries).
 	E2ELanes []string
+	// CacheTTL enables singleflight + bounded TTL caching for KPI read queries when > 0.
+	CacheTTL time.Duration
+	// CacheMaxEntries caps cached KPI entries (default 512 when CacheTTL > 0).
+	CacheMaxEntries int
+	// MaxConcurrentQueries caps uncached concurrent DB flights on the shared pool when > 0.
+	MaxConcurrentQueries int
+
+	cacheOnce sync.Once
+	cache     *kpiCache
+	semOnce   sync.Once
+	sem       chan struct{}
 }
 
 // NowTime returns the current UTC time (honoring Store.Now when set).

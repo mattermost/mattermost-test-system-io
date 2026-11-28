@@ -1,12 +1,15 @@
 package htmlpage
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -16,6 +19,11 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
+)
+
+const (
+	maxHTMLPage     = 1000
+	kpiQueryTimeout = 10 * time.Second
 )
 
 // Handler serves HTML report pages.
@@ -41,7 +49,7 @@ func (h *Handler) ServeHome(w http.ResponseWriter, r *http.Request) {
 	offset := 0
 	if p := r.URL.Query().Get("page"); p != "" {
 		n, err := strconv.Atoi(p)
-		if err != nil || n < 1 {
+		if err != nil || n < 1 || n > maxHTMLPage {
 			http.Error(w, "invalid page", http.StatusBadRequest)
 			return
 		}
@@ -108,7 +116,7 @@ func (h *Handler) ServeRepo(w http.ResponseWriter, r *http.Request) {
 	offset := 0
 	if p := r.URL.Query().Get("page"); p != "" {
 		n, err := strconv.Atoi(p)
-		if err != nil || n < 1 {
+		if err != nil || n < 1 || n > maxHTMLPage {
 			http.Error(w, "invalid page", http.StatusBadRequest)
 			return
 		}
@@ -310,8 +318,13 @@ func (h *Handler) ServeKPIOverview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "kpi pages unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	q, err := parseRawQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	now := h.KPI.NowTime()
-	failuresParams, err := kpi.ParseFailuresParams(r.URL.Query(), now)
+	failuresParams, err := kpi.ParseFailuresParams(q, now)
 	if err != nil {
 		if errors.Is(err, kpi.ErrValidation) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -322,30 +335,24 @@ func (h *Handler) ServeKPIOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	summaryParams := failuresParams
 	summaryParams.Sort = kpi.SortLaneAsc
+	showAll := strings.TrimSpace(q.Get("show")) == "all"
 
-	opts, err := h.KPI.LoadFilterOptions(r.Context(), summaryParams)
+	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
+	defer cancel()
+
+	opts, err := h.KPI.LoadFilterOptions(ctx, summaryParams)
 	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Warn("htmlpage kpi filter options failed", slog.String("error", err.Error()))
-		}
-		http.Error(w, "failed to load kpi filters", http.StatusInternalServerError)
+		handleKPIHTMLError(w, h.Logger, "htmlpage kpi filter options failed", "failed to load kpi filters", err)
 		return
 	}
-	summary, err := h.KPI.QuerySummary(r.Context(), summaryParams)
+	failures, err := h.KPI.QueryFailuresFiltered(ctx, failuresParams, !showAll)
 	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Warn("htmlpage kpi summary failed", slog.String("error", err.Error()))
-		}
-		http.Error(w, "failed to load kpi summary", http.StatusInternalServerError)
+		handleKPIHTMLError(w, h.Logger, "htmlpage kpi failures failed", "failed to load recurring failures", err)
 		return
 	}
-	showAll := strings.TrimSpace(r.URL.Query().Get("show")) == "all"
-	failures, err := h.KPI.QueryFailuresFiltered(r.Context(), failuresParams, !showAll)
+	summary, err := h.KPI.QuerySummaryWithRecurring(ctx, summaryParams, &failures.Summary)
 	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Warn("htmlpage kpi failures failed", slog.String("error", err.Error()))
-		}
-		http.Error(w, "failed to load recurring failures", http.StatusInternalServerError)
+		handleKPIHTMLError(w, h.Logger, "htmlpage kpi summary failed", "failed to load kpi summary", err)
 		return
 	}
 
@@ -358,7 +365,7 @@ func (h *Handler) ServeKPIOverview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to render page", http.StatusInternalServerError)
 		return
 	}
-	writeHTML(w, html)
+	writeKPIHTML(w, html)
 }
 
 // ServeKPIPRs serves GET /kpi/prs.
@@ -367,8 +374,13 @@ func (h *Handler) ServeKPIPRs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "kpi pages unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	q, err := parseRawQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	now := h.KPI.NowTime()
-	params, err := kpi.ParsePRsRedParams(r.URL.Query(), now)
+	params, err := kpi.ParsePRsRedParams(q, now)
 	if err != nil {
 		if errors.Is(err, kpi.ErrValidation) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -377,21 +389,19 @@ func (h *Handler) ServeKPIPRs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid query", http.StatusBadRequest)
 		return
 	}
-	opts, err := h.KPI.LoadFilterOptions(r.Context(), params)
+
+	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
+	defer cancel()
+
+	opts, err := h.KPI.LoadFilterOptions(ctx, params)
 	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Warn("htmlpage kpi prs filter options failed", slog.String("error", err.Error()))
-		}
-		http.Error(w, "failed to load kpi filters", http.StatusInternalServerError)
+		handleKPIHTMLError(w, h.Logger, "htmlpage kpi prs filter options failed", "failed to load kpi filters", err)
 		return
 	}
 
-	prResp, err := h.KPI.QueryPRsRed(r.Context(), params)
+	prResp, err := h.KPI.QueryPRsRed(ctx, params)
 	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Warn("htmlpage kpi prs failed", slog.String("error", err.Error()))
-		}
-		http.Error(w, "failed to load pr e2e metrics", http.StatusInternalServerError)
+		handleKPIHTMLError(w, h.Logger, "htmlpage kpi prs failed", "failed to load pr e2e metrics", err)
 		return
 	}
 
@@ -404,7 +414,7 @@ func (h *Handler) ServeKPIPRs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to render page", http.StatusInternalServerError)
 		return
 	}
-	writeHTML(w, html)
+	writeKPIHTML(w, html)
 }
 
 // ServeKPIFailureDetail serves GET /kpi/failures/{id}.
@@ -419,8 +429,13 @@ func (h *Handler) ServeKPIFailureDetail(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid failure signature id", http.StatusBadRequest)
 		return
 	}
+	q, err := parseRawQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	now := h.KPI.NowTime()
-	params, err := kpi.ParseFailureDetailParams(r.URL.Query(), now)
+	params, err := kpi.ParseFailureDetailParams(q, now)
 	if err != nil {
 		if errors.Is(err, kpi.ErrValidation) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -429,16 +444,17 @@ func (h *Handler) ServeKPIFailureDetail(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid query", http.StatusBadRequest)
 		return
 	}
-	detail, err := h.KPI.QueryFailureDetail(r.Context(), sigID, params)
+
+	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
+	defer cancel()
+
+	detail, err := h.KPI.QueryFailureDetail(ctx, sigID, params)
 	if err != nil {
 		if errors.Is(err, kpi.ErrNotFound) {
 			http.Error(w, "failure signature not found", http.StatusNotFound)
 			return
 		}
-		if h.Logger != nil {
-			h.Logger.Warn("htmlpage kpi failure detail failed", slog.String("error", err.Error()))
-		}
-		http.Error(w, "failed to load failure signature", http.StatusInternalServerError)
+		handleKPIHTMLError(w, h.Logger, "htmlpage kpi failure detail failed", "failed to load failure signature", err)
 		return
 	}
 
@@ -451,13 +467,46 @@ func (h *Handler) ServeKPIFailureDetail(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "failed to render page", http.StatusInternalServerError)
 		return
 	}
-	writeHTML(w, html)
+	writeKPIHTML(w, html)
+}
+
+func parseRawQuery(r *http.Request) (url.Values, error) {
+	if r.URL == nil || r.URL.RawQuery == "" {
+		return url.Values{}, nil
+	}
+	q, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return nil, errors.New("malformed query string")
+	}
+	return q, nil
+}
+
+func handleKPIHTMLError(w http.ResponseWriter, logger *slog.Logger, logMsg, userMsg string, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, kpi.ErrOverloaded) {
+		if logger != nil {
+			logger.Warn(logMsg+" (overloaded/timeout)", slog.String("error", err.Error()))
+		}
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "kpi query temporarily unavailable; please retry", http.StatusServiceUnavailable)
+		return
+	}
+	if logger != nil {
+		logger.Warn(logMsg, slog.String("error", err.Error()))
+	}
+	http.Error(w, userMsg, http.StatusInternalServerError)
 }
 
 // writeHTML writes a rendered html/template page.
 func writeHTML(w http.ResponseWriter, html []byte) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(html) //nolint:gosec // G705: html/template output is already escaped
+}
+
+func writeKPIHTML(w http.ResponseWriter, html []byte) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=30, stale-while-revalidate=60")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(html) //nolint:gosec // G705: html/template output is already escaped
 }

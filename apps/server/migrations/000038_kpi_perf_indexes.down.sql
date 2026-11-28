@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS kpi_test_commit_outcomes_mixed_date_idx;
+DROP INDEX IF EXISTS kpi_group_rollups_pr_green_lookup_idx;
+DROP INDEX IF EXISTS kpi_test_commit_outcomes_repo_sha_idx;

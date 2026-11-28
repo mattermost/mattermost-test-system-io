@@ -170,6 +170,9 @@ type RunPage struct {
 	UnitShowEnd   int
 
 	ReportsHint string
+
+	RepoKPIHref string
+	LaneKPIHref string
 }
 
 // RunDispatchLive is the live fragment body (header chips + rows).
@@ -316,6 +319,12 @@ func fillRunPageFromSnap(base *RunPage, snap *orchestration.RunWithUnits, repoSl
 
 	base.Mode = "dispatch"
 	base.IsLive = run.Status == orchestration.RunStatusInProgress
+	if id.Repository != "" {
+		base.RepoKPIHref = "/kpi?repo=" + url.QueryEscape(id.Repository)
+		if id.Name != "" {
+			base.LaneKPIHref = "/kpi?lane=" + url.QueryEscape(id.Name) + "&repo=" + url.QueryEscape(id.Repository)
+		}
+	}
 
 	applyRunSummary(base, snap, rule)
 	applyUnitPagination(base, snap.Units, pageNum, rule)

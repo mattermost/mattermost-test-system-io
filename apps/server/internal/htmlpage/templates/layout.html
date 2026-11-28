@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>{{if .KPIOverview}}{{.KPIOverview.Title}}{{else if .KPIPRs}}{{.KPIPRs.Title}}{{else if .KPIFailure}}{{.KPIFailure.Title}}{{else if .Run}}{{.Run.Title}}{{else if .Repo}}{{.Repo.Title}}{{else}}{{.Home.Title}}{{end}}</title>
+  <title>{{if .KPIOverview}}{{.KPIOverview.Title}}{{else if .KPIPRs}}{{.KPIPRs.Title}}{{else if .KPIFlaky}}{{.KPIFlaky.Title}}{{else if .KPIFailure}}{{.KPIFailure.Title}}{{else if .Run}}{{.Run.Title}}{{else if .Repo}}{{.Repo.Title}}{{else}}{{.Home.Title}}{{end}}</title>
   <style>{{.CSS}}</style>
 </head>
 <body class="page{{if .Run}} page-run{{end}}{{if .IsKPI}} page-kpi{{end}}">
@@ -51,6 +51,8 @@
     {{template "kpi-overview-content" .KPIOverview}}
     {{else if .KPIPRs}}
     {{template "kpi-prs-content" .KPIPRs}}
+    {{else if .KPIFlaky}}
+    {{template "kpi-flaky-content" .KPIFlaky}}
     {{else if .KPIFailure}}
     {{template "kpi-failure-content" .KPIFailure}}
     {{else if .Run}}

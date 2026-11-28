@@ -1,0 +1,94 @@
+{{define "kpi-flaky-content"}}
+<header class="kpi-page-header">
+  <div class="kpi-page-title-row">
+    <div>
+      <h2 class="kpi-page-title">Flaky Tests</h2>
+      <p class="kpi-page-subtitle">{{.Subtitle}}</p>
+    </div>
+    <nav class="kpi-subnav" aria-label="KPI sections">
+      <a href="{{.OverviewHref}}" class="kpi-subnav-link">Overview</a>
+      <a href="{{.PRsHref}}" class="kpi-subnav-link">PR E2E</a>
+      <a href="{{.FlakyHref}}" class="kpi-subnav-link is-active">Flaky</a>
+    </nav>
+  </div>
+  {{template "kpi-filter-bar" .Filters}}
+</header>
+
+<section class="kpi-panel" aria-label="Flaky tests table">
+  <header class="kpi-panel-head">
+    <div>
+      <h3 class="kpi-panel-title">Flaky tests</h3>
+      <span class="kpi-panel-subtitle tabular">{{.TotalTestsText}}</span>
+    </div>
+    <div class="kpi-panel-controls">
+      {{template "kpi-sort-select" .Filters}}
+    </div>
+  </header>
+  {{if not .HasTests}}
+  <div class="empty-state empty-state-inline">
+    {{if gt .Total 0}}
+    <p class="empty-title">Page {{.Page}} out of range</p>
+    <p class="empty-hint">No flaky tests on page {{.Page}} (total {{.Total}} across {{.TotalPages}} {{if eq .TotalPages 1}}page{{else}}pages{{end}}).</p>
+    {{else}}
+    <p class="empty-title">No flaky tests</p>
+    <p class="empty-hint">No tests passed and failed on the same commit across ≥2 commits in this window.</p>
+    {{end}}
+  </div>
+  {{else}}
+  <div class="kpi-table-scroll">
+    <table class="kpi-table">
+      <thead>
+        <tr>
+          <th>Test</th>
+          <th>Repository &amp; Lanes</th>
+          <th class="num">Flaky commits</th>
+          <th class="num">Flake rate</th>
+          <th class="num" title="CI runs executing this test in the window; each run may include retries">CI runs</th>
+          <th class="num">Last flaky</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Tests}}
+        <tr>
+          <td class="kpi-sig-cell">
+            <div class="kpi-lane-name">{{.Title}}</div>
+            <div class="kpi-sig-meta mono">{{.File}}{{if .ZephyrKey}} · {{.ZephyrKey}}{{end}}{{if .ScopeMeta}} · {{.ScopeMeta}}{{end}}</div>
+          </td>
+          <td>
+            <div><a href="{{.RepoHref}}" class="kpi-inline-link">{{.RepoShort}}</a></div>
+            {{if .Lanes}}
+            <div class="kpi-chip-list">
+              {{range .Lanes}}<a href="{{.Href}}" class="kpi-chip kpi-inline-link mono">{{.Label}}</a>{{end}}
+            </div>
+            {{end}}
+          </td>
+          <td class="num tabular">{{.FlakyCommits}}</td>
+          <td class="num tabular"><span class="{{.FlakeRateClass}}">{{.FlakeRateText}}</span></td>
+          <td class="num tabular">{{.TotalRuns}}</td>
+          <td class="num tabular">
+            <time datetime="{{.LastFlakyISO}}" title="{{.LastFlakyISO}}">{{.LastFlakyRel}}</time>
+            {{if or .LastShortSHA .LastRunURL}}<div class="kpi-sig-meta mono">{{if .LastShortSHA}}{{if .LastCommitURL}}<a href="{{.LastCommitURL}}" class="kpi-inline-link" target="_blank" rel="noopener noreferrer">{{.LastShortSHA}}</a>{{else}}{{.LastShortSHA}}{{end}}{{end}}{{if .LastRunURL}}{{if .LastShortSHA}} · {{end}}<a href="{{.LastRunURL}}" class="kpi-inline-link">Run &rarr;</a>{{end}}</div>{{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{if .ShowPagination}}
+  <nav class="pagination kpi-pagination" aria-label="Flaky tests pagination">
+    <span class="pagination-summary">
+      {{if .HasTests}}
+      <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} flaky tests · Page {{.Page}} of {{.TotalPages}}</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
+      {{else}}
+      <span class="pager-long">Page {{.Page}} of {{.TotalPages}} ({{.Total}} flaky tests)</span><span class="pager-short">Page {{.Page}}/{{.TotalPages}} ({{.Total}})</span>
+      {{end}}
+    </span>
+    <span class="pagination-actions">
+      {{if .HasPrev}}<a class="btn-page" href="{{.PrevHref}}">Previous</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Previous</span>{{end}}
+      {{if .HasNext}}<a class="btn-page" href="{{.NextHref}}">Next</a>{{else}}<span class="btn-page is-disabled" aria-disabled="true">Next</span>{{end}}
+    </span>
+  </nav>
+  {{end}}
+</section>
+{{end}}

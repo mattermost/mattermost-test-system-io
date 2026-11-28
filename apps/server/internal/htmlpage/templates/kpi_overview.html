@@ -3,17 +3,17 @@
   <div class="kpi-page-title-row">
     <div>
       <h2 class="kpi-page-title">Test Health KPIs</h2>
-      <p class="kpi-page-subtitle">Per-repository CI reliability and failure triage</p>
+      <p class="kpi-page-subtitle">CI reliability and recurring failures by repository</p>
     </div>
     <nav class="kpi-subnav" aria-label="KPI sections">
       <a href="{{.OverviewHref}}" class="kpi-subnav-link is-active">Overview</a>
       <a href="{{.PRsHref}}" class="kpi-subnav-link">PR E2E</a>
+      <a href="{{.FlakyHref}}" class="kpi-subnav-link">Flaky</a>
     </nav>
   </div>
   {{template "kpi-filter-bar" .Filters}}
   <div class="kpi-status-strip" role="status">
     <span>{{.PulseSummary}}</span>
-    {{if .IsAllRepos}}<span class="kpi-badge kpi-badge-muted">No blended cross-repo averages</span>{{end}}
   </div>
 </header>
 
@@ -21,7 +21,7 @@
 <section class="kpi-panel" aria-label="Repository health scorecard">
   <header class="kpi-panel-head">
     <h3 class="kpi-panel-title">Repository Health Scorecard</h3>
-    <span class="kpi-panel-subtitle">Each product measured strictly within its own runner &amp; telemetry</span>
+    <span class="kpi-panel-subtitle">Each product measured strictly within its own runner</span>
   </header>
   {{if not .HasScorecard}}
   <div class="empty-state empty-state-inline">
@@ -34,12 +34,12 @@
       <thead>
         <tr>
           <th>Repository</th>
-          <th>Telemetry</th>
-          <th class="num">Main run pass</th>
-          <th class="num">Zero-retry</th>
-          <th class="num">PR false-red</th>
+          <th>CI mode</th>
+          <th class="num">Main pass rate</th>
+          <th class="num" title="Main runs with zero orchestration spec retests">No CI retests</th>
+          <th class="num">PR false-red (&gt;24h)</th>
           <th class="num">Flaky (14d)</th>
-          <th class="num">PR E2E wait</th>
+          <th class="num">PR run time</th>
           <th class="num">Timeouts</th>
         </tr>
       </thead>
@@ -57,12 +57,12 @@
           </td>
           <td class="num tabular">{{.ZeroRetryText}}</td>
           <td class="num tabular">
-            <div>{{.PRFalseRedText}}</div>
+            <div><a href="{{.PRsHref}}" class="kpi-inline-link">{{.PRFalseRedText}}</a></div>
             {{if .PRFalseRedSub}}<div class="kpi-sig-meta">{{.PRFalseRedSub}}</div>{{end}}
           </td>
-          <td class="num tabular">{{.FlakyText}}</td>
+          <td class="num tabular"><a href="{{.FlakyHref}}" class="kpi-inline-link">{{.FlakyText}}</a></td>
           <td class="num tabular">
-            <div>{{.PRDurationText}}</div>
+            <div>{{if ne .PRDurationText "—"}}<a href="{{.PRsHref}}" class="kpi-inline-link">{{.PRDurationText}}</a>{{else}}{{.PRDurationText}}{{end}}</div>
             {{if .PRDurationSub}}<div class="kpi-sig-meta">{{.PRDurationSub}}</div>{{end}}
           </td>
           <td class="num tabular"><span class="{{.TimeoutsClass}}">{{.TimeoutsText}}</span></td>
@@ -89,7 +89,7 @@
     <p class="kpi-card-meta tabular">{{.MainPass.PrimaryMeta}}</p>
     {{if .MainPass.HasStrict}}
     <dl class="kpi-card-substats">
-      <div><dt>Zero-retry runs</dt><dd class="tabular">{{.MainPass.StrictRate}} ({{.MainPass.StrictPassed}}/{{.MainPass.StrictTotal}})</dd></div>
+      <div><dt title="Orchestrated main runs that finished without retesting any failed spec unit">No CI retests</dt><dd class="tabular">{{.MainPass.StrictRate}} ({{.MainPass.StrictPassed}}/{{.MainPass.StrictTotal}})</dd></div>
     </dl>
     {{end}}
     {{else}}
@@ -109,12 +109,12 @@
     </div>
     <div class="kpi-card-value tabular">{{.PRFalseRed.HeadlineRate}}</div>
     {{if .PRFalseRed.HasData}}
-    <p class="kpi-card-meta tabular">{{.PRFalseRed.SettledFalseRedLanes}} / {{.PRFalseRed.SettledRedLanes}} settled red lanes{{if gt .PRFalseRed.UnsettledRedLanes 0}} · {{.PRFalseRed.UnsettledRedLanes}} recent (&lt;24h){{end}}</p>
+    <p class="kpi-card-meta tabular">{{.PRFalseRed.SettledFalseRedLanes}} of {{.PRFalseRed.SettledRedLanes}} red PR runs (&gt;24h){{if gt .PRFalseRed.UnsettledRedLanes 0}} · {{.PRFalseRed.UnsettledRedLanes}} recent (&lt;24h){{end}}</p>
     {{else}}
     <p class="kpi-card-empty">No data{{if gt .PRFalseRed.UnsettledRedLanes 0}} · {{.PRFalseRed.UnsettledRedLanes}} recent (&lt;24h){{end}}</p>
     {{end}}
     <p class="kpi-card-note">{{.PRFalseRed.SettledNote}}</p>
-    <p class="kpi-card-link-row"><a href="{{.PRFalseRed.PRsHref}}" class="kpi-inline-link">Inspect PR E2E queue &rarr;</a></p>
+    <p class="kpi-card-link-row"><a href="{{.PRFalseRed.PRsHref}}" class="kpi-inline-link">View red PR runs &rarr;</a></p>
   </article>
   {{end}}
 
@@ -127,13 +127,16 @@
       </div>
     </div>
     <div class="kpi-card-value tabular">{{if .Flaky.HasData}}{{.Flaky.Count}}{{else}}N/A{{end}}</div>
-    <p class="kpi-card-meta">{{.Flaky.RuleNote}}</p>
+    <p class="kpi-card-meta">{{.Flaky.RuleNote}}{{.Flaky.BaselineNote}}</p>
+    {{if gt .Flaky.Count 0}}
+    <p class="kpi-card-link-row"><a href="{{.Flaky.FlakyHref}}" class="kpi-inline-link">View flaky tests &rarr;</a></p>
+    {{end}}
   </article>
 
   {{if .E2EDuration.ShowCard}}
   <article class="kpi-card">
     <div class="kpi-card-head">
-      <h3 class="kpi-card-title">E2E PR run time</h3>
+      <h3 class="kpi-card-title">PR run time</h3>
       {{if ne .E2EDuration.P50Delta "N/A"}}<span class="kpi-delta {{.E2EDuration.P50DeltaClass}} tabular">{{.E2EDuration.P50Delta}}</span>{{end}}
     </div>
     <div class="kpi-card-value tabular">{{.E2EDuration.P50}}{{if .E2EDuration.HasData}} <span class="kpi-card-value-unit">median</span>{{end}}</div>
@@ -144,7 +147,7 @@
     {{end}}
     {{if .E2EDuration.CompletionRate}}
     <dl class="kpi-card-substats">
-      <div><dt>Run completion</dt><dd class="tabular">{{.E2EDuration.CompletionRate}} ({{.E2EDuration.CompletedRuns}} ok · {{.E2EDuration.TimedOutRuns}} timed out)</dd></div>
+      <div><dt>Completed</dt><dd class="tabular">{{.E2EDuration.CompletionRate}} ({{.E2EDuration.CompletedRuns}} finished · {{.E2EDuration.TimedOutRuns}} timed out)</dd></div>
     </dl>
     {{end}}
   </article>
@@ -155,7 +158,7 @@
 <section class="kpi-panel" aria-label="Lane breakdown">
   <header class="kpi-panel-head">
     <h3 class="kpi-panel-title">Lanes in {{.ActiveRepoLabel}}</h3>
-    <span class="kpi-panel-subtitle">{{len .LaneRows}} active lanes</span>
+    <span class="kpi-panel-subtitle">{{.LaneCountText}}</span>
   </header>
   <div class="kpi-table-scroll">
     <table class="kpi-table">
@@ -164,11 +167,11 @@
           <th>Lane</th>
           <th>Stage</th>
           <th class="num">Runs</th>
-          <th class="num">Main run pass</th>
-          <th class="num">Main test pass</th>
-          <th class="num">Zero-retry</th>
-          <th class="num">PR wait p50</th>
-          <th class="num">PR false-red</th>
+          <th class="num">Main pass rate</th>
+          <th class="num">First-try tests</th>
+          <th class="num">No CI retests</th>
+          <th class="num">PR run time (p50)</th>
+          <th class="num">PR false-red (&gt;24h)</th>
         </tr>
       </thead>
       <tbody>
@@ -181,7 +184,7 @@
           <td class="num tabular">{{.TestPassText}}</td>
           <td class="num tabular">{{.ZeroRetryText}}</td>
           <td class="num tabular">{{.PRDurationText}}</td>
-          <td class="num tabular">{{.PRFalseRedText}}</td>
+          <td class="num tabular">{{if .PRsHref}}<a href="{{.PRsHref}}" class="kpi-inline-link">{{.PRFalseRedText}}</a>{{else}}{{.PRFalseRedText}}{{end}}</td>
         </tr>
         {{end}}
       </tbody>
@@ -238,7 +241,7 @@
     <p class="empty-hint">No failure patterns on page {{.Page}} (total {{.Total}} across {{.TotalPages}} {{if eq .TotalPages 1}}page{{else}}pages{{end}}).</p>
     {{else}}
     <p class="empty-title">No {{if not .ShowAll}}active {{end}}failure patterns</p>
-    <p class="empty-hint">{{if and (not .ShowAll) (gt .DormantCount 0)}}{{.DormantCount}} older dormant patterns hidden — select All ({{.AllTotalCount}}) above to inspect them.{{else}}No failure patterns matched the active filters in this window.{{end}}</p>
+    <p class="empty-hint">{{if and (not .ShowAll) (gt .DormantCount 0)}}{{.DormantCount}} older inactive/dormant patterns hidden — select All ({{.AllTotalCount}}) above to inspect them.{{else}}No failure patterns matched the active filters in this window.{{end}}</p>
     {{end}}
   </div>
   {{else}}

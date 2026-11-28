@@ -920,6 +920,113 @@ func TestIngestTestIDsAndFailureSignatures_SanitizesNULAndInvalidUTF8(t *testing
 		t.Fatalf("framework/fallback mismatch: got (%q, %q), want (playwright, no-error:unknown:playwright)", gotFW, gotNorm)
 	}
 
+	// Out-of-order ingestion updates failure_signatures.first_seen_at and first_seen_report_group_id to the earlier occurrence.
+	newerTime := now.Add(-2 * time.Hour).UTC().Truncate(time.Microsecond)
+	olderTime := now.Add(-48 * time.Hour).UTC().Truncate(time.Microsecond)
+	var oldGroupID, laterGroupID uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO report_groups (framework, name, status, repository, branch, commit_sha, gh_run_id, gh_run_attempt)
+		VALUES ('playwright', 'ooo-old', 'completed', $1, 'main', 'sha-ooo-old', 'run-ooo-old', '1')
+		RETURNING id
+	`, defaultRepository).Scan(&oldGroupID); err != nil {
+		t.Fatalf("insert older group: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO report_groups (framework, name, status, repository, branch, commit_sha, gh_run_id, gh_run_attempt)
+		VALUES ('playwright', 'ooo-new', 'completed', $1, 'main', 'sha-ooo-new', 'run-ooo-new', '1')
+		RETURNING id
+	`, defaultRepository).Scan(&laterGroupID); err != nil {
+		t.Fatalf("insert newer group: %v", err)
+	}
+	oooCase := ingest.CaseIdentityInput{
+		File:         "e2e/ooo_first_seen.spec.ts",
+		Title:        "ooo test",
+		FullTitle:    "Suite > ooo test",
+		Status:       ingest.StatusFailed,
+		ErrorMessage: "Error: ooo deterministic signature mismatch 9911",
+	}
+	txNew, err := env.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		t.Fatalf("begin ooo new tx: %v", err)
+	}
+	oooNewIDs, err := ingest.ResolveCaseIdentities(ctx, txNew, ingest.IdentityMeta{
+		ReportGroupID: laterGroupID,
+		Repository:    defaultRepository,
+		Framework:     "playwright",
+		SeenAt:        newerTime,
+	}, []ingest.CaseIdentityInput{oooCase})
+	if err != nil || len(oooNewIDs) != 1 || oooNewIDs[0].SignatureID == nil {
+		_ = txNew.Rollback(ctx)
+		t.Fatalf("ooo newer ResolveCaseIdentities failed: err=%v ids=%+v", err, oooNewIDs)
+	}
+	if err := txNew.Commit(ctx); err != nil {
+		t.Fatalf("commit ooo new tx: %v", err)
+	}
+	txOld, err := env.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		t.Fatalf("begin ooo old tx: %v", err)
+	}
+	oooOldIDs, err := ingest.ResolveCaseIdentities(ctx, txOld, ingest.IdentityMeta{
+		ReportGroupID: oldGroupID,
+		Repository:    defaultRepository,
+		Framework:     "playwright",
+		SeenAt:        olderTime,
+	}, []ingest.CaseIdentityInput{oooCase})
+	if err != nil || len(oooOldIDs) != 1 || oooOldIDs[0].SignatureID == nil {
+		_ = txOld.Rollback(ctx)
+		t.Fatalf("ooo older ResolveCaseIdentities failed: err=%v ids=%+v", err, oooOldIDs)
+	}
+	if err := txOld.Commit(ctx); err != nil {
+		t.Fatalf("commit ooo old tx: %v", err)
+	}
+	var gotFirstSeen time.Time
+	var gotFirstGroup uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT first_seen_at, first_seen_report_group_id
+		  FROM failure_signatures
+		 WHERE id = $1
+	`, *oooOldIDs[0].SignatureID).Scan(&gotFirstSeen, &gotFirstGroup); err != nil {
+		t.Fatalf("query ooo failure_signatures: %v", err)
+	}
+	if !gotFirstSeen.UTC().Equal(olderTime) || gotFirstGroup != oldGroupID {
+		t.Fatalf("out-of-order signature first_seen = (%s, %s), want (%s, %s)",
+			gotFirstSeen.UTC(), gotFirstGroup, olderTime, oldGroupID)
+	}
+
+	// Epoch 1970-01-01 StartTime falls back to defaultSeen, and uuid.Nil groupID on an earlier
+	// ingest must preserve an existing non-NULL first_seen_report_group_id.
+	epochTime := time.Unix(0, 0).UTC()
+	earlierNoGroup := olderTime.Add(-24 * time.Hour).UTC().Truncate(time.Microsecond)
+	txGuard, err := env.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		t.Fatalf("begin ooo guard tx: %v", err)
+	}
+	guardCaseEpoch := oooCase
+	guardCaseEpoch.StartTime = &epochTime
+	if _, err := ingest.ResolveCaseIdentities(ctx, txGuard, ingest.IdentityMeta{
+		ReportGroupID: uuid.Nil,
+		Repository:    defaultRepository,
+		Framework:     "playwright",
+		SeenAt:        earlierNoGroup,
+	}, []ingest.CaseIdentityInput{guardCaseEpoch}); err != nil {
+		_ = txGuard.Rollback(ctx)
+		t.Fatalf("guard ResolveCaseIdentities failed: %v", err)
+	}
+	if err := txGuard.Commit(ctx); err != nil {
+		t.Fatalf("commit ooo guard tx: %v", err)
+	}
+	if err := env.Pool.QueryRow(ctx, `
+		SELECT first_seen_at, first_seen_report_group_id
+		  FROM failure_signatures
+		 WHERE id = $1
+	`, *oooOldIDs[0].SignatureID).Scan(&gotFirstSeen, &gotFirstGroup); err != nil {
+		t.Fatalf("query guarded failure_signatures: %v", err)
+	}
+	if !gotFirstSeen.UTC().Equal(earlierNoGroup) || gotFirstGroup != oldGroupID {
+		t.Fatalf("guarded signature first_seen = (%s, %s), want (%s, %s)",
+			gotFirstSeen.UTC(), gotFirstGroup, earlierNoGroup, oldGroupID)
+	}
+
 	// 4. Sanitized attachment lookup links staged screenshot, countStatuses matches stored cases,
 	// and annotations preserve large integers + clean keys on collision.
 	var regReportID uuid.UUID

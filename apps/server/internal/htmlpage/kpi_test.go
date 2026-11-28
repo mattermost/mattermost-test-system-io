@@ -144,6 +144,13 @@ func TestRenderKPIOverview_PopulatedAndGuardrails(t *testing.T) {
 				TimedOutRuns:   1,
 				CompletionRate: &compRate,
 			},
+			PRRunCompletion: &kpi.RunCompletionSummary{
+				TotalRuns:      10,
+				CompletedRuns:  8,
+				IncompleteRuns: 1,
+				TimedOutRuns:   1,
+				CompletionRate: &compRate,
+			},
 		},
 		WeeklySeries: []kpi.WeeklyPoint{
 			{
@@ -212,13 +219,14 @@ func TestRenderKPIOverview_PopulatedAndGuardrails(t *testing.T) {
 		`class="site-nav-link is-active">KPIs</a>`,
 		`88.0%`,
 		`94.2%`,
-		`Zero-retry runs`,
+		`No CI retests`,
 		`at least 18.5%`,
 		`Down 2.5 pts`,
-		`new-commit fixes excluded`,
-		`Trailing 14d`,
+		`excludes failures resolved by pushing a new commit`,
+		`Last 14d`,
 		`Active (2)`,
 		`All (4)`,
+		`show=all`,
 		`14m 20s`,
 		`28m 5s`,
 		`90.0%`,
@@ -239,12 +247,16 @@ func TestRenderKPIOverview_PopulatedAndGuardrails(t *testing.T) {
 			t.Fatalf("RenderKPIOverview missing %q", want)
 		}
 	}
+	if !strings.Contains(page.ShowAllHref, `show=all`) {
+		t.Fatalf("ShowAllHref = %q, want show=all included", page.ShowAllHref)
+	}
 
 	for _, forbid := range []string{
 		`id="connection-status"`,
 		`[data-theme="dark"]`,
 		`Fixed`,
 		`error_context`,
+		`No blended cross-repo averages`,
 	} {
 		if strings.Contains(s, forbid) {
 			t.Fatalf("RenderKPIOverview must not contain %q", forbid)
@@ -254,9 +266,12 @@ func TestRenderKPIOverview_PopulatedAndGuardrails(t *testing.T) {
 		t.Fatal("RenderKPIOverview must not contain 'blocked'")
 	}
 
-	// Verify /kpi/prs sub-tab link preserves filters without leaking incompatible /kpi sort=rate_desc or page=2.
+	// Verify /kpi/prs and /kpi/flaky sub-tab links preserve filters cleanly.
 	if !strings.Contains(s, `href="/kpi/prs?app=mattermost&amp;lane=e2e-pr&amp;platform=linux&amp;repo=mattermost%2Fmattermost&amp;stage=pr&amp;window=14d"`) {
 		t.Fatalf("expected PR E2E sub-tab link to preserve filters without sort/page, got HTML snippet: %s", s)
+	}
+	if !strings.Contains(s, `href="/kpi/flaky?app=mattermost&amp;lane=e2e-pr&amp;platform=linux&amp;repo=mattermost%2Fmattermost&amp;stage=pr"`) {
+		t.Fatalf("expected Flaky sub-tab link to preserve filters with 14d default omitted, got HTML snippet: %s", s)
 	}
 }
 
@@ -369,19 +384,24 @@ func TestRenderKPIPRs_PopulatedAndEmpty(t *testing.T) {
 	s := string(htmlBytes)
 
 	for _, want := range []string{
+		`PR E2E Reliability`,
 		`at least 22.5%`,
 		`excludes failures resolved by pushing a new commit`,
-		`Went green on rerun`,
-		`Also failing elsewhere`,
-		`PR-specific / Unclassified`,
+		`Passed on rerun`,
+		`Failing on main or ≥3 PRs`,
+		`Only this PR (or &lt;3 PRs)`,
 		`12.5%`,
 		`10.0%`,
 		`77.5%`,
 		`E2E red`,
+		`https://github.com/mattermost/mattermost/pull/12345`,
+		`https://github.com/mattermost/mattermost/commit/abcdef1234567`,
+		`/kpi?lane=e2e-rf-pr&amp;repo=mattermost%2Fmattermost&amp;window=7d`,
 		`#12345`,
 		`Failing on main &#43; 4 other PRs`,
 		`3 tests · 2 errors`,
-		`40 aged (&gt;24h) · 3 recent (&lt;24h) · 2 red PR runs total`,
+		`40 (&gt;24h) · 3 (&lt;24h) · 2 red PR runs total`,
+		`2 red PR runs total · 4 still red`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("RenderKPIPRs missing %q", want)
@@ -401,7 +421,7 @@ func TestRenderKPIPRs_PopulatedAndEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	es := string(emptyHTML)
-	if !strings.Contains(es, `N/A`) || !strings.Contains(es, `No aged (&gt;24h) red PR runs to classify`) || !strings.Contains(es, `No E2E red PR runs`) {
+	if !strings.Contains(es, `N/A`) || !strings.Contains(es, `No red PR runs (&gt;24h) to classify`) || !strings.Contains(es, `No E2E red PR runs`) {
 		t.Fatalf("empty PRs page missing expected empty states")
 	}
 }
@@ -434,7 +454,7 @@ func TestBuildKPIOverviewAndPRs_PRFalseRedZeroSettledAndUnsettledStates(t *testi
 		`N/A`,
 		`No data`,
 		`3 recent (&lt;24h)`,
-		`3 recent red runs (&lt;24h unsettled); new-commit fixes excluded.`,
+		`3 recent red runs (&lt;24h old); excludes failures resolved by pushing a new commit.`,
 	} {
 		if !strings.Contains(ovStr, want) {
 			t.Fatalf("unsettled overview missing %q", want)
@@ -455,11 +475,11 @@ func TestBuildKPIOverviewAndPRs_PRFalseRedZeroSettledAndUnsettledStates(t *testi
 	if err != nil {
 		t.Fatalf("RenderKPIOverview zero PR: %v", err)
 	}
-	if !strings.Contains(string(ovEmptyHTML), `No settled (&gt;24h) red PR runs in window.`) {
+	if !strings.Contains(string(ovEmptyHTML), `No red PR runs &gt;24h old in window.`) {
 		t.Fatalf("zero-PR overview missing settled note")
 	}
 
-	// PR E2E page: nil FalseRedRate + unsettled "E2E red" row failing on 3 other PRs (without main) + 2 other PRs ("Seen on 2 other PR(s)").
+	// PR E2E page: nil FalseRedRate + unsettled "E2E red" row failing on 3 other PRs (without main) + 2 other PRs.
 	prParams, err := kpi.ParsePRsRedParams(url.Values{"repo": {"mattermost/mattermost"}}, now)
 	if err != nil {
 		t.Fatal(err)
@@ -520,11 +540,11 @@ func TestBuildKPIOverviewAndPRs_PRFalseRedZeroSettledAndUnsettledStates(t *testi
 	prStr := string(prHTML)
 	for _, want := range []string{
 		`N/A`,
-		`No settled (&gt;24h) red PR runs in this window`,
+		`No red PR runs (&gt;24h) in this window`,
 		`E2E red`,
 		`Failing on 3 other PRs`,
 		`Recent (&lt;24h) · seen on 2 other PRs`,
-		`PR-specific / Unclassified`,
+		`Only this PR (or &lt;3 PRs)`,
 	} {
 		if !strings.Contains(prStr, want) {
 			t.Fatalf("PRs zero-settled missing %q", want)
@@ -624,7 +644,7 @@ func TestRenderKPIFailureDetail_XSSRedactionAndGuardrails(t *testing.T) {
 		`&#43;30.0 / 1k`,
 		`PR #999`,
 		`deadbee`,
-		`flaky-infra`,
+		`Run verdict: flaky-infra`,
 		`92%`,
 		`Dormant`,
 		`e2e/login.ts`,
@@ -662,11 +682,12 @@ func TestKPIViewModelsHaveNoAuthorOrErrorContextFields(t *testing.T) {
 	}
 	checkStruct(t, reflect.TypeOf(KPIOverviewPage{}), "KPIOverviewPage")
 	checkStruct(t, reflect.TypeOf(KPIPRsPage{}), "KPIPRsPage")
+	checkStruct(t, reflect.TypeOf(KPIFlakyPage{}), "KPIFlakyPage")
 	checkStruct(t, reflect.TypeOf(KPIFailureDetailPage{}), "KPIFailureDetailPage")
 }
 
 func TestKPIHandlers_ValidationAndNilStore(t *testing.T) {
-	// Nil KPI store -> 503 across all 3 handlers.
+	// Nil KPI store -> 503 across all 4 KPI handlers.
 	hNil := &Handler{Logger: slog.New(slog.DiscardHandler)}
 	for _, tc := range []struct {
 		name string
@@ -675,6 +696,7 @@ func TestKPIHandlers_ValidationAndNilStore(t *testing.T) {
 	}{
 		{"overview_nil", hNil.ServeKPIOverview, "/kpi"},
 		{"prs_nil", hNil.ServeKPIPRs, "/kpi/prs"},
+		{"flaky_nil", hNil.ServeKPIFlaky, "/kpi/flaky"},
 		{"failure_nil", hNil.ServeKPIFailureDetail, "/kpi/failures/019a1234-5678-7abc-8def-0123456789ab"},
 	} {
 		rec := httptest.NewRecorder()
@@ -699,13 +721,14 @@ func TestKPIHandlers_ValidationAndNilStore(t *testing.T) {
 		}
 	}
 
-	// Verify chi router mounts /kpi, /kpi/prs, /kpi/failures/{id} when ServeKPI* wired.
+	// Verify chi router mounts /kpi, /kpi/prs, /kpi/flaky, /kpi/failures/{id} when ServeKPI* wired.
 	r := chi.NewRouter()
 	h := &Handler{}
 	r.Get("/kpi", h.ServeKPIOverview)
 	r.Get("/kpi/prs", h.ServeKPIPRs)
+	r.Get("/kpi/flaky", h.ServeKPIFlaky)
 	r.Get("/kpi/failures/{id}", h.ServeKPIFailureDetail)
-	for _, path := range []string{"/kpi", "/kpi/prs", "/kpi/failures/not-a-uuid"} {
+	for _, path := range []string{"/kpi", "/kpi/prs", "/kpi/flaky", "/kpi/failures/not-a-uuid"} {
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusServiceUnavailable {
@@ -811,7 +834,7 @@ func TestKPIPaginationOutOfRangeRecovery(t *testing.T) {
 		}
 		s := string(htmlBytes)
 		for _, want := range []string{
-			`57 E2E red PR lane runs`,
+			`57 red PR runs total · 0 still red`,
 			`Page 5 out of range`,
 			`No red PR runs on page 5 (total 57 across 2 pages).`,
 			`kpi-pagination`,
@@ -869,9 +892,8 @@ func TestKPIHardening_URLSanitizationPathEscapeUTF8AndMobileCSS(t *testing.T) {
 			{ReportGroupID: "rg-bslash", GHPRNumber: 102, RunURL: `/\evil.example/phish`, CreatedAt: now},
 		},
 	}, now)
-	const fallbackReportsURL = "/reports"
-	if prPage.Lanes[0].RunURL != fallbackReportsURL || prPage.Lanes[1].RunURL != fallbackReportsURL {
-		t.Fatalf("expected unsafe RunURLs to fall back to %s, got %q and %q", fallbackReportsURL, prPage.Lanes[0].RunURL, prPage.Lanes[1].RunURL)
+	if prPage.Lanes[0].RunURL != "" || prPage.Lanes[1].RunURL != "" {
+		t.Fatalf("expected unsafe RunURLs to neutralize to empty string, got %q and %q", prPage.Lanes[0].RunURL, prPage.Lanes[1].RunURL)
 	}
 
 	// 2. SignatureID path-escaped in BuildKPIOverviewPage.
@@ -1258,8 +1280,8 @@ func TestRenderKPI_EngProdUXClarityAndSmallSamples(t *testing.T) {
 		t.Fatalf("RenderKPIPRs desktop noise suppression: %v", err)
 	}
 	prs := string(prHTMLBytes)
-	if !strings.Contains(prs, `Unclassified`) {
-		t.Fatal("expected Unclassified badge when ReasonMix is 100% Other")
+	if !strings.Contains(prs, `0% passed rerun (&gt;24h)`) {
+		t.Fatal("expected '0% passed rerun (>24h)' badge when ReasonMix is 100% Other")
 	}
 	for _, forbid := range []string{`-100.0 pp`, `Healthy`, `Configured E2E lanes:`, `test_stats_json`, `total_duration_ms`} {
 		if strings.Contains(prs, forbid) {
@@ -1305,17 +1327,18 @@ func TestKPIURLAndPaginationHardening(t *testing.T) {
 		}
 	}
 
-	// BuildKPIPRsPage falls back to /reports when RunURL is external.
+	// BuildKPIPRsPage neutralizes unsafe or root RunURL to empty (never falls back to /reports or /).
 	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
 	prParams, _ := kpi.ParsePRsRedParams(url.Values{}, now)
 	prsPage := BuildKPIPRsPage(SiteInfo{}, kpi.FilterOptions{}, kpi.PRRedResponse{
 		Filters: prParams,
 		Lanes: []kpi.RedPRLaneRow{
 			{ReportGroupID: "rg-ext", GHPRNumber: 9, Repository: "mattermost/mattermost", Lane: "e2e", RunURL: "https://phish.example/evil", CreatedAt: now},
+			{ReportGroupID: "rg-root", GHPRNumber: 10, Repository: "mattermost/mattermost", Lane: "e2e", RunURL: "/", CreatedAt: now},
 		},
 	}, now)
-	if len(prsPage.Lanes) != 1 || prsPage.Lanes[0].RunURL != "/reports" {
-		t.Fatalf("external RunURL not neutralized: %+v", prsPage.Lanes)
+	if len(prsPage.Lanes) != 2 || prsPage.Lanes[0].RunURL != "" || prsPage.Lanes[1].RunURL != "" {
+		t.Fatalf("unsafe/root RunURL not neutralized to empty: %+v", prsPage.Lanes)
 	}
 
 	// ServeHome, ServeRepo, and ServeKPIOverview reject overflowing pages & malformed queries with 400.
@@ -1371,5 +1394,230 @@ func TestKPIURLAndPaginationHardening(t *testing.T) {
 	}
 	if strings.Contains(string(mainLaneHTML), "PR false-red rate") {
 		t.Fatal("main-only single-lane page must hide empty PR false-red rate card")
+	}
+	if !strings.Contains(string(mainLaneHTML), "Low sample") {
+		t.Fatal("single-lane page with n=1 run must display Low sample badge instead of red Action needed")
+	}
+	if strings.Contains(string(mainLaneHTML), "Lanes in Mobile") {
+		t.Fatal("single-lane page must hide redundant 1-row Lanes table")
+	}
+
+	// RenderKPIFlaky, GitHub URL validation, and per-repo scorecard Timeouts isolation.
+	flakyParams, _ := kpi.ParseFlakyParams(url.Values{"repo": {"mattermost/desktop"}}, now)
+	flakyPage := BuildKPIFlakyPage(SiteInfo{}, kpi.FilterOptions{Repos: []string{"mattermost/desktop"}}, kpi.FlakyResponse{
+		Filters:         flakyParams,
+		WindowDays:      14,
+		MinFlakyCommits: 2,
+		Pagination:      kpi.Pagination{Page: 1, Limit: 50, Total: 1, TotalPages: 1},
+		Tests: []kpi.FlakyTestRow{{
+			TestID: "t-flaky-1", ZephyrKey: strPtr("MM-T4055"), File: "e2e/links.spec.ts",
+			FullTitle: "Links > opens external URL", Repository: "mattermost/desktop",
+			Framework: "playwright", FlakyCommitCount: 3, TotalCommitCount: 4, TotalRuns: 5,
+			FlakeRate: 75.0, LastFlakyAt: now.Add(-2 * time.Hour), LastCommitSHA: "abcdef1234567",
+			Lanes: []string{"desktop-pr"},
+		}},
+	}, now)
+	flakyHTML, err := RenderKPIFlaky(flakyPage)
+	if err != nil {
+		t.Fatalf("RenderKPIFlaky: %v", err)
+	}
+	fs := string(flakyHTML)
+	for _, want := range []string{`Flaky Tests`, `MM-T4055`, `3 / 4`, `75.0%`, `desktop-pr`, `https://github.com/mattermost/desktop/commit/abcdef1234567`, `Page 1 of 1`} {
+		if !strings.Contains(fs, want) {
+			t.Fatalf("RenderKPIFlaky missing %q", want)
+		}
+	}
+	if githubPRURL("../evil", 10) != "" || githubCommitURL("mattermost/desktop", "not-a-sha!") != "" {
+		t.Fatal("GitHub URL helpers must reject unsafe repo slugs or non-hex SHAs")
+	}
+	ovAllParams, _ := kpi.ParseFailuresParams(url.Values{}, now)
+	ovTimeoutPage := BuildKPIOverviewPage(SiteInfo{}, kpi.FilterOptions{Repos: []string{"mattermost/mattermost"}}, kpi.SummaryResponse{
+		Filters: ovAllParams,
+		MainPassRate: kpi.MainPassRate{ByLane: []kpi.MainLaneRow{
+			{App: "mattermost", Repository: "mattermost/mattermost", Lane: "main", LanesPassed: 5, LanesTotal: 5, OrchestratedRuns: 5},
+		}},
+		Triage: &kpi.TriageSummary{RunCompletion: kpi.RunCompletionSummary{
+			TotalRuns: 10, TimedOutRuns: 9, TimedOutByRepo: map[string]int{"mattermost/mattermost": 2},
+		}},
+	}, kpi.FailuresResponse{Filters: ovAllParams}, now)
+	if len(ovTimeoutPage.RepoScorecard) != 1 || ovTimeoutPage.RepoScorecard[0].TimeoutsText != "2" {
+		t.Fatalf("expected per-repo timeouts '2' (not global 9), got %+v", ovTimeoutPage.RepoScorecard)
+	}
+}
+
+func TestKPIHardeningPass_P0AndP1(t *testing.T) {
+	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+
+	// P0-1, P0-2, P0-4, P1-2, P1-6 on Overview:
+	// - Single-lane pulse names repo+lane and marks low sample
+	// - Window != 14d qualifies flaky count with (14d) and kpiFlakyHref stays on 14d
+	// - PR run time completion uses PRRunCompletion (stage='pr'), never all-stage RunCompletion
+	// - ShowAll preserved on RepoTabs / WindowPills / failure drilldown links
+	// - Lane filter without Repo still enables ShowLaneSelect and keeps All Repos inactive
+	ovParams, err := kpi.ParseFailuresParams(url.Values{
+		"repo":   {"mattermost/mattermost-mobile"},
+		"lane":   {"mobile-main-detox-android"},
+		"window": {"7d"},
+	}, now)
+	if err != nil {
+		t.Fatalf("ParseFailuresParams: %v", err)
+	}
+	prComp := 90.0
+	allComp := 50.0
+	ovPage := BuildKPIOverviewPageWithShow(
+		SiteInfo{},
+		kpi.FilterOptions{Repos: []string{"mattermost/mattermost", "mattermost/mattermost-mobile"}},
+		kpi.SummaryResponse{
+			Filters: ovParams,
+			MainPassRate: kpi.MainPassRate{
+				LaneLevel: kpi.LaneLevelPassRate{PassedLanes: 0, TotalLanes: 1, PassRate: floatPtr(0)},
+			},
+			FlakyTests:  kpi.FlakySummary{Count: 3},
+			E2EDuration: kpi.E2EDurationSummary{SampleCount: 10, P50Ms: floatPtr(60000), P90Ms: floatPtr(90000)},
+			Triage: &kpi.TriageSummary{
+				RunCompletion: kpi.RunCompletionSummary{
+					TotalRuns: 100, CompletedRuns: 50, TimedOutRuns: 10, CompletionRate: &allComp,
+				},
+				PRRunCompletion: &kpi.RunCompletionSummary{
+					TotalRuns: 10, CompletedRuns: 9, TimedOutRuns: 1, CompletionRate: &prComp,
+				},
+			},
+		},
+		kpi.FailuresResponse{
+			Filters: ovParams,
+			Failures: []kpi.RecurringFailureRow{
+				{SignatureID: "sig-show", NormalizedMessage: "detox crash", State: kpi.FailureStateActive, OccurrenceCount: 2, LastSeenAt: now},
+			},
+		},
+		now,
+		true,
+	)
+	if !strings.Contains(ovPage.PulseSummary, "Mobile · mobile-main-detox-android (7d): Main pass rate 0.0% (low sample) · 3 flaky tests (14d)") {
+		t.Fatalf("unexpected PulseSummary: %q", ovPage.PulseSummary)
+	}
+	if strings.Contains(ovPage.FlakyHref, "window=7d") {
+		t.Fatalf("FlakyHref must pin to default 14d (no window=7d), got %q", ovPage.FlakyHref)
+	}
+	if ovPage.E2EDuration.CompletedRuns != 9 || ovPage.E2EDuration.TimedOutRuns != 1 || ovPage.E2EDuration.CompletionRate != "90.0%" {
+		t.Fatalf("PR run time card must use PRRunCompletion (9/1/90%%), got %+v", ovPage.E2EDuration)
+	}
+	if !strings.Contains(ovPage.Failures[0].Href, "show=all") {
+		t.Fatalf("failure link must preserve show=all, got %q", ovPage.Failures[0].Href)
+	}
+	if len(ovPage.Filters.WindowPills) == 0 || !strings.Contains(ovPage.Filters.WindowPills[0].Href, "show=all") {
+		t.Fatalf("window pills must preserve show=all, got %+v", ovPage.Filters.WindowPills)
+	}
+
+	// Lane-only URL without repo= must not select All Repos and must keep lane dropdown visible.
+	laneOnlyParams, _ := kpi.ParseFailuresParams(url.Values{"lane": {"mobile-main-detox-android"}}, now)
+	laneOnlyPage := BuildKPIOverviewPage(SiteInfo{}, kpi.FilterOptions{
+		Repos: []string{"mattermost/mattermost-mobile"},
+		Lanes: []string{"mobile-main-detox-android"},
+	}, kpi.SummaryResponse{Filters: laneOnlyParams}, kpi.FailuresResponse{Filters: laneOnlyParams}, now)
+	if !laneOnlyPage.Filters.ShowLaneSelect || laneOnlyPage.Filters.RepoTabs[0].Active {
+		t.Fatalf("lane-only view: ShowLaneSelect=%v AllReposActive=%v", laneOnlyPage.Filters.ShowLaneSelect, laneOnlyPage.Filters.RepoTabs[0].Active)
+	}
+
+	// P0-3 on /kpi/prs: resolved via newer commit -> Newer commit green (never "Fixed"); partial main -> "Some errors on main".
+	prParams, _ := kpi.ParsePRsRedParams(url.Values{}, now)
+	prsPage := BuildKPIPRsPage(SiteInfo{}, kpi.FilterOptions{}, kpi.PRRedResponse{
+		Filters: prParams,
+		Lanes: []kpi.RedPRLaneRow{
+			{
+				ReportGroupID: "rg-1", Repository: "mattermost/mattermost", Lane: "e2e-pr", GHPRNumber: 42,
+				CommitSHA: "abcdef1234567", Settled: true, StillRed: false, WentGreenOnRerun: false,
+				FailingOnMain: true, AllSignaturesFailingElsewhere: false, Reason: kpi.ReasonOther,
+				CreatedAt: now.Add(-30 * time.Hour),
+			},
+		},
+	}, now)
+	if prsPage.Lanes[0].StatusLabel != "Newer commit green" {
+		t.Fatalf("resolved non-rerun row StatusLabel = %q, want 'Newer commit green'", prsPage.Lanes[0].StatusLabel)
+	}
+	if prsPage.Lanes[0].CauseLabel != "Some errors on main" {
+		t.Fatalf("partial main failure CauseLabel = %q, want 'Some errors on main'", prsPage.Lanes[0].CauseLabel)
+	}
+
+	// P0-4 & P0-6 & P1-4 on /kpi/flaky: default 14d does not leak ?window=14d back to Overview/PRs/RepoHref; renders LastRunURL and CI runs header.
+	flakyParams, _ := kpi.ParseFlakyParams(url.Values{"repo": {"mattermost/mattermost"}}, now)
+	flakyPage := BuildKPIFlakyPage(SiteInfo{}, kpi.FilterOptions{}, kpi.FlakyResponse{
+		Filters:    flakyParams,
+		WindowDays: 14,
+		Tests: []kpi.FlakyTestRow{{
+			TestID: "t-1", FullTitle: "Test > flaky", Repository: "mattermost/mattermost",
+			LastFlakyAt: now, LastCommitSHA: "abcdef1234567", LastRunURL: "/reports/mattermost/main/abcdef1/e2e",
+			Lanes: []string{"e2e-pw"},
+		}},
+	}, now)
+	if strings.Contains(flakyPage.OverviewHref, "window=14d") || strings.Contains(flakyPage.PRsHref, "window=14d") || strings.Contains(flakyPage.Tests[0].RepoHref, "window=14d") {
+		t.Fatalf("flaky page leaked window=14d into links: ov=%q prs=%q repo=%q", flakyPage.OverviewHref, flakyPage.PRsHref, flakyPage.Tests[0].RepoHref)
+	}
+	flakyHTML, err := RenderKPIFlaky(flakyPage)
+	if err != nil {
+		t.Fatalf("RenderKPIFlaky: %v", err)
+	}
+	for _, want := range []string{`>CI runs</th>`, `href="/reports/mattermost/main/abcdef1/e2e"`, `Run &rarr;`} {
+		if !strings.Contains(string(flakyHTML), want) {
+			t.Fatalf("RenderKPIFlaky missing %q", want)
+		}
+	}
+
+	// P0-6, P1-2, P1-3, P1-5, P1-7 on Failure Detail:
+	// - Root breadcrumb links to /kpi (no repo/lane) with show=all
+	// - Multi-repo PR chips leave Href empty while FirstSeen retains explicit PRURL
+	// - LatestRunURL renders View latest run
+	// - Low-sample 14d rate does not repeat occurrences/runs twice
+	failParams, _ := kpi.ParseFailureDetailParams(url.Values{"repo": {"mattermost/mattermost"}, "lane": {"e2e-pw"}}, now)
+	rate1k := 1000.0
+	prNum := 888
+	detailPage := BuildKPIFailureDetailPageWithShow(SiteInfo{}, kpi.FailureDetailResponse{
+		Filters:           failParams,
+		ErrorClass:        strPtr("TimeoutError"),
+		NormalizedMessage: "timeout waiting for selector",
+		OccurrenceCount:   33,
+		AffectedTestRuns:  33,
+		AffectedTestCount: 3,
+		RatePer1k:         &rate1k,
+		Occurrences14d:    33,
+		AffectedRuns14d:   33,
+		RatePer1k14d:      &rate1k,
+		FirstSeen: kpi.FailureFirstSeen{
+			FirstSeenAt: now.Add(-7 * 24 * time.Hour),
+			Repository:  strPtr("mattermost/mattermost"),
+			GHPRNumber:  &prNum,
+			RunURL:      "/reports/mattermost/main/1111111/e2e-pw",
+		},
+		LatestRunURL: "/reports/mattermost/main/2222222/e2e-pw",
+		AffectedRepos: []kpi.FailureAffectedRepo{
+			{Repository: "mattermost/mattermost", App: "mattermost"},
+			{Repository: "mattermost/desktop", App: "desktop"},
+		},
+		PRNumbers: []int{888, 101},
+		LatestVerdict: &kpi.FailureVerdict{
+			Label:     "cleared",
+			CreatedAt: now.Add(-time.Hour),
+		},
+	}, now, true)
+	if detailPage.Breadcrumbs[0].Href != "/kpi?show=all" || detailPage.Breadcrumbs[1].Href != "/kpi?repo=mattermost%2Fmattermost&show=all" {
+		t.Fatalf("unexpected breadcrumbs: %+v", detailPage.Breadcrumbs)
+	}
+	if detailPage.PRLinks[0].Href != "" || !strings.Contains(detailPage.FirstSeen.PRURL, "/mattermost/mattermost/pull/888") {
+		t.Fatalf("multi-repo PR links must stay unlinked while FirstSeen keeps PRURL: links=%+v fs=%+v", detailPage.PRLinks, detailPage.FirstSeen)
+	}
+	if detailPage.Current14dText != "100% (33 of 33 affected test runs)" {
+		t.Fatalf("Current14dText = %q, want compact non-redundant format", detailPage.Current14dText)
+	}
+	detailHTML, err := RenderKPIFailureDetail(detailPage)
+	if err != nil {
+		t.Fatalf("RenderKPIFailureDetail: %v", err)
+	}
+	ds := string(detailHTML)
+	for _, want := range []string{`Impact (Last 30d) &amp; 14d trend`, `View latest run &rarr;`, `/reports/mattermost/main/2222222/e2e-pw`} {
+		if !strings.Contains(ds, want) {
+			t.Fatalf("RenderKPIFailureDetail missing %q", want)
+		}
+	}
+	if strings.Contains(ds, "· <time") && strings.Contains(ds, ">\n      · <time") {
+		t.Fatal("empty DecidedBy must not produce leading middot")
 	}
 }

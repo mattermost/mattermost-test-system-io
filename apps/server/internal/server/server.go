@@ -325,6 +325,7 @@ func Build(d Deps) chi.Router {
 			r.Use(kpiLimiter.Middleware)
 			r.Get("/kpi", htmlH.ServeKPIOverview)
 			r.Get("/kpi/prs", htmlH.ServeKPIPRs)
+			r.Get("/kpi/flaky", htmlH.ServeKPIFlaky)
 			r.Get("/kpi/failures/{id}", htmlH.ServeKPIFailureDetail)
 		})
 		r.Get("/reports/fragment/home-live", htmlH.ServeHomeLiveFragment)

@@ -181,6 +181,19 @@ type sigUpsertRow struct {
 	firstSeen time.Time
 }
 
+var minValidTestTimestamp = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+func normalizeCaseSeenAt(startTime *time.Time, defaultSeen time.Time) time.Time {
+	if startTime == nil || startTime.IsZero() {
+		return defaultSeen
+	}
+	ts := startTime.UTC()
+	if ts.Before(minValidTestTimestamp) || ts.After(defaultSeen.Add(24*time.Hour)) {
+		return defaultSeen
+	}
+	return ts
+}
+
 // ResolveCaseIdentities derives test_key and algo_version=2 failure signatures
 // for each case, bulk-upserts unique tests and failure_signatures inside tx in
 // deterministic sorted order, and returns one TestIdentity per input case.
@@ -190,8 +203,9 @@ type sigUpsertRow struct {
 // ResolveCaseIdentities rather than holding it open across suite/case writes):
 // upsertTestsTx acquires row locks on existing shared `tests` rows via ON
 // CONFLICT DO UPDATE, and upsertFailureSignaturesTx relies on ON CONFLICT
-// (fingerprint) DO NOTHING followed by SELECT, which needs per-statement
-// snapshot refresh to see rows committed concurrently by other shards.
+// (fingerprint) DO UPDATE (preserving earliest first_seen_at) followed by SELECT,
+// which needs per-statement snapshot refresh to see rows committed concurrently
+// by other shards.
 func ResolveCaseIdentities(
 	ctx context.Context, tx pgx.Tx, meta IdentityMeta, cases []CaseIdentityInput,
 ) ([]TestIdentity, error) {
@@ -211,10 +225,7 @@ func ResolveCaseIdentities(
 	caseFPs := make([]string, len(cases))
 
 	for i, c := range cases {
-		seenAt := defaultSeen
-		if c.StartTime != nil && !c.StartTime.IsZero() {
-			seenAt = c.StartTime.UTC()
-		}
+		seenAt := normalizeCaseSeenAt(c.StartTime, defaultSeen)
 		normFile := NormalizeTestFile(c.File)
 		normTitle := NormalizeTestTitle(c.FullTitle)
 		if normTitle == "" {
@@ -401,7 +412,10 @@ func upsertFailureSignaturesTx(
 		       NULLIF(u.top_frame, ''), NULLIF(u.sample_message, ''), u.first_seen_at, $8
 		FROM UNNEST($1::text[], $2::smallint[], $3::text[], $4::text[], $5::text[], $6::text[], $7::timestamptz[])
 		     AS u(fingerprint, algo_version, error_class, normalized_message, top_frame, sample_message, first_seen_at)
-		ON CONFLICT (fingerprint) DO NOTHING
+		ON CONFLICT (fingerprint) DO UPDATE SET
+			first_seen_at = EXCLUDED.first_seen_at,
+			first_seen_report_group_id = COALESCE(EXCLUDED.first_seen_report_group_id, failure_signatures.first_seen_report_group_id)
+		WHERE EXCLUDED.first_seen_at < failure_signatures.first_seen_at
 	`, fps, algos, errClasses, normMsgs, topFrames, sampleMsgs, firstSeens, groupID); err != nil {
 		return nil, fmt.Errorf("insert failure_signatures: %w", err)
 	}

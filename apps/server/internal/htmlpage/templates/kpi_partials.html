@@ -1,10 +1,3 @@
-{{define "kpi-subnav"}}
-<nav class="kpi-subnav" aria-label="KPI sections">
-  <a href="{{.OverviewHref}}" class="kpi-subnav-link{{if eq .Active "overview"}} is-active{{end}}">Overview</a>
-  <a href="{{.PRsHref}}" class="kpi-subnav-link{{if eq .Active "prs"}} is-active{{end}}">PR E2E</a>
-</nav>
-{{end}}
-
 {{define "kpi-filter-bar"}}
 <section class="kpi-nav-bar" aria-label="KPI navigation and time window">
   <div class="kpi-nav-row">

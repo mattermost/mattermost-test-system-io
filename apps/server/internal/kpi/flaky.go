@@ -275,7 +275,8 @@ func (s *Store) queryFlakyTestRows(ctx context.Context, q dbQuerier, f FilterPar
 				MAX(c.last_seen_at) AS last_seen_at,
 				SUM(c.run_count)::integer AS commit_runs,
 				(SUM(c.pass_count) > 0 AND SUM(c.fail_count) > 0) AS is_mixed,
-				ARRAY_AGG(DISTINCT c.lane) AS commit_lanes
+				ARRAY_AGG(DISTINCT c.lane) AS commit_lanes,
+				COALESCE(ARRAY_AGG(DISTINCT c.lane) FILTER (WHERE c.fail_count > 0), '{}'::text[]) AS fail_lanes
 			  FROM kpi_test_commit_outcomes c
 			 WHERE `+where.String()+`
 			 GROUP BY c.repository, c.commit_sha, c.test_id, c.project, c.platform
@@ -359,7 +360,14 @@ func (s *Store) queryFlakyTestRows(ctx context.Context, q dbQuerier, f FilterPar
 			p.flake_rate,
 			p.last_flaky_at,
 			p.last_commit_sha,
-			COALESCE(tl.lanes, '{}'::text[])
+			COALESCE(tl.lanes, '{}'::text[]),
+			COALESCE((
+				SELECT ARRAY_AGG(DISTINCT fl ORDER BY fl)
+				  FROM commit_agg ca2
+				 CROSS JOIN LATERAL UNNEST(ca2.fail_lanes) AS fl
+				 WHERE ca2.test_id = p.test_id AND ca2.project = p.project AND ca2.platform = p.platform
+				   AND ca2.is_mixed AND ca2.commit_sha = p.last_commit_sha
+			), '{}'::text[])
 		  FROM paged p
 		  LEFT JOIN test_lanes tl
 		    ON tl.test_id = p.test_id AND tl.project = p.project AND tl.platform = p.platform
@@ -372,20 +380,127 @@ func (s *Store) queryFlakyTestRows(ctx context.Context, q dbQuerier, f FilterPar
 	defer rows.Close()
 
 	out := []FlakyTestRow{}
+	lastFlakyLanes := [][]string{}
 	for rows.Next() {
 		var r FlakyTestRow
+		var lastLanes []string
 		if err := rows.Scan(
 			&r.TestID, &r.TestKey, &r.ZephyrKey, &r.File, &r.FullTitle,
 			&r.Repository, &r.App, &r.Framework, &r.Project, &r.Platform,
 			&r.FlakyCommitCount, &r.TotalCommitCount, &r.TotalRuns,
-			&r.FlakeRate, &r.LastFlakyAt, &r.LastCommitSHA, &r.Lanes,
+			&r.FlakeRate, &r.LastFlakyAt, &r.LastCommitSHA, &r.Lanes, &lastLanes,
 		); err != nil {
 			return nil, fmt.Errorf("scan flaky test row: %w", err)
 		}
 		r.Lanes = ensureNonNilSlice(r.Lanes)
 		out = append(out, r)
+		lastFlakyLanes = append(lastFlakyLanes, ensureNonNilSlice(lastLanes))
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.populateFlakyLastRunURLs(ctx, q, f, out, lastFlakyLanes); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Store) populateFlakyLastRunURLs(
+	ctx context.Context,
+	q dbQuerier,
+	f FilterParams,
+	rows []FlakyTestRow,
+	lastFlakyLanes [][]string,
+) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	type repoSHA struct{ repo, sha string }
+	seen := make(map[repoSHA]struct{}, len(rows))
+	repos := make([]string, 0, len(rows))
+	shas := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if r.Repository == "" || r.LastCommitSHA == "" {
+			continue
+		}
+		k := repoSHA{repo: r.Repository, sha: r.LastCommitSHA}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		repos = append(repos, r.Repository)
+		shas = append(shas, r.LastCommitSHA)
+	}
+	if len(repos) == 0 {
+		return nil
+	}
+
+	b := &sqlFilterBuilder{}
+	reposPH := b.add(repos)
+	shasPH := b.add(shas)
+	fromPH := b.add(f.CurFromDate)
+	toPH := b.add(f.CurToDate)
+	stageFilter := ""
+	if f.Stage != "" {
+		stageFilter = " AND rg.stage = " + b.add(f.Stage)
+	}
+	dbRows, err := q.Query(ctx, `
+		SELECT DISTINCT ON (rg.repository, rg.commit_sha, rg.name)
+		       rg.repository, rg.commit_sha, COALESCE(rg.branch, ''), rg.name,
+		       COALESCE(rg.run_group, ''), COALESCE(rg.gh_run_id, ''), COALESCE(rg.gh_run_attempt, '')
+		  FROM UNNEST(`+reposPH+`::text[], `+shasPH+`::text[]) AS u(repo, sha)
+		  JOIN report_groups rg
+		    ON rg.repository = u.repo AND rg.commit_sha = u.sha
+		 WHERE (rg.created_at AT TIME ZONE 'UTC')::date >= `+fromPH+`
+		   AND (rg.created_at AT TIME ZONE 'UTC')::date <= `+toPH+stageFilter+`
+		 ORDER BY rg.repository, rg.commit_sha, rg.name, rg.created_at DESC
+	`, b.args...)
+	if err != nil {
+		return fmt.Errorf("query flaky last run urls: %w", err)
+	}
+	defer dbRows.Close()
+
+	type runEntry struct {
+		lane string
+		url  string
+	}
+	byKey := map[repoSHA][]runEntry{}
+	for dbRows.Next() {
+		var repo, sha, branch, name, runGroup, ghRunID, ghRunAttempt string
+		if err := dbRows.Scan(&repo, &sha, &branch, &name, &runGroup, &ghRunID, &ghRunAttempt); err != nil {
+			return fmt.Errorf("scan flaky last run url: %w", err)
+		}
+		u := buildRunURL(repo, branch, sha, name, runGroup, ghRunID, ghRunAttempt)
+		if u != "/" {
+			k := repoSHA{repo: repo, sha: sha}
+			byKey[k] = append(byKey[k], runEntry{lane: name, url: u})
+		}
+	}
+	if err := dbRows.Err(); err != nil {
+		return fmt.Errorf("iterate flaky last run urls: %w", err)
+	}
+
+	for i := range rows {
+		entries := byKey[repoSHA{repo: rows[i].Repository, sha: rows[i].LastCommitSHA}]
+		if len(entries) == 0 {
+			continue
+		}
+		matchLanes := rows[i].Lanes
+		if i < len(lastFlakyLanes) && len(lastFlakyLanes[i]) > 0 {
+			matchLanes = lastFlakyLanes[i]
+		}
+		laneSet := make(map[string]struct{}, len(matchLanes))
+		for _, ln := range matchLanes {
+			laneSet[ln] = struct{}{}
+		}
+		for _, e := range entries {
+			if _, ok := laneSet[e.lane]; ok {
+				rows[i].LastRunURL = e.url
+				break
+			}
+		}
+	}
+	return nil
 }
 
 func safePageOffset(page, limit int) (int, bool) {

@@ -12,6 +12,7 @@ import {
   GitPullRequest,
   Play,
   ExternalLink,
+  BarChart3,
 } from 'lucide-react';
 import {
   formatDuration,
@@ -606,6 +607,22 @@ export function ReportSummary(props: ReportSummaryProps) {
             >
               <Play className="h-3 w-3" />
               Job {ghJobId}
+            </a>
+          )}
+          <a
+            href={`/kpi?repo=${encodeURIComponent(repository)}`}
+            className="inline-flex items-center gap-1.5 px-2 py-1 bg-gray-100 rounded-md text-xs text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 transition-colors"
+          >
+            <BarChart3 className="h-3 w-3" />
+            Repo KPIs
+          </a>
+          {name && (
+            <a
+              href={`/kpi?lane=${encodeURIComponent(name)}&repo=${encodeURIComponent(repository)}`}
+              className="inline-flex items-center gap-1.5 px-2 py-1 bg-gray-100 rounded-md text-xs text-gray-700 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 transition-colors"
+            >
+              <BarChart3 className="h-3 w-3" />
+              Lane KPIs
             </a>
           )}
         </div>

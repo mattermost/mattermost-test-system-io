@@ -16,6 +16,8 @@ type KPIRepoScorecardRow struct {
 	Repository      string
 	DisplayName     string
 	Href            string
+	PRsHref         string
+	FlakyHref       string
 	RunnersSummary  string
 	IsOrchestrated  bool
 	MainRunPassText string
@@ -35,6 +37,7 @@ type KPIRepoScorecardRow struct {
 type KPILaneBreakdownRow struct {
 	Lane           string
 	Href           string
+	PRsHref        string
 	Stage          string
 	RunsCount      int
 	RunPassText    string
@@ -84,13 +87,15 @@ type KPIPRFalseRedCard struct {
 
 // KPIFlakyCard holds KPI 3 card data (single-repo view).
 type KPIFlakyCard struct {
-	HasData     bool
-	HealthLabel string
-	HealthClass string
-	Count       int
-	Delta       string
-	DeltaClass  string
-	RuleNote    string
+	HasData      bool
+	HealthLabel  string
+	HealthClass  string
+	Count        int
+	Delta        string
+	DeltaClass   string
+	BaselineNote string
+	RuleNote     string
+	FlakyHref    string
 }
 
 // KPIDurationCard holds KPI 5 + run completion card data (orchestrated repos).
@@ -137,12 +142,14 @@ type KPIOverviewPage struct {
 	Filters           KPIFilterBar
 	OverviewHref      string
 	PRsHref           string
+	FlakyHref         string
 	IsAllRepos        bool
 	ActiveRepoLabel   string
 	PulseSummary      string
 	HasScorecard      bool
 	RepoScorecard     []KPIRepoScorecardRow
 	HasLaneRows       bool
+	LaneCountText     string
 	LaneRows          []KPILaneBreakdownRow
 	MainPass          KPIMainPassCard
 	PRFalseRed        KPIPRFalseRedCard
@@ -196,11 +203,11 @@ func BuildKPIOverviewPageWithShow(
 	if filterParams.Window == "" {
 		filterParams = summary.Filters
 	}
-	filterBar := buildKPIFilterBar(filterParams, opts, "/kpi", kpi.SortOccurrencesDesc, kpiOverviewSortOptions)
-	filterBar.State.ShowAll = showAll
+	filterBar := buildKPIFilterBarWithShow(filterParams, opts, "/kpi", kpi.SortOccurrencesDesc, kpiOverviewSortOptions, showAll)
 
 	overviewHref := kpiHref("/kpi", filterBar.State, 1, "", false)
 	prsHref := kpiHref("/kpi/prs", filterBar.State, 1, "", false)
+	flakyHref := kpiFlakyHref(filterBar.State)
 	activeOnlyHref := kpiOverviewHref(filterBar.State, false)
 	showAllHref := kpiOverviewHref(filterBar.State, true)
 
@@ -214,86 +221,21 @@ func BuildKPIOverviewPageWithShow(
 	case filterBar.State.Lane != "":
 		activeRepoLabel = filterBar.State.Lane
 	}
+	pulseScopeLabel := activeRepoLabel
+	if filterBar.State.Lane != "" && activeRepoLabel != "" && activeRepoLabel != filterBar.State.Lane {
+		pulseScopeLabel = activeRepoLabel + " · " + filterBar.State.Lane
+	}
 
 	scorecard := buildRepoScorecard(opts, summary, filterBar.State)
-	laneRows := buildLaneBreakdown(summary, filterBar.State)
-
-	// Single-repo cards.
-	tl := summary.MainPassRate.TestLevel
-	ll := summary.MainPassRate.LaneLevel
-	mainRate := formatPct(ll.PassRate)
-	mainDelta := formatDeltaPP(ll.DeltaPP)
-	mainDeltaClass := deltaClassHigherGood(ll.DeltaPP)
-	mainHealthLabel, mainHealthClass := healthBadgeHigherGood(ll.PassRate, 90, 75)
-	if ll.TotalLanes == 0 && tl.TotalTests > 0 {
-		mainRate = formatPct(tl.PassRate)
-		mainDelta = formatDeltaPP(tl.DeltaPP)
-		mainDeltaClass = deltaClassHigherGood(tl.DeltaPP)
-		mainHealthLabel, mainHealthClass = healthBadgeHigherGood(tl.PassRate, 95, 85)
-	}
-	mainMeta := fmt.Sprintf(
-		"%d of %s green · %s first-try tests (%d/%d)",
-		ll.PassedLanes,
-		pluralize(ll.TotalLanes, "run", "runs"),
-		formatPct(tl.PassRate),
-		tl.FirstAttemptPassed,
-		tl.TotalTests,
-	)
-	mainCard := KPIMainPassCard{
-		ShowCard:           true,
-		HasData:            tl.TotalTests > 0 || ll.TotalLanes > 0,
-		HealthLabel:        mainHealthLabel,
-		HealthClass:        mainHealthClass,
-		PrimaryRate:        mainRate,
-		PrimaryDelta:       mainDelta,
-		DeltaClass:         mainDeltaClass,
-		PrimaryMeta:        mainMeta,
-		FirstAttemptPassed: tl.FirstAttemptPassed,
-		TotalTests:         tl.TotalTests,
-		LaneRate:           formatPct(ll.PassRate),
-		LanePassed:         ll.PassedLanes,
-		LaneTotal:          ll.TotalLanes,
-		HasStrict:          ll.StrictTotalLanes > 0,
-		StrictRate:         formatPct(ll.StrictPassRate),
-		StrictPassed:       ll.StrictPassedLanes,
-		StrictTotal:        ll.StrictTotalLanes,
+	var laneRows []KPILaneBreakdownRow
+	if filterBar.State.Lane == "" {
+		laneRows = buildLaneBreakdown(summary, filterBar.State)
 	}
 
+	mainCard := buildMainPassCard(summary.MainPassRate)
 	prCard := buildPRFalseRedCard(summary.PRFalseRed, prsHref)
-
-	flakyHasData := summary.LaneCoverage.TotalRuns > 0 || summary.FlakyTests.Count > 0
-	var flakyHealthLabel, flakyHealthClass string
-	if flakyHasData {
-		cnt := float64(summary.FlakyTests.Count)
-		flakyHealthLabel, flakyHealthClass = healthBadgeLowerGood(&cnt, 0, 5)
-	}
-	flakyCard := KPIFlakyCard{
-		HasData:     flakyHasData,
-		HealthLabel: flakyHealthLabel,
-		HealthClass: flakyHealthClass,
-		Count:       summary.FlakyTests.Count,
-		Delta:       formatSignedIntDelta(summary.FlakyTests.Delta),
-		DeltaClass:  deltaIntLowerGoodClass(summary.FlakyTests.Delta),
-		RuleNote:    "Trailing 14d · passed & failed on same commit ≥2 times",
-	}
-
-	dur := summary.E2EDuration
-	durCard := KPIDurationCard{
-		ShowCard:      dur.SampleCount > 0 || summary.LaneCoverage.OrchestratedRuns > 0,
-		HasData:       dur.SampleCount > 0 && dur.P50Ms != nil,
-		P50:           formatDurationMs(dur.P50Ms),
-		P50Delta:      formatDeltaDurationMs(dur.DeltaP50Ms),
-		P50DeltaClass: deltaClassLowerGood(dur.DeltaP50Ms),
-		P90:           formatDurationMs(dur.P90Ms),
-		SampleCount:   dur.SampleCount,
-		SampleText:    pluralize(dur.SampleCount, "orchestrated PR run", "orchestrated PR runs"),
-	}
-	if summary.Triage != nil && summary.Triage.RunCompletion.TotalRuns > 0 {
-		rc := summary.Triage.RunCompletion
-		durCard.TimedOutRuns = rc.TimedOutRuns
-		durCard.CompletedRuns = rc.CompletedRuns
-		durCard.CompletionRate = formatPct(rc.CompletionRate)
-	}
+	flakyCard := buildFlakyCard(summary, flakyHref)
+	durCard := buildDurationCard(summary)
 
 	recSum := failures.Summary
 	if summary.RecurringFailures != nil {
@@ -318,12 +260,16 @@ func BuildKPIOverviewPageWithShow(
 		}
 	}
 
-	weeklyBars, chartW := buildWeeklyChartBars(summary.WeeklySeries)
+	minWeeklyActive := 1
+	if filterBar.State.Lane != "" {
+		minWeeklyActive = 2
+	}
+	weeklyBars, chartW := buildWeeklyChartBars(summary.WeeklySeries, minWeeklyActive)
 
 	failureRows := buildFailureTableRows(failures.Failures, filterBar.State, now)
 	pag := buildKPIPagination(filterBar.State, failures.Pagination.Page, failures.Pagination.Limit, failures.Pagination.Total, failures.Pagination.TotalPages)
 
-	pulse := buildOverviewPulse(isAllRepos, activeRepoLabel, filterBar.State.Window, scorecard, mainCard, flakyCard, activeTotal)
+	pulse := buildOverviewPulse(isAllRepos, pulseScopeLabel, filterBar.State.Window, scorecard, mainCard, flakyCard, activeTotal)
 
 	return KPIOverviewPage{
 		Title:             "KPIs · Test System IO",
@@ -331,12 +277,14 @@ func BuildKPIOverviewPageWithShow(
 		Filters:           filterBar,
 		OverviewHref:      overviewHref,
 		PRsHref:           prsHref,
+		FlakyHref:         flakyHref,
 		IsAllRepos:        isAllRepos,
 		ActiveRepoLabel:   activeRepoLabel,
 		PulseSummary:      pulse,
 		HasScorecard:      len(scorecard) > 0,
 		RepoScorecard:     scorecard,
 		HasLaneRows:       len(laneRows) > 0,
+		LaneCountText:     pluralize(len(laneRows), "active lane", "active lanes"),
 		LaneRows:          laneRows,
 		MainPass:          mainCard,
 		PRFalseRed:        prCard,
@@ -367,9 +315,104 @@ func BuildKPIOverviewPageWithShow(
 	}
 }
 
+func buildMainPassCard(mp kpi.MainPassRate) KPIMainPassCard {
+	tl := mp.TestLevel
+	ll := mp.LaneLevel
+	mainRate := formatPct(ll.PassRate)
+	mainDelta := formatDeltaPP(ll.DeltaPP)
+	mainDeltaClass := deltaClassHigherGood(ll.DeltaPP)
+	mainHealthLabel, mainHealthClass := healthBadgeHigherGood(ll.PassRate, 90, 75)
+	if ll.TotalLanes > 0 && ll.TotalLanes < 3 {
+		mainHealthLabel = kpiLabelLowSample
+		mainHealthClass = kpiBadgeNeutral
+	}
+	if ll.TotalLanes == 0 && tl.TotalTests > 0 {
+		mainRate = formatPct(tl.PassRate)
+		mainDelta = formatDeltaPP(tl.DeltaPP)
+		mainDeltaClass = deltaClassHigherGood(tl.DeltaPP)
+		mainHealthLabel, mainHealthClass = healthBadgeHigherGood(tl.PassRate, 95, 85)
+		if tl.TotalTests < 10 {
+			mainHealthLabel = kpiLabelLowSample
+			mainHealthClass = kpiBadgeNeutral
+		}
+	}
+	mainMeta := fmt.Sprintf(
+		"%d of %s green · %s first-try tests (%d/%d)",
+		ll.PassedLanes,
+		pluralize(ll.TotalLanes, "run", "runs"),
+		formatPct(tl.PassRate),
+		tl.FirstAttemptPassed,
+		tl.TotalTests,
+	)
+	return KPIMainPassCard{
+		ShowCard:           true,
+		HasData:            tl.TotalTests > 0 || ll.TotalLanes > 0,
+		HealthLabel:        mainHealthLabel,
+		HealthClass:        mainHealthClass,
+		PrimaryRate:        mainRate,
+		PrimaryDelta:       mainDelta,
+		DeltaClass:         mainDeltaClass,
+		PrimaryMeta:        mainMeta,
+		FirstAttemptPassed: tl.FirstAttemptPassed,
+		TotalTests:         tl.TotalTests,
+		LaneRate:           formatPct(ll.PassRate),
+		LanePassed:         ll.PassedLanes,
+		LaneTotal:          ll.TotalLanes,
+		HasStrict:          ll.StrictTotalLanes > 0,
+		StrictRate:         formatPct(ll.StrictPassRate),
+		StrictPassed:       ll.StrictPassedLanes,
+		StrictTotal:        ll.StrictTotalLanes,
+	}
+}
+
+func buildFlakyCard(summary kpi.SummaryResponse, flakyHref string) KPIFlakyCard {
+	flakyHasData := summary.LaneCoverage.TotalRuns > 0 || summary.FlakyTests.Count > 0
+	var flakyHealthLabel, flakyHealthClass string
+	if flakyHasData {
+		cnt := float64(summary.FlakyTests.Count)
+		flakyHealthLabel, flakyHealthClass = healthBadgeLowerGood(&cnt, 0, 5)
+	}
+	flakyBaselineNote := ""
+	if flakyHasData && summary.FlakyTests.Delta == nil {
+		flakyBaselineNote = " · no prior 14d baseline"
+	}
+	return KPIFlakyCard{
+		HasData:      flakyHasData,
+		HealthLabel:  flakyHealthLabel,
+		HealthClass:  flakyHealthClass,
+		Count:        summary.FlakyTests.Count,
+		Delta:        formatSignedIntDelta(summary.FlakyTests.Delta),
+		DeltaClass:   deltaIntLowerGoodClass(summary.FlakyTests.Delta),
+		BaselineNote: flakyBaselineNote,
+		RuleNote:     "Last 14d · mixed pass/fail across ≥2 commits",
+		FlakyHref:    flakyHref,
+	}
+}
+
+func buildDurationCard(summary kpi.SummaryResponse) KPIDurationCard {
+	dur := summary.E2EDuration
+	card := KPIDurationCard{
+		ShowCard:      dur.SampleCount > 0 || summary.LaneCoverage.OrchestratedRuns > 0,
+		HasData:       dur.SampleCount > 0 && dur.P50Ms != nil,
+		P50:           formatDurationMs(dur.P50Ms),
+		P50Delta:      formatDeltaDurationMs(dur.DeltaP50Ms),
+		P50DeltaClass: deltaClassLowerGood(dur.DeltaP50Ms),
+		P90:           formatDurationMs(dur.P90Ms),
+		SampleCount:   dur.SampleCount,
+		SampleText:    pluralize(dur.SampleCount, "orchestrated PR run", "orchestrated PR runs"),
+	}
+	if summary.Triage != nil && summary.Triage.PRRunCompletion != nil && summary.Triage.PRRunCompletion.TotalRuns > 0 {
+		rc := summary.Triage.PRRunCompletion
+		card.TimedOutRuns = rc.TimedOutRuns
+		card.CompletedRuns = rc.CompletedRuns
+		card.CompletionRate = formatPct(rc.CompletionRate)
+	}
+	return card
+}
+
 func buildOverviewPulse(
 	isAllRepos bool,
-	repoLabel, window string,
+	scopeLabel, window string,
 	scorecard []KPIRepoScorecardRow,
 	mainCard KPIMainPassCard,
 	flakyCard KPIFlakyCard,
@@ -377,21 +420,29 @@ func buildOverviewPulse(
 ) string {
 	if isAllRepos {
 		if len(scorecard) == 0 {
-			return fmt.Sprintf("Org Pulse (%s): No test runs in this window.", window)
+			return fmt.Sprintf("Last %s: No test runs in this window.", window)
 		}
 		parts := make([]string, 0, len(scorecard))
 		for _, r := range scorecard {
 			parts = append(parts, fmt.Sprintf("%s %s", r.DisplayName, r.MainRunPassText))
 		}
-		return fmt.Sprintf("Org Pulse (%s) · Main run pass: %s · %s.",
+		return fmt.Sprintf("Last %s main pass rate: %s · %s.",
 			window, strings.Join(parts, " · "), pluralize(activePatterns, "active failure pattern", "active failure patterns"))
 	}
-	if !mainCard.HasData {
-		return fmt.Sprintf("%s (%s): %s · %s.",
-			repoLabel, window, pluralize(flakyCard.Count, "flaky test", "flaky tests"), pluralize(activePatterns, "active failure pattern", "active failure patterns"))
+	flakyText := pluralize(flakyCard.Count, "flaky test", "flaky tests")
+	if window != kpi.Window14d {
+		flakyText += " (14d)"
 	}
-	return fmt.Sprintf("%s (%s): Main run pass %s · %s · %s.",
-		repoLabel, window, mainCard.PrimaryRate, pluralize(flakyCard.Count, "flaky test", "flaky tests"), pluralize(activePatterns, "active failure pattern", "active failure patterns"))
+	patternsText := pluralize(activePatterns, "active failure pattern", "active failure patterns")
+	if !mainCard.HasData {
+		return fmt.Sprintf("%s (%s): %s · %s.", scopeLabel, window, flakyText, patternsText)
+	}
+	mainRateText := mainCard.PrimaryRate
+	if mainCard.HealthLabel == kpiLabelLowSample {
+		mainRateText += " (low sample)"
+	}
+	return fmt.Sprintf("%s (%s): Main pass rate %s · %s · %s.",
+		scopeLabel, window, mainRateText, flakyText, patternsText)
 }
 
 type repoAccum struct {
@@ -505,8 +556,10 @@ func formatRepoScorecardRow(
 	base KPIFilterState,
 ) KPIRepoScorecardRow {
 	rState := KPIFilterState{Repo: a.repo, Window: base.Window, Limit: base.Limit, ActionPath: "/kpi"}
+	prsHref := kpiHref("/kpi/prs", rState, 1, "", false)
+	flakyHref := kpiFlakyHref(rState)
 	isOrch := a.orchRuns+a.prOrch > 0
-	mode := "Upload-only"
+	mode := "Results upload"
 	if isOrch {
 		mode = "Orchestrated"
 	}
@@ -516,6 +569,9 @@ func formatRepoScorecardRow(
 		pct := float64(a.lanesPassed) * 100.0 / float64(a.lanesTotal)
 		mainRunText = fmt.Sprintf("%.1f%% (%d/%d)", pct, a.lanesPassed, a.lanesTotal)
 		_, mainRunClass = healthBadgeHigherGood(&pct, 90, 75)
+		if a.lanesTotal < 3 {
+			mainRunClass = kpiBadgeNeutral
+		}
 	}
 	if a.testsTotal > 0 {
 		testPct := float64(a.firstPass) * 100.0 / float64(a.testsTotal)
@@ -544,8 +600,8 @@ func formatRepoScorecardRow(
 
 	timeoutsText, timeoutsClass := kpiDash, "kpi-muted-text"
 	if isOrch && summary.Triage != nil && summary.Triage.RunCompletion.TotalRuns > 0 {
-		to := summary.Triage.RunCompletion.TimedOutRuns
-		timeoutsText = pluralize(to, "timeout", "timeouts")
+		to := summary.Triage.RunCompletion.TimedOutByRepo[a.repo]
+		timeoutsText = strconv.Itoa(to)
 		if to > 0 {
 			timeoutsClass = "kpi-badge kpi-reason-elsewhere"
 		} else {
@@ -557,6 +613,8 @@ func formatRepoScorecardRow(
 		Repository:      a.repo,
 		DisplayName:     friendlyRepoName(a.repo),
 		Href:            kpiHref("/kpi", rState, 1, "", false),
+		PRsHref:         prsHref,
+		FlakyHref:       flakyHref,
 		RunnersSummary:  mode,
 		IsOrchestrated:  isOrch,
 		MainRunPassText: mainRunText,
@@ -575,15 +633,13 @@ func formatRepoScorecardRow(
 
 func formatRepoPRFalseRedCell(a *repoAccum) (text, sub string) {
 	if a.settledRed > 0 {
+		pct := float64(a.settledFalse) * 100.0 / float64(a.settledRed)
+		text = fmt.Sprintf("at least %.1f%% (%d/%d)", pct, a.settledFalse, a.settledRed)
 		if a.wentGreen == 0 && a.failingElsewhere == 0 {
-			text = fmt.Sprintf("0/%d settled", a.settledRed)
-			sub = "unclassified"
-		} else {
-			pct := float64(a.settledFalse) * 100.0 / float64(a.settledRed)
-			text = fmt.Sprintf("at least %.1f%% (%d/%d)", pct, a.settledFalse, a.settledRed)
+			sub = "0% passed rerun"
 		}
 	} else {
-		text = "0 settled"
+		text = "0 >24h runs"
 	}
 	if a.unsettled > 0 {
 		if sub != "" {
@@ -702,6 +758,9 @@ func buildLaneBreakdown(summary kpi.SummaryResponse, state KPIFilterState) []KPI
 			pct := float64(a.mainRow.LanesPassed) * 100.0 / float64(a.mainRow.LanesTotal)
 			runPassText = fmt.Sprintf("%.1f%% (%d/%d)", pct, a.mainRow.LanesPassed, a.mainRow.LanesTotal)
 			_, runPassClass = healthBadgeHigherGood(&pct, 90, 75)
+			if a.mainRow.LanesTotal < 3 {
+				runPassClass = kpiBadgeNeutral
+			}
 			if a.mainRow.TestsTotal > 0 {
 				testPassText = fmt.Sprintf("%s (%d/%d)", formatPct(a.mainRow.TestPassRate), a.mainRow.FirstAttemptPassed, a.mainRow.TestsTotal)
 			}
@@ -714,19 +773,22 @@ func buildLaneBreakdown(summary kpi.SummaryResponse, state KPIFilterState) []KPI
 			prDurText = fmt.Sprintf("%s (p90: %s · %d)", formatDurationMs(a.durRow.P50Ms), formatDurationMs(a.durRow.P90Ms), a.durRow.SampleCount)
 		}
 		prRedText := kpiDash
+		prsHref := ""
+		lState := state
+		lState.Lane = a.lane
 		if a.prRow != nil && (a.prRow.SettledRedLanes > 0 || a.prRow.UnsettledRedLanes > 0) {
+			prsHref = kpiHref("/kpi/prs", lState, 1, "", false)
 			if a.prRow.SettledRedLanes > 0 {
-				prRedText = fmt.Sprintf("%d/%d settled red", a.prRow.SettledFalseRedLanes, a.prRow.SettledRedLanes)
+				prRedText = fmt.Sprintf("%d/%d >24h red", a.prRow.SettledFalseRedLanes, a.prRow.SettledRedLanes)
 			} else {
 				prRedText = fmt.Sprintf("%d <24h", a.prRow.UnsettledRedLanes)
 			}
 		}
 
-		lState := state
-		lState.Lane = a.lane
 		out = append(out, KPILaneBreakdownRow{
 			Lane:           a.lane,
 			Href:           kpiHref("/kpi", lState, 1, "", false),
+			PRsHref:        prsHref,
 			Stage:          stage,
 			RunsCount:      a.runsCount,
 			RunPassText:    runPassText,
@@ -798,7 +860,7 @@ func buildPRFalseRedCard(pr *kpi.PRFalseRedSummary, prsHref string) KPIPRFalseRe
 		ShowCard:     true,
 		HeadlineRate: kpiNotAvailable,
 		DeltaClass:   kpiDeltaNeutral,
-		SettledNote:  "No data — settled (>24h) red PR lanes; pushed fixes excluded.",
+		SettledNote:  "Runs >24h old; excludes failures resolved by pushing a new commit.",
 		PRsHref:      prsHref,
 	}
 	if pr == nil {
@@ -822,29 +884,31 @@ func buildPRFalseRedCard(pr *kpi.PRFalseRedSummary, prsHref string) KPIPRFalseRe
 		card.HasData = true
 		card.HeadlineRate = fmt.Sprintf("%s %.1f%%", qualifier, *pr.FalseRedRate)
 		if pr.ReasonMix.Total > 0 && pr.ReasonMix.Other == pr.ReasonMix.Total {
-			card.HealthLabel = "Unclassified"
+			card.HealthLabel = "0% passed rerun (>24h)"
 			card.HealthClass = kpiBadgeNeutral
 		} else {
 			card.HealthLabel, card.HealthClass = healthBadgeLowerGood(pr.FalseRedRate, 5, 15)
 		}
-		card.SettledNote = fmt.Sprintf("Settled >%dh runs; new-commit fixes excluded.", settledHours)
+		card.SettledNote = fmt.Sprintf("Runs >%dh old; excludes failures resolved by pushing a new commit.", settledHours)
 	case pr.UnsettledRedLanes > 0:
-		card.SettledNote = fmt.Sprintf("%d recent red runs (<%dh unsettled); new-commit fixes excluded.", pr.UnsettledRedLanes, settledHours)
+		card.SettledNote = fmt.Sprintf("%d recent red runs (<%dh old); excludes failures resolved by pushing a new commit.", pr.UnsettledRedLanes, settledHours)
 	default:
-		card.SettledNote = fmt.Sprintf("No settled (>%dh) red PR runs in window.", settledHours)
+		card.SettledNote = fmt.Sprintf("No red PR runs >%dh old in window.", settledHours)
 	}
 	return card
 }
 
-func buildWeeklyChartBars(series []kpi.WeeklyPoint) (bars []KPIChartBar, chartWidth int) {
-	hasActivity := false
+func buildWeeklyChartBars(series []kpi.WeeklyPoint, minActiveWeeks int) (bars []KPIChartBar, chartWidth int) {
+	if minActiveWeeks <= 0 {
+		minActiveWeeks = 1
+	}
+	activeWeeks := 0
 	for _, pt := range series {
 		if pt.MainTestPassRate != nil || pt.MainLanePassRate != nil || pt.MainTestsTotal > 0 || pt.MainLanesTotal > 0 {
-			hasActivity = true
-			break
+			activeWeeks++
 		}
 	}
-	if !hasActivity {
+	if activeWeeks < minActiveWeeks {
 		return nil, 0
 	}
 	const (

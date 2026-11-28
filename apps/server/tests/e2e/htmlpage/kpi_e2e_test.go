@@ -24,6 +24,7 @@ func TestKPISSRPages_DisabledWhenHTMLViewFalse(t *testing.T) {
 	for _, path := range []string{
 		"/kpi",
 		"/kpi/prs",
+		"/kpi/flaky",
 		"/kpi/failures/019a1234-5678-7abc-8def-0123456789ab",
 	} {
 		resp, err := http.Get(env.ServerURL + path) //nolint:gosec
@@ -36,7 +37,8 @@ func TestKPISSRPages_DisabledWhenHTMLViewFalse(t *testing.T) {
 		s := string(body)
 		for _, ssrMarker := range []string{
 			`Test Health KPIs`,
-			`PR E2E Signal Reliability`,
+			`PR E2E Reliability`,
+			`Flaky Tests`,
 			`kpi-failure-hero`,
 			`kpi-cards-grid`,
 		} {
@@ -65,9 +67,9 @@ func TestKPISSRPages_EmptyZeroDenominatorStates(t *testing.T) {
 
 	prsHTML := getHTML(t, env.ServerURL+"/kpi/prs", http.StatusOK)
 	for _, want := range []string{
-		`PR E2E Signal Reliability`,
+		`PR E2E Reliability`,
 		`N/A`,
-		`No aged (&gt;24h) red PR runs to classify in this window`,
+		`No red PR runs (&gt;24h) to classify in this window`,
 		`No E2E red PR runs`,
 	} {
 		if !strings.Contains(prsHTML, want) {
@@ -75,6 +77,12 @@ func TestKPISSRPages_EmptyZeroDenominatorStates(t *testing.T) {
 		}
 	}
 	assertNoKPIGuardrailViolations(t, "/kpi/prs (empty)", prsHTML, nil)
+
+	flakyHTML := getHTML(t, env.ServerURL+"/kpi/flaky", http.StatusOK)
+	if !strings.Contains(flakyHTML, `Flaky Tests`) || !strings.Contains(flakyHTML, `No flaky tests`) {
+		t.Fatalf("empty /kpi/flaky missing expected headings/empty state")
+	}
+	assertNoKPIGuardrailViolations(t, "/kpi/flaky (empty)", flakyHTML, nil)
 }
 
 func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
@@ -271,6 +279,8 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 		`Resurfaced`,
 		`/kpi/failures/` + sigActive.String(),
 		`href="/kpi/prs"`,
+		`href="/kpi/flaky"`,
+		`show=all`,
 	} {
 		if !strings.Contains(ovHTML, want) {
 			t.Fatalf("GET /kpi missing %q", want)
@@ -297,9 +307,10 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 		`PR false-red rate`,
 		`at least 50.0%`,
 		`Flaky tests`,
-		`E2E PR run time`,
+		`PR run time`,
 		`Lanes in Web &amp; Server`,
 		`Weekly Main Pass Rate`,
+		`View flaky tests`,
 	} {
 		if !strings.Contains(ovWebHTML, want) {
 			t.Fatalf("GET /kpi?repo=mattermost/mattermost missing %q", want)
@@ -310,16 +321,17 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 	// ---- Verify GET /kpi/prs (200) ----
 	prsHTML := getHTML(t, env.ServerURL+"/kpi/prs", http.StatusOK)
 	for _, want := range []string{
-		`PR E2E Signal Reliability`,
+		`PR E2E Reliability`,
 		`at least 50.0%`,
-		`Went green on rerun`,
-		`Also failing elsewhere`,
-		`PR-specific / Unclassified`,
-		`Red now`,
+		`Passed on rerun`,
+		`Failing on main or ≥3 PRs`,
+		`Only this PR (or &lt;3 PRs)`,
+		`Red PR runs`,
 		`E2E red`,
 		`Failing on main`,
 		`#203`,
-		`Recent (&lt;24h unsettled)`,
+		`https://github.com/mattermost/mattermost/pull/203`,
+		`Recent (&lt;24h)`,
 		`/reports/mattermost/pr-203/`,
 	} {
 		if !strings.Contains(prsHTML, want) {
@@ -328,6 +340,20 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 	}
 	assertNoKPIGuardrailViolations(t, "GET /kpi/prs", prsHTML, secrets)
 
+	// ---- Verify GET /kpi/flaky (200) ----
+	flakyPageHTML := getHTML(t, env.ServerURL+"/kpi/flaky?app=mattermost", http.StatusOK)
+	for _, want := range []string{
+		`Flaky Tests`,
+		`Channel &gt; flaky test`,
+		`e2e-pw-main`,
+		`100.0%`,
+	} {
+		if !strings.Contains(flakyPageHTML, want) {
+			t.Fatalf("GET /kpi/flaky missing %q", want)
+		}
+	}
+	assertNoKPIGuardrailViolations(t, "GET /kpi/flaky", flakyPageHTML, secrets)
+
 	// ---- Verify GET /kpi/failures/{id} (200, 400, 404) ----
 	detailHTML := getHTML(t, env.ServerURL+"/kpi/failures/"+sigActive.String(), http.StatusOK)
 	for _, want := range []string{
@@ -335,7 +361,8 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 		`waiting for #login-submit button`,
 		`e2e/login.spec.ts:42`,
 		`Daily Failures`,
-		`Impact &amp; 14d trend`,
+		`Impact (Last 30d) &amp; 14d trend`,
+		`View latest run &rarr;`,
 		`Affected Tests`,
 		`Auth &gt; active failure`,
 		`Affected Repositories`,
@@ -343,7 +370,7 @@ func TestKPISSRPages_SeededDataFiltersDetailsAndNoSecrets(t *testing.T) {
 		`mattermost/mattermost-mobile`,
 		`First seen`,
 		`Latest AI triage verdict`,
-		`flaky-infra`,
+		`Run verdict: flaky-infra`,
 		`Known infra timeout in login`,
 		`91%`,
 		`Active`,

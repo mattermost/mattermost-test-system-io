@@ -428,6 +428,55 @@ func (h *Handler) ServeKPIPRs(w http.ResponseWriter, r *http.Request) {
 	writeKPIHTML(w, html)
 }
 
+// ServeKPIFlaky serves GET /kpi/flaky.
+func (h *Handler) ServeKPIFlaky(w http.ResponseWriter, r *http.Request) {
+	if h.KPI == nil || h.KPI.Pool == nil {
+		http.Error(w, "kpi pages unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	q, err := parseRawQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	now := h.KPI.NowTime()
+	params, err := kpi.ParseFlakyParams(q, now)
+	if err != nil {
+		if errors.Is(err, kpi.ErrValidation) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "invalid query", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
+	defer cancel()
+
+	opts, err := h.KPI.LoadFilterOptions(ctx, params)
+	if err != nil {
+		handleKPIHTMLError(w, h.Logger, "htmlpage kpi flaky filter options failed", "failed to load kpi filters", err)
+		return
+	}
+
+	flResp, err := h.KPI.QueryFlaky(ctx, params)
+	if err != nil {
+		handleKPIHTMLError(w, h.Logger, "htmlpage kpi flaky failed", "failed to load flaky tests", err)
+		return
+	}
+
+	page := BuildKPIFlakyPage(h.Site, opts, flResp, now)
+	html, err := RenderKPIFlaky(page)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("htmlpage kpi flaky render failed", slog.String("error", err.Error()))
+		}
+		http.Error(w, "failed to render page", http.StatusInternalServerError)
+		return
+	}
+	writeKPIHTML(w, html)
+}
+
 // ServeKPIFailureDetail serves GET /kpi/failures/{id}.
 func (h *Handler) ServeKPIFailureDetail(w http.ResponseWriter, r *http.Request) {
 	if h.KPI == nil || h.KPI.Pool == nil {
@@ -469,7 +518,9 @@ func (h *Handler) ServeKPIFailureDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	page := BuildKPIFailureDetailPage(h.Site, detail, now)
+	showAll := strings.TrimSpace(q.Get("show")) == "all"
+
+	page := BuildKPIFailureDetailPageWithShow(h.Site, detail, now, showAll)
 	html, err := RenderKPIFailureDetail(page)
 	if err != nil {
 		if h.Logger != nil {

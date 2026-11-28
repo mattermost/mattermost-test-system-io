@@ -30,6 +30,9 @@ var kpiOverviewHTML string
 //go:embed templates/kpi_prs.html
 var kpiPRsHTML string
 
+//go:embed templates/kpi_flaky.html
+var kpiFlakyHTML string
+
 //go:embed templates/kpi_failure.html
 var kpiFailureHTML string
 
@@ -114,7 +117,7 @@ var pageTmpl = template.Must(template.New("layout").Funcs(template.FuncMap{
 		}
 		return queryURL(v)
 	},
-}).Parse(layoutHTML + homeHTML + repoHTML + runHTML + kpiPartialsHTML + kpiOverviewHTML + kpiPRsHTML + kpiFailureHTML))
+}).Parse(layoutHTML + homeHTML + repoHTML + runHTML + kpiPartialsHTML + kpiOverviewHTML + kpiPRsHTML + kpiFlakyHTML + kpiFailureHTML))
 
 type layoutData struct {
 	Site           SiteInfo
@@ -125,6 +128,7 @@ type layoutData struct {
 	Run            *RunPage
 	KPIOverview    *KPIOverviewPage
 	KPIPRs         *KPIPRsPage
+	KPIFlaky       *KPIFlakyPage
 	KPIFailure     *KPIFailureDetailPage
 	CSS            template.CSS
 	ThemeJS        template.JS
@@ -226,6 +230,23 @@ func RenderKPIPRs(page KPIPRsPage) ([]byte, error) {
 		CSS:     styleAsset,
 		ThemeJS: themeAsset,
 		PageJS:  kpiAsset,
+	}
+	var buf bytes.Buffer
+	if err := pageTmpl.ExecuteTemplate(&buf, "layout", data); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// RenderKPIFlaky renders the minimal KPI flaky tests page HTML.
+func RenderKPIFlaky(page KPIFlakyPage) ([]byte, error) {
+	data := layoutData{
+		Site:     page.Site,
+		IsKPI:    true,
+		KPIFlaky: &page,
+		CSS:      styleAsset,
+		ThemeJS:  themeAsset,
+		PageJS:   kpiAsset,
 	}
 	var buf bytes.Buffer
 	if err := pageTmpl.ExecuteTemplate(&buf, "layout", data); err != nil {

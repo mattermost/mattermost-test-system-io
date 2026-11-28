@@ -21,12 +21,17 @@ const (
 	kpiBadgeWarn          = "kpi-badge kpi-reason-elsewhere"
 	kpiBadgeBad           = "kpi-badge kpi-state-active"
 	kpiBadgeNeutral       = "kpi-badge kpi-badge-neutral"
+	kpiBadgeReasonOther   = "kpi-badge kpi-reason-other"
+	kpiLabelLowSample     = "Low sample"
 	kpiDefaultLimit       = 50
 	kpiMinRunsForPer1k    = 50
 	kpiMinSettledForDelta = 10
 	repoMattermostWeb     = "mattermost/mattermost"
 	repoMattermostMobile  = "mattermost/mattermost-mobile"
 	repoMattermostDesktop = "mattermost/desktop"
+	appMattermost         = "mattermost"
+	appMobile             = "mobile"
+	appDesktop            = "desktop"
 )
 
 // KPIFilterOption represents one <option> in a KPI filter or sort dropdown.
@@ -62,19 +67,27 @@ type KPIPlatformPill struct {
 
 // KPIFilterState holds normalized active query parameters for KPI SSR links.
 type KPIFilterState struct {
-	App         string
-	Repo        string
-	Stage       string
-	Lane        string
-	Platform    string
-	Window      string
-	Sort        string
-	Page        int
-	Limit       int
-	ShowAll     bool
-	DefaultSort string
-	ActionPath  string
-	ResetHref   string
+	App           string
+	Repo          string
+	Stage         string
+	Lane          string
+	Platform      string
+	Window        string
+	DefaultWindow string
+	Sort          string
+	Page          int
+	Limit         int
+	ShowAll       bool
+	DefaultSort   string
+	ActionPath    string
+	ResetHref     string
+}
+
+func (s KPIFilterState) defaultWindow() string {
+	if s.DefaultWindow != "" {
+		return s.DefaultWindow
+	}
+	return kpi.Window30d
 }
 
 // HasCustomLimit reports whether a non-default page limit is active.
@@ -122,6 +135,14 @@ var kpiOverviewSortOptions = []KPIFilterOption{
 	{Value: kpi.SortNameAsc, Label: "Signature A–Z"},
 }
 
+var kpiFlakySortOptions = []KPIFilterOption{
+	{Value: kpi.SortFlakyCommitsDesc, Label: "Most flaky commits"},
+	{Value: kpi.SortFlakeRateDesc, Label: "Highest flake rate"},
+	{Value: kpi.SortTotalRunsDesc, Label: "Most runs"},
+	{Value: kpi.SortLastFlakyDesc, Label: "Most recently flaky"},
+	{Value: kpi.SortNameAsc, Label: "Test A–Z"},
+}
+
 var kpiWindowOptions = []KPIFilterOption{
 	{Value: kpi.Window7d, Label: "7d"},
 	{Value: kpi.Window14d, Label: "14d"},
@@ -129,7 +150,15 @@ var kpiWindowOptions = []KPIFilterOption{
 	{Value: kpi.Window90d, Label: "90d"},
 }
 
+func defaultWindowFor(base string) string {
+	if base == "/kpi/flaky" {
+		return kpi.Window14d
+	}
+	return kpi.Window30d
+}
+
 func kpiFilterStateFromParams(f kpi.FilterParams, actionPath, defaultSort string) KPIFilterState {
+	defaultWindow := defaultWindowFor(actionPath)
 	page := f.Page
 	if page < 1 {
 		page = 1
@@ -140,25 +169,26 @@ func kpiFilterStateFromParams(f kpi.FilterParams, actionPath, defaultSort string
 	}
 	window := f.Window
 	if window == "" {
-		window = kpi.Window30d
+		window = defaultWindow
 	}
 	sortBy := f.Sort
 	if sortBy == "" {
 		sortBy = defaultSort
 	}
 	return KPIFilterState{
-		App:         f.App,
-		Repo:        f.Repo,
-		Stage:       f.Stage,
-		Lane:        f.Lane,
-		Platform:    f.Platform,
-		Window:      window,
-		Sort:        sortBy,
-		Page:        page,
-		Limit:       limit,
-		DefaultSort: defaultSort,
-		ActionPath:  actionPath,
-		ResetHref:   actionPath,
+		App:           f.App,
+		Repo:          f.Repo,
+		Stage:         f.Stage,
+		Lane:          f.Lane,
+		Platform:      f.Platform,
+		Window:        window,
+		DefaultWindow: defaultWindow,
+		Sort:          sortBy,
+		Page:          page,
+		Limit:         limit,
+		DefaultSort:   defaultSort,
+		ActionPath:    actionPath,
+		ResetHref:     actionPath,
 	}
 }
 
@@ -178,17 +208,30 @@ func friendlyRepoName(repo string) string {
 	}
 }
 
+func friendlyAppName(app string) string {
+	switch app {
+	case appMattermost:
+		return friendlyRepoName(repoMattermostWeb)
+	case appMobile:
+		return friendlyRepoName(repoMattermostMobile)
+	case appDesktop:
+		return friendlyRepoName(repoMattermostDesktop)
+	default:
+		return app
+	}
+}
+
 func repoMatchesApp(repo, app string) bool {
 	if app == "" {
 		return false
 	}
 	switch repo {
 	case repoMattermostWeb:
-		return app == "mattermost"
+		return app == appMattermost
 	case repoMattermostMobile:
-		return app == "mobile"
+		return app == appMobile
 	case repoMattermostDesktop:
-		return app == "desktop"
+		return app == appDesktop
 	default:
 		return strings.EqualFold(repo, app) || strings.HasSuffix(strings.ToLower(repo), "/"+strings.ToLower(app))
 	}
@@ -200,7 +243,18 @@ func buildKPIFilterBar(
 	actionPath, defaultSort string,
 	sortOpts []KPIFilterOption,
 ) KPIFilterBar {
+	return buildKPIFilterBarWithShow(f, opts, actionPath, defaultSort, sortOpts, false)
+}
+
+func buildKPIFilterBarWithShow(
+	f kpi.FilterParams,
+	opts kpi.FilterOptions,
+	actionPath, defaultSort string,
+	sortOpts []KPIFilterOption,
+	showAll bool,
+) KPIFilterBar {
 	state := kpiFilterStateFromParams(f, actionPath, defaultSort)
+	state.ShowAll = showAll
 
 	windows := make([]KPIFilterOption, len(kpiWindowOptions))
 	windowPills := make([]KPIWindowPill, len(kpiWindowOptions))
@@ -241,6 +295,7 @@ func buildKPIFilterBar(
 	allState := KPIFilterState{
 		Window:      state.Window,
 		Limit:       state.Limit,
+		ShowAll:     showAll,
 		DefaultSort: state.DefaultSort,
 		ActionPath:  actionPath,
 		ResetHref:   actionPath,
@@ -248,7 +303,7 @@ func buildKPIFilterBar(
 	repoTabs := []KPIRepoTab{{
 		Label:  "All Repos",
 		Href:   kpiHref(actionPath, allState, 1, "", false),
-		Active: !isSingleRepo,
+		Active: !isSingleRepo && state.Lane == "",
 	}}
 	for _, r := range repoList {
 		rState := allState
@@ -289,7 +344,7 @@ func buildKPIFilterBar(
 
 	hasActive := state.App != "" || state.Repo != "" || state.Stage != "" ||
 		state.Lane != "" || state.Platform != "" ||
-		(state.Window != "" && state.Window != kpi.Window30d) ||
+		(state.Window != "" && state.Window != state.defaultWindow()) ||
 		(state.Sort != "" && defaultSort != "" && state.Sort != defaultSort) ||
 		state.HasCustomLimit()
 
@@ -299,7 +354,7 @@ func buildKPIFilterBar(
 		WindowPills:      windowPills,
 		PlatformPills:    platformPills,
 		ShowPlatforms:    len(platformPills) > 0,
-		ShowLaneSelect:   isSingleRepo && (len(opts.Lanes) > 2 || state.Lane != ""),
+		ShowLaneSelect:   (isSingleRepo && len(opts.Lanes) > 2) || state.Lane != "",
 		IsSingleRepo:     isSingleRepo,
 		Apps:             buildStringFilterOptions(opts.Apps, state.App),
 		Repos:            buildStringFilterOptions(opts.Repos, state.Repo),
@@ -374,7 +429,7 @@ func kpiQueryStringWithShow(f KPIFilterState, page int, sort string, includeSort
 	if f.Platform != "" {
 		v.Set("platform", f.Platform)
 	}
-	if f.Window != "" && f.Window != kpi.Window30d {
+	if f.Window != "" && f.Window != f.defaultWindow() {
 		v.Set("window", f.Window)
 	}
 	if includeShow && f.ShowAll {
@@ -396,11 +451,107 @@ func kpiQueryStringWithShow(f KPIFilterState, page int, sort string, includeSort
 }
 
 func kpiHref(base string, f KPIFilterState, page int, sort string, includeSort bool) string {
-	return base + kpiQueryString(f, page, sort, includeSort)
+	f.DefaultWindow = defaultWindowFor(base)
+	includeShow := f.ShowAll && (base == "/kpi" || strings.HasPrefix(base, "/kpi/failures/"))
+	return base + kpiQueryStringWithShow(f, page, sort, includeSort, includeShow)
+}
+
+func kpiScopeHref(base KPIFilterState, repo, lane string) string {
+	return kpiHref("/kpi", KPIFilterState{
+		Repo:    repo,
+		Lane:    lane,
+		Window:  base.Window,
+		Limit:   base.Limit,
+		ShowAll: base.ShowAll,
+	}, 1, "", false)
+}
+
+func safeRunHref(raw string) string {
+	u := strings.TrimSpace(raw)
+	if !isSafeLocalReportHref(u) || u == "/" {
+		return ""
+	}
+	return u
 }
 
 func kpiOverviewHref(f KPIFilterState, showAll bool) string {
+	f.ShowAll = showAll
 	return "/kpi" + kpiQueryStringWithShow(f, 1, f.Sort, true, showAll)
+}
+
+func kpiFlakyHref(f KPIFilterState) string {
+	fl := KPIFilterState{
+		App:      f.App,
+		Repo:     f.Repo,
+		Stage:    f.Stage,
+		Lane:     f.Lane,
+		Platform: f.Platform,
+		Window:   kpi.Window14d,
+		Limit:    f.Limit,
+	}
+	return kpiHref("/kpi/flaky", fl, 1, "", false)
+}
+
+// KPILink is a simple label + href pair for cross-page navigation chips.
+type KPILink struct {
+	Label string
+	Href  string
+}
+
+func isRepoSlugChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.'
+}
+
+func isHexChar(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func isSafeRepoSlug(repo string) bool {
+	if repo == "" || hasASCIIControl(repo) {
+		return false
+	}
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	for _, seg := range parts {
+		if seg == "." || seg == ".." {
+			return false
+		}
+		for i := 0; i < len(seg); i++ {
+			if !isRepoSlugChar(seg[i]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isValidHexSHA(sha string) bool {
+	if len(sha) < 7 || len(sha) > 40 {
+		return false
+	}
+	for i := 0; i < len(sha); i++ {
+		if !isHexChar(sha[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func githubPRURL(repo string, prNum int) string {
+	if prNum <= 0 || !isSafeRepoSlug(repo) {
+		return ""
+	}
+	return fmt.Sprintf("https://github.com/%s/pull/%d", repo, prNum)
+}
+
+func githubCommitURL(repo, sha string) string {
+	sha = strings.TrimSpace(sha)
+	if !isSafeRepoSlug(repo) || !isValidHexSHA(sha) {
+		return ""
+	}
+	return "https://github.com/" + repo + "/commit/" + sha
 }
 
 func kpiPageQuery(f KPIFilterState, page int) string {

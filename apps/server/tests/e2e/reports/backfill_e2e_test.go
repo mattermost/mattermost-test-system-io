@@ -115,6 +115,31 @@ func startBackfillEnv(t *testing.T, uploads ...[4]string) (*testenv.Env, []shard
 	for i, u := range uploads {
 		shards[i] = uploadReportShard(t, env, tok, u[0], u[1], u[2], u[3])
 	}
+	// finalizeResults marks report_groups complete before calling
+	// refreshGroupSummaryBestEffort -> kpi.RefreshGroupRollupsBestEffort; wait
+	// for async rollup refresh to finish before stripping test_cases/signatures.
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		var unrefreshed int
+		if err := env.Pool.QueryRow(waitCtx, `
+			SELECT count(*)
+			  FROM report_groups g
+			 WHERE g.kpi_rollups_refreshed_at IS NULL
+			    OR g.kpi_rollups_version < g.kpi_summary_version
+			    OR g.kpi_rollups_refreshed_at < GREATEST(g.updated_at, g.last_upload_at)
+			    OR EXISTS (
+			          SELECT 1 FROM reports r
+			           WHERE r.report_group_id = g.id
+			             AND r.updated_at > g.kpi_rollups_refreshed_at)
+		`).Scan(&unrefreshed); err != nil {
+			t.Fatalf("wait for async rollup refresh: %v", err)
+		}
+		if unrefreshed == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	bfExec(t, env, `UPDATE test_cases SET test_id = NULL, signature_id = NULL, error_stack = NULL,
 		project = NULL, tags = '[]', annotations = '[]'`)
 	bfExec(t, env, `DELETE FROM failure_signatures`)

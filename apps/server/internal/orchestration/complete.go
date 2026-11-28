@@ -172,7 +172,7 @@ func (s *Store) RecordCompletion(
 				UPDATE orchestration_runs
 				   SET status = 'completed',
 				       terminal_at = $2,
-				       updated_at = now()
+				       updated_at = clock_timestamp()
 				 WHERE id = $1 AND status = 'in_progress'
 			`, run.ID, now); err != nil {
 				return fmt.Errorf("transition run completed: %w", err)
@@ -525,7 +525,7 @@ func finalizeUnitStateTx(
 		       %s = %s + 1,
 		       retest_eligible_count = retest_eligible_count + $2,
 		       last_activity_at = now(),
-		       updated_at = now()
+		       updated_at = clock_timestamp()
 		 WHERE id = $1
 	`, counterCol, counterCol), runID, retestEligibleDelta)
 	if err != nil {

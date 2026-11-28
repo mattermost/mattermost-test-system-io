@@ -32,6 +32,8 @@ tags:
       between the controller and worker jobs.
   - name: artifacts
   - name: verdicts
+  - name: kpi
+    description: Pre-aggregated CI test-health KPI endpoints.
   - name: health
   - name: system
 
@@ -1293,6 +1295,64 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /api/v1/kpi/summary:
+    get:
+      tags: [kpi]
+      summary: Get pre-aggregated KPI summary (KPI 1 main pass rate, KPI 3 flaky count, KPI 5 E2E run time, weekly series)
+      operationId: kpiSummary
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/KpiApp'
+        - $ref: '#/components/parameters/KpiRepo'
+        - $ref: '#/components/parameters/KpiStage'
+        - $ref: '#/components/parameters/KpiLane'
+        - $ref: '#/components/parameters/KpiPlatform'
+        - $ref: '#/components/parameters/KpiWindow'
+        - in: query
+          name: sort
+          required: false
+          schema:
+            type: string
+            enum: [lane_asc, pass_rate_asc, pass_rate_desc, duration_desc, duration_asc]
+            default: lane_asc
+      responses:
+        '200':
+          description: Pre-aggregated KPI summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KPISummaryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/kpi/flaky:
+    get:
+      tags: [kpi]
+      summary: Get flaky test counts and paginated top flaky tests
+      operationId: kpiFlaky
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/KpiApp'
+        - $ref: '#/components/parameters/KpiRepo'
+        - $ref: '#/components/parameters/KpiStage'
+        - $ref: '#/components/parameters/KpiLane'
+        - $ref: '#/components/parameters/KpiPlatform'
+        - $ref: '#/components/parameters/KpiWindow'
+        - in: query
+          name: sort
+          required: false
+          schema:
+            type: string
+            enum: [flaky_commits_desc, flake_rate_desc, total_runs_desc, last_flaky_desc, name_asc]
+            default: flaky_commits_desc
+        - $ref: '#/components/parameters/KpiPage'
+        - $ref: '#/components/parameters/KpiLimit'
+      responses:
+        '200':
+          description: Flaky test counts and paginated flaky tests
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KPIFlakyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
 components:
   securitySchemes:
     apiKey:
@@ -1324,6 +1384,56 @@ components:
       required: true
       schema: { type: string, format: uuid }
       description: Report ID (`upload_id`) returned by `/reports/register`.
+    KpiApp:
+      in: query
+      name: app
+      required: false
+      schema: { type: string, maxLength: 64 }
+      description: Filter by app name from `apps` table (e.g. `mattermost`, `mobile`, `desktop`).
+    KpiRepo:
+      in: query
+      name: repo
+      required: false
+      schema: { type: string, maxLength: 256 }
+      description: Filter by repository slug or trailing repo name.
+    KpiStage:
+      in: query
+      name: stage
+      required: false
+      schema:
+        type: string
+        enum: [pr, main, release, nightly, manual, other]
+      description: Filter by run stage.
+    KpiLane:
+      in: query
+      name: lane
+      required: false
+      schema: { type: string, maxLength: 256 }
+      description: Filter by lane (`report_groups.name`).
+    KpiPlatform:
+      in: query
+      name: platform
+      required: false
+      schema: { type: string, maxLength: 64 }
+      description: Filter by effective platform (e.g. `ios`, `android`).
+    KpiWindow:
+      in: query
+      name: window
+      required: false
+      schema:
+        type: string
+        enum: [7d, 14d, 30d, 90d]
+      description: Lookback window (`30d` default on `/summary`, `14d` default on `/flaky`).
+    KpiPage:
+      in: query
+      name: page
+      required: false
+      schema: { type: integer, minimum: 1, default: 1 }
+    KpiLimit:
+      in: query
+      name: limit
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
 
   schemas:
     HealthStatus:
@@ -2529,6 +2639,314 @@ components:
         triage_url: { type: string, nullable: true, description: "Optional HTTP/HTTPS link to the triage run" }
         reused_from_id: { type: string, format: uuid, nullable: true }
         created_at: { type: string, format: date-time }
+
+    KPIFilters:
+      type: object
+      required: [app, repo, stage, lane, platform, window, sort, window_days, from, to]
+      properties:
+        app: { type: string }
+        repo: { type: string }
+        stage: { type: string }
+        lane: { type: string }
+        platform: { type: string }
+        window: { type: string }
+        sort: { type: string }
+        page: { type: integer }
+        limit: { type: integer }
+        window_days: { type: integer }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+
+    KPILaneCoverage:
+      type: object
+      required:
+        - total_lanes
+        - orchestrated_lanes
+        - upload_only_lanes
+        - strict_supported_lanes
+        - total_runs
+        - orchestrated_runs
+        - upload_only_runs
+        - covered_lanes
+        - upload_only_lane_names
+        - notes
+      properties:
+        total_lanes: { type: integer }
+        orchestrated_lanes: { type: integer }
+        upload_only_lanes:
+          type: integer
+          description: Lanes in the window with zero orchestrated runs (upload-only only).
+        strict_supported_lanes: { type: integer }
+        total_runs: { type: integer }
+        orchestrated_runs: { type: integer }
+        upload_only_runs: { type: integer }
+        covered_lanes:
+          type: array
+          items: { type: string }
+        upload_only_lane_names:
+          type: array
+          items: { type: string }
+          description: Names of lanes with zero orchestrated runs in the window.
+        notes:
+          type: array
+          items: { type: string }
+
+    KPITestLevelPassRate:
+      type: object
+      required: [pass_rate, prior_pass_rate, delta_pp, first_attempt_passed, total_tests]
+      properties:
+        pass_rate: { type: number, nullable: true }
+        prior_pass_rate: { type: number, nullable: true }
+        delta_pp: { type: number, nullable: true }
+        first_attempt_passed: { type: integer }
+        total_tests: { type: integer }
+
+    KPILaneLevelPassRate:
+      type: object
+      required:
+        - pass_rate
+        - prior_pass_rate
+        - delta_pp
+        - passed_lanes
+        - total_lanes
+        - strict_pass_rate
+        - strict_prior_pass_rate
+        - strict_delta_pp
+        - strict_passed_lanes
+        - strict_total_lanes
+        - upload_only_lanes_count
+      properties:
+        pass_rate: { type: number, nullable: true }
+        prior_pass_rate: { type: number, nullable: true }
+        delta_pp: { type: number, nullable: true }
+        passed_lanes: { type: integer }
+        total_lanes: { type: integer }
+        strict_pass_rate: { type: number, nullable: true }
+        strict_prior_pass_rate: { type: number, nullable: true }
+        strict_delta_pp: { type: number, nullable: true }
+        strict_passed_lanes: { type: integer }
+        strict_total_lanes: { type: integer }
+        upload_only_lanes_count: { type: integer }
+
+    KPIMainLaneRow:
+      type: object
+      required:
+        - app
+        - repository
+        - lane
+        - test_pass_rate
+        - first_attempt_passed
+        - tests_total
+        - lane_pass_rate
+        - strict_pass_rate
+        - lanes_passed
+        - lanes_total
+        - strict_lanes_passed
+        - strict_lanes_total
+        - orchestrated_runs
+        - upload_only_runs
+      properties:
+        app: { type: string }
+        repository: { type: string }
+        lane: { type: string }
+        test_pass_rate: { type: number, nullable: true }
+        first_attempt_passed: { type: integer }
+        tests_total: { type: integer }
+        lane_pass_rate: { type: number, nullable: true }
+        strict_pass_rate: { type: number, nullable: true }
+        lanes_passed: { type: integer }
+        lanes_total: { type: integer }
+        strict_lanes_passed: { type: integer }
+        strict_lanes_total: { type: integer }
+        orchestrated_runs: { type: integer }
+        upload_only_runs: { type: integer }
+
+    KPIMainPassRate:
+      type: object
+      required: [test_level, lane_level, by_lane, lane_coverage]
+      properties:
+        test_level: { $ref: '#/components/schemas/KPITestLevelPassRate' }
+        lane_level: { $ref: '#/components/schemas/KPILaneLevelPassRate' }
+        by_lane:
+          type: array
+          items: { $ref: '#/components/schemas/KPIMainLaneRow' }
+        lane_coverage: { $ref: '#/components/schemas/KPILaneCoverage' }
+
+    KPIAppFlakyCount:
+      type: object
+      required: [app, count, prior_count, delta]
+      properties:
+        app: { type: string }
+        count: { type: integer }
+        prior_count: { type: integer, nullable: true }
+        delta: { type: integer, nullable: true }
+
+    KPIFlakySummary:
+      type: object
+      required: [window_days, baseline_window_days, min_flaky_commits, count, prior_count, delta, by_app, lane_coverage]
+      properties:
+        window_days: { type: integer }
+        baseline_window_days: { type: integer }
+        min_flaky_commits: { type: integer }
+        count: { type: integer }
+        prior_count: { type: integer, nullable: true }
+        delta: { type: integer, nullable: true }
+        by_app:
+          type: array
+          items: { $ref: '#/components/schemas/KPIAppFlakyCount' }
+        lane_coverage: { $ref: '#/components/schemas/KPILaneCoverage' }
+
+    KPIDurationLaneRow:
+      type: object
+      required: [app, repository, lane, p50_ms, p90_ms, sample_count, orchestrated_runs, upload_only_runs]
+      properties:
+        app: { type: string }
+        repository: { type: string }
+        lane: { type: string }
+        p50_ms: { type: number, nullable: true }
+        p90_ms: { type: number, nullable: true }
+        sample_count: { type: integer }
+        orchestrated_runs: { type: integer }
+        upload_only_runs: { type: integer }
+
+    KPIE2EDurationSummary:
+      type: object
+      required: [p50_ms, prior_p50_ms, delta_p50_ms, p90_ms, prior_p90_ms, delta_p90_ms, sample_count, by_lane, lane_coverage]
+      properties:
+        p50_ms: { type: number, nullable: true }
+        prior_p50_ms: { type: number, nullable: true }
+        delta_p50_ms: { type: number, nullable: true }
+        p90_ms: { type: number, nullable: true }
+        prior_p90_ms: { type: number, nullable: true }
+        delta_p90_ms: { type: number, nullable: true }
+        sample_count: { type: integer }
+        by_lane:
+          type: array
+          items: { $ref: '#/components/schemas/KPIDurationLaneRow' }
+        lane_coverage: { $ref: '#/components/schemas/KPILaneCoverage' }
+
+    KPIWeeklyPoint:
+      type: object
+      required:
+        - week_start
+        - main_test_pass_rate
+        - main_lane_pass_rate
+        - main_strict_lane_pass_rate
+        - main_tests_total
+        - main_lanes_total
+        - flaky_test_count
+        - e2e_p50_ms
+        - e2e_p90_ms
+        - e2e_sample_count
+        - pr_false_red_rate
+        - recurring_failures_count
+        - triage_coverage_rate
+      properties:
+        week_start: { type: string, format: date }
+        main_test_pass_rate: { type: number, nullable: true }
+        main_lane_pass_rate: { type: number, nullable: true }
+        main_strict_lane_pass_rate: { type: number, nullable: true }
+        main_tests_total: { type: integer }
+        main_lanes_total: { type: integer }
+        flaky_test_count: { type: integer }
+        e2e_p50_ms: { type: number, nullable: true }
+        e2e_p90_ms: { type: number, nullable: true }
+        e2e_sample_count: { type: integer }
+        pr_false_red_rate: { type: number, nullable: true }
+        recurring_failures_count: { type: integer, nullable: true }
+        triage_coverage_rate: { type: number, nullable: true }
+
+    KPISummaryResponse:
+      type: object
+      required: [filters, lane_coverage, main_pass_rate, flaky_tests, e2e_duration, weekly_series]
+      properties:
+        filters: { $ref: '#/components/schemas/KPIFilters' }
+        lane_coverage: { $ref: '#/components/schemas/KPILaneCoverage' }
+        main_pass_rate: { $ref: '#/components/schemas/KPIMainPassRate' }
+        flaky_tests: { $ref: '#/components/schemas/KPIFlakySummary' }
+        e2e_duration: { $ref: '#/components/schemas/KPIE2EDurationSummary' }
+        weekly_series:
+          type: array
+          items: { $ref: '#/components/schemas/KPIWeeklyPoint' }
+        pr_false_red:
+          type: object
+          additionalProperties: true
+          nullable: true
+        recurring_failures:
+          type: object
+          additionalProperties: true
+          nullable: true
+        triage:
+          type: object
+          additionalProperties: true
+          nullable: true
+
+    KPIPagination:
+      type: object
+      required: [page, limit, total, total_pages]
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+
+    KPIFlakyTestRow:
+      type: object
+      required:
+        - test_id
+        - test_key
+        - zephyr_key
+        - file
+        - full_title
+        - repository
+        - app
+        - framework
+        - project
+        - platform
+        - flaky_commit_count
+        - total_commit_count
+        - total_runs
+        - flake_rate
+        - last_flaky_at
+        - last_commit_sha
+        - lanes
+      properties:
+        test_id: { type: string, format: uuid }
+        test_key: { type: string }
+        zephyr_key: { type: string, nullable: true }
+        file: { type: string }
+        full_title: { type: string }
+        repository: { type: string }
+        app: { type: string, nullable: true }
+        framework: { type: string }
+        project: { type: string, nullable: true }
+        platform: { type: string, nullable: true }
+        flaky_commit_count: { type: integer }
+        total_commit_count: { type: integer }
+        total_runs: { type: integer }
+        flake_rate: { type: number }
+        last_flaky_at: { type: string, format: date-time }
+        last_commit_sha: { type: string }
+        lanes:
+          type: array
+          items: { type: string }
+
+    KPIFlakyResponse:
+      type: object
+      required: [filters, window_days, min_flaky_commits, total_flaky_tests, by_app, lane_coverage, pagination, tests]
+      properties:
+        filters: { $ref: '#/components/schemas/KPIFilters' }
+        window_days: { type: integer }
+        min_flaky_commits: { type: integer }
+        total_flaky_tests: { type: integer }
+        by_app:
+          type: array
+          items: { $ref: '#/components/schemas/KPIAppFlakyCount' }
+        lane_coverage: { $ref: '#/components/schemas/KPILaneCoverage' }
+        pagination: { $ref: '#/components/schemas/KPIPagination' }
+        tests:
+          type: array
+          items: { $ref: '#/components/schemas/KPIFlakyTestRow' }
 
     Error:
       type: object

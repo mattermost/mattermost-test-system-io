@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -238,13 +239,41 @@ func (r *runner) updateStages(ctx context.Context, ids []uuid.UUID, stages []str
 	if r.opts.DryRun || len(ids) == 0 {
 		return len(ids), nil
 	}
-	tag, err := r.pool.Exec(ctx, `
-		UPDATE report_groups g SET stage = u.stage
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, fmt.Errorf("begin stage update tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	lockIDs := make([]string, 0, len(ids))
+	seen := make(map[uuid.UUID]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		lockIDs = append(lockIDs, id.String())
+	}
+	slices.Sort(lockIDs)
+	for _, idStr := range lockIDs {
+		if _, err := tx.Exec(ctx,
+			`SELECT pg_advisory_xact_lock(hashtextextended('kpi_group:' || $1, 0))`,
+			idStr,
+		); err != nil {
+			return 0, fmt.Errorf("lock kpi group %s: %w", idStr, err)
+		}
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE report_groups g SET stage = u.stage, kpi_rollups_refreshed_at = NULL
 		FROM UNNEST($1::uuid[], $2::text[]) AS u(id, stage)
 		WHERE g.id = u.id AND g.stage = 'other'
 	`, ids, stages)
 	if err != nil {
 		return 0, fmt.Errorf("update report_groups stage: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit stage update tx: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }
@@ -571,6 +600,14 @@ func (r *runner) write(ctx context.Context, rep reportRow, cases []dbCase, p rep
 		return fmt.Errorf("begin update tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if len(p.dirty) > 0 {
+		if _, err := tx.Exec(ctx,
+			`SELECT pg_advisory_xact_lock(hashtextextended('kpi_group:' || $1, 0))`,
+			rep.GroupID.String(),
+		); err != nil {
+			return fmt.Errorf("lock kpi group %s: %w", rep.GroupID, err)
+		}
+	}
 	batch := &pgx.Batch{}
 	for _, i := range p.dirty {
 		c := cases[i]
@@ -606,6 +643,11 @@ func (r *runner) write(ctx context.Context, rep reportRow, cases []dbCase, p rep
 	}
 	if err := ingest.AttributeFailureSignaturesTx(ctx, tx, rep.GroupID, assigned); err != nil {
 		return err
+	}
+	if len(p.dirty) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE report_groups SET kpi_rollups_refreshed_at = NULL WHERE id = $1`, rep.GroupID); err != nil {
+			return fmt.Errorf("reset kpi_rollups_refreshed_at: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit update tx: %w", err)

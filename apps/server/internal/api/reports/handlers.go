@@ -23,6 +23,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
@@ -616,15 +617,21 @@ func (h *Handlers) JSONFile(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-// Delete removes a report group (cascades to reports/suites/cases/artifacts).
+// Delete removes a report group (cascades to reports/suites/cases/artifacts)
+// and atomically recomputes affected KPI rollups.
 func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		api.WriteError(w, r, api.ErrBadRequest)
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM report_groups WHERE id = $1`, id); err != nil {
+	deleted, err := kpi.DeleteGroupAndRecomputeRollups(r.Context(), h.Pool, id)
+	if err != nil {
 		api.WriteError(w, r, err)
+		return
+	}
+	if !deleted {
+		api.WriteError(w, r, api.ErrNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

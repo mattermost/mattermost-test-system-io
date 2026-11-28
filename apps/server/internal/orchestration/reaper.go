@@ -550,7 +550,7 @@ func (s *Store) markRunTimedOut(ctx context.Context, runID uuid.UUID) (*runTimed
 			       pending_count = 0,
 			       leased_count = 0,
 			       abandoned_count = abandoned_count + $3,
-			       updated_at = now()
+			       updated_at = clock_timestamp()
 			 WHERE id = $1 AND status = 'in_progress'
 		`, runID, now, abandoned); err != nil {
 			return fmt.Errorf("transition run timed_out: %w", err)

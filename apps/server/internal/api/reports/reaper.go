@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
@@ -35,6 +36,10 @@ const stalenessEnvVar = "TSIO_REPORTS_STALENESS_TIMEOUT_MS"
 // reaperBatchLimit caps how many groups a single tick processes. Bounded
 // work keeps a runaway tick from monopolising the pool.
 const reaperBatchLimit = 100
+
+// reaperKPIBudget bounds per-tick KPI summary and rollup catch-up work so
+// lock contention or large batches cannot starve RetryStalledResults.
+const reaperKPIBudget = 15 * time.Second
 
 // Reaper periodically flips report_groups whose last_upload_at is older
 // than the configured staleness window from `in_progress` to `incomplete`.
@@ -123,9 +128,7 @@ func (r *Reaper) loop(ctx context.Context) {
 			if err := r.markIncomplete(ctx); err != nil {
 				r.Logger.Error("reports reaper: mark incomplete", slog.String("error", err.Error()))
 			}
-			if err := RefreshStaleGroupSummariesWithRule(ctx, r.Pool, r.Logger, reaperBatchLimit, r.statusRule()); err != nil {
-				r.Logger.Warn("reports reaper: refresh stale summaries", slog.String("error", err.Error()))
-			}
+			r.refreshKPIRollups(ctx)
 			r.RetryStalledResults(ctx)
 		}
 	}
@@ -153,6 +156,7 @@ func (r *Reaper) markIncomplete(ctx context.Context) error {
 	}
 	defer rows.Close()
 
+	var reapedIDs []uuid.UUID
 	for rows.Next() {
 		var id uuid.UUID
 		var updatedAt time.Time
@@ -166,8 +170,34 @@ func (r *Reaper) markIncomplete(ctx context.Context) error {
 		r.Logger.Info("report group reaped to incomplete",
 			slog.String("group_id", id.String()),
 			slog.Int("reports_count", reportsCount))
+		reapedIDs = append(reapedIDs, id)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	if len(reapedIDs) > 0 {
+		kpiCtx, cancel := context.WithTimeout(ctx, reaperKPIBudget)
+		defer cancel()
+		for _, id := range reapedIDs {
+			if kpiCtx.Err() != nil {
+				break
+			}
+			kpi.RefreshGroupRollupsBestEffort(kpiCtx, r.Pool, r.Logger, id)
+		}
+	}
+	return nil
+}
+
+func (r *Reaper) refreshKPIRollups(ctx context.Context) {
+	kpiCtx, cancel := context.WithTimeout(ctx, reaperKPIBudget)
+	defer cancel()
+	if err := RefreshStaleGroupSummariesWithRule(kpiCtx, r.Pool, r.Logger, reaperBatchLimit, r.statusRule()); err != nil {
+		r.Logger.Warn("reports reaper: refresh stale summaries", slog.String("error", err.Error()))
+	}
+	if err := kpi.RefreshStaleGroupRollups(kpiCtx, r.Pool, r.Logger, reaperBatchLimit); err != nil {
+		r.Logger.Warn("reports reaper: refresh stale kpi rollups", slog.String("error", err.Error()))
+	}
 }
 
 // stalledResultsAge is how long a shard whose results could not be read waits before the reaper tries again;

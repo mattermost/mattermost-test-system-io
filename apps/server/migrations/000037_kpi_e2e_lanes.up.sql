@@ -25,6 +25,11 @@ INSERT INTO kpi_e2e_lanes (repository, lane) VALUES
     ('mattermost/mattermost-mobile', 'mobile-pr'),
     ('mattermost/mattermost-mobile', 'mobile-detox-pr'),
     ('mattermost/mattermost-mobile', 'mobile-maestro-pr'),
+    ('mattermost/mattermost-mobile', 'mobile-pr-detox-ios'),
+    ('mattermost/mattermost-mobile', 'mobile-pr-detox-android'),
+    ('mattermost/mattermost-mobile', 'mobile-pr-detox-ipad'),
+    ('mattermost/mattermost-mobile', 'mobile-pr-maestro-ios-e2e'),
+    ('mattermost/mattermost-mobile', 'mobile-pr-maestro-android-e2e'),
     ('mattermost/mattermost-mobile', 'detox-ios'),
     ('mattermost/mattermost-mobile', 'detox-android'),
     ('mattermost/mattermost-mobile', 'detox-ipad'),
@@ -63,3 +68,12 @@ ALTER TABLE kpi_group_signature_rollups
 CREATE INDEX IF NOT EXISTS kpi_group_signature_rollups_sig_date_idx
     ON kpi_group_signature_rollups (repository, signature_id, stage, metric_date DESC, gh_pr_number)
     WHERE has_failed_test;
+
+UPDATE report_groups rg
+   SET kpi_rollups_refreshed_at = NULL
+ WHERE rg.kpi_rollups_refreshed_at IS NOT NULL
+   AND EXISTS (
+       SELECT 1
+         FROM kpi_group_signature_rollups gs
+        WHERE gs.report_group_id = rg.id
+   );

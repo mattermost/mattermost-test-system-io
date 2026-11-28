@@ -114,6 +114,9 @@ func (s *Store) QueryPRsRed(ctx context.Context, f FilterParams) (PRRedResponse,
 	if s == nil || s.Pool == nil {
 		return PRRedResponse{}, errors.New("kpi store pool is nil")
 	}
+	if err := validatePaginationParams(f); err != nil {
+		return PRRedResponse{}, err
+	}
 
 	refNow := s.effectiveRefNow(f)
 	settledCutoff := refNow.Add(-settledAfterHours * time.Hour)
@@ -398,6 +401,9 @@ func (s *Store) queryRedPRLaneRows(
 	where.WriteString(b.appendCommonFilters("gr", f, false))
 	where.WriteString(appendPlatformScope(b, "gr", f.Platform))
 
+	if err := validatePaginationParams(f); err != nil {
+		return nil, err
+	}
 	orderBy := prRedOrderByClause(f.Sort)
 	limitPH := b.add(f.Limit)
 	offsetPH := b.add((f.Page - 1) * f.Limit)
@@ -786,9 +792,14 @@ func rerunGreenExpr(alias string) string {
 		   AND r2.platform = %s.platform
 		   AND r2.gh_pr_number IS NOT NULL
 		   AND r2.gh_pr_number > 0
+		   AND r2.gh_pr_number = %s.gh_pr_number
 		   AND r2.is_completed = true
 		   AND r2.is_red = false
 		   AND (NOT r2.has_orchestration OR r2.orch_status = 'completed')
+		   AND (
+		       (r2.tests_passed + r2.tests_flaky) > 0
+		       OR (r2.has_orchestration AND r2.orch_status = 'completed' AND r2.tests_total = 0)
+		   )
 		   AND (
 		       (r2.gh_run_id <> '' AND r2.gh_run_id = %s.gh_run_id AND (
 		           r2.gh_run_attempt_num > %s.gh_run_attempt_num
@@ -799,7 +810,7 @@ func rerunGreenExpr(alias string) string {
 		           AND r2.group_created_at > %s.group_created_at
 		       )
 		   )
-	)`, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias)
+	)`, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias)
 }
 
 func stillRedExpr(alias string) string {
@@ -816,6 +827,10 @@ func stillRedExpr(alias string) string {
 			   AND r3.is_completed = true
 			   AND r3.is_red = false
 			   AND (NOT r3.has_orchestration OR r3.orch_status = 'completed')
+			   AND (
+			       (r3.tests_passed + r3.tests_flaky) > 0
+			       OR (r3.has_orchestration AND r3.orch_status = 'completed' AND r3.tests_total = 0)
+			   )
 			   AND r3.group_created_at > %s.group_created_at
 		)
 	)`, alias, alias, alias, alias, alias, alias)

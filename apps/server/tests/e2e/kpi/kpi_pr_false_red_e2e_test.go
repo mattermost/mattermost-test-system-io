@@ -7,10 +7,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,35 +43,40 @@ func TestMigration000037_UpDownAndNoConcurrentOrTestCasesIndex(t *testing.T) {
 		t.Fatal("000037 migration must not contain CREATE/DROP INDEX CONCURRENTLY")
 	}
 
-	// Verify zero indexes added to test_cases or suites.
-	rows, err := env.Pool.Query(ctx, `
-		SELECT tablename, indexname, indexdef
-		  FROM pg_indexes
-		 WHERE tablename IN ('test_cases', 'suites')
-	`)
-	if err != nil {
-		t.Fatalf("query pg_indexes: %v", err)
-	}
-	for rows.Next() {
-		var tbl, name, def string
-		if err := rows.Scan(&tbl, &name, &def); err != nil {
-			rows.Close()
-			t.Fatalf("scan pg_indexes: %v", err)
+	snapshotTableIndexes := func() []string {
+		t.Helper()
+		rows, qErr := env.Pool.Query(ctx, `
+			SELECT tablename || '|' || indexname || '|' || indexdef
+			  FROM pg_indexes
+			 WHERE schemaname = 'public'
+			   AND tablename IN ('test_cases', 'suites')
+			 ORDER BY tablename, indexname
+		`)
+		if qErr != nil {
+			t.Fatalf("query pg_indexes: %v", qErr)
 		}
-		if strings.Contains(name, "kpi") || strings.Contains(def, "test_id") || strings.Contains(def, "signature_id") {
-			rows.Close()
-			t.Fatalf("unexpected index on %s: %s (%s)", tbl, name, def)
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var entry string
+			if scanErr := rows.Scan(&entry); scanErr != nil {
+				t.Fatalf("scan pg_indexes: %v", scanErr)
+			}
+			out = append(out, entry)
 		}
+		if rErr := rows.Err(); rErr != nil {
+			t.Fatalf("rows pg_indexes: %v", rErr)
+		}
+		return out
 	}
-	rows.Close()
 
-	// Verify all 16 default E2E lanes are seeded.
+	// Verify all 21 default E2E lanes are seeded.
 	var seededCount int
 	if err := env.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM kpi_e2e_lanes WHERE enabled = true`).Scan(&seededCount); err != nil {
 		t.Fatalf("count kpi_e2e_lanes: %v", err)
 	}
-	if seededCount != 16 {
-		t.Fatalf("seeded kpi_e2e_lanes count = %d, want 16", seededCount)
+	if seededCount != 21 {
+		t.Fatalf("seeded kpi_e2e_lanes count = %d, want 21", seededCount)
 	}
 
 	assertObjects := func(wantPresent bool) {
@@ -98,11 +107,16 @@ func TestMigration000037_UpDownAndNoConcurrentOrTestCasesIndex(t *testing.T) {
 		t.Fatalf("exec 000037 down: %v", err)
 	}
 	assertObjects(false)
+	indexesBefore := snapshotTableIndexes()
 
 	if _, err := env.Pool.Exec(ctx, string(upSQL)); err != nil {
 		t.Fatalf("re-exec 000037 up: %v", err)
 	}
 	assertObjects(true)
+	indexesAfter := snapshotTableIndexes()
+	if !slices.Equal(indexesBefore, indexesAfter) {
+		t.Fatalf("000037 changed test_cases/suites indexes:\nbefore=%v\nafter=%v", indexesBefore, indexesAfter)
+	}
 }
 
 func insertFailureSig(t *testing.T, ctx context.Context, env *testenv.Env, _ string, fingerprint string) uuid.UUID {
@@ -152,8 +166,8 @@ func TestKPI_PRFalseRedSettledAttributionAndSummaryFixtures(t *testing.T) {
 		t.Fatalf("expected nil rates on empty DB, got cur=%v prior=%v delta=%v",
 			emptyResp.FalseRedRate, emptyResp.PriorFalseRedRate, emptyResp.DeltaPP)
 	}
-	if len(emptyResp.ConfiguredE2ELanes) != 15 {
-		t.Fatalf("configured_e2e_lanes = %d, want 15 (16 seeded - 1 disabled)", len(emptyResp.ConfiguredE2ELanes))
+	if len(emptyResp.ConfiguredE2ELanes) != 20 {
+		t.Fatalf("configured_e2e_lanes = %d, want 20 (21 seeded - 1 disabled)", len(emptyResp.ConfiguredE2ELanes))
 	}
 
 	// Seed tests & failure signatures.
@@ -541,16 +555,16 @@ func TestKPI_PRFalseRedSettledAttributionAndSummaryFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryPRsRed(ios): %v", err)
 	}
-	if resIOS.Pagination.Total != 1 || resIOS.Lanes[0].GHPRNumber != 202 {
-		t.Fatalf("ios filter got %+v, want PR #202 only", resIOS.Lanes)
+	if resIOS.Pagination.Total != 1 || len(resIOS.Lanes) != 1 || resIOS.Lanes[0].GHPRNumber != 202 {
+		t.Fatalf("ios filter got total=%d lanes=%+v, want PR #202 only", resIOS.Pagination.Total, resIOS.Lanes)
 	}
 	fAnd, _ := kpi.ParsePRsRedParams(map[string][]string{"platform": {"android"}}, fixedNow)
 	resAnd, err := store.QueryPRsRed(ctx, fAnd)
 	if err != nil {
 		t.Fatalf("QueryPRsRed(android): %v", err)
 	}
-	if resAnd.Pagination.Total != 0 || resAnd.FalseRedRate != nil {
-		t.Fatalf("android filter got total=%d rate=%v, want 0/nil", resAnd.Pagination.Total, resAnd.FalseRedRate)
+	if resAnd.Pagination.Total != 0 || len(resAnd.Lanes) != 0 || resAnd.FalseRedRate != nil {
+		t.Fatalf("android filter got total=%d lanes=%d rate=%v, want 0/0/nil", resAnd.Pagination.Total, len(resAnd.Lanes), resAnd.FalseRedRate)
 	}
 
 	// TSIO_KPI_E2E_LANES override test: restrict to desktop-pr only.
@@ -563,8 +577,8 @@ func TestKPI_PRFalseRedSettledAttributionAndSummaryFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("override QueryPRsRed: %v", err)
 	}
-	if resOverride.Pagination.Total != 1 || resOverride.Lanes[0].GHPRNumber != 110 {
-		t.Fatalf("override got %+v, want PR #110 only", resOverride.Lanes)
+	if resOverride.Pagination.Total != 1 || len(resOverride.Lanes) != 1 || resOverride.Lanes[0].GHPRNumber != 110 {
+		t.Fatalf("override got total=%d lanes=%+v, want PR #110 only", resOverride.Pagination.Total, resOverride.Lanes)
 	}
 
 	// Regression test (Defect 1 & 2): overlapping repo-scoped + wildcard TSIO_KPI_E2E_LANES
@@ -706,15 +720,37 @@ func TestKPI_PRFalseRedSettledAttributionAndSummaryFixtures(t *testing.T) {
 	}
 	assertNearPtr(t, "summary.PRFalseRed.FalseRedRate", summary.PRFalseRed.FalseRedRate, wantRate, 1e-6)
 	assertNearPtr(t, "summary.PRFalseRed.PriorFalseRedRate", summary.PRFalseRed.PriorFalseRedRate, 50.0, 1e-6)
-	foundWeeklyRate := false
-	for _, wp := range summary.WeeklySeries {
-		if wp.PRFalseRedRate != nil {
-			foundWeeklyRate = true
-			assertNearPtr(t, "weekly pr_false_red_rate", wp.PRFalseRedRate, wantRate, 1e-6)
-		}
+	weekMonday := func(ts time.Time) string {
+		d := ts.UTC()
+		offset := (int(d.Weekday()) + 6) % 7
+		mon := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -offset)
+		return mon.Format("2006-01-02")
 	}
-	if !foundWeeklyRate {
-		t.Fatal("expected at least one weekly_series entry with non-nil pr_false_red_rate")
+	type weekCounts struct{ settled, falseRed int }
+	expectedWeeks := map[string]weekCounts{}
+	addWeek := func(ts time.Time, settled, falseRed int) {
+		wk := weekMonday(ts)
+		c := expectedWeeks[wk]
+		c.settled += settled
+		c.falseRed += falseRed
+		expectedWeeks[wk] = c
+	}
+	addWeek(t48h, 2, 1)  // PR #101 (false red), PR #102 (still red)
+	addWeek(t30h, 11, 0) // PRs #103..#109, #112..#115
+	addWeek(t25h, 1, 0)  // PR #110
+
+	matchedWeeks := 0
+	for _, wp := range summary.WeeklySeries {
+		exp, ok := expectedWeeks[wp.WeekStart]
+		if !ok || exp.settled == 0 {
+			continue
+		}
+		matchedWeeks++
+		wantWeekRate := float64(exp.falseRed) * 100.0 / float64(exp.settled)
+		assertNearPtr(t, "weekly pr_false_red_rate "+wp.WeekStart, wp.PRFalseRedRate, wantWeekRate, 1e-6)
+	}
+	if matchedWeeks != len(expectedWeeks) {
+		t.Fatalf("matched %d weekly_series entries, want %d", matchedWeeks, len(expectedWeeks))
 	}
 
 	// Verify remaining sort modes return HTTP 200 cleanly.
@@ -1014,6 +1050,104 @@ func TestKPI_PRFalseRedCrossRunAttemptNotTreatedAsRerun(t *testing.T) {
 	}
 	if res.SettledRedLanes != 4 || res.SettledFalseRedLanes != 2 {
 		t.Fatalf("counts = settled:%d falseRed:%d, want 4/2", res.SettledRedLanes, res.SettledFalseRedLanes)
+	}
+}
+
+func TestKPI_PRFalseRedSamePRSkippedOnlyAndPaginationGuard(t *testing.T) {
+	env := testenv.Start(t, testenv.WithReaperDisabled())
+	ctx := t.Context()
+
+	fixedNow := time.Now().UTC().Truncate(time.Second)
+	store := &kpi.Store{
+		Pool: env.Pool,
+		Now:  func() time.Time { return fixedNow },
+	}
+
+	const repo = "mattermost/mattermost"
+	t1 := insertTest(t, ctx, env.Pool, repo, "playwright", "h:pr-guard-t1", "Guard > t1")
+	sig405 := insertFailureSig(t, ctx, env, repo, "fp-guard-405")
+	sig406 := insertFailureSig(t, ctx, env, repo, "fp-guard-406")
+	prPtr := func(n int) *int { return &n }
+
+	t30h := fixedNow.Add(-30 * time.Hour)
+	t25h := fixedNow.Add(-25 * time.Hour)
+
+	// PR #405 fails on sha-shared, while a DIFFERENT PR #999 passes on the exact same commit/lane.
+	// PR #405 must NOT count as went_green_on_rerun or lose still_red.
+	g405 := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-405", Commit: "sha-shared", RunID: "run-405", Attempt: "1",
+		PRNum: prPtr(405), Stage: "pr", CreatedAt: t30h,
+	})
+	r405 := insertReport(t, ctx, env.Pool, g405, "playwright-full", "")
+	s405 := insertSuite(t, ctx, env.Pool, r405, "S")
+	insertCaseWithSig(t, ctx, env.Pool, s405, t1, sig405, "t1", "failed", 0, 0)
+	mustRefresh(t, ctx, env.Pool, g405)
+
+	g999 := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-999", Commit: "sha-shared", RunID: "run-999", Attempt: "1",
+		PRNum: prPtr(999), Stage: "pr", CreatedAt: t25h,
+	})
+	r999 := insertReport(t, ctx, env.Pool, g999, "playwright-full", "")
+	s999 := insertSuite(t, ctx, env.Pool, r999, "S")
+	insertCase(t, ctx, env.Pool, s999, t1, "t1", "passed", 0, "", 0)
+	mustRefresh(t, ctx, env.Pool, g999)
+
+	// PR #406 fails on attempt 1 and reruns attempt 2 with ONLY skipped tests (0 passed/flaky).
+	// Skipped-only rerun must NOT clear PR #406 or mark it false red.
+	g406Red := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-406", Commit: "sha-406", RunID: "run-406", Attempt: "1",
+		PRNum: prPtr(406), Stage: "pr", CreatedAt: t30h,
+	})
+	r406Red := insertReport(t, ctx, env.Pool, g406Red, "playwright-full", "")
+	s406Red := insertSuite(t, ctx, env.Pool, r406Red, "S")
+	insertCaseWithSig(t, ctx, env.Pool, s406Red, t1, sig406, "t1", "failed", 0, 0)
+	mustRefresh(t, ctx, env.Pool, g406Red)
+
+	g406Skip := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "playwright-full", Status: "completed",
+		Repo: repo, Branch: "pr-406", Commit: "sha-406", RunID: "run-406", Attempt: "2",
+		PRNum: prPtr(406), Stage: "pr", CreatedAt: t25h,
+	})
+	r406Skip := insertReport(t, ctx, env.Pool, g406Skip, "playwright-full", "")
+	s406Skip := insertSuite(t, ctx, env.Pool, r406Skip, "S")
+	insertCase(t, ctx, env.Pool, s406Skip, t1, "t1", "skipped", 0, "", 0)
+	mustRefresh(t, ctx, env.Pool, g406Skip)
+
+	params, err := kpi.ParsePRsRedParams(nil, fixedNow)
+	if err != nil {
+		t.Fatalf("ParsePRsRedParams: %v", err)
+	}
+	res, err := store.QueryPRsRed(ctx, params)
+	if err != nil {
+		t.Fatalf("QueryPRsRed: %v", err)
+	}
+	byPR := map[int]kpi.RedPRLaneRow{}
+	for _, row := range res.Lanes {
+		byPR[row.GHPRNumber] = row
+	}
+	if row, ok := byPR[405]; !ok || row.WentGreenOnRerun || !row.StillRed {
+		t.Fatalf("PR #405 affected by different PR #999: %+v", row)
+	}
+	if row, ok := byPR[406]; !ok || row.WentGreenOnRerun || !row.StillRed {
+		t.Fatalf("PR #406 cleared by skipped-only rerun: %+v", row)
+	}
+	if res.SettledRedLanes != 2 || res.SettledFalseRedLanes != 0 {
+		t.Fatalf("counts = settled:%d falseRed:%d, want 2/0", res.SettledRedLanes, res.SettledFalseRedLanes)
+	}
+
+	// Overflowing pagination must fail validation both at parse time and directly on Store.
+	overflowPage := fmt.Sprintf("%d", math.MaxInt/4+2)
+	if _, pErr := kpi.ParsePRsRedParams(url.Values{"page": {overflowPage}, "limit": {"4"}}, fixedNow); !errors.Is(pErr, kpi.ErrValidation) {
+		t.Fatalf("ParsePRsRedParams overflow err = %v, want ErrValidation", pErr)
+	}
+	badFilter := params
+	badFilter.Page = math.MaxInt/4 + 2
+	badFilter.Limit = 4
+	if _, qErr := store.QueryPRsRed(ctx, badFilter); !errors.Is(qErr, kpi.ErrValidation) {
+		t.Fatalf("QueryPRsRed overflow err = %v, want ErrValidation", qErr)
 	}
 }
 

@@ -3,6 +3,7 @@ package kpi
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -107,6 +108,9 @@ func parseParams(
 			}
 			limit = n
 		}
+		if err := validatePaginationParams(FilterParams{Page: page, Limit: limit}); err != nil {
+			return FilterParams{}, err
+		}
 	}
 
 	curFrom, curTo, priorFrom, priorTo := WindowBounds(now, days)
@@ -128,6 +132,13 @@ func parseParams(
 		PriorFromDate: priorFrom,
 		PriorToDate:   priorTo,
 	}, nil
+}
+
+func validatePaginationParams(f FilterParams) error {
+	if f.Page < 1 || f.Limit < 1 || f.Page-1 > math.MaxInt/f.Limit {
+		return fmt.Errorf("%w: invalid pagination page=%d limit=%d", ErrValidation, f.Page, f.Limit)
+	}
+	return nil
 }
 
 // WindowDays returns the number of UTC days in a window literal.

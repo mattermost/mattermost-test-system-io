@@ -2056,6 +2056,63 @@ html.dark .site-nav-link.is-active {
   padding-left: 1.25rem;
   color: #6b7280;
 }
+.kpi-disclosure {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #ffffff;
+  font-size: 0.8125rem;
+  color: #4b5563;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.kpi-disclosure-summary {
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  list-style: none;
+}
+.kpi-disclosure-summary::-webkit-details-marker { display: none; }
+.kpi-disclosure-hint {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #2563eb;
+  flex-shrink: 0;
+}
+.kpi-card-disclosure {
+  margin-top: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  background: #f9fafb;
+  font-size: 0.75rem;
+}
+.kpi-tech-details {
+  margin-top: 0.75rem;
+  background: #f9fafb;
+}
+.kpi-tech-body {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: #4b5563;
+}
+.kpi-head-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+.kpi-badge-warn { background: #fef3c7; color: #92400e; }
+.kpi-low-sample {
+  margin-top: 0.125rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: #92400e;
+}
 
 .kpi-cards-grid {
   display: grid;
@@ -2298,7 +2355,7 @@ html.dark .site-nav-link.is-active {
   font-size: 0.8125rem;
 }
 .kpi-mix-val { font-weight: 500; color: #374151; }
-.kpi-configured-lanes { margin-top: 0.875rem; padding-top: 0.75rem; border-top: 1px solid #f3f4f6; }
+.kpi-configured-lanes { margin-top: 0.875rem; background: #f9fafb; }
 
 .kpi-stat-box {
   padding: 0.75rem;
@@ -2480,6 +2537,7 @@ html.dark .kpi-table th,
 html.dark .kpi-muted-text { color: #9ca3af; }
 html.dark .kpi-filters,
 html.dark .kpi-coverage-banner,
+html.dark .kpi-disclosure,
 html.dark .kpi-card,
 html.dark .kpi-panel,
 html.dark .kpi-failure-hero {
@@ -2487,11 +2545,19 @@ html.dark .kpi-failure-hero {
   border-color: #374151;
 }
 html.dark .kpi-stat-box,
-html.dark .kpi-sample-msg {
+html.dark .kpi-sample-msg,
+html.dark .kpi-card-disclosure,
+html.dark .kpi-tech-details,
+html.dark .kpi-configured-lanes {
   background: #111827;
   border-color: #374151;
   color: #d1d5db;
 }
+html.dark .kpi-disclosure,
+html.dark .kpi-tech-body { color: #d1d5db; }
+html.dark .kpi-disclosure-hint { color: #60a5fa; }
+html.dark .kpi-badge-warn { background: rgba(120, 53, 15, 0.5); color: #fde68a; }
+html.dark .kpi-low-sample { color: #fde68a; }
 html.dark .kpi-subnav { background: #1f2937; }
 html.dark .kpi-subnav-link { color: #9ca3af; }
 html.dark .kpi-subnav-link:hover { color: #f3f4f6; }

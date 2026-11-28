@@ -50,6 +50,7 @@ type KPIRedPRRow struct {
 	HasElsewhereMatch bool
 	TestsFailed       int
 	FailedSignatures  int
+	FailedSummary     string
 	RunURL            string
 }
 
@@ -70,13 +71,16 @@ type KPIPRsPage struct {
 	StillRedLanes        int
 	SettledNote          string
 	ReasonMixTotal       int
+	ReasonMixTotalText   string
 	ReasonMix            []KPIReasonMixSegment
 	ConfiguredLanes      []kpi.ConfiguredE2ELane
+	ConfiguredLanesText  string
 	CoverageSummary      string
 	CoverageNotes        []string
 	HasLanes             bool
 	Lanes                []KPIRedPRRow
 	Total                int
+	TotalLanesText       string
 	Page                 int
 	TotalPages           int
 	RowStart             int
@@ -181,6 +185,7 @@ func BuildKPIPRsPage(
 			HasElsewhereMatch: hasElsewhere,
 			TestsFailed:       lane.TestsFailed,
 			FailedSignatures:  lane.FailedSignatureCount,
+			FailedSummary:     pluralize(lane.TestsFailed, "test", "tests") + " · " + pluralize(lane.FailedSignatureCount, "pattern", "patterns"),
 			RunURL:            runHref,
 		})
 	}
@@ -203,13 +208,16 @@ func BuildKPIPRsPage(
 		StillRedLanes:        data.StillRedLanes,
 		SettledNote:          settledNote,
 		ReasonMixTotal:       reasonTotal,
+		ReasonMixTotalText:   pluralize(reasonTotal, "settled lane", "settled lanes"),
 		ReasonMix:            reasonSegments,
 		ConfiguredLanes:      append([]kpi.ConfiguredE2ELane(nil), data.ConfiguredE2ELanes...),
+		ConfiguredLanesText:  pluralize(len(data.ConfiguredE2ELanes), "configured lane", "configured lanes"),
 		CoverageSummary:      formatLaneCoverageSummary(data.LaneCoverage),
-		CoverageNotes:        append([]string(nil), data.LaneCoverage.Notes...),
+		CoverageNotes:        humanizeCoverageNotes(data.LaneCoverage.Notes),
 		HasLanes:             len(rows) > 0,
 		Lanes:                rows,
 		Total:                data.Pagination.Total,
+		TotalLanesText:       pluralize(data.Pagination.Total, "E2E red PR lane run", "E2E red PR lane runs"),
 		Page:                 pag.Page,
 		TotalPages:           pag.TotalPages,
 		RowStart:             pag.RowStart,
@@ -247,7 +255,7 @@ func mapPRReasonBadge(reason string) (label, cssClass string) {
 	case kpi.ReasonWentGreenOnRerun:
 		return "Went green on rerun", "kpi-badge kpi-reason-rerun"
 	case kpi.ReasonFailingElsewhere:
-		return "Also failing elsewhere", "kpi-badge kpi-reason-elsewhere"
+		return "Also failing elsewhere", kpiBadgeWarn
 	default:
 		return "Other", "kpi-badge kpi-reason-other"
 	}
@@ -262,7 +270,7 @@ func formatElsewhereMatch(failingOnMain bool, otherPRs int) (string, bool) {
 	case otherPRs >= 3:
 		return fmt.Sprintf("Failing on %d other PRs", otherPRs), true
 	case otherPRs > 0:
-		return fmt.Sprintf("Seen on %d other PR(s)", otherPRs), false
+		return "Seen on " + pluralize(otherPRs, "other PR", "other PRs"), false
 	default:
 		return "No cross-PR/main match", false
 	}

@@ -12,6 +12,8 @@ import (
 // KPIMainPassCard holds KPI 1 card data.
 type KPIMainPassCard struct {
 	HasData              bool
+	HealthLabel          string
+	HealthClass          string
 	PrimaryRate          string
 	PrimaryDelta         string
 	DeltaClass           string
@@ -24,6 +26,7 @@ type KPIMainPassCard struct {
 	StrictPassed         int
 	StrictTotal          int
 	UploadOnlyLanesCount int
+	UploadOnlyNote       string
 	CoverageSummary      string
 	CoverageNotes        []string
 }
@@ -31,6 +34,8 @@ type KPIMainPassCard struct {
 // KPIPRFalseRedCard holds KPI 2 card data.
 type KPIPRFalseRedCard struct {
 	HasData              bool
+	HealthLabel          string
+	HealthClass          string
 	HeadlineRate         string
 	Delta                string
 	DeltaClass           string
@@ -50,12 +55,14 @@ type KPIAppFlakyItem struct {
 
 // KPIFlakyCard holds KPI 3 card data.
 type KPIFlakyCard struct {
-	HasData    bool
-	Count      int
-	Delta      string
-	DeltaClass string
-	RuleNote   string
-	ByApp      []KPIAppFlakyItem
+	HasData     bool
+	HealthLabel string
+	HealthClass string
+	Count       int
+	Delta       string
+	DeltaClass  string
+	RuleNote    string
+	ByApp       []KPIAppFlakyItem
 }
 
 // KPIRecurringCard holds KPI 4 summary card data.
@@ -63,6 +70,7 @@ type KPIRecurringCard struct {
 	HasData            bool
 	TotalSignatures    int
 	TotalOccurrences   int
+	OccurrencesText    string
 	TriagedCount       int
 	ActiveCount        int
 	ResurfacedCount    int
@@ -78,6 +86,7 @@ type KPIDurationCard struct {
 	P50DeltaClass   string
 	P90             string
 	SampleCount     int
+	SampleCountText string
 	CoverageSummary string
 	CoverageNotes   []string
 }
@@ -138,6 +147,9 @@ type KPIRecurringFailureRow struct {
 	AffectedTestCount  int
 	AffectedTestRuns   int
 	RatePer1k          string
+	RateText           string
+	IsLowSample        bool
+	MetaSummary        string
 	DeltaRate14d       string
 	DeltaClass         string
 	LastSeenISO        string
@@ -149,35 +161,36 @@ type KPIRecurringFailureRow struct {
 // KPIOverviewPage is the view model for GET /kpi.
 // Author names and verdicts.error_context are intentionally omitted.
 type KPIOverviewPage struct {
-	Title           string
-	Site            SiteInfo
-	Filters         KPIFilterBar
-	OverviewHref    string
-	PRsHref         string
-	CoverageSummary string
-	CoverageNotes   []string
-	MainPass        KPIMainPassCard
-	PRFalseRed      KPIPRFalseRedCard
-	Flaky           KPIFlakyCard
-	Recurring       KPIRecurringCard
-	E2EDuration     KPIDurationCard
-	Triage          KPITriageSection
-	HasWeekly       bool
-	WeeklyBars      []KPIChartBar
-	WeeklyChartW    int
-	WeeklyRows      []KPIWeeklyRow
-	HasFailures     bool
-	Failures        []KPIRecurringFailureRow
-	Total           int
-	Page            int
-	TotalPages      int
-	RowStart        int
-	ShowEnd         int
-	ShowPagination  bool
-	HasPrev         bool
-	HasNext         bool
-	PrevHref        string
-	NextHref        string
+	Title             string
+	Site              SiteInfo
+	Filters           KPIFilterBar
+	OverviewHref      string
+	PRsHref           string
+	CoverageSummary   string
+	CoverageNotes     []string
+	MainPass          KPIMainPassCard
+	PRFalseRed        KPIPRFalseRedCard
+	Flaky             KPIFlakyCard
+	Recurring         KPIRecurringCard
+	E2EDuration       KPIDurationCard
+	Triage            KPITriageSection
+	HasWeekly         bool
+	WeeklyBars        []KPIChartBar
+	WeeklyChartW      int
+	WeeklyRows        []KPIWeeklyRow
+	HasFailures       bool
+	Failures          []KPIRecurringFailureRow
+	Total             int
+	TotalPatternsText string
+	Page              int
+	TotalPages        int
+	RowStart          int
+	ShowEnd           int
+	ShowPagination    bool
+	HasPrev           bool
+	HasNext           bool
+	PrevHref          string
+	NextHref          string
 }
 
 // BuildKPIOverviewPage maps KPI summary and recurring failures responses into KPIOverviewPage.
@@ -199,8 +212,15 @@ func BuildKPIOverviewPage(
 	// KPI 1: Main first-attempt pass rate.
 	tl := summary.MainPassRate.TestLevel
 	ll := summary.MainPassRate.LaneLevel
+	mainHealthLabel, mainHealthClass := healthBadgeHigherGood(tl.PassRate, 95, 85)
+	uploadOnlyNote := ""
+	if ll.UploadOnlyLanesCount > 0 {
+		uploadOnlyNote = pluralize(ll.UploadOnlyLanesCount, "upload-only lane", "upload-only lanes") + " excluded from zero-retry rate"
+	}
 	mainCard := KPIMainPassCard{
 		HasData:              tl.TotalTests > 0 || ll.TotalLanes > 0,
+		HealthLabel:          mainHealthLabel,
+		HealthClass:          mainHealthClass,
 		PrimaryRate:          formatPct(tl.PassRate),
 		PrimaryDelta:         formatDeltaPP(tl.DeltaPP),
 		DeltaClass:           deltaClassHigherGood(tl.DeltaPP),
@@ -213,8 +233,9 @@ func BuildKPIOverviewPage(
 		StrictPassed:         ll.StrictPassedLanes,
 		StrictTotal:          ll.StrictTotalLanes,
 		UploadOnlyLanesCount: ll.UploadOnlyLanesCount,
+		UploadOnlyNote:       uploadOnlyNote,
 		CoverageSummary:      formatLaneCoverageSummary(summary.MainPassRate.LaneCoverage),
-		CoverageNotes:        append([]string(nil), summary.MainPassRate.LaneCoverage.Notes...),
+		CoverageNotes:        humanizeCoverageNotes(summary.MainPassRate.LaneCoverage.Notes),
 	}
 
 	// KPI 2: PR false-red rate (lower bound).
@@ -229,13 +250,21 @@ func BuildKPIOverviewPage(
 			Delta: formatSignedIntDelta(a.Delta),
 		})
 	}
+	flakyHasData := summary.LaneCoverage.TotalRuns > 0 || summary.FlakyTests.Count > 0 || len(appItems) > 0
+	var flakyHealthLabel, flakyHealthClass string
+	if flakyHasData {
+		cnt := float64(summary.FlakyTests.Count)
+		flakyHealthLabel, flakyHealthClass = healthBadgeLowerGood(&cnt, 0, 5)
+	}
 	flakyCard := KPIFlakyCard{
-		HasData:    summary.LaneCoverage.TotalRuns > 0 || summary.FlakyTests.Count > 0 || len(appItems) > 0,
-		Count:      summary.FlakyTests.Count,
-		Delta:      formatSignedIntDelta(summary.FlakyTests.Delta),
-		DeltaClass: deltaIntLowerGoodClass(summary.FlakyTests.Delta),
-		RuleNote:   fmt.Sprintf("Trailing %dd · >=%d flaky commits", summary.FlakyTests.WindowDays, summary.FlakyTests.MinFlakyCommits),
-		ByApp:      appItems,
+		HasData:     flakyHasData,
+		HealthLabel: flakyHealthLabel,
+		HealthClass: flakyHealthClass,
+		Count:       summary.FlakyTests.Count,
+		Delta:       formatSignedIntDelta(summary.FlakyTests.Delta),
+		DeltaClass:  deltaIntLowerGoodClass(summary.FlakyTests.Delta),
+		RuleNote:    fmt.Sprintf("Trailing %dd · >=%d flaky commits", summary.FlakyTests.WindowDays, summary.FlakyTests.MinFlakyCommits),
+		ByApp:       appItems,
 	}
 	if summary.FlakyTests.WindowDays == 0 {
 		flakyCard.RuleNote = "Trailing 14d · >=2 flaky commits"
@@ -250,6 +279,7 @@ func BuildKPIOverviewPage(
 		HasData:            recSum.TotalSignatures > 0 || recSum.TotalOccurrences > 0,
 		TotalSignatures:    recSum.TotalSignatures,
 		TotalOccurrences:   recSum.TotalOccurrences,
+		OccurrencesText:    pluralize(recSum.TotalOccurrences, "occurrence", "occurrences") + " in window",
 		TriagedCount:       recSum.TriagedCount,
 		ActiveCount:        recSum.ActiveCount,
 		ResurfacedCount:    recSum.ResurfacedCount,
@@ -266,8 +296,9 @@ func BuildKPIOverviewPage(
 		P50DeltaClass:   deltaClassLowerGood(dur.DeltaP50Ms),
 		P90:             formatDurationMs(dur.P90Ms),
 		SampleCount:     dur.SampleCount,
+		SampleCountText: pluralize(dur.SampleCount, "orchestrated PR run", "orchestrated PR runs"),
 		CoverageSummary: formatLaneCoverageSummary(dur.LaneCoverage),
-		CoverageNotes:   append([]string(nil), dur.LaneCoverage.Notes...),
+		CoverageNotes:   humanizeCoverageNotes(dur.LaneCoverage.Notes),
 	}
 
 	// Triage & Run completion (SEC-11520).
@@ -295,6 +326,8 @@ func BuildKPIOverviewPage(
 		} else if len(r.Repositories) > 1 {
 			reposSummary = fmt.Sprintf("%s (+%d)", r.Repositories[0], len(r.Repositories)-1)
 		}
+		rateText, isLowSample := formatFailureRate(r.RatePer1k, r.OccurrenceCount, r.AffectedTestRuns)
+		deltaText, deltaClass := formatFailureDelta14d(r.DeltaRatePer1k, r.Occurrences14d, r.AffectedRuns14d, r.PriorOccurrences14d, r.PriorAffectedRuns14d)
 		failureRows = append(failureRows, KPIRecurringFailureRow{
 			SignatureID:        r.SignatureID,
 			Href:               kpiHref("/kpi/failures/"+url.PathEscape(r.SignatureID), filterBar.State, 1, "", false),
@@ -309,8 +342,11 @@ func BuildKPIOverviewPage(
 			AffectedTestCount:  r.AffectedTestCount,
 			AffectedTestRuns:   r.AffectedTestRuns,
 			RatePer1k:          formatRatePer1k(r.RatePer1k),
-			DeltaRate14d:       formatDeltaRatePer1k(r.DeltaRatePer1k),
-			DeltaClass:         deltaClassLowerGood(r.DeltaRatePer1k),
+			RateText:           rateText,
+			IsLowSample:        isLowSample,
+			MetaSummary:        pluralize(r.AffectedTestCount, "test", "tests") + " · " + pluralize(r.GroupCount, "run", "runs"),
+			DeltaRate14d:       deltaText,
+			DeltaClass:         deltaClass,
 			LastSeenISO:        lastISO,
 			LastSeenRel:        lastRel,
 			ReposSummary:       reposSummary,
@@ -321,35 +357,36 @@ func BuildKPIOverviewPage(
 	pag := buildKPIPagination(filterBar.State, failures.Pagination.Page, failures.Pagination.Limit, failures.Pagination.Total, failures.Pagination.TotalPages)
 
 	return KPIOverviewPage{
-		Title:           "KPIs · Test System IO",
-		Site:            site,
-		Filters:         filterBar,
-		OverviewHref:    overviewHref,
-		PRsHref:         prsHref,
-		CoverageSummary: formatLaneCoverageSummary(summary.LaneCoverage),
-		CoverageNotes:   append([]string(nil), summary.LaneCoverage.Notes...),
-		MainPass:        mainCard,
-		PRFalseRed:      prCard,
-		Flaky:           flakyCard,
-		Recurring:       recCard,
-		E2EDuration:     durCard,
-		Triage:          triageSec,
-		HasWeekly:       len(weeklyRows) > 0,
-		WeeklyBars:      weeklyBars,
-		WeeklyChartW:    chartW,
-		WeeklyRows:      weeklyRows,
-		HasFailures:     len(failureRows) > 0,
-		Failures:        failureRows,
-		Total:           failures.Pagination.Total,
-		Page:            pag.Page,
-		TotalPages:      pag.TotalPages,
-		RowStart:        pag.RowStart,
-		ShowEnd:         pag.ShowEnd,
-		ShowPagination:  pag.ShowPagination,
-		HasPrev:         pag.HasPrev,
-		HasNext:         pag.HasNext,
-		PrevHref:        pag.PrevHref,
-		NextHref:        pag.NextHref,
+		Title:             "KPIs · Test System IO",
+		Site:              site,
+		Filters:           filterBar,
+		OverviewHref:      overviewHref,
+		PRsHref:           prsHref,
+		CoverageSummary:   formatLaneCoverageSummary(summary.LaneCoverage),
+		CoverageNotes:     humanizeCoverageNotes(summary.LaneCoverage.Notes),
+		MainPass:          mainCard,
+		PRFalseRed:        prCard,
+		Flaky:             flakyCard,
+		Recurring:         recCard,
+		E2EDuration:       durCard,
+		Triage:            triageSec,
+		HasWeekly:         len(weeklyRows) > 0,
+		WeeklyBars:        weeklyBars,
+		WeeklyChartW:      chartW,
+		WeeklyRows:        weeklyRows,
+		HasFailures:       len(failureRows) > 0,
+		Failures:          failureRows,
+		Total:             failures.Pagination.Total,
+		TotalPatternsText: pluralize(failures.Pagination.Total, "failure pattern", "failure patterns"),
+		Page:              pag.Page,
+		TotalPages:        pag.TotalPages,
+		RowStart:          pag.RowStart,
+		ShowEnd:           pag.ShowEnd,
+		ShowPagination:    pag.ShowPagination,
+		HasPrev:           pag.HasPrev,
+		HasNext:           pag.HasNext,
+		PrevHref:          pag.PrevHref,
+		NextHref:          pag.NextHref,
 	}
 }
 
@@ -381,6 +418,7 @@ func buildPRFalseRedCard(pr *kpi.PRFalseRedSummary, prsHref string) KPIPRFalseRe
 	switch {
 	case pr.FalseRedRate != nil:
 		card.HasData = true
+		card.HealthLabel, card.HealthClass = healthBadgeLowerGood(pr.FalseRedRate, 5, 15)
 		card.HeadlineRate = fmt.Sprintf("%s %.1f%%", qualifier, *pr.FalseRedRate)
 		card.SettledNote = fmt.Sprintf("Lower bound (>%dh settled); new-commit fixes excluded.", settledHours)
 	case pr.UnsettledRedLanes > 0:

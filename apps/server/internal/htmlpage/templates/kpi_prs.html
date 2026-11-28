@@ -3,7 +3,7 @@
   <div class="kpi-page-title-row">
     <div>
       <h2 class="kpi-page-title">PR E2E Signal Reliability</h2>
-      <p class="kpi-page-subtitle">Settled false-red lower bound, attribution mix, and E2E red PR queue</p>
+      <p class="kpi-page-subtitle">Settled false-red lower bound, failure attribution, and currently red PRs</p>
     </div>
     <nav class="kpi-subnav" aria-label="KPI sections">
       <a href="{{.OverviewHref}}" class="kpi-subnav-link">Overview</a>
@@ -11,14 +11,21 @@
     </nav>
   </div>
   {{template "kpi-filter-bar" .Filters}}
-  <div class="kpi-coverage-banner" role="note">
-    <span class="kpi-coverage-summary"><strong>Lane coverage:</strong> {{.CoverageSummary}}</span>
-    {{if .CoverageNotes}}
+  {{if .CoverageNotes}}
+  <details class="kpi-disclosure" role="note">
+    <summary class="kpi-disclosure-summary">
+      <span class="kpi-coverage-summary"><strong>Lane coverage:</strong> {{.CoverageSummary}}</span>
+      <span class="kpi-disclosure-hint">Details</span>
+    </summary>
     <ul class="kpi-coverage-notes">
       {{range .CoverageNotes}}<li>{{.}}</li>{{end}}
     </ul>
-    {{end}}
+  </details>
+  {{else}}
+  <div class="kpi-coverage-banner" role="note">
+    <span class="kpi-coverage-summary"><strong>Lane coverage:</strong> {{.CoverageSummary}}</span>
   </div>
+  {{end}}
 </header>
 
 <section class="kpi-prs-top-grid" aria-label="PR false-red summary and reason mix">
@@ -43,7 +50,7 @@
   <article class="kpi-card kpi-card-wide">
     <div class="kpi-card-head">
       <h3 class="kpi-card-title">Reason mix (settled red PR lanes)</h3>
-      <span class="kpi-panel-subtitle tabular">{{.ReasonMixTotal}} settled lanes</span>
+      <span class="kpi-panel-subtitle tabular">{{.ReasonMixTotalText}}</span>
     </div>
     {{if eq .ReasonMixTotal 0}}
     <div class="empty-state empty-state-inline">
@@ -67,14 +74,17 @@
       {{end}}
     </div>
     {{if .ConfiguredLanes}}
-    <div class="kpi-configured-lanes">
-      <span class="kpi-filter-label">Configured E2E lanes:</span>
+    <details class="kpi-disclosure kpi-configured-lanes">
+      <summary class="kpi-disclosure-summary">
+        <span class="kpi-filter-label">Configured E2E lanes: Tracking {{.ConfiguredLanesText}}</span>
+        <span class="kpi-disclosure-hint">Show lanes</span>
+      </summary>
       <div class="kpi-chip-list">
         {{range .ConfiguredLanes}}
         <span class="kpi-chip mono">{{.Repository}}:{{.Lane}}</span>
         {{end}}
       </div>
-    </div>
+    </details>
     {{end}}
   </article>
 </section>
@@ -82,7 +92,7 @@
 <section class="kpi-panel" aria-label="Red now PR E2E queue">
   <header class="kpi-panel-head">
     <h3 class="kpi-panel-title">Red now</h3>
-    <span class="kpi-panel-subtitle tabular">{{if gt .Total 0}}{{.Total}} E2E red PR lane runs{{else}}0 E2E red PR lane runs{{end}}</span>
+    <span class="kpi-panel-subtitle tabular">{{.TotalLanesText}}</span>
   </header>
   {{if not .HasLanes}}
   <div class="empty-state empty-state-inline">
@@ -134,7 +144,7 @@
             {{end}}
           </td>
           <td class="num tabular"><time datetime="{{.CreatedISO}}" title="{{.CreatedISO}}">{{.AgeText}}</time></td>
-          <td class="num tabular">{{.TestsFailed}} tests · {{.FailedSignatures}} sigs</td>
+          <td class="num tabular">{{.FailedSummary}}</td>
         </tr>
         {{end}}
       </tbody>

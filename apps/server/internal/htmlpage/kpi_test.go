@@ -210,7 +210,7 @@ func TestRenderKPIOverview_PopulatedAndGuardrails(t *testing.T) {
 		`class="site-nav-link is-active">KPIs</a>`,
 		`94.2%`,
 		`Lane pass (attempt 1)`,
-		`Strict (0 retried units)`,
+		`Zero-retry runs`,
 		`at least 18.5%`,
 		`new-commit fixes excluded`,
 		`mattermost: 5`,
@@ -531,7 +531,7 @@ func TestBuildKPIOverviewAndPRs_PRFalseRedZeroSettledAndUnsettledStates(t *testi
 		`No data — no settled (&gt;24h) red PR lanes in this window`,
 		`E2E red`,
 		`Failing on 3 other PRs`,
-		`Seen on 2 other PR(s)`,
+		`Seen on 2 other PRs`,
 		`Also failing elsewhere`,
 		`Other`,
 	} {
@@ -766,9 +766,9 @@ func TestKPIPaginationOutOfRangeRecovery(t *testing.T) {
 		}
 		s := string(htmlBytes)
 		for _, want := range []string{
-			`57 canonical signatures`,
+			`57 failure patterns`,
 			`Page 5 out of range`,
-			`No failure signatures on page 5 (total 57 across 2 pages).`,
+			`No failure patterns on page 5 (total 57 across 2 pages).`,
 			`kpi-pagination`,
 			`href="?app=mattermost&amp;page=2&amp;sort=rate_desc&amp;window=14d">Previous</a>`,
 			`<span class="btn-page is-disabled" aria-disabled="true">Next</span>`,
@@ -1065,3 +1065,179 @@ func TestKPICustomLimitPreservation(t *testing.T) {
 		}
 	})
 }
+
+func TestRenderKPI_EngProdUXClarityAndSmallSamples(t *testing.T) {
+	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+
+	// Small-sample failure detail: 3 failures in 3 test runs across 1 CI run, duplicate SampleMessage, 29 zero days + 1 active day.
+	dailySeries := make([]kpi.FailureDailyPoint, 0, 30)
+	for d := 0; d < 30; d++ {
+		dt := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC).AddDate(0, 0, d).Format("2006-01-02")
+		if dt == "2026-11-21" {
+			dailySeries = append(dailySeries, kpi.FailureDailyPoint{
+				Date:             dt,
+				OccurrenceCount:  3,
+				RawAttemptCount:  3,
+				GroupCount:       1,
+				AffectedTestRuns: 3,
+				RatePer1k:        floatPtr(1000.0),
+			})
+		} else {
+			dailySeries = append(dailySeries, kpi.FailureDailyPoint{Date: dt})
+		}
+	}
+
+	msg := "Assertion is false: id: mute-unmute is visible"
+	detail := kpi.FailureDetailResponse{
+		Filters:              kpi.FilterParams{Window: kpi.Window30d},
+		RequestedSignatureID: "019a1234-5678-7abc-8def-0123456789ab",
+		CanonicalSignatureID: "019a1234-5678-7abc-8def-0123456789ab",
+		Fingerprint:          "f273fbcfb0ce0bbea78611817c57dcc214f532910bcfd29133b5e791ca1e949a",
+		AlgoVersion:          2,
+		NormalizedMessage:    msg,
+		SampleMessage:        strPtr(msg), // Exact duplicate must be suppressed.
+		State:                kpi.FailureStateNotEnoughRuns,
+		OccurrenceCount:      3,
+		RawAttemptCount:      3,
+		GroupCount:           1,
+		AffectedTestCount:    3,
+		AffectedTestRuns:     3,
+		RatePer1k:            floatPtr(1000.0),
+		Occurrences14d:       3,
+		AffectedRuns14d:      3,
+		RatePer1k14d:         floatPtr(1000.0),
+		PriorOccurrences14d:  0,
+		PriorAffectedRuns14d: 0,
+		DeltaRatePer1k:       floatPtr(1000.0),
+		LastSeenAt:           floatTimePtr(now.Add(-7 * 24 * time.Hour)),
+		FirstSeen: kpi.FailureFirstSeen{
+			FirstSeenAt: now.Add(-7 * 24 * time.Hour),
+			Repository:  strPtr("mattermost/mattermost-mobile"),
+			Lane:        strPtr("mobile-main-maestro-android-e2e"),
+			Branch:      strPtr("main"),
+			CommitSHA:   strPtr("731b710abcdef"),
+		},
+		DailySeries: dailySeries,
+		AffectedTests: []kpi.FailureAffectedTest{
+			{
+				TestID:     "t-1",
+				FullTitle:  "Maestro E2E > mute_unmute",
+				File:       "e2e/mute_unmute.yaml",
+				Repository: "mattermost/mattermost-mobile",
+				Framework:  "maestro",
+				FailCount:  1,
+				RunCount:   1,
+				GroupCount: 1,
+				LastSeenAt: now.Add(-7 * 24 * time.Hour),
+			},
+		},
+		AffectedRepos: []kpi.FailureAffectedRepo{
+			{
+				Repository:      "mattermost/mattermost-mobile",
+				App:             "mobile",
+				OccurrenceCount: 3,
+				GroupCount:      1,
+				AffectedRuns:    3,
+				RatePer1k:       floatPtr(1000.0),
+				Lanes:           []string{"mobile-main-maestro-android-e2e"},
+			},
+		},
+	}
+
+	detailHTMLBytes, err := RenderKPIFailureDetail(BuildKPIFailureDetailPage(SiteInfo{}, detail, now))
+	if err != nil {
+		t.Fatalf("RenderKPIFailureDetail: %v", err)
+	}
+	ds := string(detailHTMLBytes)
+
+	for _, want := range []string{
+		`100% (3 of 3)`,
+		`Low sample`,
+		`New in 14d`,
+		`3 failures`,
+		`1 CI run`,
+		`1 repository`,
+		`1 test`,
+		`1 active day`,
+		`2026-11-21`,
+		`29 quiet days with 0 failures are shown as baseline bars in the chart above.`,
+		`Technical details (Signature v2`,
+	} {
+		if !strings.Contains(ds, want) {
+			t.Fatalf("small-sample failure detail missing %q", want)
+		}
+	}
+	for _, forbid := range []string{
+		`1000.0 / 1k`,
+		`class="kpi-sample-msg"`,
+		`1 runs`,
+		`1 groups`,
+		`1 repositories`,
+		`<td>2026-10-30</td>`,
+		`2026-11-20</td>`,
+	} {
+		if strings.Contains(ds, forbid) {
+			t.Fatalf("small-sample failure detail must not contain %q", forbid)
+		}
+	}
+	idxTests := strings.Index(ds, `Affected Tests`)
+	idxDaily := strings.Index(ds, `Daily Occurrences &amp; Rate`)
+	if idxTests == -1 || idxDaily == -1 || idxTests > idxDaily {
+		t.Fatalf("expected Affected Tests (%d) to render before Daily Occurrences & Rate (%d)", idxTests, idxDaily)
+	}
+
+	// Coverage notes with raw SQL column names are humanized on /kpi and /kpi/prs.
+	ovParams, err := kpi.ParseFailuresParams(url.Values{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ovHTMLBytes, err := RenderKPIOverview(BuildKPIOverviewPage(
+		SiteInfo{},
+		kpi.FilterOptions{},
+		kpi.SummaryResponse{
+			Filters: ovParams,
+			LaneCoverage: kpi.LaneCoverage{
+				TotalLanes: 8, OrchestratedLanes: 4, UploadOnlyLanes: 4, TotalRuns: 12,
+				Notes: []string{"upload-only runs lack orchestration lease history and total_duration_ms; excluded from strict lane pass rate and p50/p90 E2E duration"},
+			},
+		},
+		kpi.FailuresResponse{Filters: ovParams},
+		now,
+	))
+	if err != nil {
+		t.Fatalf("RenderKPIOverview humanized coverage: %v", err)
+	}
+	ovs := string(ovHTMLBytes)
+	if strings.Contains(ovs, "total_duration_ms") || strings.Contains(ovs, "test_stats_json") {
+		t.Fatal("RenderKPIOverview leaked raw DB column name in coverage notes")
+	}
+	if !strings.Contains(ovs, "12 runs across 8 lanes (4 orchestrated, 4 upload-only)") {
+		t.Fatal("RenderKPIOverview missing humanized pluralized lane coverage summary")
+	}
+
+	prParams, err := kpi.ParsePRsRedParams(url.Values{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prHTMLBytes, err := RenderKPIPRs(BuildKPIPRsPage(
+		SiteInfo{},
+		kpi.FilterOptions{},
+		kpi.PRRedResponse{
+			Filters: prParams,
+			LaneCoverage: kpi.LaneCoverage{
+				TotalLanes: 2, UploadOnlyLanes: 1, TotalRuns: 5,
+				Notes: []string{"upload-only runs use test_stats_json failed counts; orchestration lease history unavailable"},
+			},
+		},
+		now,
+	))
+	if err != nil {
+		t.Fatalf("RenderKPIPRs humanized coverage: %v", err)
+	}
+	prs := string(prHTMLBytes)
+	if strings.Contains(prs, "test_stats_json") || strings.Contains(prs, "total_duration_ms") {
+		t.Fatal("RenderKPIPRs leaked raw DB column name in coverage notes")
+	}
+}
+
+func floatTimePtr(t time.Time) *time.Time { return &t }

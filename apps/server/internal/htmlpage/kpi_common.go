@@ -12,11 +12,15 @@ import (
 )
 
 const (
-	kpiNotAvailable = "N/A"
-	kpiDeltaNeutral = "kpi-delta-neutral"
-	kpiDeltaGood    = "kpi-delta-good"
-	kpiDeltaBad     = "kpi-delta-bad"
-	kpiDefaultLimit = 50
+	kpiNotAvailable    = "N/A"
+	kpiDeltaNeutral    = "kpi-delta-neutral"
+	kpiDeltaGood       = "kpi-delta-good"
+	kpiDeltaBad        = "kpi-delta-bad"
+	kpiBadgeGood       = "kpi-badge kpi-state-quiet"
+	kpiBadgeWarn       = "kpi-badge kpi-reason-elsewhere"
+	kpiBadgeBad        = "kpi-badge kpi-state-active"
+	kpiDefaultLimit    = 50
+	kpiMinRunsForPer1k = 50
 )
 
 // KPIFilterOption represents one <option> in a KPI filter or sort dropdown.
@@ -75,7 +79,7 @@ type KPIChartBar struct {
 
 var kpiOverviewSortOptions = []KPIFilterOption{
 	{Value: kpi.SortOccurrencesDesc, Label: "Most occurrences"},
-	{Value: kpi.SortRateDesc, Label: "Highest rate / 1k"},
+	{Value: kpi.SortRateDesc, Label: "Highest failure rate"},
 	{Value: kpi.SortTrendDesc, Label: "Fastest rising (14d)"},
 	{Value: kpi.SortLastSeenDesc, Label: "Most recently seen"},
 	{Value: kpi.SortNameAsc, Label: "Signature A–Z"},
@@ -239,12 +243,129 @@ func kpiPageQuery(f KPIFilterState, page int) string {
 
 func formatLaneCoverageSummary(cov kpi.LaneCoverage) string {
 	if cov.TotalLanes == 0 && cov.TotalRuns == 0 {
-		return "No matching lane runs in this window"
+		return "No matching runs in this window"
 	}
 	return fmt.Sprintf(
-		"%d lanes (%d orchestrated, %d upload-only) · %d runs",
-		cov.TotalLanes, cov.OrchestratedLanes, cov.UploadOnlyLanes, cov.TotalRuns,
+		"%s across %s (%d orchestrated, %d upload-only)",
+		pluralize(cov.TotalRuns, "run", "runs"),
+		pluralize(cov.TotalLanes, "lane", "lanes"),
+		cov.OrchestratedLanes,
+		cov.UploadOnlyLanes,
 	)
+}
+
+func pluralWord(n int, singular, plural string) string {
+	if n == 1 || n == -1 {
+		return singular
+	}
+	return plural
+}
+
+func pluralize(n int, singular, plural string) string {
+	return fmt.Sprintf("%d %s", n, pluralWord(n, singular, plural))
+}
+
+func shortFingerprint(fp string) string {
+	if len(fp) > 14 {
+		return fp[:8] + "…" + fp[len(fp)-4:]
+	}
+	return fp
+}
+
+// formatFailureRate avoids extrapolating small samples (<50 runs) into misleading per-1k rates.
+func formatFailureRate(ratePer1k *float64, occurrences, affectedRuns int) (text string, isLowSample bool) {
+	if ratePer1k == nil || affectedRuns <= 0 {
+		return kpiNotAvailable, false
+	}
+	if affectedRuns >= kpiMinRunsForPer1k {
+		return formatRatePer1k(ratePer1k), false
+	}
+	pct := *ratePer1k / 10.0
+	if math.Abs(pct-math.Round(pct)) < 0.05 {
+		return fmt.Sprintf("%.0f%% (%d of %d)", pct, occurrences, affectedRuns), true
+	}
+	return fmt.Sprintf("%.1f%% (%d of %d)", pct, occurrences, affectedRuns), true
+}
+
+func formatFailureDelta14d(delta *float64, curOcc, curRuns, priorOcc, priorRuns int) (text, cssClass string) {
+	if priorRuns == 0 && curOcc > 0 {
+		return "New in 14d", kpiDeltaBad
+	}
+	if (curRuns >= kpiMinRunsForPer1k && priorRuns >= kpiMinRunsForPer1k) || (curRuns == 0 && priorRuns == 0) {
+		return formatDeltaRatePer1k(delta), deltaClassLowerGood(delta)
+	}
+	if delta == nil {
+		return kpiNotAvailable, kpiDeltaNeutral
+	}
+	diff := curOcc - priorOcc
+	if diff == 0 {
+		return "No change", kpiDeltaNeutral
+	}
+	absDiff := diff
+	if absDiff < 0 {
+		absDiff = -absDiff
+	}
+	return fmt.Sprintf("%s %s", formatSignedIntDelta(&diff), pluralWord(absDiff, "failure", "failures")), deltaIntLowerGoodClass(&diff)
+}
+
+func healthBadgeHigherGood(v *float64, goodMin, warnMin float64) (label, cssClass string) {
+	if v == nil {
+		return "", ""
+	}
+	switch {
+	case *v >= goodMin:
+		return "Healthy", kpiBadgeGood
+	case *v >= warnMin:
+		return "Watch", kpiBadgeWarn
+	default:
+		return "Action needed", kpiBadgeBad
+	}
+}
+
+func healthBadgeLowerGood(v *float64, goodMax, warnMax float64) (label, cssClass string) {
+	if v == nil {
+		return "", ""
+	}
+	switch {
+	case *v <= goodMax:
+		return "Healthy", kpiBadgeGood
+	case *v <= warnMax:
+		return "Watch", kpiBadgeWarn
+	default:
+		return "Action needed", kpiBadgeBad
+	}
+}
+
+func humanizeCoverageNotes(notes []string) []string {
+	if len(notes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(notes))
+	for _, n := range notes {
+		out = append(out, humanizeCoverageNote(n))
+	}
+	return out
+}
+
+func humanizeCoverageNote(note string) string {
+	switch {
+	case strings.Contains(note, "total_duration_ms"):
+		return "Upload-only jobs (such as mobile runs) don't report job-level retry or run-time telemetry, so they are excluded from zero-retry pass rate and median/p90 E2E duration."
+	case strings.Contains(note, "test_stats_json"):
+		return "Upload-only jobs determine pass/fail from uploaded test results because job-level retry history is unavailable."
+	case strings.Contains(note, "lower bound ('at least')"):
+		return "Lower bound ('at least'): excludes runs younger than 24h until settled and excludes failures resolved by pushing a new commit."
+	case strings.Contains(note, "always evaluates stage='main'"):
+		return "The stage filter does not apply to Main Health (always evaluates main-branch runs)."
+	case strings.Contains(note, "always evaluates stage='pr'"):
+		return "The stage filter does not apply to E2E PR run time (always evaluates PR runs)."
+	case strings.Contains(note, "always evaluates PR lanes"):
+		return "The stage filter does not apply to PR false-red rate (always evaluates pull-request runs)."
+	case strings.Contains(note, "always evaluates trailing 14d"):
+		return "The window filter does not apply to Flaky tests (always evaluates the trailing 14 days)."
+	default:
+		return note
+	}
 }
 
 func formatPct(v *float64) string {
@@ -389,14 +510,14 @@ func formatSecondsDuration(sec int64) string {
 func mapFailureStateBadge(state string, quietDays *int) (label, cssClass string) {
 	switch state {
 	case kpi.FailureStateActive:
-		return kpi.FailureStateActive, "kpi-badge kpi-state-active"
+		return kpi.FailureStateActive, kpiBadgeBad
 	case kpi.FailureStateResurfaced:
 		return kpi.FailureStateResurfaced, "kpi-badge kpi-state-resurfaced"
 	case kpi.FailureStateQuiet:
 		if quietDays != nil && *quietDays >= 0 {
-			return fmt.Sprintf("%s (%dd)", kpi.FailureStateQuiet, *quietDays), "kpi-badge kpi-state-quiet"
+			return fmt.Sprintf("%s (%dd)", kpi.FailureStateQuiet, *quietDays), kpiBadgeGood
 		}
-		return kpi.FailureStateQuiet, "kpi-badge kpi-state-quiet"
+		return kpi.FailureStateQuiet, kpiBadgeGood
 	default:
 		return kpi.FailureStateNotEnoughRuns, "kpi-badge kpi-state-not-enough-runs"
 	}

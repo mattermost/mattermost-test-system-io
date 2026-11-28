@@ -32,21 +32,28 @@ type cypressSuite struct {
 }
 
 type cypressTest struct {
-	Title     string        `json:"title"`
-	FullTitle string        `json:"fullTitle"`
-	Duration  int64         `json:"duration"`
-	State     string        `json:"state"`
-	Pass      bool          `json:"pass"`
-	Fail      bool          `json:"fail"`
-	Pending   bool          `json:"pending"`
-	Skipped   bool          `json:"skipped"`
-	Context   *string       `json:"context"`
-	Err       *cypressError `json:"err"`
+	Title     string            `json:"title"`
+	FullTitle string            `json:"fullTitle"`
+	Duration  int64             `json:"duration"`
+	State     string            `json:"state"`
+	Pass      bool              `json:"pass"`
+	Fail      bool              `json:"fail"`
+	Pending   bool              `json:"pending"`
+	Skipped   bool              `json:"skipped"`
+	Context   *string           `json:"context"`
+	Err       *cypressError     `json:"err"`
+	Attempts  []json.RawMessage `json:"attempts"`
 }
 
 type cypressError struct {
 	Message string `json:"message"`
 	Estack  string `json:"estack"`
+	Stack   string `json:"stack"`
+}
+
+type cypressAttempt struct {
+	Err   *cypressError `json:"err"`
+	Error *cypressError `json:"error"`
 }
 
 // extractCypress parses a Mochawesome (Cypress) JSON file. Mochawesome nests
@@ -127,13 +134,11 @@ func walkCypressSuite(s cypressSuite, inheritedFile string, seq *int, startTime 
 
 func extractCypressTest(t cypressTest, seq *int, startTime *time.Time) ExtractedCase {
 	status := cypressStatus(t)
-	var errMsg *string
-	if t.Err != nil {
-		msg := firstNonEmpty(t.Err.Message, t.Err.Estack)
-		if msg != "" {
-			errMsg = &msg
-		}
+	retryCount := 0
+	if len(t.Attempts) > 1 {
+		retryCount = len(t.Attempts) - 1
 	}
+	errMsg, errStack := extractCypressError(t)
 	full := t.FullTitle
 	if full == "" {
 		full = t.Title
@@ -143,8 +148,9 @@ func extractCypressTest(t cypressTest, seq *int, startTime *time.Time) Extracted
 		FullTitle:    full,
 		Status:       status,
 		DurationMs:   t.Duration,
-		RetryCount:   0,
+		RetryCount:   retryCount,
 		ErrorMessage: errMsg,
+		ErrorStack:   errStack,
 		Sequence:     *seq,
 		StartTime:    startTime,
 		Attachments:  parseCypressContext(t.Context),
@@ -153,20 +159,69 @@ func extractCypressTest(t cypressTest, seq *int, startTime *time.Time) Extracted
 	return c
 }
 
+func extractCypressError(t cypressTest) (errMsg, errStack *string) {
+	var msg, stack string
+	if t.Err != nil {
+		msg = t.Err.Message
+		stack = firstNonEmpty(t.Err.Estack, t.Err.Stack)
+	}
+	if msg == "" || stack == "" {
+		for _, raw := range t.Attempts {
+			var a cypressAttempt
+			if err := json.Unmarshal(raw, &a); err != nil {
+				continue
+			}
+			for _, candidate := range []*cypressError{a.Err, a.Error} {
+				if candidate == nil {
+					continue
+				}
+				if msg == "" {
+					msg = candidate.Message
+				}
+				if stack == "" {
+					stack = firstNonEmpty(candidate.Estack, candidate.Stack)
+				}
+				if msg != "" && stack != "" {
+					break
+				}
+			}
+			if msg != "" && stack != "" {
+				break
+			}
+		}
+	}
+	if fullMsg := firstNonEmpty(msg, stack); fullMsg != "" {
+		errMsg = &fullMsg
+	}
+	if stack != "" {
+		errStack = &stack
+	}
+	return errMsg, errStack
+}
+
 func cypressStatus(t cypressTest) string {
+	retried := len(t.Attempts) > 1
 	switch {
 	case t.Pending || t.Skipped:
 		return StatusSkipped
 	case t.Fail:
 		return StatusFailed
 	case t.Pass:
+		if retried {
+			return StatusFlaky
+		}
 		return StatusPassed
 	}
 	switch t.State {
 	case StatusPassed:
+		if retried {
+			return StatusFlaky
+		}
 		return StatusPassed
 	case StatusFailed:
 		return StatusFailed
+	case StatusFlaky:
+		return StatusFlaky
 	case cypressStatePending, StatusSkipped:
 		return StatusSkipped
 	default:

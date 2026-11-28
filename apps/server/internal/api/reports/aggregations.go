@@ -999,7 +999,7 @@ func (h *Handlers) SuiteSpecs(w http.ResponseWriter, r *http.Request) {
 	// shape its flaky / "N attempts" rendering already expects.
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT tc.id, tc.title, tc.full_title, tc.status, tc.retry_count, tc.duration_ms,
-		       tc.error_message, tc.error_stack, tc.attachments, tc.ordinal, s.file
+		       tc.error_message, tc.error_stack, tc.project, tc.attachments, tc.ordinal, s.file
 		FROM test_cases tc
 		JOIN suites s ON s.id = tc.suite_id
 		WHERE tc.suite_id = $1
@@ -1020,6 +1020,7 @@ func (h *Handlers) SuiteSpecs(w http.ResponseWriter, r *http.Request) {
 		Duration   *int64
 		ErrorMsg   *string
 		ErrorStack *string
+		Project    *string
 		Attach     []byte
 		Ordinal    int
 		FilePath   *string
@@ -1028,7 +1029,7 @@ func (h *Handlers) SuiteSpecs(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c caseRow
 		if err := rows.Scan(&c.ID, &c.Title, &c.FullTitle, &c.Status, &c.Retry,
-			&c.Duration, &c.ErrorMsg, &c.ErrorStack, &c.Attach, &c.Ordinal, &c.FilePath); err != nil {
+			&c.Duration, &c.ErrorMsg, &c.ErrorStack, &c.Project, &c.Attach, &c.Ordinal, &c.FilePath); err != nil {
 			api.WriteError(w, r, err)
 			return
 		}
@@ -1117,7 +1118,7 @@ func (h *Handlers) SuiteSpecs(w http.ResponseWriter, r *http.Request) {
 				"retry":        c.Retry,
 				"start_time":   "",
 				"project_id":   "",
-				"project_name": "",
+				"project_name": derefOrEmpty(c.Project),
 				"errors_json":  buildErrorsJSON(c.ErrorMsg, c.ErrorStack),
 				"attachments":  attachmentsOrEmpty(c.Attach),
 			})

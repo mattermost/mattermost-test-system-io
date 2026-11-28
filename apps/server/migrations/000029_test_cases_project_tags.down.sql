@@ -1,0 +1,3 @@
+ALTER TABLE test_cases
+    DROP COLUMN IF EXISTS tags,
+    DROP COLUMN IF EXISTS project;

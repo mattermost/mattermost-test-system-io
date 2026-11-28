@@ -507,7 +507,7 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT tc.id, tc.suite_id, tc.title, tc.full_title, tc.status, tc.retry_count, tc.duration_ms,
-		       tc.error_message, tc.error_stack, tc.annotations, tc.ordinal
+		       tc.error_message, tc.error_stack, tc.project, tc.tags, tc.annotations, tc.ordinal
 		FROM test_cases tc
 		JOIN suites s ON s.id = tc.suite_id
 		JOIN reports r ON r.id = s.report_id
@@ -526,14 +526,24 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 		var title, fullTitle, status string
 		var retry, ordinal int
 		var dur *int64
-		var em, es *string
-		var annotations []byte
-		if err := rows.Scan(&cid, &sid, &title, &fullTitle, &status, &retry, &dur, &em, &es, &annotations, &ordinal); err != nil {
+		var em, es, project *string
+		var tagsRaw, annotations []byte
+		if err := rows.Scan(&cid, &sid, &title, &fullTitle, &status, &retry, &dur, &em, &es, &project, &tagsRaw, &annotations, &ordinal); err != nil {
 			api.WriteError(w, r, err)
 			return
 		}
-		var ann any
-		_ = json.Unmarshal(annotations, &ann)
+		tags := []string{}
+		if len(tagsRaw) > 0 {
+			if err := json.Unmarshal(tagsRaw, &tags); err != nil || tags == nil {
+				tags = []string{}
+			}
+		}
+		ann := []any{}
+		if len(annotations) > 0 {
+			if err := json.Unmarshal(annotations, &ann); err != nil || ann == nil {
+				ann = []any{}
+			}
+		}
 		out = append(out, map[string]any{
 			"id":       cid,
 			"suite_id": sid,
@@ -546,6 +556,8 @@ func (h *Handlers) Cases(w http.ResponseWriter, r *http.Request) {
 			"duration_ms":   dur,
 			"error_message": em,
 			"error_stack":   es,
+			"project":       project,
+			"tags":          tags,
 			"annotations":   ann,
 			"ordinal":       ordinal,
 		})

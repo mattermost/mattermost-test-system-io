@@ -1624,6 +1624,10 @@ components:
         duration_ms: { type: integer, nullable: true }
         error_message: { type: string, nullable: true }
         error_stack: { type: string, nullable: true }
+        project: { type: string, nullable: true }
+        tags:
+          type: array
+          items: { type: string }
         annotations:
           type: array
           items: { type: object }

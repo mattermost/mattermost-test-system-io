@@ -6,7 +6,10 @@
 // to their test_cases after extraction completes.
 package ingest
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ExtractedSuite is a flat suite with its test cases. Nested suite hierarchy
 // is flattened by the framework-specific extractors: each extracted suite has
@@ -28,6 +31,10 @@ type ExtractedCase struct {
 	DurationMs   int64
 	RetryCount   int
 	ErrorMessage *string
+	ErrorStack   *string
+	Project      *string
+	Tags         []string
+	Annotations  []json.RawMessage
 	Sequence     int
 	StartTime    *time.Time
 	Attachments  []ExtractedAttachment

@@ -75,6 +75,7 @@
 </section>
 {{else}}
 <section class="kpi-cards-grid" aria-label="Repository KPI summary cards">
+  {{if .MainPass.ShowCard}}
   <article class="kpi-card">
     <div class="kpi-card-head">
       <h3 class="kpi-card-title">Main pass rate</h3>
@@ -95,7 +96,9 @@
     <p class="kpi-card-empty">No data — no main-stage runs in this window</p>
     {{end}}
   </article>
+  {{end}}
 
+  {{if .PRFalseRed.ShowCard}}
   <article class="kpi-card">
     <div class="kpi-card-head">
       <h3 class="kpi-card-title">PR false-red rate</h3>
@@ -113,6 +116,7 @@
     <p class="kpi-card-note">{{.PRFalseRed.SettledNote}}</p>
     <p class="kpi-card-link-row"><a href="{{.PRFalseRed.PRsHref}}" class="kpi-inline-link">Inspect PR E2E queue &rarr;</a></p>
   </article>
+  {{end}}
 
   <article class="kpi-card">
     <div class="kpi-card-head">
@@ -277,7 +281,7 @@
   <nav class="pagination kpi-pagination" aria-label="Failure patterns pagination">
     <span class="pagination-summary">
       {{if .HasFailures}}
-      <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} patterns</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
+      <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} patterns · Page {{.Page}} of {{.TotalPages}}</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
       {{else}}
       <span class="pager-long">Page {{.Page}} of {{.TotalPages}} ({{.Total}} patterns)</span><span class="pager-short">Page {{.Page}}/{{.TotalPages}} ({{.Total}})</span>
       {{end}}

@@ -1339,4 +1339,37 @@ func TestKPIURLAndPaginationHardening(t *testing.T) {
 			t.Errorf("GET %s status = %d, want 400", path, rec.Code)
 		}
 	}
+
+	// Single-lane views hide irrelevant empty Main/PR cards and always render pagination when rows exist.
+	mainLaneParams, _ := kpi.ParseFailuresParams(url.Values{"repo": {"mattermost/mattermost-mobile"}, "lane": {"mobile-main-detox-android"}}, now)
+	mainLanePage := BuildKPIOverviewPageWithShow(SiteInfo{}, kpi.FilterOptions{
+		Repos: []string{"mattermost/mattermost-mobile"},
+		Lanes: []string{"mobile-main-detox-android"},
+	}, kpi.SummaryResponse{
+		Filters: mainLaneParams,
+		MainPassRate: kpi.MainPassRate{
+			TestLevel: kpi.TestLevelPassRate{FirstAttemptPassed: 94, TotalTests: 95, PassRate: floatPtr(98.95)},
+			LaneLevel: kpi.LaneLevelPassRate{TotalLanes: 1, UploadOnlyLanesCount: 1},
+		},
+	}, kpi.FailuresResponse{
+		Filters:    mainLaneParams,
+		Pagination: kpi.Pagination{Page: 1, Limit: 50, Total: 1, TotalPages: 1},
+		Failures:   []kpi.RecurringFailureRow{{SignatureID: "sig-1", NormalizedMessage: "detox err", State: kpi.FailureStateNotEnoughRuns, OccurrenceCount: 1, LastSeenAt: now}},
+	}, now, true)
+	if !mainLanePage.MainPass.ShowCard || mainLanePage.PRFalseRed.ShowCard {
+		t.Fatalf("main-only lane card visibility = (main=%v, pr=%v), want (true, false)", mainLanePage.MainPass.ShowCard, mainLanePage.PRFalseRed.ShowCard)
+	}
+	if !mainLanePage.ShowPagination {
+		t.Fatal("expected ShowPagination=true when Total=1")
+	}
+	mainLaneHTML, err := RenderKPIOverview(mainLanePage)
+	if err != nil {
+		t.Fatalf("RenderKPIOverview main lane: %v", err)
+	}
+	if !strings.Contains(string(mainLaneHTML), "Page 1 of 1") {
+		t.Fatal("expected single-page pagination summary 'Page 1 of 1'")
+	}
+	if strings.Contains(string(mainLaneHTML), "PR false-red rate") {
+		t.Fatal("main-only single-lane page must hide empty PR false-red rate card")
+	}
 }

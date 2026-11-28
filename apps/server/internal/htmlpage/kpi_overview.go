@@ -47,6 +47,7 @@ type KPILaneBreakdownRow struct {
 
 // KPIMainPassCard holds KPI 1 card data (single-repo view).
 type KPIMainPassCard struct {
+	ShowCard           bool
 	HasData            bool
 	HealthLabel        string
 	HealthClass        string
@@ -67,6 +68,7 @@ type KPIMainPassCard struct {
 
 // KPIPRFalseRedCard holds KPI 2 card data (single-repo view).
 type KPIPRFalseRedCard struct {
+	ShowCard             bool
 	HasData              bool
 	HealthLabel          string
 	HealthClass          string
@@ -204,10 +206,13 @@ func BuildKPIOverviewPageWithShow(
 
 	isAllRepos := !filterBar.IsSingleRepo && filterBar.State.Lane == ""
 	activeRepoLabel := ""
-	if filterBar.State.Repo != "" {
+	switch {
+	case filterBar.State.Repo != "":
 		activeRepoLabel = friendlyRepoName(filterBar.State.Repo)
-	} else if filterBar.State.App != "" {
+	case filterBar.State.App != "":
 		activeRepoLabel = filterBar.State.App
+	case filterBar.State.Lane != "":
+		activeRepoLabel = filterBar.State.Lane
 	}
 
 	scorecard := buildRepoScorecard(opts, summary, filterBar.State)
@@ -235,6 +240,7 @@ func BuildKPIOverviewPageWithShow(
 		tl.TotalTests,
 	)
 	mainCard := KPIMainPassCard{
+		ShowCard:           true,
 		HasData:            tl.TotalTests > 0 || ll.TotalLanes > 0,
 		HealthLabel:        mainHealthLabel,
 		HealthClass:        mainHealthClass,
@@ -295,6 +301,22 @@ func BuildKPIOverviewPageWithShow(
 	}
 	activeTotal := recSum.ActiveCount + recSum.ResurfacedCount
 	dormantTotal := recSum.QuietCount + recSum.NotEnoughRunsCount
+	if activeTotal == 0 && recSum.TotalSignatures > 0 {
+		sep := "?"
+		if strings.Contains(activeOnlyHref, "?") {
+			sep = "&"
+		}
+		activeOnlyHref += sep + "show=active"
+	}
+
+	if filterBar.State.Lane != "" {
+		if mainCard.HasData && !prCard.HasData && prCard.UnsettledRedLanes == 0 {
+			prCard.ShowCard = false
+		}
+		if !mainCard.HasData && (prCard.HasData || prCard.UnsettledRedLanes > 0 || durCard.HasData) {
+			mainCard.ShowCard = false
+		}
+	}
 
 	weeklyBars, chartW := buildWeeklyChartBars(summary.WeeklySeries)
 
@@ -773,6 +795,7 @@ func buildFailureTableRows(rows []kpi.RecurringFailureRow, state KPIFilterState,
 
 func buildPRFalseRedCard(pr *kpi.PRFalseRedSummary, prsHref string) KPIPRFalseRedCard {
 	card := KPIPRFalseRedCard{
+		ShowCard:     true,
 		HeadlineRate: kpiNotAvailable,
 		DeltaClass:   kpiDeltaNeutral,
 		SettledNote:  "No data — settled (>24h) red PR lanes; pushed fixes excluded.",

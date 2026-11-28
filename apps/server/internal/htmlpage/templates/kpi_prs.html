@@ -121,7 +121,7 @@
   <nav class="pagination kpi-pagination" aria-label="Red PR queue pagination">
     <span class="pagination-summary">
       {{if .HasLanes}}
-      <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} PR runs</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
+      <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} PR runs · Page {{.Page}} of {{.TotalPages}}</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
       {{else}}
       <span class="pager-long">Page {{.Page}} of {{.TotalPages}} ({{.Total}} PR runs)</span><span class="pager-short">Page {{.Page}}/{{.TotalPages}} ({{.Total}})</span>
       {{end}}

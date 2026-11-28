@@ -760,7 +760,7 @@ func buildKPIPagination(state KPIFilterState, page, limit, total, respTotalPages
 	if page < 1 {
 		page = 1
 	}
-	showPagination := total > 0 && (totalPages > 1 || page > totalPages)
+	showPagination := total > 0
 	hasPrev := total > 0 && totalPages >= 1 && page > 1
 	var prevHref string
 	if hasPrev {

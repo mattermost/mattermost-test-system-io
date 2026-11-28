@@ -335,7 +335,8 @@ func (h *Handler) ServeKPIOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	summaryParams := failuresParams
 	summaryParams.Sort = kpi.SortLaneAsc
-	showAll := strings.TrimSpace(q.Get("show")) == "all"
+	rawShow := strings.TrimSpace(q.Get("show"))
+	showAll := rawShow == "all"
 
 	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
 	defer cancel()
@@ -349,6 +350,16 @@ func (h *Handler) ServeKPIOverview(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		handleKPIHTMLError(w, h.Logger, "htmlpage kpi failures failed", "failed to load recurring failures", err)
 		return
+	}
+	// If a narrow scope (e.g. a single lane) has 0 Active/Resurfaced rows but dormant
+	// patterns exist, show All automatically unless the user explicitly chose ?show=active.
+	if rawShow == "" && !showAll && failures.Pagination.Total == 0 && failures.Summary.TotalSignatures > 0 {
+		showAll = true
+		failures, err = h.KPI.QueryFailuresFiltered(ctx, failuresParams, false)
+		if err != nil {
+			handleKPIHTMLError(w, h.Logger, "htmlpage kpi failures failed", "failed to load recurring failures", err)
+			return
+		}
 	}
 	summary, err := h.KPI.QuerySummaryWithRecurring(ctx, summaryParams, &failures.Summary)
 	if err != nil {

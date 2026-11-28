@@ -29,8 +29,10 @@ func TestKPIContract(t *testing.T) {
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/summary", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/flaky", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/prs/red", "", nil, nil, http.StatusOK, true)
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures", "", nil, nil, http.StatusOK, true)
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures/"+uuid.NewString(), "", nil, nil, http.StatusNotFound, true)
 
-	// Invalid query params -> 400 conforming to OpenAPI (validateReq=false since request intentionally violates schema).
+	// Invalid query params / UUID -> 400 conforming to OpenAPI (validateReq=false since request intentionally violates schema).
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/summary?window=99d", "", nil, nil, http.StatusBadRequest, false)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/summary?stage=invalid", "", nil, nil, http.StatusBadRequest, false)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/summary?sort=bogus", "", nil, nil, http.StatusBadRequest, false)
@@ -39,8 +41,11 @@ func TestKPIContract(t *testing.T) {
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/prs/red?window=5d", "", nil, nil, http.StatusBadRequest, false)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/prs/red?sort=duration_desc", "", nil, nil, http.StatusBadRequest, false)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/prs/red?limit=500", "", nil, nil, http.StatusBadRequest, false)
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures?window=2d", "", nil, nil, http.StatusBadRequest, false)
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures?sort=bogus", "", nil, nil, http.StatusBadRequest, false)
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures/not-a-uuid", "", nil, nil, http.StatusBadRequest, false)
 
-	// Seed a real flaky test across 2 commits + PR duration + main pass rate + configured PR false-red rerun, refresh rollups, and verify 200 contract.
+	// Seed a real flaky test across 2 commits + failure signature + verdict + PR duration + main pass rate + configured PR false-red rerun, refresh rollups, and verify 200 contract.
 	ctx := t.Context()
 	now := time.Now().UTC()
 	var testID uuid.UUID
@@ -51,8 +56,16 @@ func TestKPIContract(t *testing.T) {
 	`).Scan(&testID); err != nil {
 		t.Fatalf("insert test: %v", err)
 	}
+	var sigID uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO failure_signatures (fingerprint, algo_version, error_class, normalized_message, top_frame, sample_message, first_seen_at)
+		VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 2, 'TimeoutError', 'locator timeout', 'e2e/login.spec.ts:10', 'TimeoutError: locator timeout', $1)
+		RETURNING id
+	`, now.Add(-2*time.Hour)).Scan(&sigID); err != nil {
+		t.Fatalf("insert failure_signature: %v", err)
+	}
 
-	seedGroup := func(stage, lane, sha, runID, attempt string, prNum *int, durMs *int64, createdAt time.Time, statuses []string, withOrch bool) {
+	seedGroup := func(stage, lane, sha, runID, attempt string, prNum *int, durMs *int64, createdAt time.Time, statuses []string, withOrch bool) uuid.UUID {
 		var gid, rid, sid uuid.UUID
 		if err := env.Pool.QueryRow(ctx, `
 			INSERT INTO report_groups (
@@ -93,25 +106,37 @@ func TestKPIContract(t *testing.T) {
 			t.Fatalf("insert suite: %v", err)
 		}
 		for i, st := range statuses {
+			var sigArg *uuid.UUID
+			if st == "failed" {
+				sigArg = &sigID
+			}
 			if _, err := env.Pool.Exec(ctx, `
-				INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, ordinal, test_id)
-				VALUES ($1, 'works', 'Login > works', $2, $3, $3, $4)
-			`, sid, st, i, testID); err != nil {
+				INSERT INTO test_cases (suite_id, title, full_title, status, retry_count, ordinal, test_id, signature_id)
+				VALUES ($1, 'works', 'Login > works', $2, $3, $3, $4, $5)
+			`, sid, st, i, testID, sigArg); err != nil {
 				t.Fatalf("insert test_case: %v", err)
 			}
 		}
 		if err := kpi.RefreshGroupRollups(ctx, env.Pool, gid); err != nil {
 			t.Fatalf("RefreshGroupRollups: %v", err)
 		}
+		return gid
 	}
 
 	pr := 42
 	dur := int64(12345)
 	seedGroup("main", "e2e-main", "sha-contract-1", "run-1", "1", nil, nil, now.Add(-2*time.Hour), []string{"failed", "passed"}, false)
-	seedGroup("pr", "e2e-pr", "sha-contract-2", "run-2", "1", &pr, &dur, now.Add(-2*time.Hour), []string{"failed", "passed"}, true)
+	gidPR := seedGroup("pr", "e2e-pr", "sha-contract-2", "run-2", "1", &pr, &dur, now.Add(-2*time.Hour), []string{"failed", "passed"}, true)
 	seedGroup("pr", "playwright-full", "sha-contract-pr-red", "run-3", "1", &pr, &dur, now.Add(-30*time.Hour), []string{"failed"}, false)
 	seedGroup("pr", "playwright-full", "sha-contract-pr-red", "run-3", "2", &pr, &dur, now.Add(-29*time.Hour), []string{"passed"}, false)
 	seedGroup("pr", "playwright-full", "sha-contract-pr-live", "run-4", "1", &pr, &dur, now.Add(-2*time.Hour), []string{"failed"}, false)
+
+	if _, err := env.Pool.Exec(ctx, `
+		INSERT INTO verdicts (report_group_id, repository, test_id, signature_id, label, decided_by, summary, model, triage_url, error_context)
+		VALUES ($1, 'mattermost/mattermost', $2, $3, 'infra', 'ai', 'transient timeout', 'claude', 'https://example.com/triage/1', '{"secret":"must_not_leak"}'::jsonb)
+	`, gidPR, testID, sigID); err != nil {
+		t.Fatalf("insert verdict: %v", err)
+	}
 
 	rawSummary := exchange(t, c, http.MethodGet, "/api/v1/kpi/summary?app=mattermost&window=30d&sort=lane_asc", "", nil, nil, http.StatusOK, true)
 	var summary kpi.SummaryResponse
@@ -129,4 +154,6 @@ func TestKPIContract(t *testing.T) {
 	}
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/flaky?app=mattermost&window=14d&sort=flake_rate_desc&page=1&limit=10", "", nil, nil, http.StatusOK, true)
 	exchange(t, c, http.MethodGet, "/api/v1/kpi/prs/red?app=mattermost&window=30d&sort=created_desc&page=1&limit=10", "", nil, nil, http.StatusOK, true)
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures?app=mattermost&window=30d&sort=rate_desc&page=1&limit=10", "", nil, nil, http.StatusOK, true)
+	exchange(t, c, http.MethodGet, "/api/v1/kpi/failures/"+sigID.String()+"?app=mattermost&window=30d", "", nil, nil, http.StatusOK, true)
 }

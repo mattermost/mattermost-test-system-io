@@ -308,6 +308,129 @@ func TestComputeGroupFlags_SinglePlatformStatsFallback(t *testing.T) {
 	}
 }
 
+func TestParseFailuresParams_DefaultsAndSorts(t *testing.T) {
+	now := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+
+	params, err := ParseFailuresParams(url.Values{}, now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if params.Window != Window30d || params.WindowDays != 30 {
+		t.Fatalf("window = %q (%d), want 30d (30)", params.Window, params.WindowDays)
+	}
+	if params.Sort != SortOccurrencesDesc {
+		t.Fatalf("sort = %q, want %q", params.Sort, SortOccurrencesDesc)
+	}
+
+	for _, s := range []string{SortOccurrencesDesc, SortCountDesc, SortRateDesc, SortTrendDesc, SortLastSeenDesc, SortNameAsc} {
+		p, err := ParseFailuresParams(url.Values{"sort": {s}}, now)
+		if err != nil || p.Sort != s {
+			t.Fatalf("sort %q failed: p=%+v err=%v", s, p, err)
+		}
+	}
+	if _, err := ParseFailuresParams(url.Values{"sort": {SortFlakyCommitsDesc}}, now); err == nil {
+		t.Fatal("expected flaky sort to fail validation on /failures")
+	}
+	if _, err := ParseFailureDetailParams(url.Values{"window": {"99d"}}, now); err == nil {
+		t.Fatal("expected invalid window to fail validation on /failures/{id}")
+	}
+}
+
+func TestComputeFailureState_AllFourStatesAndBoundaries(t *testing.T) {
+	today := utcDayNum(time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC))
+
+	t.Run("Active_seen_in_7d_no_prior_quiet_gap", func(t *testing.T) {
+		occ := map[int64]int{today - 2: 3}
+		runs := map[int64]int{today - 2: 100, today - 1: 100}
+		state, qd := computeFailureState(today, true, today-2, occ, runs)
+		if state != FailureStateActive || qd != nil {
+			t.Fatalf("got (%q, %v), want (%q, nil)", state, qd, FailureStateActive)
+		}
+	})
+
+	t.Run("Active_brand_new_signature_with_prior_test_history", func(t *testing.T) {
+		// Test ran 600 times before firstSeenDay, then signature appeared for the first time today.
+		occ := map[int64]int{today: 1}
+		runs := map[int64]int{today - 10: 600, today: 20}
+		state, qd := computeFailureState(today, true, today, occ, runs)
+		if state != FailureStateActive || qd != nil {
+			t.Fatalf("got (%q, %v), want (%q, nil)", state, qd, FailureStateActive)
+		}
+	})
+
+	t.Run("Active_prior_gap_under_500_runs_is_not_resurfaced", func(t *testing.T) {
+		occ := map[int64]int{today - 15: 1, today - 2: 1}
+		runs := map[int64]int{today - 12: 499, today - 2: 50}
+		state, qd := computeFailureState(today, true, today-15, occ, runs)
+		if state != FailureStateActive || qd != nil {
+			t.Fatalf("got (%q, %v), want (%q, nil)", state, qd, FailureStateActive)
+		}
+	})
+
+	t.Run("Quiet_exact_500_runs_in_7d", func(t *testing.T) {
+		occ := map[int64]int{today - 10: 2}
+		runs := map[int64]int{today - 6: 250, today - 1: 250}
+		state, qd := computeFailureState(today, true, today-10, occ, runs)
+		if state != FailureStateQuiet || qd == nil || *qd != 10 {
+			t.Fatalf("got (%q, %v), want (%q, 10)", state, qd, FailureStateQuiet)
+		}
+	})
+
+	t.Run("Not_enough_runs_499_runs_in_7d", func(t *testing.T) {
+		occ := map[int64]int{today - 8: 1}
+		runs := map[int64]int{today - 3: 499}
+		state, qd := computeFailureState(today, true, today-8, occ, runs)
+		if state != FailureStateNotEnoughRuns || qd == nil || *qd != 8 {
+			t.Fatalf("got (%q, %v), want (%q, 8)", state, qd, FailureStateNotEnoughRuns)
+		}
+	})
+
+	t.Run("Not_enough_runs_zero_occurrences_zero_runs", func(t *testing.T) {
+		state, qd := computeFailureState(today, false, today, map[int64]int{}, map[int64]int{})
+		if state != FailureStateNotEnoughRuns || qd != nil {
+			t.Fatalf("got (%q, %v), want (%q, nil)", state, qd, FailureStateNotEnoughRuns)
+		}
+	})
+
+	t.Run("Resurfaced_after_prior_7d_quiet_period", func(t *testing.T) {
+		occ := map[int64]int{today - 20: 1, today - 3: 2}
+		runs := map[int64]int{today - 18: 250, today - 15: 250, today - 3: 50}
+		state, qd := computeFailureState(today, true, today-20, occ, runs)
+		if state != FailureStateResurfaced || qd != nil {
+			t.Fatalf("got (%q, %v), want (%q, nil)", state, qd, FailureStateResurfaced)
+		}
+	})
+
+	t.Run("Resurfaced_when_quiet_window_overlaps_trailing_7d", func(t *testing.T) {
+		// Occurred -10d, quiet -9d..-3d (7 days, 500 runs), recurred -2d.
+		occ := map[int64]int{today - 10: 1, today - 2: 1}
+		runs := map[int64]int{today - 7: 300, today - 4: 200, today - 2: 20}
+		state, qd := computeFailureState(today, true, today-10, occ, runs)
+		if state != FailureStateResurfaced || qd != nil {
+			t.Fatalf("got (%q, %v), want (%q, nil)", state, qd, FailureStateResurfaced)
+		}
+	})
+}
+
+func TestRatePer1kZeroDenominatorGuards(t *testing.T) {
+	if got := ratePer1kPtr(5, 0); got != nil {
+		t.Fatalf("ratePer1kPtr(5, 0) = %v, want nil", *got)
+	}
+	if got := ratePer1kPtr(0, 500); got == nil || *got != 0.0 {
+		t.Fatalf("ratePer1kPtr(0, 500) = %v, want 0.0", got)
+	}
+	if got := ratePer1kPtr(5, 250); got == nil || *got != 20.0 {
+		t.Fatalf("ratePer1kPtr(5, 250) = %v, want 20.0", got)
+	}
+	ten := 10.0
+	if got := diffFloatPtr(&ten, nil); got != nil {
+		t.Fatalf("diffFloatPtr(10, nil) = %v, want nil", *got)
+	}
+	if got := diffFloatPtr(nil, &ten); got != nil {
+		t.Fatalf("diffFloatPtr(nil, 10) = %v, want nil", *got)
+	}
+}
+
 func TestAggregateGroupSlices_Attempt1AndPlatforms(t *testing.T) {
 	t1 := uuid.New()
 	t2 := uuid.New()
@@ -417,5 +540,84 @@ func TestSafePageOffset(t *testing.T) {
 	}
 	if _, ok := safePageOffset(1, 0); ok {
 		t.Fatal("expected limit=0 to fail")
+	}
+}
+
+func TestHasScopeFilters(t *testing.T) {
+	if hasScopeFilters(FilterParams{Window: Window30d, Sort: SortOccurrencesDesc, Page: 1, Limit: 50}) {
+		t.Fatal("expected hasScopeFilters=false when only window/sort/pagination are set")
+	}
+	for _, tc := range []struct {
+		name string
+		f    FilterParams
+	}{
+		{"app", FilterParams{App: "mattermost"}},
+		{"repo", FilterParams{Repo: "mattermost/mattermost"}},
+		{"stage", FilterParams{Stage: "pr"}},
+		{"lane", FilterParams{Lane: "e2e-pr"}},
+		{"platform", FilterParams{Platform: "ios"}},
+	} {
+		if !hasScopeFilters(tc.f) {
+			t.Fatalf("expected hasScopeFilters=true for %s", tc.name)
+		}
+	}
+}
+
+func TestComputeWindowRates_ScopedFirstSeenBoundPreventsCrossScopeBleed(t *testing.T) {
+	today := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	todayDay := utcDayNum(today)
+	curFromDay := todayDay - 29
+
+	// First occurrence in the scoped query was at today-1, even though the test had
+	// 600 passing runs in that scope at today-20. With firstSeenBoundDay = today-1 (scoped),
+	// state must be Active, not Resurfaced.
+	acc := newSigAccum(nil)
+	acc.addMetricRow(dailySigMetricRow{
+		MetricDate:      today.AddDate(0, 0, -1),
+		OccurrenceCount: 1,
+		RawAttemptCount: 1,
+		GroupCount:      1,
+		LastSeenAt:      today.AddDate(0, 0, -1),
+	}, curFromDay, todayDay)
+
+	runsByDay := map[int64]int{
+		todayDay - 20: 600,
+		todayDay - 1:  10,
+	}
+
+	scopedBound := todayDay - 1
+	scopedRates := computeWindowRates(acc, runsByDay, curFromDay, todayDay, &scopedBound)
+	if scopedRates.state != FailureStateActive {
+		t.Fatalf("scoped state = %q, want %q", scopedRates.state, FailureStateActive)
+	}
+
+	// Conversely, if the scoped occurrence history shows an occurrence >365d ago (before historyFrom),
+	// and there were >=500 quiet runs in [-365d..-2d], state must be Resurfaced.
+	oldBound := todayDay - 400
+	resurfRates := computeWindowRates(acc, runsByDay, curFromDay, todayDay, &oldBound)
+	if resurfRates.state != FailureStateResurfaced {
+		t.Fatalf("pre-history scoped state = %q, want %q", resurfRates.state, FailureStateResurfaced)
+	}
+}
+
+func TestPaginateRecurringFailures_OverflowAndBounds(t *testing.T) {
+	rows := []RecurringFailureRow{
+		{SignatureID: "s1"},
+		{SignatureID: "s2"},
+		{SignatureID: "s3"},
+	}
+
+	if got := paginateRecurringFailures(rows, 1, 2); len(got) != 2 || got[0].SignatureID != "s1" || got[1].SignatureID != "s2" {
+		t.Fatalf("page=1 limit=2 got %+v", got)
+	}
+	if got := paginateRecurringFailures(rows, 2, 2); len(got) != 1 || got[0].SignatureID != "s3" {
+		t.Fatalf("page=2 limit=2 got %+v", got)
+	}
+	if got := paginateRecurringFailures(rows, 3, 2); got == nil || len(got) != 0 {
+		t.Fatalf("page=3 limit=2 got %+v, want non-nil empty slice", got)
+	}
+	// Overflow boundary: (page-1)*limit would wrap negative in signed arithmetic without safePageOffset.
+	if got := paginateRecurringFailures(rows, math.MaxInt, 50); got == nil || len(got) != 0 {
+		t.Fatalf("overflow page=MaxInt limit=50 got %+v, want non-nil empty slice", got)
 	}
 }

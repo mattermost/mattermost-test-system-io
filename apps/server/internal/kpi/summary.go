@@ -62,19 +62,25 @@ func (s *Store) QuerySummary(ctx context.Context, f FilterParams) (SummaryRespon
 		return SummaryResponse{}, err
 	}
 
+	recurring, err := s.queryRecurringFailuresSummary(ctx, f)
+	if err != nil {
+		return SummaryResponse{}, err
+	}
+
 	weekly, err := s.queryWeeklySeries(ctx, f)
 	if err != nil {
 		return SummaryResponse{}, err
 	}
 
 	return SummaryResponse{
-		Filters:      f,
-		LaneCoverage: topCoverage,
-		MainPassRate: mainPassRate,
-		FlakyTests:   flakySummary,
-		E2EDuration:  e2eDuration,
-		WeeklySeries: weekly,
-		PRFalseRed:   &prFalseRed,
+		Filters:           f,
+		LaneCoverage:      topCoverage,
+		MainPassRate:      mainPassRate,
+		FlakyTests:        flakySummary,
+		E2EDuration:       e2eDuration,
+		WeeklySeries:      weekly,
+		PRFalseRed:        &prFalseRed,
+		RecurringFailures: recurring,
 	}, nil
 }
 
@@ -571,6 +577,11 @@ func (s *Store) queryWeeklySeries(ctx context.Context, f FilterParams) ([]Weekly
 		weeks = append(weeks, w)
 	}
 
+	weeklyFailures, err := s.queryWeeklyRecurringFailureCounts(ctx, f, weeks)
+	if err != nil {
+		return nil, err
+	}
+
 	series := make([]WeeklyPoint, 0, len(weeks))
 	for _, wStart := range weeks {
 		sliceFrom := wStart
@@ -651,6 +662,9 @@ func (s *Store) queryWeeklySeries(ctx context.Context, f FilterParams) ([]Weekly
 			return nil, fmt.Errorf("weekly pr false-red rate: %w", err)
 		}
 		pt.PRFalseRedRate = pctPtr(falseRedCount, settledRedCount)
+
+		rfCount := weeklyFailures[pt.WeekStart]
+		pt.RecurringFailuresCount = &rfCount
 
 		series = append(series, pt)
 	}

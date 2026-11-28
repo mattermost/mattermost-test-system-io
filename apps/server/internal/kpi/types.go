@@ -77,6 +77,27 @@ const (
 	ReasonOther            = "other"
 )
 
+// Supported sort literals for /kpi/failures.
+const (
+	SortOccurrencesDesc = "occurrences_desc"
+	SortCountDesc       = "count_desc"
+	SortRateDesc        = "rate_desc"
+	SortTrendDesc       = "trend_desc"
+	SortLastSeenDesc    = "last_seen_desc"
+)
+
+// Computed recurring-failure states (never "Fixed").
+const (
+	FailureStateActive        = "Active"
+	FailureStateQuiet         = "Quiet"
+	FailureStateNotEnoughRuns = "Not enough runs"
+	FailureStateResurfaced    = "Resurfaced"
+
+	QuietRunThreshold = 500
+	StateWindowDays   = 7
+	TrendWindowDays   = 14
+)
+
 // FilterParams holds validated query filters shared across KPI endpoints.
 type FilterParams struct {
 	App        string    `json:"app"`
@@ -228,15 +249,15 @@ type WeeklyPoint struct {
 
 // SummaryResponse is the wire shape for GET /api/v1/kpi/summary.
 type SummaryResponse struct {
-	Filters           FilterParams       `json:"filters"`
-	LaneCoverage      LaneCoverage       `json:"lane_coverage"`
-	MainPassRate      MainPassRate       `json:"main_pass_rate"`
-	FlakyTests        FlakySummary       `json:"flaky_tests"`
-	E2EDuration       E2EDurationSummary `json:"e2e_duration"`
-	WeeklySeries      []WeeklyPoint      `json:"weekly_series"`
-	PRFalseRed        *PRFalseRedSummary `json:"pr_false_red"`
-	RecurringFailures any                `json:"recurring_failures"`
-	Triage            any                `json:"triage"`
+	Filters           FilterParams              `json:"filters"`
+	LaneCoverage      LaneCoverage              `json:"lane_coverage"`
+	MainPassRate      MainPassRate              `json:"main_pass_rate"`
+	FlakyTests        FlakySummary              `json:"flaky_tests"`
+	E2EDuration       E2EDurationSummary        `json:"e2e_duration"`
+	WeeklySeries      []WeeklyPoint             `json:"weekly_series"`
+	PRFalseRed        *PRFalseRedSummary        `json:"pr_false_red"`
+	RecurringFailures *RecurringFailuresSummary `json:"recurring_failures"`
+	Triage            any                       `json:"triage"`
 }
 
 // Pagination describes page metadata on list endpoints.
@@ -375,4 +396,160 @@ type PRRedResponse struct {
 	LaneCoverage         LaneCoverage        `json:"lane_coverage"`
 	Pagination           Pagination          `json:"pagination"`
 	Lanes                []RedPRLaneRow      `json:"lanes"`
+}
+
+// RecurringFailuresSummary summarizes recurring failure counts by state.
+type RecurringFailuresSummary struct {
+	TotalSignatures    int `json:"total_signatures"`
+	ActiveCount        int `json:"active_count"`
+	ResurfacedCount    int `json:"resurfaced_count"`
+	QuietCount         int `json:"quiet_count"`
+	NotEnoughRunsCount int `json:"not_enough_runs_count"`
+	TotalOccurrences   int `json:"total_occurrences"`
+	TriagedCount       int `json:"triaged_count"`
+}
+
+// RecurringFailureRow represents one canonical failure signature in GET /api/v1/kpi/failures.
+type RecurringFailureRow struct {
+	SignatureID          string    `json:"signature_id"`
+	Fingerprint          string    `json:"fingerprint"`
+	AlgoVersion          int       `json:"algo_version"`
+	ErrorClass           *string   `json:"error_class"`
+	NormalizedMessage    string    `json:"normalized_message"`
+	TopFrame             *string   `json:"top_frame"`
+	MergedSignatureIDs   []string  `json:"merged_signature_ids"`
+	State                string    `json:"state"`
+	QuietDays            *int      `json:"quiet_days"`
+	OccurrenceCount      int       `json:"occurrence_count"`
+	RawAttemptCount      int       `json:"raw_attempt_count"`
+	GroupCount           int       `json:"group_count"`
+	AffectedTestCount    int       `json:"affected_test_count"`
+	AffectedTestRuns     int       `json:"affected_test_runs"`
+	RatePer1k            *float64  `json:"rate_per_1k"`
+	Occurrences14d       int       `json:"occurrences_14d"`
+	AffectedRuns14d      int       `json:"affected_runs_14d"`
+	RatePer1k14d         *float64  `json:"rate_per_1k_14d"`
+	PriorOccurrences14d  int       `json:"prior_occurrences_14d"`
+	PriorAffectedRuns14d int       `json:"prior_affected_runs_14d"`
+	PriorRatePer1k14d    *float64  `json:"prior_rate_per_1k_14d"`
+	DeltaRatePer1k       *float64  `json:"delta_rate_per_1k"`
+	Occurrences7d        int       `json:"occurrences_7d"`
+	AffectedRuns7d       int       `json:"affected_runs_7d"`
+	FirstSeenAt          time.Time `json:"first_seen_at"`
+	LastSeenAt           time.Time `json:"last_seen_at"`
+	Repositories         []string  `json:"repositories"`
+	Apps                 []string  `json:"apps"`
+	Lanes                []string  `json:"lanes"`
+	PRNumbers            []int     `json:"pr_numbers"`
+	LatestVerdictLabel   *string   `json:"latest_verdict_label"`
+}
+
+// FailuresResponse is the wire shape for GET /api/v1/kpi/failures.
+type FailuresResponse struct {
+	Filters      FilterParams             `json:"filters"`
+	WindowDays   int                      `json:"window_days"`
+	Summary      RecurringFailuresSummary `json:"summary"`
+	LaneCoverage LaneCoverage             `json:"lane_coverage"`
+	Pagination   Pagination               `json:"pagination"`
+	Failures     []RecurringFailureRow    `json:"failures"`
+}
+
+// FailureVerdict holds non-sensitive latest triage metadata for a failure signature.
+// error_context is deliberately excluded and never queried.
+type FailureVerdict struct {
+	ID         string    `json:"id"`
+	Label      string    `json:"label"`
+	DecidedBy  *string   `json:"decided_by"`
+	Rule       *string   `json:"rule"`
+	Confidence *float64  `json:"confidence"`
+	Summary    *string   `json:"summary"`
+	Model      *string   `json:"model"`
+	TriageURL  *string   `json:"triage_url"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// FailureFirstSeen describes where a canonical failure signature was first observed.
+type FailureFirstSeen struct {
+	FirstSeenAt   time.Time `json:"first_seen_at"`
+	ReportGroupID *string   `json:"report_group_id"`
+	Repository    *string   `json:"repository"`
+	Lane          *string   `json:"lane"`
+	Branch        *string   `json:"branch"`
+	CommitSHA     *string   `json:"commit_sha"`
+	GHPRNumber    *int      `json:"gh_pr_number"`
+}
+
+// FailureDailyPoint is one UTC day in the failure's daily occurrence & rate series.
+type FailureDailyPoint struct {
+	Date             string   `json:"date"`
+	OccurrenceCount  int      `json:"occurrence_count"`
+	RawAttemptCount  int      `json:"raw_attempt_count"`
+	GroupCount       int      `json:"group_count"`
+	AffectedTestRuns int      `json:"affected_test_runs"`
+	RatePer1k        *float64 `json:"rate_per_1k"`
+}
+
+// FailureAffectedTest summarizes one test affected by the failure signature.
+type FailureAffectedTest struct {
+	TestID     string    `json:"test_id"`
+	TestKey    string    `json:"test_key"`
+	ZephyrKey  *string   `json:"zephyr_key"`
+	File       string    `json:"file"`
+	FullTitle  string    `json:"full_title"`
+	Repository string    `json:"repository"`
+	Framework  string    `json:"framework"`
+	GroupCount int       `json:"group_count"`
+	RunCount   int       `json:"run_count"`
+	FailCount  int       `json:"fail_count"`
+	LastSeenAt time.Time `json:"last_seen_at"`
+}
+
+// FailureAffectedRepo summarizes one repository affected by the failure signature.
+type FailureAffectedRepo struct {
+	Repository      string   `json:"repository"`
+	App             string   `json:"app"`
+	OccurrenceCount int      `json:"occurrence_count"`
+	GroupCount      int      `json:"group_count"`
+	AffectedRuns    int      `json:"affected_runs"`
+	RatePer1k       *float64 `json:"rate_per_1k"`
+	Lanes           []string `json:"lanes"`
+}
+
+// FailureDetailResponse is the wire shape for GET /api/v1/kpi/failures/{id}.
+type FailureDetailResponse struct {
+	Filters              FilterParams          `json:"filters"`
+	RequestedSignatureID string                `json:"requested_signature_id"`
+	CanonicalSignatureID string                `json:"canonical_signature_id"`
+	MergedIntoID         *string               `json:"merged_into_id"`
+	MergedSignatureIDs   []string              `json:"merged_signature_ids"`
+	Fingerprint          string                `json:"fingerprint"`
+	AlgoVersion          int                   `json:"algo_version"`
+	ErrorClass           *string               `json:"error_class"`
+	NormalizedMessage    string                `json:"normalized_message"`
+	TopFrame             *string               `json:"top_frame"`
+	SampleMessage        *string               `json:"sample_message"`
+	State                string                `json:"state"`
+	QuietDays            *int                  `json:"quiet_days"`
+	OccurrenceCount      int                   `json:"occurrence_count"`
+	RawAttemptCount      int                   `json:"raw_attempt_count"`
+	GroupCount           int                   `json:"group_count"`
+	AffectedTestCount    int                   `json:"affected_test_count"`
+	AffectedTestRuns     int                   `json:"affected_test_runs"`
+	RatePer1k            *float64              `json:"rate_per_1k"`
+	Occurrences14d       int                   `json:"occurrences_14d"`
+	AffectedRuns14d      int                   `json:"affected_runs_14d"`
+	RatePer1k14d         *float64              `json:"rate_per_1k_14d"`
+	PriorOccurrences14d  int                   `json:"prior_occurrences_14d"`
+	PriorAffectedRuns14d int                   `json:"prior_affected_runs_14d"`
+	PriorRatePer1k14d    *float64              `json:"prior_rate_per_1k_14d"`
+	DeltaRatePer1k       *float64              `json:"delta_rate_per_1k"`
+	Occurrences7d        int                   `json:"occurrences_7d"`
+	AffectedRuns7d       int                   `json:"affected_runs_7d"`
+	LastSeenAt           *time.Time            `json:"last_seen_at"`
+	FirstSeen            FailureFirstSeen      `json:"first_seen"`
+	LatestVerdict        *FailureVerdict       `json:"latest_verdict"`
+	DailySeries          []FailureDailyPoint   `json:"daily_series"`
+	AffectedTests        []FailureAffectedTest `json:"affected_tests"`
+	AffectedRepos        []FailureAffectedRepo `json:"affected_repos"`
+	PRNumbers            []int                 `json:"pr_numbers"`
 }

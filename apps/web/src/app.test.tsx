@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect } from 'vitest';
+import { PrimaryNav } from './app';
 import { HomePage } from './pages/home_page';
 
 function createWrapper(initialEntry = '/') {
@@ -26,5 +27,12 @@ describe('HomePage', () => {
     render(<HomePage />, { wrapper: createWrapper('/?individual=1') });
     expect(screen.getByText('Grouped')).toBeInTheDocument();
     expect(screen.getByText('Individual')).toBeInTheDocument();
+  });
+
+  it('renders Reports and KPIs links in the primary navigation bar', () => {
+    render(<PrimaryNav />);
+    const nav = screen.getByRole('navigation', { name: 'Primary navigation' });
+    expect(nav.querySelector('a[href="/reports"]')).toHaveTextContent('Reports');
+    expect(nav.querySelector('a[href="/kpi"]')).toHaveTextContent('KPIs');
   });
 });

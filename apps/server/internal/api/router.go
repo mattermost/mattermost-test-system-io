@@ -25,6 +25,7 @@ func NewRouter(deps Deps) *chi.Mux {
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
+	r.Use(securityHeadersMiddleware)
 	r.Use(telemetry.Middleware(deps.Logger))
 
 	if len(deps.CORSAllowedOrigins) > 0 {
@@ -44,4 +45,14 @@ func NewRouter(deps Deps) *chi.Mux {
 	})
 
 	return r
+}
+
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
 }

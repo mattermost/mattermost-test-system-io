@@ -750,8 +750,8 @@ func TestPaginationOverflowValidation(t *testing.T) {
 		raw  string
 		want bool
 	}{
-		{"valid_max_page", "1000000", true},
-		{"over_max_page", "1000001", false},
+		{"valid_max_page", "1000", true},
+		{"over_max_page", "1001", false},
 		{"int64_offset_overflow", "999999999999999999", false},
 		{"int64_max", "9223372036854775807", false},
 		{"zero", "0", false},

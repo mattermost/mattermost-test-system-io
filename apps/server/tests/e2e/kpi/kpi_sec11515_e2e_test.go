@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -412,7 +413,7 @@ func TestSEC11515_TwoPlatformMobileCase(t *testing.T) {
 
 	// 4. SSR GET /kpi?app=mobile&window=14d
 	mobileHTML := getRaw(t, env.ServerURL+"/kpi?app=mobile&window=14d")
-	for _, want := range []string{`1 flaky test`, `Trailing 14d`} {
+	for _, want := range []string{`1 flaky test`, `Last 14d`} {
 		if !strings.Contains(mobileHTML, want) {
 			t.Fatalf("SSR /kpi?app=mobile&window=14d missing %q", want)
 		}
@@ -420,6 +421,89 @@ func TestSEC11515_TwoPlatformMobileCase(t *testing.T) {
 	iosHTML := getRaw(t, env.ServerURL+"/kpi?app=mobile&platform=ios&window=14d")
 	if strings.Contains(iosHTML, `1 flaky test`) || !strings.Contains(iosHTML, `0 flaky tests`) {
 		t.Fatalf("SSR /kpi?app=mobile&platform=ios&window=14d must show 0 flaky tests")
+	}
+}
+
+// TestKPIHardening_FlakyLastRunURLAndFailureLatestRunURL verifies DB-backed URL resolution for
+// FlakyTestRow.LastRunURL (picking only the lane that flaked on the last flaky commit and ignoring
+// out-of-window runs) and FailureDetailResponse.LatestRunURL / View latest run SSR link.
+func TestKPIHardening_FlakyLastRunURLAndFailureLatestRunURL(t *testing.T) {
+	env := testenv.Start(t, testenv.WithHTMLView(), testenv.WithReaperDisabled())
+	ctx := t.Context()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	todayMidnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	day5 := todayMidnight.AddDate(0, 0, -5).Add(12 * time.Hour)
+	day2 := todayMidnight.AddDate(0, 0, -2).Add(12 * time.Hour)
+	outOfWindow := todayMidnight.AddDate(0, 0, -25).Add(12 * time.Hour)
+
+	tFlaky := insertTest(t, ctx, env.Pool, secMMRepo, "playwright", "h:flaky-lane-pick", "Flaky > lane precision")
+
+	// Older out-of-window run sharing the latest flaky commit SHA must NEVER be linked on 14d window.
+	insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "lane-b-flaky", Status: "completed",
+		Repo: secMMRepo, Branch: "main", Commit: "deadbeef1111", RunID: "900", Attempt: "1",
+		Stage: "main", CreatedAt: outOfWindow,
+	})
+
+	// Commit 1 (day5): mixed in lane-b-flaky, plus failure signature attached for LatestRunURL baseline.
+	gidC1 := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "lane-b-flaky", Status: "completed",
+		Repo: secMMRepo, Branch: "main", Commit: "cafe00001111", RunID: "901", Attempt: "1",
+		Stage: "main", CreatedAt: day5,
+	})
+	var sigID uuid.UUID
+	if err := env.Pool.QueryRow(ctx, `
+		INSERT INTO failure_signatures (
+			fingerprint, algo_version, error_class, normalized_message, first_seen_at, first_seen_report_group_id
+		) VALUES ('fp:latest-run-url-check', 2, 'TimeoutError', 'waiting for latest button', $1, $2)
+		RETURNING id
+	`, day5, gidC1).Scan(&sigID); err != nil {
+		t.Fatalf("insert failure signature: %v", err)
+	}
+	rC1 := insertReport(t, ctx, env.Pool, gidC1, "shard-1", "")
+	sC1 := insertSuite(t, ctx, env.Pool, rC1, "Suite")
+	insertCaseWithSig(t, ctx, env.Pool, sC1, tFlaky, sigID, "lane precision", "failed", 0, 0)
+	insertCase(t, ctx, env.Pool, sC1, tFlaky, "lane precision", "passed", 1, "", 1)
+	mustRefresh(t, ctx, env.Pool, gidC1)
+
+	// Commit 2 (day2): ran in BOTH lane-a-pass (alphabetically first, cleanly passed) and lane-b-flaky (mixed).
+	// Also records signature on lane-b-flaky as the latest failing run (run_id=903).
+	gidPassA := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "lane-a-pass", Status: "completed",
+		Repo: secMMRepo, Branch: "main", Commit: "deadbeef1111", RunID: "902", Attempt: "1",
+		Stage: "main", CreatedAt: day2.Add(-time.Hour),
+	})
+	rPassA := insertReport(t, ctx, env.Pool, gidPassA, "shard-1", "")
+	sPassA := insertSuite(t, ctx, env.Pool, rPassA, "Suite")
+	insertCase(t, ctx, env.Pool, sPassA, tFlaky, "lane precision", "passed", 0, "", 0)
+	mustRefresh(t, ctx, env.Pool, gidPassA)
+
+	gidFlakyB := insertGroup(t, ctx, env.Pool, groupSeed{
+		Framework: "playwright", Name: "lane-b-flaky", Status: "completed",
+		Repo: secMMRepo, Branch: "main", Commit: "deadbeef1111", RunID: "903", Attempt: "1",
+		Stage: "main", CreatedAt: day2,
+	})
+	rFlakyB := insertReport(t, ctx, env.Pool, gidFlakyB, "shard-1", "")
+	sFlakyB := insertSuite(t, ctx, env.Pool, rFlakyB, "Suite")
+	insertCaseWithSig(t, ctx, env.Pool, sFlakyB, tFlaky, sigID, "lane precision", "failed", 0, 0)
+	insertCase(t, ctx, env.Pool, sFlakyB, tFlaky, "lane precision", "passed", 1, "", 1)
+	mustRefresh(t, ctx, env.Pool, gidFlakyB)
+
+	flakyHTML := getRaw(t, env.ServerURL+"/kpi/flaky?repo="+url.QueryEscape(secMMRepo)+"&window=14d")
+	if !strings.Contains(flakyHTML, `/reports/mattermost/main/deadbee/lane-b-flaky?gh_run_id=903&amp;gh_run_attempt=1`) {
+		t.Fatalf("/kpi/flaky must link the flaky lane (lane-b-flaky, run 903), got HTML without expected URL")
+	}
+	if strings.Contains(flakyHTML, `gh_run_id=902`) || strings.Contains(flakyHTML, `gh_run_id=900`) {
+		t.Fatalf("/kpi/flaky must NOT link clean lane-a-pass (902) or out-of-window run (900)")
+	}
+
+	detailHTML := getRaw(t, env.ServerURL+"/kpi/failures/"+sigID.String())
+	if !strings.Contains(detailHTML, `/reports/mattermost/main/deadbee/lane-b-flaky?gh_run_id=903&amp;gh_run_attempt=1`) {
+		t.Fatalf("/kpi/failures/{id} View latest run must link run 903")
+	}
+	if !strings.Contains(detailHTML, `/reports/mattermost/main/cafe000/lane-b-flaky?gh_run_id=901&amp;gh_run_attempt=1`) {
+		t.Fatalf("/kpi/failures/{id} View first run must link run 901")
 	}
 }
 
@@ -967,8 +1051,8 @@ func TestSEC11515_RealOrchestrationRetestChainAndPRFalseRedAttribution(t *testin
 	prsHTML := getRaw(t, env.ServerURL+"/kpi/prs")
 	for _, want := range []string{
 		`at least 12.5%`,
-		`Went green on rerun`,
-		`Also failing elsewhere`,
+		`Passed on rerun`,
+		`Failing on main or ≥3 PRs`,
 		`E2E red`,
 		`Failing on main`,
 		`Failing on 3 other PRs`,
@@ -1623,8 +1707,8 @@ func TestSEC11515_HandComputedUnifiedKPIFixtureSuite(t *testing.T) {
 	assertNoSecretOrContextLeak(t, "unified SSR /kpi/prs", prsHTML, []string{unifiedSecret}, true)
 	for _, want := range []string{
 		`at least 33.3%`,
-		`Went green on rerun`,
-		`Also failing elsewhere`,
+		`Passed on rerun`,
+		`Failing on main or ≥3 PRs`,
 		`E2E red`,
 		`#104`,
 	} {

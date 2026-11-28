@@ -2,12 +2,14 @@
 package kpi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -15,6 +17,8 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/kpi"
 )
+
+const kpiQueryTimeout = 10 * time.Second
 
 // Handlers bundles HTTP handlers for /api/v1/kpi*.
 type Handlers struct {
@@ -43,12 +47,12 @@ func (h *Handlers) Summary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.Store.QuerySummary(r.Context(), params)
+	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
+	defer cancel()
+
+	resp, err := h.Store.QuerySummary(ctx, params)
 	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Error("kpi summary query failed", slog.String("error", err.Error()))
-		}
-		api.WriteError(w, r, err)
+		handleKPIError(w, r, h.Logger, "kpi summary query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -75,12 +79,12 @@ func (h *Handlers) Flaky(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.Store.QueryFlaky(r.Context(), params)
+	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
+	defer cancel()
+
+	resp, err := h.Store.QueryFlaky(ctx, params)
 	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Error("kpi flaky query failed", slog.String("error", err.Error()))
-		}
-		api.WriteError(w, r, err)
+		handleKPIError(w, r, h.Logger, "kpi flaky query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -107,12 +111,12 @@ func (h *Handlers) PRsRed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.Store.QueryPRsRed(r.Context(), params)
+	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
+	defer cancel()
+
+	resp, err := h.Store.QueryPRsRed(ctx, params)
 	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Error("kpi prs red query failed", slog.String("error", err.Error()))
-		}
-		api.WriteError(w, r, err)
+		handleKPIError(w, r, h.Logger, "kpi prs red query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -139,12 +143,12 @@ func (h *Handlers) Failures(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.Store.QueryFailures(r.Context(), params)
+	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
+	defer cancel()
+
+	resp, err := h.Store.QueryFailures(ctx, params)
 	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Error("kpi failures query failed", slog.String("error", err.Error()))
-		}
-		api.WriteError(w, r, err)
+		handleKPIError(w, r, h.Logger, "kpi failures query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -177,16 +181,12 @@ func (h *Handlers) FailureDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.Store.QueryFailureDetail(r.Context(), sigID, params)
+	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
+	defer cancel()
+
+	resp, err := h.Store.QueryFailureDetail(ctx, sigID, params)
 	if err != nil {
-		if errors.Is(err, kpi.ErrNotFound) {
-			api.WriteError(w, r, api.ErrNotFound)
-			return
-		}
-		if h.Logger != nil {
-			h.Logger.Error("kpi failure detail query failed", slog.String("error", err.Error()))
-		}
-		api.WriteError(w, r, err)
+		handleKPIError(w, r, h.Logger, "kpi failure detail query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -219,19 +219,34 @@ func (h *Handlers) TestState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.Store.QueryTestState(r.Context(), testID, params)
+	ctx, cancel := context.WithTimeout(r.Context(), kpiQueryTimeout)
+	defer cancel()
+
+	resp, err := h.Store.QueryTestState(ctx, testID, params)
 	if err != nil {
-		if errors.Is(err, kpi.ErrNotFound) {
-			api.WriteError(w, r, api.ErrNotFound)
-			return
-		}
-		if h.Logger != nil {
-			h.Logger.Error("test state query failed", slog.String("error", err.Error()))
-		}
-		api.WriteError(w, r, err)
+		handleKPIError(w, r, h.Logger, "test state query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func handleKPIError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, msg string, err error) {
+	if errors.Is(err, kpi.ErrNotFound) {
+		api.WriteError(w, r, api.ErrNotFound)
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, kpi.ErrOverloaded) {
+		if logger != nil {
+			logger.Warn(msg+" (overloaded/timeout)", slog.String("error", err.Error()))
+		}
+		w.Header().Set("Retry-After", "5")
+		api.WriteErrorCode(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "kpi query temporarily unavailable; please retry")
+		return
+	}
+	if logger != nil {
+		logger.Error(msg, slog.String("error", err.Error()))
+	}
+	api.WriteError(w, r, err)
 }
 
 func parseRawQuery(r *http.Request) (url.Values, error) {
@@ -247,6 +262,7 @@ func parseRawQuery(r *http.Request) (url.Values, error) {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=30, stale-while-revalidate=60")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }

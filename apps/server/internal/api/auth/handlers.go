@@ -150,6 +150,7 @@ func (h *Handlers) Callback(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	user := h.currentUser(r)
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]any{"user": user})
 }
 

@@ -11,9 +11,29 @@ import (
 
 // QuerySummary computes GET /api/v1/kpi/summary strictly from pre-aggregated rollup tables.
 func (s *Store) QuerySummary(ctx context.Context, f FilterParams) (SummaryResponse, error) {
+	return s.QuerySummaryWithRecurring(ctx, f, nil)
+}
+
+// QuerySummaryWithRecurring computes GET /api/v1/kpi/summary, reusing a precomputed
+// RecurringFailuresSummary when provided so callers like /kpi SSR avoid scanning signatures twice.
+func (s *Store) QuerySummaryWithRecurring(
+	ctx context.Context,
+	f FilterParams,
+	precomputed *RecurringFailuresSummary,
+) (SummaryResponse, error) {
 	if s == nil || s.Pool == nil {
 		return SummaryResponse{}, errors.New("kpi store pool is nil")
 	}
+	return cachedQuery(ctx, s, filterCacheKey("summary", f, ""), func(ctx context.Context) (SummaryResponse, error) {
+		return s.querySummaryUncached(ctx, f, precomputed)
+	})
+}
+
+func (s *Store) querySummaryUncached(
+	ctx context.Context,
+	f FilterParams,
+	precomputed *RecurringFailuresSummary,
+) (SummaryResponse, error) {
 
 	topCoverage, err := s.queryLaneCoverage(ctx, f, "", true, nil)
 	if err != nil {
@@ -62,9 +82,15 @@ func (s *Store) QuerySummary(ctx context.Context, f FilterParams) (SummaryRespon
 		return SummaryResponse{}, err
 	}
 
-	recurring, err := s.queryRecurringFailuresSummary(ctx, f)
-	if err != nil {
-		return SummaryResponse{}, err
+	recurring := precomputed
+	if recurring == nil {
+		recurring, err = s.queryRecurringFailuresSummary(ctx, f)
+		if err != nil {
+			return SummaryResponse{}, err
+		}
+	} else {
+		cp := *recurring
+		recurring = &cp
 	}
 
 	triage, err := s.queryTriageSummary(ctx, f)
@@ -580,6 +606,22 @@ func (s *Store) queryE2EDurationByLane(ctx context.Context, f FilterParams) ([]D
 	return out, nil
 }
 
+type weeklyMainBucket struct {
+	firstPass, testsRun     int
+	lanesPass, lanesTotal   int
+	strictPass, strictTotal int
+}
+
+type weeklyDurationBucket struct {
+	p50Ms, p90Ms *float64
+	sampleCount  int
+}
+
+type weeklyPRFalseRedBucket struct {
+	falseRed   int
+	settledRed int
+}
+
 func (s *Store) queryWeeklySeries(ctx context.Context, f FilterParams) ([]WeeklyPoint, error) {
 	refNow := s.effectiveRefNow(f)
 	settledCutoff := refNow.Add(-settledAfterHours * time.Hour)
@@ -600,95 +642,261 @@ func (s *Store) queryWeeklySeries(ctx context.Context, f FilterParams) ([]Weekly
 	if err != nil {
 		return nil, err
 	}
+	weeklyMain, err := s.queryWeeklyMainPassRates(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	weeklyFlaky, err := s.queryWeeklyFlakyCounts(ctx, f, weeks)
+	if err != nil {
+		return nil, err
+	}
+	weeklyDur, err := s.queryWeeklyE2EDuration(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	weeklyFalseRed, err := s.queryWeeklyPRFalseRedRates(ctx, f, settledCutoff)
+	if err != nil {
+		return nil, err
+	}
 
 	series := make([]WeeklyPoint, 0, len(weeks))
 	for _, wStart := range weeks {
-		sliceFrom := wStart
-		if sliceFrom.Before(f.CurFromDate) {
-			sliceFrom = f.CurFromDate
+		wkKey := wStart.Format("2006-01-02")
+		mb := weeklyMain[wkKey]
+		db := weeklyDur[wkKey]
+		fb := weeklyFalseRed[wkKey]
+		rfCount := weeklyFailures[wkKey]
+
+		series = append(series, WeeklyPoint{
+			WeekStart:              wkKey,
+			MainTestsTotal:         mb.testsRun,
+			MainLanesTotal:         mb.lanesTotal,
+			MainTestPassRate:       pctPtr(mb.firstPass, mb.testsRun),
+			MainLanePassRate:       pctPtr(mb.lanesPass, mb.lanesTotal),
+			MainStrictLanePassRate: pctPtr(mb.strictPass, mb.strictTotal),
+			FlakyTestCount:         weeklyFlaky[wkKey],
+			E2EP50Ms:               db.p50Ms,
+			E2EP90Ms:               db.p90Ms,
+			E2ESampleCount:         db.sampleCount,
+			PRFalseRedRate:         pctPtr(fb.falseRed, fb.settledRed),
+			RecurringFailuresCount: &rfCount,
+			TriageCoverageRate:     weeklyTriage[wkKey],
+		})
+	}
+	return series, nil
+}
+
+const pgWeekStartExpr = "(%s.metric_date - (EXTRACT(ISODOW FROM %s.metric_date)::int - 1))"
+
+func (s *Store) queryWeeklyMainPassRates(ctx context.Context, f FilterParams) (map[string]weeklyMainBucket, error) {
+	b := &sqlFilterBuilder{}
+	fromPH := b.add(f.CurFromDate)
+	toPH := b.add(f.CurToDate)
+	var where strings.Builder
+	fmt.Fprintf(&where, "m.stage = 'main' AND m.metric_date >= %s AND m.metric_date <= %s", fromPH, toPH)
+	where.WriteString(b.appendCommonFilters("m", f, false))
+	where.WriteString(appendPlatformScope(b, "m", f.Platform))
+
+	wkExpr := fmt.Sprintf("to_char("+pgWeekStartExpr+", 'YYYY-MM-DD')", "m", "m")
+	rows, err := s.Pool.Query(ctx, `
+		SELECT
+			`+wkExpr+` AS wk,
+			COALESCE(SUM(m.attempt1_first_attempt_passed_count), 0)::integer,
+			COALESCE(SUM(m.attempt1_tests_run), 0)::integer,
+			COALESCE(SUM(m.attempt1_lanes_passed), 0)::integer,
+			COALESCE(SUM(m.attempt1_lanes_total), 0)::integer,
+			COALESCE(SUM(m.attempt1_lanes_strict_pass), 0)::integer,
+			COALESCE(SUM(m.attempt1_lanes_strict_elig), 0)::integer
+		  FROM kpi_daily_lane_metrics m
+		 WHERE `+where.String()+`
+		 GROUP BY 1
+	`, b.args...)
+	if err != nil {
+		return nil, fmt.Errorf("weekly main pass rate: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]weeklyMainBucket{}
+	for rows.Next() {
+		var wk string
+		var val weeklyMainBucket
+		if err := rows.Scan(&wk, &val.firstPass, &val.testsRun, &val.lanesPass, &val.lanesTotal, &val.strictPass, &val.strictTotal); err != nil {
+			return nil, fmt.Errorf("scan weekly main pass rate: %w", err)
 		}
+		out[wk] = val
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) queryWeeklyE2EDuration(ctx context.Context, f FilterParams) (map[string]weeklyDurationBucket, error) {
+	b := &sqlFilterBuilder{}
+	fromPH := b.add(f.CurFromDate)
+	toPH := b.add(f.CurToDate)
+	var where strings.Builder
+	fmt.Fprintf(&where, "m.stage = 'pr' AND m.metric_date >= %s AND m.metric_date <= %s", fromPH, toPH)
+	where.WriteString(b.appendCommonFilters("m", f, false))
+	where.WriteString(appendPlatformScope(b, "m", f.Platform))
+
+	wkExpr := fmt.Sprintf("to_char("+pgWeekStartExpr+", 'YYYY-MM-DD')", "m", "m")
+	rows, err := s.Pool.Query(ctx, `
+		SELECT
+			`+wkExpr+` AS wk,
+			PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY d.val),
+			PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY d.val),
+			COUNT(d.val)::integer
+		  FROM kpi_daily_lane_metrics m
+		 CROSS JOIN LATERAL UNNEST(m.duration_samples_ms) AS d(val)
+		 WHERE `+where.String()+`
+		 GROUP BY 1
+	`, b.args...)
+	if err != nil {
+		return nil, fmt.Errorf("weekly e2e duration: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]weeklyDurationBucket{}
+	for rows.Next() {
+		var wk string
+		var val weeklyDurationBucket
+		if err := rows.Scan(&wk, &val.p50Ms, &val.p90Ms, &val.sampleCount); err != nil {
+			return nil, fmt.Errorf("scan weekly e2e duration: %w", err)
+		}
+		out[wk] = val
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) queryWeeklyPRFalseRedRates(
+	ctx context.Context,
+	f FilterParams,
+	settledCutoff time.Time,
+) (map[string]weeklyPRFalseRedBucket, error) {
+	override := parseConfiguredE2ELanes(s.E2ELanes)
+	b := &sqlFilterBuilder{}
+	fromPH := b.add(f.CurFromDate)
+	toPH := b.add(f.CurToDate)
+	cutoffPH := b.add(settledCutoff)
+
+	var where strings.Builder
+	fmt.Fprintf(&where, "gr.gh_pr_number IS NOT NULL AND gr.gh_pr_number > 0 AND gr.is_red = true AND gr.metric_date >= %s AND gr.metric_date <= %s AND gr.group_created_at < %s", fromPH, toPH, cutoffPH)
+	where.WriteString(appendE2ELanesFilter(b, "gr", override))
+	where.WriteString(b.appendCommonFilters("gr", f, false))
+	where.WriteString(appendPlatformScope(b, "gr", f.Platform))
+
+	wkExpr := fmt.Sprintf("to_char("+pgWeekStartExpr+", 'YYYY-MM-DD')", "gr", "gr")
+	rows, err := s.Pool.Query(ctx, `
+		SELECT
+			`+wkExpr+` AS wk,
+			COUNT(*) FILTER (WHERE `+rerunGreenExpr("gr")+`)::integer,
+			COUNT(*)::integer
+		  FROM kpi_group_rollups gr
+		 WHERE `+where.String()+`
+		 GROUP BY 1
+	`, b.args...)
+	if err != nil {
+		return nil, fmt.Errorf("weekly pr false-red rate: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]weeklyPRFalseRedBucket{}
+	for rows.Next() {
+		var wk string
+		var val weeklyPRFalseRedBucket
+		if err := rows.Scan(&wk, &val.falseRed, &val.settledRed); err != nil {
+			return nil, fmt.Errorf("scan weekly pr false-red rate: %w", err)
+		}
+		out[wk] = val
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) queryWeeklyFlakyCounts(ctx context.Context, f FilterParams, weeks []time.Time) (map[string]int, error) {
+	out := map[string]int{}
+	if len(weeks) == 0 {
+		return out, nil
+	}
+
+	weekStarts := make([]string, len(weeks))
+	flakyFroms := make([]string, len(weeks))
+	flakyTos := make([]string, len(weeks))
+	var minFrom, maxTo time.Time
+
+	for i, wStart := range weeks {
 		sliceTo := wStart.AddDate(0, 0, 6)
 		if sliceTo.After(f.CurToDate) {
 			sliceTo = f.CurToDate
 		}
-
-		pt := WeeklyPoint{
-			WeekStart: wStart.Format("2006-01-02"),
-		}
-
-		// Main pass rate for this week slice.
-		bMain := &sqlFilterBuilder{}
-		fromPH := bMain.add(sliceFrom)
-		toPH := bMain.add(sliceTo)
-		var mainWhere strings.Builder
-		fmt.Fprintf(&mainWhere, "m.stage = 'main' AND m.metric_date >= %s AND m.metric_date <= %s", fromPH, toPH)
-		mainWhere.WriteString(bMain.appendCommonFilters("m", f, false))
-		mainWhere.WriteString(appendPlatformScope(bMain, "m", f.Platform))
-
-		var firstPass, testsRun, lanesPass, lanesTotal, strictPass, strictTotal int
-		if err := s.Pool.QueryRow(ctx, `
-			SELECT
-				COALESCE(SUM(m.attempt1_first_attempt_passed_count), 0)::integer,
-				COALESCE(SUM(m.attempt1_tests_run), 0)::integer,
-				COALESCE(SUM(m.attempt1_lanes_passed), 0)::integer,
-				COALESCE(SUM(m.attempt1_lanes_total), 0)::integer,
-				COALESCE(SUM(m.attempt1_lanes_strict_pass), 0)::integer,
-				COALESCE(SUM(m.attempt1_lanes_strict_elig), 0)::integer
-			  FROM kpi_daily_lane_metrics m
-			 WHERE `+mainWhere.String(),
-			bMain.args...,
-		).Scan(&firstPass, &testsRun, &lanesPass, &lanesTotal, &strictPass, &strictTotal); err != nil {
-			return nil, fmt.Errorf("weekly main pass rate: %w", err)
-		}
-		pt.MainTestsTotal = testsRun
-		pt.MainLanesTotal = lanesTotal
-		pt.MainTestPassRate = pctPtr(firstPass, testsRun)
-		pt.MainLanePassRate = pctPtr(lanesPass, lanesTotal)
-		pt.MainStrictLanePassRate = pctPtr(strictPass, strictTotal)
-
-		// Flaky test count in trailing 14d ending at sliceTo.
 		flakyFrom := sliceTo.AddDate(0, 0, -13)
-		flakyCount, _, err := s.queryFlakyCountsByApp(ctx, f, flakyFrom, sliceTo)
-		if err != nil {
-			return nil, fmt.Errorf("weekly flaky count: %w", err)
+		if i == 0 || flakyFrom.Before(minFrom) {
+			minFrom = flakyFrom
 		}
-		pt.FlakyTestCount = flakyCount
-
-		// E2E duration for PR stage in this week slice.
-		bDur := &sqlFilterBuilder{}
-		dFromPH := bDur.add(sliceFrom)
-		dToPH := bDur.add(sliceTo)
-		var durWhere strings.Builder
-		fmt.Fprintf(&durWhere, "m.stage = 'pr' AND m.metric_date >= %s AND m.metric_date <= %s", dFromPH, dToPH)
-		durWhere.WriteString(bDur.appendCommonFilters("m", f, false))
-		durWhere.WriteString(appendPlatformScope(bDur, "m", f.Platform))
-
-		if err := s.Pool.QueryRow(ctx, `
-			SELECT
-				PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY d.val),
-				PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY d.val),
-				COUNT(d.val)::integer
-			  FROM kpi_daily_lane_metrics m
-			 CROSS JOIN LATERAL UNNEST(m.duration_samples_ms) AS d(val)
-			 WHERE `+durWhere.String(),
-			bDur.args...,
-		).Scan(&pt.E2EP50Ms, &pt.E2EP90Ms, &pt.E2ESampleCount); err != nil {
-			return nil, fmt.Errorf("weekly e2e duration: %w", err)
+		if i == 0 || sliceTo.After(maxTo) {
+			maxTo = sliceTo
 		}
-
-		falseRedCount, settledRedCount, err := s.queryPRFalseRedRateForDates(ctx, f, sliceFrom, sliceTo, settledCutoff)
-		if err != nil {
-			return nil, fmt.Errorf("weekly pr false-red rate: %w", err)
-		}
-		pt.PRFalseRedRate = pctPtr(falseRedCount, settledRedCount)
-
-		rfCount := weeklyFailures[pt.WeekStart]
-		pt.RecurringFailuresCount = &rfCount
-		pt.TriageCoverageRate = weeklyTriage[pt.WeekStart]
-
-		series = append(series, pt)
+		weekStarts[i] = wStart.Format("2006-01-02")
+		flakyFroms[i] = flakyFrom.Format("2006-01-02")
+		flakyTos[i] = sliceTo.Format("2006-01-02")
 	}
-	return series, nil
+
+	b := &sqlFilterBuilder{}
+	wkArrPH := b.add(weekStarts)
+	fromArrPH := b.add(flakyFroms)
+	toArrPH := b.add(flakyTos)
+	minPH := b.add(minFrom)
+	maxPH := b.add(maxTo)
+
+	commitWhere := appendCommitFilters(b, "c", f)
+	rows, err := s.Pool.Query(ctx, `
+		WITH week_windows AS (
+			SELECT *
+			  FROM UNNEST(`+wkArrPH+`::date[], `+fromArrPH+`::date[], `+toArrPH+`::date[]) AS w(week_start, flaky_from, flaky_to)
+		),
+		commit_agg AS (
+			SELECT
+				w.week_start,
+				c.repository,
+				c.commit_sha,
+				c.test_id,
+				c.project,
+				c.platform,
+				(SUM(c.pass_count) > 0 AND SUM(c.fail_count) > 0) AS is_mixed
+			  FROM week_windows w
+			  JOIN kpi_test_commit_outcomes c
+			    ON c.metric_date >= `+minPH+`
+			   AND c.metric_date <= `+maxPH+`
+			   AND c.metric_date >= w.flaky_from
+			   AND c.metric_date <= w.flaky_to`+commitWhere+`
+			 GROUP BY w.week_start, c.repository, c.commit_sha, c.test_id, c.project, c.platform
+		),
+		flaky_tests AS (
+			SELECT
+				week_start,
+				test_id,
+				project,
+				platform
+			  FROM commit_agg
+			 WHERE is_mixed
+			 GROUP BY week_start, test_id, project, platform
+			HAVING COUNT(*) >= 2
+		)
+		SELECT to_char(week_start, 'YYYY-MM-DD'), COUNT(*)::integer
+		  FROM flaky_tests
+		 GROUP BY week_start
+	`, b.args...)
+	if err != nil {
+		return nil, fmt.Errorf("weekly flaky count: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var wk string
+		var cnt int
+		if err := rows.Scan(&wk, &cnt); err != nil {
+			return nil, fmt.Errorf("scan weekly flaky count: %w", err)
+		}
+		out[wk] = cnt
+	}
+	return out, rows.Err()
 }
 
 func truncateToUTCWeekMonday(d time.Time) time.Time {

@@ -4,6 +4,7 @@ package kpi
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,6 +23,17 @@ type Store struct {
 	Now func() time.Time
 	// E2ELanes optionally overrides kpi_e2e_lanes ("owner/repo:lane" or "lane" entries).
 	E2ELanes []string
+	// CacheTTL enables singleflight + bounded TTL caching for KPI read queries when > 0.
+	CacheTTL time.Duration
+	// CacheMaxEntries caps cached KPI entries (default 512 when CacheTTL > 0).
+	CacheMaxEntries int
+	// MaxConcurrentQueries caps uncached concurrent DB flights on the shared pool when > 0.
+	MaxConcurrentQueries int
+
+	cacheOnce sync.Once
+	cache     *kpiCache
+	semOnce   sync.Once
+	sem       chan struct{}
 }
 
 // NowTime returns the current UTC time (honoring Store.Now when set).
@@ -280,27 +292,29 @@ type TriageLabelMix struct {
 // bucket so timed-out runs are neither double-counted nor dropped).
 // CompletionRate = CompletedRuns / (TotalRuns - InProgressRuns) * 100 (nil when denominator is 0).
 type RunCompletionSummary struct {
-	TotalRuns      int      `json:"total_runs"`
-	CompletedRuns  int      `json:"completed_runs"`
-	IncompleteRuns int      `json:"incomplete_runs"`
-	InProgressRuns int      `json:"in_progress_runs"`
-	TimedOutRuns   int      `json:"timed_out_runs"`
-	CompletionRate *float64 `json:"completion_rate"`
+	TotalRuns      int            `json:"total_runs"`
+	CompletedRuns  int            `json:"completed_runs"`
+	IncompleteRuns int            `json:"incomplete_runs"`
+	InProgressRuns int            `json:"in_progress_runs"`
+	TimedOutRuns   int            `json:"timed_out_runs"`
+	CompletionRate *float64       `json:"completion_rate"`
+	TimedOutByRepo map[string]int `json:"-"`
 }
 
 // TriageSummary holds SEC-11520 triage coverage, verdict reuse, label mix, and run completion metrics.
 type TriageSummary struct {
-	RunCoverageRate        *float64             `json:"run_coverage_rate"`
-	TestCoverageRate       *float64             `json:"test_coverage_rate"`
-	FailedRunsCount        int                  `json:"failed_runs_count"`
-	TriagedRunsCount       int                  `json:"triaged_runs_count"`
-	FailedTestOccurrences  int                  `json:"failed_test_occurrences"`
-	TriagedTestOccurrences int                  `json:"triaged_test_occurrences"`
-	VerdictReuseRate       *float64             `json:"verdict_reuse_rate"`
-	VerdictsTotal          int                  `json:"verdicts_total"`
-	VerdictsReused         int                  `json:"verdicts_reused"`
-	LabelMix               []TriageLabelMix     `json:"label_mix"`
-	RunCompletion          RunCompletionSummary `json:"run_completion"`
+	RunCoverageRate        *float64              `json:"run_coverage_rate"`
+	TestCoverageRate       *float64              `json:"test_coverage_rate"`
+	FailedRunsCount        int                   `json:"failed_runs_count"`
+	TriagedRunsCount       int                   `json:"triaged_runs_count"`
+	FailedTestOccurrences  int                   `json:"failed_test_occurrences"`
+	TriagedTestOccurrences int                   `json:"triaged_test_occurrences"`
+	VerdictReuseRate       *float64              `json:"verdict_reuse_rate"`
+	VerdictsTotal          int                   `json:"verdicts_total"`
+	VerdictsReused         int                   `json:"verdicts_reused"`
+	LabelMix               []TriageLabelMix      `json:"label_mix"`
+	RunCompletion          RunCompletionSummary  `json:"run_completion"`
+	PRRunCompletion        *RunCompletionSummary `json:"-"`
 }
 
 // TestStateResponse is the wire shape for GET /api/v1/tests/{id}/state.
@@ -350,6 +364,7 @@ type FlakyTestRow struct {
 	FlakeRate        float64   `json:"flake_rate"`
 	LastFlakyAt      time.Time `json:"last_flaky_at"`
 	LastCommitSHA    string    `json:"last_commit_sha"`
+	LastRunURL       string    `json:"-"`
 	Lanes            []string  `json:"lanes"`
 }
 
@@ -545,6 +560,7 @@ type FailureFirstSeen struct {
 	Branch        *string   `json:"branch"`
 	CommitSHA     *string   `json:"commit_sha"`
 	GHPRNumber    *int      `json:"gh_pr_number"`
+	RunURL        string    `json:"-"`
 }
 
 // FailureDailyPoint is one UTC day in the failure's daily occurrence & rate series.
@@ -615,6 +631,7 @@ type FailureDetailResponse struct {
 	AffectedRuns7d       int                   `json:"affected_runs_7d"`
 	LastSeenAt           *time.Time            `json:"last_seen_at"`
 	FirstSeen            FailureFirstSeen      `json:"first_seen"`
+	LatestRunURL         string                `json:"-"`
 	LatestVerdict        *FailureVerdict       `json:"latest_verdict"`
 	DailySeries          []FailureDailyPoint   `json:"daily_series"`
 	AffectedTests        []FailureAffectedTest `json:"affected_tests"`

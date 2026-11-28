@@ -93,6 +93,11 @@ type Config struct {
 	// Entries may be "owner/repo:lane" or "lane". When unset, uses kpi_e2e_lanes.
 	KPIE2ELanes []string `env:"TSIO_KPI_E2E_LANES" envSeparator:","`
 
+	// KPI high-load protection defaults. Zero/negative disables the corresponding layer.
+	KPICacheTTL        time.Duration `env:"TSIO_KPI_CACHE_TTL" envDefault:"30s"`
+	KPIMaxConcurrent   int           `env:"TSIO_KPI_MAX_CONCURRENT" envDefault:"10"`
+	KPIRateLimitPerMin int           `env:"TSIO_KPI_RATE_LIMIT_PER_MIN" envDefault:"180"`
+
 	// Client-facing tunables surfaced via GET /api/v1/config.
 	UploadTimeoutMs int  `env:"TSIO_UPLOAD_TIMEOUT_MS" envDefault:"3600000"` // 1h
 	HTMLViewEnabled bool `env:"TSIO_HTML_VIEW_ENABLED" envDefault:"true"`

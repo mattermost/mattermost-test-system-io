@@ -2,12 +2,13 @@
 <header class="kpi-page-header">
   <div class="kpi-page-title-row">
     <div>
-      <h2 class="kpi-page-title">PR E2E Signal Reliability</h2>
+      <h2 class="kpi-page-title">PR E2E Reliability</h2>
       <p class="kpi-page-subtitle">{{.SettledNote}}</p>
     </div>
     <nav class="kpi-subnav" aria-label="KPI sections">
       <a href="{{.OverviewHref}}" class="kpi-subnav-link">Overview</a>
       <a href="{{.PRsHref}}" class="kpi-subnav-link is-active">PR E2E</a>
+      <a href="{{.FlakyHref}}" class="kpi-subnav-link">Flaky</a>
     </nav>
   </div>
   {{template "kpi-filter-bar" .Filters}}
@@ -24,24 +25,24 @@
     </div>
     <div class="kpi-card-value tabular">{{.HeadlineRate}}</div>
     {{if .HasRateData}}
-    <p class="kpi-card-meta tabular">{{.SettledFalseRedLanes}} of {{.SettledRedLanes}} aged (&gt;24h) red PR runs passed on rerun</p>
+    <p class="kpi-card-meta tabular">{{.SettledFalseRedLanes}} of {{.SettledRedLanes}} red PR runs (&gt;24h) passed on rerun</p>
     {{else}}
-    <p class="kpi-card-empty">No settled (&gt;24h) red PR runs in this window</p>
+    <p class="kpi-card-empty">No red PR runs (&gt;24h) in this window</p>
     {{end}}
     <p class="kpi-card-note tabular">{{.QueueSummary}}</p>
   </article>
 
   <article class="kpi-card kpi-card-wide">
     <div class="kpi-card-head">
-      <h3 class="kpi-card-title">Failure attribution (aged &gt;24h red PRs)</h3>
+      <h3 class="kpi-card-title">Likely cause (&gt;24h red PRs)</h3>
       <span class="kpi-panel-subtitle tabular">{{.ReasonMixTotalText}}</span>
     </div>
     {{if eq .ReasonMixTotal 0}}
     <div class="empty-state empty-state-inline">
-      <p class="empty-hint">No aged (&gt;24h) red PR runs to classify in this window</p>
+      <p class="empty-hint">No red PR runs (&gt;24h) to classify in this window</p>
     </div>
     {{else}}
-    <div class="kpi-mix-bar" role="img" aria-label="Aged red PR cause breakdown">
+    <div class="kpi-mix-bar" role="img" aria-label="Red PR (>24h) cause breakdown">
       {{range .ReasonMix}}
       {{if gt .WidthPct 0}}
       <div class="kpi-mix-seg {{.ColorClass}}" style="width: {{.WidthPct}}%" title="{{.Label}}: {{.Count}} ({{.SharePct}})"></div>
@@ -52,7 +53,7 @@
     <div class="kpi-mix-legend">
       {{range .ReasonMix}}
       <div class="kpi-mix-item">
-        <span class="kpi-badge {{.ColorClass}}">{{.Label}}</span>
+        <span class="kpi-badge {{.ColorClass}}"{{if .Tooltip}} title="{{.Tooltip}}"{{end}}>{{.Label}}</span>
         <span class="kpi-mix-val tabular">{{.Count}} ({{.SharePct}})</span>
       </div>
       {{end}}
@@ -60,10 +61,10 @@
   </article>
 </section>
 
-<section class="kpi-panel" aria-label="Red now PR E2E queue">
+<section class="kpi-panel" aria-label="Red PR E2E runs queue">
   <header class="kpi-panel-head">
     <div>
-      <h3 class="kpi-panel-title">Red now</h3>
+      <h3 class="kpi-panel-title">Red PR runs</h3>
       <span class="kpi-panel-subtitle tabular">{{.TotalLanesText}}</span>
     </div>
     <div class="kpi-panel-controls">
@@ -86,31 +87,31 @@
       <thead>
         <tr>
           <th>PR &amp; Commit</th>
-          <th>Suite &amp; Repo</th>
+          <th>Lane &amp; Repo</th>
           <th>Status &amp; Likely Cause</th>
           <th class="num">Age</th>
-          <th class="num">Failed</th>
+          <th class="num">Failed (Report)</th>
         </tr>
       </thead>
       <tbody>
         {{range .Lanes}}
         <tr>
           <td class="tabular">
-            <a href="{{.RunURL}}" class="kpi-sig-link">#{{.PRNumber}}</a>
-            <div class="kpi-sig-meta mono">{{.ShortSHA}}</div>
+            {{if .GitHubPRURL}}<a href="{{.GitHubPRURL}}" class="kpi-sig-link" target="_blank" rel="noopener noreferrer">#{{.PRNumber}}</a>{{else if .RunURL}}<a href="{{.RunURL}}" class="kpi-sig-link">#{{.PRNumber}}</a>{{else}}#{{.PRNumber}}{{end}}
+            <div class="kpi-sig-meta mono">{{if .GitHubCommitURL}}<a href="{{.GitHubCommitURL}}" class="kpi-inline-link" target="_blank" rel="noopener noreferrer">{{.ShortSHA}}</a>{{else}}{{.ShortSHA}}{{end}}</div>
           </td>
           <td>
-            <div class="kpi-lane-name mono">{{.Lane}}</div>
-            <div class="kpi-sig-meta">{{if $.ShowRepoBadge}}{{.RepoShort}} · {{end}}{{.Repository}}{{if .Platform}} · {{.Platform}}{{end}}</div>
+            <div class="kpi-lane-name mono"><a href="{{.LaneHref}}" class="kpi-sig-link mono">{{.Lane}}</a></div>
+            <div class="kpi-sig-meta"><a href="{{.RepoHref}}" class="kpi-inline-link">{{if $.ShowRepoBadge}}{{.RepoShort}} · {{end}}{{.Repository}}</a>{{if .Platform}} · {{.Platform}}{{end}}</div>
           </td>
           <td>
             <div class="kpi-badge-stack">
               <span class="{{.StatusClass}}">{{.StatusLabel}}</span>
-              <span class="{{.CauseClass}}">{{.CauseLabel}}</span>
+              {{if .CauseLabel}}<span class="{{.CauseClass}}">{{.CauseLabel}}</span>{{end}}
             </div>
           </td>
           <td class="num tabular"><time datetime="{{.CreatedISO}}" title="{{.CreatedISO}}">{{.AgeText}}</time></td>
-          <td class="num tabular">{{.FailedSummary}}</td>
+          <td class="num tabular">{{if .RunURL}}<a href="{{.RunURL}}" class="kpi-inline-link">{{.FailedSummary}} &rarr;</a>{{else}}{{.FailedSummary}}{{end}}</td>
         </tr>
         {{end}}
       </tbody>
@@ -121,7 +122,7 @@
   <nav class="pagination kpi-pagination" aria-label="Red PR queue pagination">
     <span class="pagination-summary">
       {{if .HasLanes}}
-      <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} PR runs</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
+      <span class="pager-long">Showing {{.RowStart}} to {{.ShowEnd}} of {{.Total}} PR runs · Page {{.Page}} of {{.TotalPages}}</span><span class="pager-short">{{.RowStart}}-{{.ShowEnd}} of {{.Total}}</span>
       {{else}}
       <span class="pager-long">Page {{.Page}} of {{.TotalPages}} ({{.Total}} PR runs)</span><span class="pager-short">Page {{.Page}}/{{.TotalPages}} ({{.Total}})</span>
       {{end}}

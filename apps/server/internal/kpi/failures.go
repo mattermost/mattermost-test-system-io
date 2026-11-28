@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	failureHistoryMaxDays = 365
-	maxSignatureMergeHops = 32
+	failureHistoryMaxDays         = 365
+	maxSignatureMergeHops         = 32
+	maxFailureDetailAffectedTests = 100
 )
 
 // canonicalRootExprSQL resolves the canonical signature UUID from a terminal sig_up row:
@@ -48,6 +49,16 @@ func (s *Store) QueryFailuresFiltered(ctx context.Context, f FilterParams, activ
 	if err := validatePaginationParams(f); err != nil {
 		return FailuresResponse{}, err
 	}
+	extra := "all"
+	if activeOnly {
+		extra = "active"
+	}
+	return cachedQuery(ctx, s, filterCacheKey("failures", f, extra), func(ctx context.Context) (FailuresResponse, error) {
+		return s.queryFailuresFilteredUncached(ctx, f, activeOnly)
+	})
+}
+
+func (s *Store) queryFailuresFilteredUncached(ctx context.Context, f FilterParams, activeOnly bool) (FailuresResponse, error) {
 
 	cov, err := s.queryLaneCoverage(ctx, f, "", true, nil)
 	if err != nil {
@@ -111,6 +122,12 @@ func (s *Store) QueryFailureDetail(ctx context.Context, sigID uuid.UUID, f Filte
 	if s == nil || s.Pool == nil {
 		return FailureDetailResponse{}, errors.New("kpi store pool is nil")
 	}
+	return cachedQuery(ctx, s, filterCacheKey("faildetail", f, sigID.String()), func(ctx context.Context) (FailureDetailResponse, error) {
+		return s.queryFailureDetailUncached(ctx, sigID, f)
+	})
+}
+
+func (s *Store) queryFailureDetailUncached(ctx context.Context, sigID uuid.UUID, f FilterParams) (FailureDetailResponse, error) {
 
 	fam, found, err := s.loadSignatureFamilyByID(ctx, sigID)
 	if err != nil {
@@ -189,6 +206,10 @@ func (s *Store) QueryFailureDetail(ctx context.Context, sigID uuid.UUID, f Filte
 	if err != nil {
 		return FailureDetailResponse{}, err
 	}
+	latestRunURL, err := s.loadFailureLatestRunURL(ctx, fam.MemberIDs, f)
+	if err != nil {
+		return FailureDetailResponse{}, err
+	}
 
 	var lastSeenPtr *time.Time
 	if acc.hasLastSeen {
@@ -227,6 +248,7 @@ func (s *Store) QueryFailureDetail(ctx context.Context, sigID uuid.UUID, f Filte
 		AffectedRuns7d:       rates.affectedRuns7d,
 		LastSeenAt:           lastSeenPtr,
 		FirstSeen:            firstSeen,
+		LatestRunURL:         latestRunURL,
 		LatestVerdict:        latestVerdict,
 		DailySeries:          buildFailureDailySeries(f, acc, runsByDay),
 		AffectedTests:        affectedTests,
@@ -586,7 +608,8 @@ func (s *Store) computeRecurringFailures(ctx context.Context, f FilterParams) ([
 }
 
 func failureHistoryStart(f FilterParams) time.Time {
-	historyFrom := f.CurToDate.AddDate(0, 0, -failureHistoryMaxDays)
+	historyDays := max(f.WindowDays+30, 90)
+	historyFrom := f.CurToDate.AddDate(0, 0, -historyDays)
 	if f.CurFromDate.Before(historyFrom) {
 		return f.CurFromDate
 	}
@@ -1060,26 +1083,65 @@ func (s *Store) loadFailureFirstSeen(ctx context.Context, firstSeenAt time.Time,
 	fs.ReportGroupID = &gidStr
 
 	var (
-		repo, lane, branch, commitSHA string
-		prNum                         *int
+		repo, lane, rawBranch, runGroup, commitSHA, ghRunID, ghRunAttempt string
+		prNum                                                             *int
 	)
 	err := s.Pool.QueryRow(ctx, `
-		SELECT repository, name, branch, commit_sha, gh_pr_number
+		SELECT repository, name, COALESCE(branch, ''), COALESCE(run_group, ''), commit_sha,
+		       COALESCE(gh_run_id, ''), COALESCE(gh_run_attempt, ''), gh_pr_number
 		  FROM report_groups
 		 WHERE id = $1
-	`, *groupID).Scan(&repo, &lane, &branch, &commitSHA, &prNum)
+	`, *groupID).Scan(&repo, &lane, &rawBranch, &runGroup, &commitSHA, &ghRunID, &ghRunAttempt, &prNum)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fs, nil
 	}
 	if err != nil {
 		return FailureFirstSeen{}, fmt.Errorf("load first_seen report_group: %w", err)
 	}
+	branch := stripBranchRefPrefix(rawBranch)
 	fs.Repository = &repo
 	fs.Lane = &lane
 	fs.Branch = &branch
 	fs.CommitSHA = &commitSHA
 	fs.GHPRNumber = prNum
+	fs.RunURL = buildRunURL(repo, rawBranch, commitSHA, lane, runGroup, ghRunID, ghRunAttempt)
 	return fs, nil
+}
+
+func (s *Store) loadFailureLatestRunURL(ctx context.Context, memberIDs []uuid.UUID, f FilterParams) (string, error) {
+	if len(memberIDs) == 0 {
+		return "", nil
+	}
+	b := &sqlFilterBuilder{}
+	sigPH := b.add(memberIDs)
+	fromPH := b.add(failureHistoryStart(f))
+	toPH := b.add(f.CurToDate)
+	where := fmt.Sprintf(
+		"gs.signature_id = ANY(%s) AND gs.occurrence_count > 0 AND gs.metric_date >= %s AND gs.metric_date <= %s%s",
+		sigPH, fromPH, toPH, b.appendSignatureExecFilters("gs", f),
+	)
+
+	var repo, lane, rawBranch, runGroup, commitSHA, ghRunID, ghRunAttempt string
+	err := s.Pool.QueryRow(ctx, `
+		SELECT rg.repository, rg.name, COALESCE(rg.branch, ''), COALESCE(rg.run_group, ''),
+		       rg.commit_sha, COALESCE(rg.gh_run_id, ''), COALESCE(rg.gh_run_attempt, '')
+		  FROM kpi_group_signature_rollups gs
+		  JOIN report_groups rg ON rg.id = gs.report_group_id
+		 WHERE `+where+`
+		 ORDER BY gs.last_seen_at DESC, rg.created_at DESC
+		 LIMIT 1
+	`, b.args...).Scan(&repo, &lane, &rawBranch, &runGroup, &commitSHA, &ghRunID, &ghRunAttempt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load latest failure run url: %w", err)
+	}
+	u := buildRunURL(repo, rawBranch, commitSHA, lane, runGroup, ghRunID, ghRunAttempt)
+	if u == "/" {
+		return "", nil
+	}
+	return u, nil
 }
 
 func hasScopeFilters(f FilterParams) bool {
@@ -1230,11 +1292,27 @@ func (s *Store) loadAffectedTestsMetadata(
 	if len(testIDs) == 0 {
 		return []FailureAffectedTest{}, nil
 	}
+	selected := testIDs
+	if len(selected) > maxFailureDetailAffectedTests {
+		selected = append([]uuid.UUID(nil), testIDs...)
+		sort.Slice(selected, func(i, j int) bool {
+			gi, gj := groupCounts[selected[i]], groupCounts[selected[j]]
+			if gi != gj {
+				return gi > gj
+			}
+			ri, rj := runCounts[selected[i]], runCounts[selected[j]]
+			if ri != rj {
+				return ri > rj
+			}
+			return selected[i].String() < selected[j].String()
+		})
+		selected = selected[:maxFailureDetailAffectedTests]
+	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT id, test_key, zephyr_key, file, full_title, repository, framework
 		  FROM tests
 		 WHERE id = ANY($1)
-	`, testIDs)
+	`, selected)
 	if err != nil {
 		return nil, fmt.Errorf("load affected tests metadata: %w", err)
 	}

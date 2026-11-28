@@ -40,6 +40,44 @@ func (s *Store) queryTriageSummary(ctx context.Context, f FilterParams) (*Triage
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	agg, whereStr, whereArgs, err := queryDailyTriageAgg(ctx, tx, f)
+	if err != nil {
+		return nil, err
+	}
+	toSplit, timedOutByRepo, err := queryTimedOutSplit(ctx, tx, f)
+	if err != nil {
+		return nil, err
+	}
+	labelCounts, err := queryVerdictLabelMix(ctx, tx, whereStr, whereArgs)
+	if err != nil {
+		return nil, err
+	}
+
+	summary := buildTriageSummary(agg, toSplit, labelCounts)
+	summary.RunCompletion.TimedOutByRepo = timedOutByRepo
+
+	switch f.Stage {
+	case "pr":
+		cp := summary.RunCompletion
+		summary.PRRunCompletion = &cp
+	case "":
+		prFilter := f
+		prFilter.Stage = "pr"
+		prAgg, _, _, err := queryDailyTriageAgg(ctx, tx, prFilter)
+		if err != nil {
+			return nil, err
+		}
+		prSplit, _, err := queryTimedOutSplit(ctx, tx, prFilter)
+		if err != nil {
+			return nil, err
+		}
+		prRC := computeRunCompletion(prAgg, prSplit)
+		summary.PRRunCompletion = &prRC
+	}
+	return &summary, nil
+}
+
+func queryDailyTriageAgg(ctx context.Context, tx pgx.Tx, f FilterParams) (dailyTriageAgg, string, []any, error) {
 	b := &sqlFilterBuilder{}
 	fromPH := b.add(f.CurFromDate)
 	toPH := b.add(f.CurToDate)
@@ -50,7 +88,7 @@ func (s *Store) queryTriageSummary(ctx context.Context, f FilterParams) (*Triage
 	where.WriteString(appendPlatformScope(b, "m", f.Platform))
 
 	var agg dailyTriageAgg
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		SELECT
 			COALESCE(SUM(m.total_runs), 0)::integer,
 			COALESCE(SUM(m.completed_runs), 0)::integer,
@@ -72,9 +110,12 @@ func (s *Store) queryTriageSummary(ctx context.Context, f FilterParams) (*Triage
 		&agg.verdictsTotal, &agg.verdictsReused,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("query triage summary: %w", err)
+		return dailyTriageAgg{}, "", nil, fmt.Errorf("query triage summary: %w", err)
 	}
+	return agg, where.String(), b.args, nil
+}
 
+func queryTimedOutSplit(ctx context.Context, tx pgx.Tx, f FilterParams) (timedOutSplit, map[string]int, error) {
 	// Query kpi_group_rollups only for the explicit orch_status='timed_out' split
 	// so timed-out runs are neither double-counted nor dropped from completion_rate.
 	bt := &sqlFilterBuilder{}
@@ -86,27 +127,43 @@ func (s *Store) queryTriageSummary(ctx context.Context, f FilterParams) (*Triage
 	tWhere.WriteString(appendPlatformScope(bt, "gr", f.Platform))
 
 	var toSplit timedOutSplit
-	err = tx.QueryRow(ctx, `
+	timedOutByRepo := map[string]int{}
+	toRows, err := tx.Query(ctx, `
 		SELECT
+			gr.repository,
 			COUNT(*)::integer,
 			COUNT(*) FILTER (WHERE gr.is_completed)::integer,
 			COUNT(*) FILTER (WHERE gr.group_status = 'incomplete')::integer,
 			COUNT(*) FILTER (WHERE gr.group_status = 'in_progress')::integer
 		  FROM kpi_group_rollups gr
-		 WHERE `+tWhere.String(),
-		bt.args...,
-	).Scan(&toSplit.total, &toSplit.completed, &toSplit.incomplete, &toSplit.inProgress)
+		 WHERE `+tWhere.String()+`
+		 GROUP BY gr.repository
+	`, bt.args...)
 	if err != nil {
-		return nil, fmt.Errorf("query timed out runs split: %w", err)
+		return timedOutSplit{}, nil, fmt.Errorf("query timed out runs split: %w", err)
 	}
+	defer toRows.Close()
 
-	labelCounts, err := queryVerdictLabelMix(ctx, tx, where.String(), b.args)
-	if err != nil {
-		return nil, err
+	for toRows.Next() {
+		var (
+			repo                      string
+			tot, comp, incomp, inProg int
+		)
+		if err := toRows.Scan(&repo, &tot, &comp, &incomp, &inProg); err != nil {
+			return timedOutSplit{}, nil, fmt.Errorf("scan timed out runs split: %w", err)
+		}
+		toSplit.total += tot
+		toSplit.completed += comp
+		toSplit.incomplete += incomp
+		toSplit.inProgress += inProg
+		if repo != "" && tot > 0 {
+			timedOutByRepo[repo] += tot
+		}
 	}
-
-	summary := buildTriageSummary(agg, toSplit, labelCounts)
-	return &summary, nil
+	if err := toRows.Err(); err != nil {
+		return timedOutSplit{}, nil, fmt.Errorf("iterate timed out runs split: %w", err)
+	}
+	return toSplit, timedOutByRepo, nil
 }
 
 func queryVerdictLabelMix(ctx context.Context, tx pgx.Tx, where string, args []any) (map[string]int, error) {
@@ -136,6 +193,21 @@ func queryVerdictLabelMix(ctx context.Context, tx pgx.Tx, where string, args []a
 	return counts, rows.Err()
 }
 
+func computeRunCompletion(agg dailyTriageAgg, toSplit timedOutSplit) RunCompletionSummary {
+	completed := max(0, agg.completedRuns-toSplit.completed)
+	incomplete := max(0, agg.incompleteRuns-toSplit.incomplete)
+	inProgress := max(0, agg.inProgressRuns-toSplit.inProgress)
+	denom := agg.totalRuns - inProgress
+	return RunCompletionSummary{
+		TotalRuns:      agg.totalRuns,
+		CompletedRuns:  completed,
+		IncompleteRuns: incomplete,
+		InProgressRuns: inProgress,
+		TimedOutRuns:   toSplit.total,
+		CompletionRate: pctPtr(completed, denom),
+	}
+}
+
 func buildTriageSummary(agg dailyTriageAgg, toSplit timedOutSplit, rawLabels map[string]int) TriageSummary {
 	totalLabels := 0
 	for _, cnt := range rawLabels {
@@ -161,11 +233,6 @@ func buildTriageSummary(agg dailyTriageAgg, toSplit timedOutSplit, rawLabels map
 		return labelMix[i].Label < labelMix[j].Label
 	})
 
-	completed := max(0, agg.completedRuns-toSplit.completed)
-	incomplete := max(0, agg.incompleteRuns-toSplit.incomplete)
-	inProgress := max(0, agg.inProgressRuns-toSplit.inProgress)
-	denom := agg.totalRuns - inProgress
-
 	return TriageSummary{
 		RunCoverageRate:        pctPtr(agg.triagedRunsCount, agg.failedRunsCount),
 		TestCoverageRate:       pctPtr(agg.triagedTestOccurrences, agg.failedTestOccurrences),
@@ -177,14 +244,7 @@ func buildTriageSummary(agg dailyTriageAgg, toSplit timedOutSplit, rawLabels map
 		VerdictsTotal:          agg.verdictsTotal,
 		VerdictsReused:         agg.verdictsReused,
 		LabelMix:               labelMix,
-		RunCompletion: RunCompletionSummary{
-			TotalRuns:      agg.totalRuns,
-			CompletedRuns:  completed,
-			IncompleteRuns: incomplete,
-			InProgressRuns: inProgress,
-			TimedOutRuns:   toSplit.total,
-			CompletionRate: pctPtr(completed, denom),
-		},
+		RunCompletion:          computeRunCompletion(agg, toSplit),
 	}
 }
 

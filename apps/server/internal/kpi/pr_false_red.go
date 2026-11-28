@@ -117,6 +117,12 @@ func (s *Store) QueryPRsRed(ctx context.Context, f FilterParams) (PRRedResponse,
 	if err := validatePaginationParams(f); err != nil {
 		return PRRedResponse{}, err
 	}
+	return cachedQuery(ctx, s, filterCacheKey("prs_red", f, ""), func(ctx context.Context) (PRRedResponse, error) {
+		return s.queryPRsRedUncached(ctx, f)
+	})
+}
+
+func (s *Store) queryPRsRedUncached(ctx context.Context, f FilterParams) (PRRedResponse, error) {
 
 	refNow := s.effectiveRefNow(f)
 	settledCutoff := refNow.Add(-settledAfterHours * time.Hour)
@@ -328,7 +334,7 @@ func (s *Store) queryPRRedTotals(
 				(gr.group_created_at < `+cutoffPH+`) AS settled,
 				`+rerunGreenExpr("gr")+` AS went_green_on_rerun,
 				`+allSigsFailingElsewhereExpr("gr")+` AS all_signatures_failing_elsewhere,
-				`+stillRedExpr("gr")+` AS still_red
+				`+notGreenLaterExpr("gr")+` AS no_green_later
 			  FROM kpi_group_rollups gr
 			 WHERE `+where.String()+`
 		)
@@ -336,7 +342,7 @@ func (s *Store) queryPRRedTotals(
 			COUNT(*) FILTER (WHERE settled)::integer,
 			COUNT(*) FILTER (WHERE settled AND went_green_on_rerun)::integer,
 			COUNT(*) FILTER (WHERE NOT settled)::integer,
-			COUNT(*) FILTER (WHERE still_red)::integer,
+			COUNT(*) FILTER (WHERE NOT went_green_on_rerun AND no_green_later)::integer,
 			COUNT(*) FILTER (WHERE settled AND went_green_on_rerun)::integer,
 			COUNT(*) FILTER (WHERE settled AND NOT went_green_on_rerun AND all_signatures_failing_elsewhere)::integer,
 			COUNT(*) FILTER (WHERE settled AND NOT went_green_on_rerun AND NOT all_signatures_failing_elsewhere)::integer
@@ -412,8 +418,29 @@ func (s *Store) queryRedPRLaneRows(
 	limitPH := b.add(f.Limit)
 	offsetPH := b.add((f.Page - 1) * f.Limit)
 
-	rows, err := s.Pool.Query(ctx, `
-		WITH base AS (
+	// When not sorting by computed reason, paginate kpi_group_rollups before running the
+	// LATERAL signature checks so at most `f.Limit` rows pay that subquery cost.
+	fromGrClause := `FROM kpi_group_rollups gr
+			  JOIN report_groups rg ON rg.id = gr.report_group_id`
+	outerWhere := where.String()
+	outerOrderLimit := "ORDER BY " + orderBy + "\n\t\t LIMIT " + limitPH + " OFFSET " + offsetPH
+	ctePrefix := "WITH "
+	if f.Sort != SortReasonAsc {
+		ctePrefix = `WITH paged_gr AS (
+			SELECT gr.*
+			  FROM kpi_group_rollups gr
+			 WHERE ` + where.String() + `
+			 ORDER BY ` + orderBy + `
+			 LIMIT ` + limitPH + ` OFFSET ` + offsetPH + `
+		),
+		`
+		fromGrClause = `FROM paged_gr gr
+			  JOIN report_groups rg ON rg.id = gr.report_group_id`
+		outerWhere = "true"
+		outerOrderLimit = "ORDER BY " + orderBy
+	}
+
+	rows, err := s.Pool.Query(ctx, ctePrefix+`base AS (
 			SELECT
 				gr.report_group_id,
 				gr.repository,
@@ -431,15 +458,14 @@ func (s *Store) queryRedPRLaneRows(
 				gr.orch_status,
 				gr.group_created_at,
 				(gr.group_created_at < `+cutoffPH+`) AS settled,
-				`+stillRedExpr("gr")+` AS still_red,
+				`+notGreenLaterExpr("gr")+` AS no_green_later,
 				`+rerunGreenExpr("gr")+` AS went_green_on_rerun,
 				sa.failing_on_main,
 				sa.other_prs_count,
 				sa.all_signatures_failing_elsewhere,
 				sa.failed_signature_count,
 				gr.tests_failed
-			  FROM kpi_group_rollups gr
-			  JOIN report_groups rg ON rg.id = gr.report_group_id
+			  `+fromGrClause+`
 			  LEFT JOIN LATERAL (
 			      WITH lane_sigs AS (
 			          SELECT DISTINCT gs.signature_id
@@ -509,11 +535,12 @@ func (s *Store) queryRedPRLaneRows(
 			          COALESCE(COUNT(*) > 0 AND BOOL_AND(sc.on_main_24h OR sc.other_prs_24h >= 3), false) AS all_signatures_failing_elsewhere
 			        FROM sig_checks sc
 			  ) sa ON true
-			 WHERE `+where.String()+`
+			 WHERE `+outerWhere+`
 		),
 		ranked AS (
 			SELECT
 				b.*,
+				(NOT b.went_green_on_rerun AND b.no_green_later) AS still_red,
 				CASE
 					WHEN b.went_green_on_rerun THEN '`+ReasonWentGreenOnRerun+`'
 					WHEN b.all_signatures_failing_elsewhere THEN '`+ReasonFailingElsewhere+`'
@@ -547,8 +574,7 @@ func (s *Store) queryRedPRLaneRows(
 			tests_failed,
 			reason
 		  FROM ranked
-		 ORDER BY `+orderBy+`
-		 LIMIT `+limitPH+` OFFSET `+offsetPH,
+		 `+outerOrderLimit,
 		b.args...,
 	)
 	if err != nil {
@@ -817,10 +843,8 @@ func rerunGreenExpr(alias string) string {
 	)`, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias, alias)
 }
 
-func stillRedExpr(alias string) string {
-	return fmt.Sprintf(`(
-		NOT `+rerunGreenExpr(alias)+`
-		AND NOT EXISTS (
+func notGreenLaterExpr(alias string) string {
+	return fmt.Sprintf(`NOT EXISTS (
 			SELECT 1
 			  FROM kpi_group_rollups r3
 			 WHERE r3.repository = %s.repository
@@ -836,8 +860,7 @@ func stillRedExpr(alias string) string {
 			       OR (r3.has_orchestration AND r3.orch_status = 'completed' AND r3.tests_total = 0)
 			   )
 			   AND r3.group_created_at > %s.group_created_at
-		)
-	)`, alias, alias, alias, alias, alias, alias)
+		)`, alias, alias, alias, alias, alias, alias)
 }
 
 func allSigsFailingElsewhereExpr(alias string) string {

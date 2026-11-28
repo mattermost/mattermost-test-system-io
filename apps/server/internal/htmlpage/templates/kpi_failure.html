@@ -1,8 +1,12 @@
 {{define "kpi-failure-content"}}
 <header class="kpi-page-header">
   <nav class="breadcrumb" aria-label="Breadcrumb">
-    <span class="breadcrumb-item"><a href="{{.OverviewHref}}" class="breadcrumb-link">KPIs</a></span>
-    <span class="breadcrumb-item">{{template "icon-chevron-right"}}<span class="breadcrumb-current">{{if .ErrorClass}}{{.ErrorClass}}{{else}}Failure Pattern{{end}}</span></span>
+    {{range $i, $c := .Breadcrumbs}}
+    <span class="breadcrumb-item">
+      {{if $i}}{{template "icon-chevron-right"}}{{end}}
+      {{if $c.Href}}<a href="{{$c.Href}}" class="breadcrumb-link">{{$c.Label}}</a>{{else}}<span class="breadcrumb-current">{{$c.Label}}</span>{{end}}
+    </span>
+    {{end}}
   </nav>
 
   <div class="kpi-failure-hero">
@@ -10,6 +14,7 @@
       <span class="{{.StateClass}}">{{.StateLabel}}</span>
       <span class="kpi-badge kpi-badge-muted">Last seen <time datetime="{{.LastSeenISO}}" title="{{.LastSeenISO}}">{{.LastSeenRel}}</time></span>
       <span class="kpi-badge kpi-badge-neutral tabular">Last {{.WindowDays}} days</span>
+      {{if .LatestRunURL}}<a href="{{.LatestRunURL}}" class="kpi-inline-link">View latest run &rarr;</a>{{end}}
     </div>
     <h2 class="kpi-failure-message">{{.NormalizedMessage}}</h2>
     {{if or .ErrorClass .TopFrame}}
@@ -27,7 +32,7 @@
 <section class="kpi-cards-grid" aria-label="Failure impact, origin, and triage verdict">
   <article class="kpi-card">
     <div class="kpi-card-head">
-      <h3 class="kpi-card-title">Impact &amp; 14d trend</h3>
+      <h3 class="kpi-card-title">Impact (Last {{.WindowDays}}d) &amp; 14d trend</h3>
       <div class="kpi-head-badges">
         <span class="kpi-badge kpi-badge-neutral tabular">{{.GroupCountText}}</span>
         {{if .IsLowSample}}<span class="kpi-badge kpi-badge-warn">Low sample</span>{{end}}
@@ -37,7 +42,7 @@
     <div class="kpi-card-value tabular">{{.WindowPrimaryValue}}</div>
     <p class="kpi-card-meta tabular">{{.WindowMeta}}</p>
     <dl class="kpi-card-substats">
-      <div><dt>Last 14d</dt><dd class="tabular">{{.Rate14d}} · {{.Current14dText}}</dd></div>
+      <div><dt>Last 14d</dt><dd class="tabular">{{.Current14dText}}</dd></div>
       <div><dt>Prior 14d</dt><dd class="tabular">{{.Prior14dText}}</dd></div>
     </dl>
   </article>
@@ -45,18 +50,18 @@
   <article class="kpi-card">
     <div class="kpi-card-head">
       <h3 class="kpi-card-title">First seen</h3>
-      {{if .FirstSeen.HasPR}}<span class="kpi-badge kpi-badge-neutral tabular">PR #{{.FirstSeen.PRNumber}}</span>{{end}}
+      {{if .FirstSeen.RunURL}}<a href="{{.FirstSeen.RunURL}}" class="kpi-inline-link">View first run &rarr;</a>{{end}}
     </div>
     {{if .FirstSeen.HasData}}
     <div class="kpi-card-value kpi-card-value-sm"><time datetime="{{.FirstSeen.TimestampISO}}" title="{{.FirstSeen.TimestampISO}}">{{.FirstSeen.TimestampRel}}</time></div>
-    <p class="kpi-card-meta">{{if .FirstSeen.Repository}}{{.FirstSeen.Repository}}{{end}}{{if .FirstSeen.Lane}} · <span class="mono">{{.FirstSeen.Lane}}</span>{{end}}</p>
-    <p class="kpi-card-note mono">{{if .FirstSeen.Branch}}{{.FirstSeen.Branch}}{{end}}{{if .FirstSeen.ShortSHA}} · {{.FirstSeen.ShortSHA}}{{end}}</p>
+    <p class="kpi-card-meta">{{if .FirstSeen.RepoHref}}<a href="{{.FirstSeen.RepoHref}}" class="kpi-inline-link">{{.FirstSeen.Repository}}</a>{{else if .FirstSeen.Repository}}{{.FirstSeen.Repository}}{{end}}{{if .FirstSeen.Lane}} · {{if .FirstSeen.LaneHref}}<a href="{{.FirstSeen.LaneHref}}" class="kpi-inline-link mono">{{.FirstSeen.Lane}}</a>{{else}}<span class="mono">{{.FirstSeen.Lane}}</span>{{end}}{{end}}</p>
+    <p class="kpi-card-note mono">{{if .FirstSeen.Branch}}{{.FirstSeen.Branch}}{{end}}{{if .FirstSeen.ShortSHA}}{{if .FirstSeen.Branch}} · {{end}}{{if .FirstSeen.CommitURL}}<a href="{{.FirstSeen.CommitURL}}" class="kpi-inline-link" target="_blank" rel="noopener noreferrer">{{.FirstSeen.ShortSHA}}</a>{{else}}{{.FirstSeen.ShortSHA}}{{end}}{{end}}{{if .FirstSeen.HasPR}} · {{if .FirstSeen.PRURL}}<a href="{{.FirstSeen.PRURL}}" class="kpi-inline-link" target="_blank" rel="noopener noreferrer">PR #{{.FirstSeen.PRNumber}}</a>{{else}}PR #{{.FirstSeen.PRNumber}}{{end}}{{end}}</p>
     {{else}}
     <p class="kpi-card-empty">No data — first-seen context unavailable</p>
     {{end}}
-    {{if .PRNumbers}}
+    {{if .PRLinks}}
     <div class="kpi-chip-list">
-      {{range .PRNumbers}}<span class="kpi-chip tabular">PR #{{.}}</span>{{end}}
+      {{range .PRLinks}}{{if .Href}}<a href="{{.Href}}" class="kpi-chip kpi-inline-link tabular" target="_blank" rel="noopener noreferrer">{{.Label}}</a>{{else}}<span class="kpi-chip tabular">{{.Label}}</span>{{end}}{{end}}
     </div>
     {{end}}
   </article>
@@ -69,7 +74,7 @@
     {{if .LatestVerdict}}
     {{if .LatestVerdict.Summary}}<p class="kpi-verdict-summary">{{.LatestVerdict.Summary}}</p>{{end}}
     <p class="kpi-card-note">
-      {{if .LatestVerdict.DecidedBy}}{{.LatestVerdict.DecidedBy}}{{end}}{{if .LatestVerdict.Confidence}} · {{.LatestVerdict.Confidence}}{{end}} · <time datetime="{{.LatestVerdict.CreatedISO}}">{{.LatestVerdict.CreatedRel}}</time>
+      {{if .LatestVerdict.DecidedBy}}{{.LatestVerdict.DecidedBy}} · {{end}}{{if .LatestVerdict.Confidence}}{{.LatestVerdict.Confidence}} · {{end}}<time datetime="{{.LatestVerdict.CreatedISO}}">{{.LatestVerdict.CreatedRel}}</time>
       {{if .LatestVerdict.TriageURL}} · <a href="{{.LatestVerdict.TriageURL}}" class="kpi-inline-link" target="_blank" rel="noopener noreferrer">Triage run &rarr;</a>{{end}}
     </p>
     {{else}}
@@ -96,7 +101,7 @@
           <th>Repository</th>
           <th>Framework</th>
           <th class="num">Failures</th>
-          <th class="num">CI runs</th>
+          <th class="num">Test &amp; CI runs</th>
           <th class="num">Last seen</th>
         </tr>
       </thead>
@@ -107,7 +112,7 @@
             <div class="kpi-lane-name">{{.Title}}</div>
             <div class="kpi-sig-meta mono">{{.File}}{{if .ZephyrKey}} · {{.ZephyrKey}}{{end}}</div>
           </td>
-          <td>{{.Repository}}</td>
+          <td>{{if .RepoHref}}<a href="{{.RepoHref}}" class="kpi-inline-link">{{.Repository}}</a>{{else}}{{.Repository}}{{end}}</td>
           <td>{{.Framework}}</td>
           <td class="num tabular">{{.FailCount}}</td>
           <td class="num tabular">{{.RunsText}}</td>
@@ -120,8 +125,8 @@
   {{end}}
   {{if .SingleRepo}}
   <div class="kpi-inline-strip">
-    <span><strong>Repository:</strong> {{.SingleRepo.Repository}} ({{.SingleRepo.App}})</span>
-    <span><strong>Lanes:</strong> <span class="mono">{{.SingleRepo.LanesSummary}}</span></span>
+    <span><strong>Repository:</strong> {{if .SingleRepo.RepoHref}}<a href="{{.SingleRepo.RepoHref}}" class="kpi-inline-link">{{.SingleRepo.Repository}}</a>{{else}}{{.SingleRepo.Repository}}{{end}} ({{.SingleRepo.App}})</span>
+    <span><strong>Lanes:</strong> {{range $i, $l := .SingleRepo.Lanes}}{{if $i}}, {{end}}<a href="{{$l.Href}}" class="kpi-inline-link mono">{{$l.Label}}</a>{{end}}</span>
     <span class="tabular"><strong>Impact:</strong> {{.SingleRepo.OccurrencesText}} · {{.SingleRepo.RatePer1k}}</span>
   </div>
   {{end}}
@@ -148,9 +153,9 @@
       <tbody>
         {{range .AffectedRepos}}
         <tr>
-          <td>{{.Repository}}</td>
+          <td>{{if .RepoHref}}<a href="{{.RepoHref}}" class="kpi-inline-link">{{.Repository}}</a>{{else}}{{.Repository}}{{end}}</td>
           <td>{{.App}}</td>
-          <td class="mono">{{.LanesSummary}}</td>
+          <td class="mono">{{range $i, $l := .Lanes}}{{if $i}}, {{end}}<a href="{{$l.Href}}" class="kpi-inline-link mono">{{$l.Label}}</a>{{end}}</td>
           <td class="num tabular">{{.OccurrencesText}}</td>
           <td class="num tabular">{{.AffectedRuns}}</td>
           <td class="num tabular">{{.RatePer1k}}</td>

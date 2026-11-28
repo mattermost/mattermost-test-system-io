@@ -19,6 +19,7 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	cfg.MaxConnIdleTime = 10 * time.Minute
 	cfg.MaxConnLifetime = 1 * time.Hour
 	cfg.ConnConfig.RuntimeParams["application_name"] = "tsio"
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "15000"
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

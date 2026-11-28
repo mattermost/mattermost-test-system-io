@@ -23,6 +23,7 @@ type RunPageOpts struct {
 	GHRunID      string
 	GHRunAttempt string
 	Page         int // 1-based unit list page
+	StatusRule   teststatus.Rule
 }
 
 // Crumb is one breadcrumb entry.
@@ -284,11 +285,11 @@ func BuildRunPage(
 		return RunPage{}, nil, err
 	}
 
-	fillRunPageFromSnap(&base, snap, repoSlug, branch, pageNum)
+	fillRunPageFromSnap(&base, snap, repoSlug, branch, pageNum, opts.StatusRule)
 	return base, nil, nil
 }
 
-func fillRunPageFromSnap(base *RunPage, snap *orchestration.RunWithUnits, repoSlug, branch string, pageNum int) {
+func fillRunPageFromSnap(base *RunPage, snap *orchestration.RunWithUnits, repoSlug, branch string, pageNum int, rule teststatus.Rule) {
 	run := snap.Run
 	id := run.Identity
 	pr := 0
@@ -316,14 +317,14 @@ func fillRunPageFromSnap(base *RunPage, snap *orchestration.RunWithUnits, repoSl
 	base.Mode = "dispatch"
 	base.IsLive = run.Status == orchestration.RunStatusInProgress
 
-	applyRunSummary(base, snap)
-	applyUnitPagination(base, snap.Units, pageNum)
+	applyRunSummary(base, snap, rule)
+	applyUnitPagination(base, snap.Units, pageNum, rule)
 }
 
-func applyRunSummary(base *RunPage, snap *orchestration.RunWithUnits) {
+func applyRunSummary(base *RunPage, snap *orchestration.RunWithUnits, rule teststatus.Rule) {
 	run := snap.Run
 	allJobNames := collectJobNames(snap.Units)
-	built := buildSpecRows(snap.Units, allJobNames)
+	built := buildSpecRows(snap.Units, allJobNames, rule)
 
 	tcPassed, tcFailed, tcFlaky, tcSkipped := 0, 0, 0, 0
 	for _, r := range built {
@@ -339,7 +340,7 @@ func applyRunSummary(base *RunPage, snap *orchestration.RunWithUnits) {
 	base.TestFlaky = tcFlaky
 	base.TestSkipped = tcSkipped
 	base.TestTotal = tcTotal
-	if rate := passRateDisplay(tcPassed, tcFailed, tcFlaky); rate != "" {
+	if rate := passRateDisplayWithRule(tcPassed, tcFailed, tcFlaky, tcSkipped, rule); rate != "" {
 		base.PassRate = rate
 		base.PassRateClass = passRateColorClass(rate)
 	}
@@ -359,7 +360,11 @@ func applyRunSummary(base *RunPage, snap *orchestration.RunWithUnits) {
 		base.ProgressLabel = "Timed Out"
 	default:
 		base.HasTestStatus = true
-		if tcFailed > 0 || run.Counts.CompletedFail > 0 || run.Counts.Abandoned > 0 {
+		failedRun := tcFailed > 0
+		if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
+			failedRun = failedRun || run.Counts.CompletedFail > 0 || run.Counts.Abandoned > 0
+		}
+		if failedRun {
 			base.TestStatus = statusFailed
 			base.TestStatusClass = "test-status-fail"
 		} else {
@@ -413,9 +418,9 @@ func applyRunSummary(base *RunPage, snap *orchestration.RunWithUnits) {
 	base.CreatedAtText = formatRunDate(run.StartedAt)
 }
 
-func applyUnitPagination(base *RunPage, units []orchestration.UnitView, pageNum int) {
+func applyUnitPagination(base *RunPage, units []orchestration.UnitView, pageNum int, rule teststatus.Rule) {
 	allJobNames := collectJobNames(units)
-	built := buildSpecRows(units, allJobNames)
+	built := buildSpecRows(units, allJobNames, rule)
 	// SPA SpecList keeps the full unit set in memory and paginates
 	// client-side after filtering. SSR mirrors that: ship every row so
 	// filter chips / search work across the run, not just one server page.
@@ -431,12 +436,23 @@ func applyUnitPagination(base *RunPage, units []orchestration.UnitView, pageNum 
 	base.Units = built
 }
 
-// BuildRunDispatchLive rebuilds header chips + current page of unit rows for the live fragment.
+// BuildRunDispatchLive rebuilds header chips + current page of unit rows using legacy rules.
 func BuildRunDispatchLive(
 	ctx context.Context,
 	orch *orchestration.Store,
 	repo, commit, ghRunID, name, attempt string,
 	page int,
+) (live RunDispatchLive, total int, isLive bool, err error) {
+	return BuildRunDispatchLiveWithRule(ctx, orch, repo, commit, ghRunID, name, attempt, page, teststatus.RuleLegacy)
+}
+
+// BuildRunDispatchLiveWithRule rebuilds header chips + current page of unit rows for the live fragment.
+func BuildRunDispatchLiveWithRule(
+	ctx context.Context,
+	orch *orchestration.Store,
+	repo, commit, ghRunID, name, attempt string,
+	page int,
+	rule teststatus.Rule,
 ) (live RunDispatchLive, total int, isLive bool, err error) {
 	if orch == nil {
 		return RunDispatchLive{}, 0, false, errors.New("htmlpage: nil orch store")
@@ -459,8 +475,8 @@ func BuildRunDispatchLive(
 		return RunDispatchLive{}, 0, false, err
 	}
 	tmp := RunPage{}
-	applyRunSummary(&tmp, snap)
-	applyUnitPagination(&tmp, snap.Units, page)
+	applyRunSummary(&tmp, snap, rule)
+	applyUnitPagination(&tmp, snap.Units, page, rule)
 	return RunDispatchLive{
 		UnitTotalAll:         tmp.UnitTotalAll,
 		UnitPass:             tmp.UnitPass,
@@ -538,12 +554,43 @@ func parseAttemptTests(raw json.RawMessage) []orchTestCase {
 	return cases
 }
 
-func aggregateUnitTests(u orchestration.UnitView) map[string]string {
+func legacyTestVerdict(statuses []string) string {
+	everPassed, everFailed, everSkipped := false, false, false
+	for _, s := range statuses {
+		switch s {
+		case statusPassed, statusFlaky:
+			everPassed = true
+		case statusFailed, statusTimedOutPW, statusInterrupted:
+			everFailed = true
+		case statusSkipped:
+			everSkipped = true
+		}
+	}
+	switch {
+	case everPassed && everFailed:
+		return statusFlaky
+	case everPassed:
+		return statusPassed
+	case everFailed:
+		return statusFailed
+	case everSkipped:
+		return statusSkipped
+	default:
+		return statusFailed
+	}
+}
+
+func aggregateUnitTests(u orchestration.UnitView, rule teststatus.Rule) map[string]string {
+	shared := teststatus.NormalizeRule(rule) == teststatus.RuleShared
 	byTitle := map[string][]string{}
 	order := []string{}
 	for _, a := range u.Attempts {
 		for _, tc := range parseAttemptTests(a.TestCases) {
-			if strings.TrimSpace(tc.FullTitle) == "" || tc.Status == "" {
+			if shared {
+				if strings.TrimSpace(tc.FullTitle) == "" || tc.Status == "" {
+					continue
+				}
+			} else if tc.FullTitle == "" {
 				continue
 			}
 			if _, ok := byTitle[tc.FullTitle]; !ok {
@@ -554,18 +601,22 @@ func aggregateUnitTests(u orchestration.UnitView) map[string]string {
 	}
 	out := make(map[string]string, len(byTitle))
 	for _, title := range order {
-		if v := teststatus.TestVerdict(byTitle[title], false); v != "" {
-			out[title] = v
+		if shared {
+			if v := teststatus.TestVerdict(byTitle[title], false); v != "" {
+				out[title] = v
+			}
+		} else {
+			out[title] = legacyTestVerdict(byTitle[title])
 		}
 	}
 	return out
 }
 
-func buildSpecRows(units []orchestration.UnitView, allJobNames []string) []RunUnitRow {
+func buildSpecRows(units []orchestration.UnitView, allJobNames []string, rule teststatus.Rule) []RunUnitRow {
 	out := make([]RunUnitRow, 0, len(units))
 	now := time.Now()
 	for i, u := range units {
-		agg := aggregateUnitTests(u)
+		agg := aggregateUnitTests(u, rule)
 		passed, failed, flaky, skipped := 0, 0, 0, 0
 		for _, s := range agg {
 			switch s {
@@ -607,7 +658,7 @@ func buildSpecRows(units []orchestration.UnitView, allJobNames []string) []RunUn
 			icon, status, statusClass = statusSkipped, statusSkipped, clsUnitSkipped
 		}
 
-		tests := buildUnitTestRows(u, i+1)
+		tests := buildUnitTestRows(u, i+1, rule)
 		row := RunUnitRow{
 			RowNum:      i + 1,
 			SpecPath:    u.SpecPath,
@@ -620,7 +671,7 @@ func buildSpecRows(units []orchestration.UnitView, allJobNames []string) []RunUn
 			TestFlaky:   flaky,
 			TestSkipped: skipped,
 			TestTotal:   total,
-			WorkerSlots: buildWorkerSlots(u, allJobNames),
+			WorkerSlots: buildWorkerSlots(u, allJobNames, rule),
 			CanExpand:   total > 0,
 			Tests:       tests,
 			FilterAttrs: unitFilterAttrs(icon, status, passed, failed, flaky, skipped),
@@ -708,12 +759,17 @@ type testCaseEntry struct {
 	attemptIdx int
 }
 
-func buildUnitTestRows(u orchestration.UnitView, parentNum int) []RunTestRow {
+func buildUnitTestRows(u orchestration.UnitView, parentNum int, rule teststatus.Rule) []RunTestRow {
+	shared := teststatus.NormalizeRule(rule) == teststatus.RuleShared
 	byTitle := map[string][]testCaseEntry{}
 	order := []string{}
 	for attemptIdx, a := range u.Attempts {
 		for _, tc := range parseAttemptTests(a.TestCases) {
-			if strings.TrimSpace(tc.FullTitle) == "" || tc.Status == "" {
+			if shared {
+				if strings.TrimSpace(tc.FullTitle) == "" || tc.Status == "" {
+					continue
+				}
+			} else if tc.FullTitle == "" {
 				continue
 			}
 			if _, ok := byTitle[tc.FullTitle]; !ok {
@@ -727,7 +783,7 @@ func buildUnitTestRows(u orchestration.UnitView, parentNum int) []RunTestRow {
 	out := make([]RunTestRow, 0, len(order))
 	for i, title := range order {
 		entries := byTitle[title]
-		agg := aggregateTestEntries(entries)
+		agg := aggregateTestEntries(entries, rule)
 		final := entries[len(entries)-1].tc
 		sub := i + 1
 		row := RunTestRow{
@@ -746,7 +802,7 @@ func buildUnitTestRows(u orchestration.UnitView, parentNum int) []RunTestRow {
 		hasErr := false
 		hasShot := false
 		for _, e := range entries {
-			att := buildTestAttempt(e, len(row.Attempts)+1)
+			att := buildTestAttempt(e, len(row.Attempts)+1, rule)
 			if att.ErrorText != "" {
 				hasErr = true
 			}
@@ -761,12 +817,15 @@ func buildUnitTestRows(u orchestration.UnitView, parentNum int) []RunTestRow {
 	return out
 }
 
-func aggregateTestEntries(entries []testCaseEntry) string {
+func aggregateTestEntries(entries []testCaseEntry, rule teststatus.Rule) string {
 	statuses := make([]string, 0, len(entries))
 	for _, e := range entries {
 		statuses = append(statuses, e.tc.Status)
 	}
-	return teststatus.TestVerdict(statuses, false)
+	if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
+		return teststatus.TestVerdict(statuses, false)
+	}
+	return legacyTestVerdict(statuses)
 }
 
 func testStatusIcon(status string) string {
@@ -799,15 +858,24 @@ func testStatusClass(status string) string {
 	}
 }
 
-func buildTestAttempt(e testCaseEntry, n int) RunTestAttempt {
+func buildTestAttempt(e testCaseEntry, n int, rule teststatus.Rule) RunTestAttempt {
 	tc := e.tc
-	clsAttempt := teststatus.ClassifyAttempt(tc.Status)
-	isFail := clsAttempt == teststatus.ClassFail
+	var isFail, isSkip, isPass bool
+	if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
+		clsAttempt := teststatus.ClassifyAttempt(tc.Status)
+		isFail = clsAttempt == teststatus.ClassFail
+		isSkip = clsAttempt == teststatus.ClassSkip
+		isPass = clsAttempt == teststatus.ClassPass
+	} else {
+		isFail = tc.Status == statusFailed || tc.Status == statusTimedOutPW || tc.Status == statusInterrupted
+		isSkip = tc.Status == statusSkipped
+		isPass = tc.Status == statusPassed || tc.Status == statusFlaky
+	}
 	icon, cls := iconFail, clsUnitFail
-	switch clsAttempt {
-	case teststatus.ClassSkip:
+	switch {
+	case isSkip:
 		icon, cls = statusSkipped, clsUnitSkipped
-	case teststatus.ClassPass:
+	case isPass:
 		icon, cls = iconPass, clsUnitPass
 	}
 	att := RunTestAttempt{
@@ -875,16 +943,26 @@ func durationColorClass(totalMs int64) string {
 	}
 }
 
-func buildWorkerSlots(u orchestration.UnitView, allJobNames []string) []WorkerSlot {
+func buildWorkerSlots(u orchestration.UnitView, allJobNames []string, rule teststatus.Rule) []WorkerSlot {
 	if len(u.Attempts) == 0 {
 		return nil
 	}
+	shared := teststatus.NormalizeRule(rule) == teststatus.RuleShared
 	out := make([]WorkerSlot, 0, len(u.Attempts))
 	for i, a := range u.Attempts {
 		slot := workerSlotLabel(a.GHJobName, i+1, allJobNames)
 		inFlight := a.Status == nil && !a.Expired
-		passed := a.Status != nil && teststatus.IsPass(*a.Status)
-		failed := a.Expired || (a.Status != nil && teststatus.IsFail(*a.Status))
+		var passed, failed bool
+		if a.Status != nil {
+			if shared {
+				passed = teststatus.IsPass(*a.Status)
+				failed = teststatus.IsFail(*a.Status)
+			} else {
+				passed = *a.Status == statusPassed || *a.Status == statusFlaky
+				failed = *a.Status == statusFailed || *a.Status == statusTimedOutPW || *a.Status == statusInterrupted
+			}
+		}
+		failed = a.Expired || failed
 		cls := "slot-neutral"
 		switch {
 		case inFlight:

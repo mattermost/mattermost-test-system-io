@@ -11,6 +11,8 @@ import (
 
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // Config is the fully-resolved runtime configuration.
@@ -70,6 +72,9 @@ type Config struct {
 	// Route-role and token-repository checks: off | log-only | enforce.
 	AuthzMode string `env:"TSIO_AUTHZ_MODE" envDefault:"log-only"`
 
+	// Read-time test status and pass-rate rule: legacy | shared.
+	StatusRule string `env:"TSIO_STATUS_RULE" envDefault:"legacy"`
+
 	// Path the OpenAPI request validator loads at startup. Relative paths are
 	// resolved against the process cwd. Production images set this to an
 	// absolute path so the file is discoverable regardless of WORKDIR.
@@ -122,6 +127,37 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// LoadDatabaseURL loads .env (best-effort) and resolves only the database
+// connection URL from TSIO_DATABASE_URL or split TSIO_DB_* variables without
+// requiring server-only settings like TSIO_S3_BUCKET or TSIO_SESSION_SECRET.
+func LoadDatabaseURL() (string, error) {
+	loadDotenv()
+
+	var dbCfg struct {
+		DatabaseURL string `env:"TSIO_DATABASE_URL"`
+		DBHost      string `env:"TSIO_DB_HOST"`
+		DBPort      string `env:"TSIO_DB_PORT" envDefault:"5432"`
+		DBUser      string `env:"TSIO_DB_USER"`
+		DBPassword  string `env:"TSIO_DB_PASSWORD,unset"`
+		DBName      string `env:"TSIO_DB_NAME"`
+		DBSSLMode   string `env:"TSIO_DB_SSLMODE" envDefault:"require"`
+	}
+	if err := env.Parse(&dbCfg); err != nil {
+		return "", fmt.Errorf("parse db env: %w", err)
+	}
+	if dbCfg.DatabaseURL != "" {
+		return dbCfg.DatabaseURL, nil
+	}
+	return assembleDatabaseURL(Config{
+		DBHost:     dbCfg.DBHost,
+		DBPort:     dbCfg.DBPort,
+		DBUser:     dbCfg.DBUser,
+		DBPassword: dbCfg.DBPassword,
+		DBName:     dbCfg.DBName,
+		DBSSLMode:  dbCfg.DBSSLMode,
+	})
 }
 
 // assembleDatabaseURL builds a postgres:// DSN from the split TSIO_DB_* fields.
@@ -188,6 +224,9 @@ func (c Config) validate() error {
 	case "off", "log-only", "enforce":
 	default:
 		return fmt.Errorf("invalid TSIO_AUTHZ_MODE %q (want off|log-only|enforce)", c.AuthzMode)
+	}
+	if _, err := teststatus.ParseRule(c.StatusRule); err != nil {
+		return fmt.Errorf("invalid TSIO_STATUS_RULE %q (want legacy|shared)", c.StatusRule)
 	}
 	if c.MaxUploadBytes <= 0 {
 		return errors.New("TSIO_MAX_UPLOAD_BYTES must be > 0")

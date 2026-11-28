@@ -24,6 +24,7 @@ import (
 	authapi "github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/auth"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // Handlers bundles the report-related handlers.
@@ -40,6 +41,8 @@ type Handlers struct {
 	FinalizeTimeout time.Duration
 	// AuthzMode governs the token-to-repository check on upload writes.
 	AuthzMode authapi.AuthzMode
+	// StatusRule controls read-time status and pass-rate aggregation ("" means legacy).
+	StatusRule teststatus.Rule
 
 	// groupedCache memoizes /reports/grouped responses per (limit, offset)
 	// for a short TTL so polling tabs collapse onto one DB hit per window.
@@ -308,7 +311,7 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	summaries := make([]reportSummary, 0)
-	orchLookup := newOrchestrationLookup()
+	orchLookup := newOrchestrationLookup(h.StatusRule)
 	for rows.Next() {
 		g, err := scanGroup(rows)
 		if err != nil {
@@ -367,7 +370,7 @@ func (h *Handlers) Detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orch, err := aggregateOrchestrationSummary(r.Context(), h.Pool,
-		g.Repository, g.CommitSHA, g.GHRunID, g.Name, g.GHRunAttempt)
+		g.Repository, g.CommitSHA, g.GHRunID, g.Name, g.GHRunAttempt, h.StatusRule)
 	if err != nil {
 		api.WriteError(w, r, err)
 		return

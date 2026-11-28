@@ -8,7 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // HomeLiveRun is an in-progress home row.
@@ -73,8 +76,13 @@ const runKeySQL = `CASE WHEN COALESCE(run_group, '') = '' THEN id::text
 		regexp_replace(COALESCE(branch, ''), '^refs/(heads|tags)/', ''), COALESCE(commit_sha, ''), run_group)
 	END`
 
-// LoadHomePageData loads the home page from report_groups projections.
+// LoadHomePageData loads the home page from report_groups projections using legacy rules.
 func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int, repository, branchFilter string) (HomePageData, error) {
+	return LoadHomePageDataWithRule(ctx, pool, limit, offset, repository, branchFilter, teststatus.RuleLegacy)
+}
+
+// LoadHomePageDataWithRule loads the home page from report_groups projections using rule.
+func LoadHomePageDataWithRule(ctx context.Context, pool *pgxpool.Pool, limit, offset int, repository, branchFilter string, rule teststatus.Rule) (HomePageData, error) {
 	if pool == nil {
 		return HomePageData{}, errors.New("reports: nil pool")
 	}
@@ -88,7 +96,7 @@ func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int
 		offset = 0
 	}
 
-	live, err := LoadHomeLiveRuns(ctx, pool, repository, branchFilter)
+	live, err := LoadHomeLiveRunsWithRule(ctx, pool, repository, branchFilter, rule)
 	if err != nil {
 		return HomePageData{}, err
 	}
@@ -139,16 +147,23 @@ func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int
 	}
 	defer rows.Close()
 
-	entries := make([]runEntry, 0, limit)
+	projRows := make([]groupProjectionRow, 0, limit)
 	for rows.Next() {
 		row, err := scanGroupProjection(rows)
 		if err != nil {
 			return HomePageData{}, err
 		}
-		entries = append(entries, row.toRunEntry())
+		projRows = append(projRows, row)
 	}
 	if err := rows.Err(); err != nil {
 		return HomePageData{}, err
+	}
+	if err := overlayOrchestrationCountsForProjectionRows(ctx, pool, projRows, rule); err != nil {
+		return HomePageData{}, err
+	}
+	entries := make([]runEntry, 0, len(projRows))
+	for _, row := range projRows {
+		entries = append(entries, row.toRunEntry())
 	}
 	entries = mergeGroupedRunEntries(entries)
 	sort.SliceStable(entries, func(i, j int) bool {
@@ -157,7 +172,7 @@ func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int
 
 	static := make([]HomeStaticRun, 0, len(entries))
 	for _, e := range entries {
-		static = append(static, toHomeStaticRun(e))
+		static = append(static, toHomeStaticRun(e, rule))
 	}
 
 	return HomePageData{
@@ -169,8 +184,16 @@ func LoadHomePageData(ctx context.Context, pool *pgxpool.Pool, limit, offset int
 	}, nil
 }
 
-// LoadHomeLiveRuns loads live home rows.
+// LoadHomeLiveRuns loads live home rows using legacy rules.
 func LoadHomeLiveRuns(ctx context.Context, pool *pgxpool.Pool, repository, branchFilter string) ([]HomeLiveRun, error) {
+	return LoadHomeLiveRunsWithRule(ctx, pool, repository, branchFilter, teststatus.RuleLegacy)
+}
+
+// LoadHomeLiveRunsWithRule loads live home rows using rule.
+func LoadHomeLiveRunsWithRule(ctx context.Context, pool *pgxpool.Pool, repository, branchFilter string, rule teststatus.Rule) ([]HomeLiveRun, error) {
+	if pool == nil {
+		return nil, errors.New("reports: nil pool")
+	}
 	repoFilter := RepositoryFilter(repository)
 	branchF := BranchFilter(branchFilter)
 	where := strings.Builder{}
@@ -193,15 +216,147 @@ func LoadHomeLiveRuns(ctx context.Context, pool *pgxpool.Pool, repository, branc
 	}
 	defer rows.Close()
 
-	out := make([]HomeLiveRun, 0)
+	projRows := make([]groupProjectionRow, 0)
 	for rows.Next() {
 		row, err := scanGroupProjection(rows)
 		if err != nil {
 			return nil, err
 		}
+		projRows = append(projRows, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := overlayOrchestrationCountsForProjectionRows(ctx, pool, projRows, rule); err != nil {
+		return nil, err
+	}
+	out := make([]HomeLiveRun, 0, len(projRows))
+	for _, row := range projRows {
 		out = append(out, toHomeLiveRun(row))
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// overlayOrchestrationCountsForProjectionRows recomputes orchestration test counts
+// from attempts under the active rule so cached orchestration_json (and shardless
+// test_stats_json) never serve stale counts across TSIO_STATUS_RULE switches.
+func overlayOrchestrationCountsForProjectionRows(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	projRows []groupProjectionRow,
+	rule teststatus.Rule,
+) error {
+	groupIDs := make([]uuid.UUID, 0, len(projRows))
+	for _, r := range projRows {
+		if r.Orch != nil {
+			groupIDs = append(groupIDs, r.ID)
+		}
+	}
+	if len(groupIDs) == 0 {
+		return nil
+	}
+
+	cte := orchLegacyCountsCTE
+	aggAlias := "legacy_agg"
+	if teststatus.NormalizeRule(rule) == teststatus.RuleShared {
+		cte = orchSharedCountsCTE
+		aggAlias = "shared_agg"
+	}
+	query := `
+		WITH target_groups AS (
+			SELECT DISTINCT ON (g.id)
+			       g.id AS group_id,
+			       o.id AS run_id
+			  FROM report_groups g
+			  JOIN orchestration_runs o
+			    ON o.repository = g.repository
+			   AND o.commit_sha = g.commit_sha
+			   AND o.gh_run_id = g.gh_run_id
+			   AND o.name = g.name
+			   AND o.gh_run_attempt = g.gh_run_attempt
+			 WHERE g.id = ANY($1)
+			 ORDER BY g.id, o.id
+		),
+		shard_cases AS (
+			SELECT report_group_id AS group_id,
+			       COALESCE(SUM(total_cases), 0)::int AS total_cases
+			  FROM reports
+			 WHERE report_group_id = ANY($1)
+			 GROUP BY report_group_id
+		),
+		target_run_ids AS (
+			SELECT DISTINCT run_id FROM target_groups
+		),
+		` + cte + `
+		SELECT
+			tg.group_id,
+			(COALESCE(sc.total_cases, 0) > 0) AS has_shard_cases,
+			COALESCE(agg.passed, 0),
+			COALESCE(agg.failed, 0),
+			COALESCE(agg.flaky, 0),
+			COALESCE(agg.skipped, 0),
+			COALESCE(agg.total, 0)
+		  FROM target_groups tg
+		  LEFT JOIN shard_cases sc ON sc.group_id = tg.group_id
+		  LEFT JOIN ` + aggAlias + ` agg ON agg.run_id = tg.run_id
+	`
+	rows, err := pool.Query(ctx, query, groupIDs)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type overlay struct {
+		hasShardCases bool
+		tests         *orchestrationTestCounts
+	}
+	byGroup := make(map[uuid.UUID]overlay, len(groupIDs))
+	for rows.Next() {
+		var gid uuid.UUID
+		var hasShard bool
+		var c orchestrationTestCounts
+		if err := rows.Scan(&gid, &hasShard, &c.Passed, &c.Failed, &c.Flaky, &c.Skipped, &c.Total); err != nil {
+			return err
+		}
+		var tp *orchestrationTestCounts
+		if c.Total > 0 {
+			tp = &c
+		}
+		byGroup[gid] = overlay{hasShardCases: hasShard, tests: tp}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for i := range projRows {
+		if projRows[i].Orch == nil {
+			continue
+		}
+		ov, ok := byGroup[projRows[i].ID]
+		if !ok {
+			continue
+		}
+		projRows[i].Orch.Tests = ov.tests
+		if !ov.hasShardCases {
+			if ov.tests != nil {
+				if projRows[i].Stats == nil {
+					projRows[i].Stats = &testStats{}
+				}
+				projRows[i].Stats.Total = ov.tests.Total
+				projRows[i].Stats.Passed = ov.tests.Passed
+				projRows[i].Stats.Failed = ov.tests.Failed
+				projRows[i].Stats.Skipped = ov.tests.Skipped
+				projRows[i].Stats.Flaky = ov.tests.Flaky
+			} else if projRows[i].Stats != nil {
+				projRows[i].Stats.Total = 0
+				projRows[i].Stats.Passed = 0
+				projRows[i].Stats.Failed = 0
+				projRows[i].Stats.Skipped = 0
+				projRows[i].Stats.Flaky = 0
+			}
+		}
+	}
+	return nil
 }
 
 func toHomeLiveRun(row groupProjectionRow) HomeLiveRun {
@@ -228,6 +383,9 @@ func toHomeLiveRun(row groupProjectionRow) HomeLiveRun {
 		Orch:           homeOrchView(row.Orch),
 	}
 }
+
+// HomeOrchTestCountsView holds orchestration test counts for HTML rows.
+type HomeOrchTestCountsView = orchestrationTestCounts
 
 // HomeOrchView holds orchestration fields for HTML rows.
 type HomeOrchView struct {
@@ -289,7 +447,7 @@ func homeOrchView(orch *orchestrationSummary) *HomeOrchView {
 	return v
 }
 
-func toHomeStaticRun(e runEntry) HomeStaticRun {
+func toHomeStaticRun(e runEntry, rule teststatus.Rule) HomeStaticRun {
 	stats := homeDisplayStats(e.TestStats, e.Orchestration)
 	v := HomeStaticRun{
 		GroupID:        e.ReportID,
@@ -317,7 +475,7 @@ func toHomeStaticRun(e runEntry) HomeStaticRun {
 		v.Total = stats.Total
 		v.WallClockMs = stats.WallClockMs
 		v.RetestWallMs = stats.RetestWallClockMs
-		if rate := passRatePercent(stats); rate >= 0 {
+		if rate := passRatePercent(stats, rule); rate >= 0 {
 			v.PassRate = &rate
 		}
 	}

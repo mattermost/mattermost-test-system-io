@@ -39,6 +39,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/server"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/testutil/oidcmock"
 )
 
@@ -62,11 +63,17 @@ type startConfig struct {
 	oauth           *oauth.Flow
 	htmlView        bool
 	authzMode       authapi.AuthzMode
+	statusRule      teststatus.Rule
 }
 
 // WithAuthzMode sets TSIO_AUTHZ_MODE for the server. Default is log-only.
 func WithAuthzMode(mode authapi.AuthzMode) Option {
 	return func(c *startConfig) { c.authzMode = mode }
+}
+
+// WithStatusRule sets TSIO_STATUS_RULE for the server. Default is legacy.
+func WithStatusRule(rule teststatus.Rule) Option {
+	return func(c *startConfig) { c.statusRule = rule }
 }
 
 // WithOAuth wires a GitHub OAuth flow so browser sign-in routes are live.
@@ -226,6 +233,7 @@ func Start(t *testing.T, opts ...Option) *Env {
 		PresignTTL:       5 * time.Minute,
 		FinalizeTimeout:  cfg.finalizeTimeout,
 		AuthzMode:        cfg.authzMode, // "" means log-only
+		StatusRule:       cfg.statusRule,
 	})
 
 	srv := httptest.NewServer(handler)

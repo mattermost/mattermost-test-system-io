@@ -13,10 +13,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
-// RefreshGroupSummary recomputes the denormalized projection columns on
-// report_groups for the given group, using the existing per-group
+// RefreshGroupSummary recomputes the denormalized projection columns using legacy rules.
+func RefreshGroupSummary(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) error {
+	return RefreshGroupSummaryWithRule(ctx, pool, groupID, teststatus.RuleLegacy)
+}
+
+// RefreshGroupSummaryWithRule recomputes the denormalized projection columns on
+// report_groups for the given group using rule, using the existing per-group
 // aggregation helpers as the single source of truth. Called from every
 // state-changing path:
 //
@@ -34,7 +40,7 @@ import (
 // Returns a non-nil error only for unrecoverable failures; transient DB
 // errors are returned to the caller, which is expected to log-and-ignore
 // (the caller's primary work has already succeeded).
-func RefreshGroupSummary(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID) error {
+func RefreshGroupSummaryWithRule(ctx context.Context, pool *pgxpool.Pool, groupID uuid.UUID, rule teststatus.Rule) error {
 	// Captured before the SELECTs so it brackets the source state we're
 	// about to summarize. Used both as the new last_summary_at value and
 	// as a compare-and-swap guard on the UPDATE: if a concurrent refresh
@@ -61,7 +67,7 @@ func RefreshGroupSummary(ctx context.Context, pool *pgxpool.Pool, groupID uuid.U
 	if err != nil {
 		return fmt.Errorf("refresh_group_summary: stats: %w", err)
 	}
-	orch, err := newOrchestrationLookup().getForGroup(ctx, pool, g)
+	orch, err := newOrchestrationLookup(rule).getForGroup(ctx, pool, g)
 	if err != nil {
 		return fmt.Errorf("refresh_group_summary: orchestration: %w", err)
 	}
@@ -164,20 +170,30 @@ func GroupIDForOrchestrationIdentity(
 	return id, nil
 }
 
-// RefreshGroupSummaryBestEffort refreshes a group projection, logging failures.
+// RefreshGroupSummaryBestEffort refreshes a group projection using legacy rules, logging failures.
 func RefreshGroupSummaryBestEffort(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, groupID uuid.UUID) {
+	RefreshGroupSummaryBestEffortWithRule(ctx, pool, logger, groupID, teststatus.RuleLegacy)
+}
+
+// RefreshGroupSummaryBestEffortWithRule refreshes a group projection using rule, logging failures.
+func RefreshGroupSummaryBestEffortWithRule(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, groupID uuid.UUID, rule teststatus.Rule) {
 	if groupID == uuid.Nil {
 		return
 	}
-	if err := RefreshGroupSummary(ctx, pool, groupID); err != nil && logger != nil {
+	if err := RefreshGroupSummaryWithRule(ctx, pool, groupID, rule); err != nil && logger != nil {
 		logger.Warn("refresh_group_summary failed",
 			"group_id", groupID.String(),
 			"error", err.Error())
 	}
 }
 
-// RefreshStaleGroupSummaries backfills stale projection rows.
+// RefreshStaleGroupSummaries backfills stale projection rows using legacy rules.
 func RefreshStaleGroupSummaries(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, limit int) error {
+	return RefreshStaleGroupSummariesWithRule(ctx, pool, logger, limit, teststatus.RuleLegacy)
+}
+
+// RefreshStaleGroupSummariesWithRule backfills stale projection rows using rule.
+func RefreshStaleGroupSummariesWithRule(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, limit int, rule teststatus.Rule) error {
 	if pool == nil || limit <= 0 {
 		return nil
 	}
@@ -213,15 +229,15 @@ func RefreshStaleGroupSummaries(ctx context.Context, pool *pgxpool.Pool, logger 
 		if err := rows.Scan(&id); err != nil {
 			return err
 		}
-		RefreshGroupSummaryBestEffort(ctx, pool, logger, id)
+		RefreshGroupSummaryBestEffortWithRule(ctx, pool, logger, id, rule)
 	}
 	return rows.Err()
 }
 
 // refreshGroupSummaryBestEffort is the handler-side wrapper: calls
-// RefreshGroupSummary, logs any error at WARN, never returns an error
+// RefreshGroupSummaryWithRule, logs any error at WARN, never returns an error
 // to the caller. Use from write paths where the projection update is
 // secondary to the primary work.
 func (h *Handlers) refreshGroupSummaryBestEffort(ctx context.Context, groupID uuid.UUID) {
-	RefreshGroupSummaryBestEffort(ctx, h.Pool, h.Logger, groupID)
+	RefreshGroupSummaryBestEffortWithRule(ctx, h.Pool, h.Logger, groupID, h.StatusRule)
 }

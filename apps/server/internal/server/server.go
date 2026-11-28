@@ -31,6 +31,7 @@ import (
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/htmlpage"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/storage"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/webui"
 )
 
@@ -62,6 +63,8 @@ type Deps struct {
 	AdminKey  string
 	// AuthzMode for route-role and token-repository checks ("" means log-only).
 	AuthzMode authapi.AuthzMode
+	// StatusRule for read-time test status and pass-rate semantics ("" means legacy).
+	StatusRule teststatus.Rule
 
 	// Client-facing config surfaced via GET /api/v1/config.
 	UploadTimeoutMs int
@@ -113,6 +116,7 @@ func Build(d Deps) chi.Router {
 	if authzMode == "" {
 		authzMode = authapi.AuthzLogOnly
 	}
+	statusRule := teststatus.NormalizeRule(d.StatusRule)
 
 	reportsH := &reports.Handlers{
 		Pool:             d.Pool,
@@ -125,6 +129,7 @@ func Build(d Deps) chi.Router {
 		SearchMinLength:  d.SearchMinLength,
 		FinalizeTimeout:  d.FinalizeTimeout,
 		AuthzMode:        authzMode,
+		StatusRule:       statusRule,
 	}
 	artifactsH := &artifactapi.Handlers{Pool: d.Pool, Store: d.Store, PresignTTL: d.PresignTTL}
 	wsH := &wsapi.Handler{Hub: d.Hub}
@@ -209,6 +214,7 @@ func Build(d Deps) chi.Router {
 			Logger:             d.Logger,
 			LeaseRetentionMs:   60_000,
 			MaxScreenshotBytes: 10 * 1024 * 1024,
+			StatusRule:         statusRule,
 		}
 		orchapi.RegisterPublic(r, publicOrchH)
 
@@ -241,6 +247,7 @@ func Build(d Deps) chi.Router {
 				LeaseRetentionMs:   60_000,
 				MaxScreenshotBytes: 10 * 1024 * 1024,
 				AuthzMode:          authzMode,
+				StatusRule:         statusRule,
 			}
 			orchapi.Register(r, orchH)
 		})
@@ -267,8 +274,9 @@ func Build(d Deps) chi.Router {
 				RepoURL:            d.RepoURL,
 				GitHubOAuthEnabled: d.OAuth != nil,
 			},
-			Logger:   d.Logger,
-			Fallback: webHandler,
+			Logger:     d.Logger,
+			Fallback:   webHandler,
+			StatusRule: statusRule,
 		}
 		r.Get("/", htmlH.ServeHome)
 		r.Get("/reports", htmlH.ServeHome)

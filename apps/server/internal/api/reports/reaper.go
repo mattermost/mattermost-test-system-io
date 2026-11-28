@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/events"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // DefaultStalenessTimeout is the idle window after which an in-flight report
@@ -122,7 +123,7 @@ func (r *Reaper) loop(ctx context.Context) {
 			if err := r.markIncomplete(ctx); err != nil {
 				r.Logger.Error("reports reaper: mark incomplete", slog.String("error", err.Error()))
 			}
-			if err := RefreshStaleGroupSummaries(ctx, r.Pool, r.Logger, reaperBatchLimit); err != nil {
+			if err := RefreshStaleGroupSummariesWithRule(ctx, r.Pool, r.Logger, reaperBatchLimit, r.statusRule()); err != nil {
 				r.Logger.Warn("reports reaper: refresh stale summaries", slog.String("error", err.Error()))
 			}
 			r.RetryStalledResults(ctx)
@@ -229,6 +230,13 @@ func (r *Reaper) RetryStalledResults(parent context.Context) {
 		}
 		r.Results.finalizeResults(parent, s.group, s.id, false)
 	}
+}
+
+func (r *Reaper) statusRule() teststatus.Rule {
+	if r.Results != nil {
+		return r.Results.StatusRule
+	}
+	return teststatus.RuleLegacy
 }
 
 // resolveStalenessTimeout reads TSIO_REPORTS_STALENESS_TIMEOUT_MS, falling

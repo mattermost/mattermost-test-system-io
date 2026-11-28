@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/api/reports"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 // RepoPage is the repo page view model.
@@ -27,8 +28,13 @@ type RepoPage struct {
 	Title                string
 }
 
-// BuildRepoPage builds the repo page view model.
+// BuildRepoPage builds the repo page view model using legacy rules.
 func BuildRepoPage(ctx context.Context, pool *pgxpool.Pool, site SiteInfo, repoSlug string, limit, offset int, branchFilter string) (RepoPage, error) {
+	return BuildRepoPageWithRule(ctx, pool, site, repoSlug, limit, offset, branchFilter, teststatus.RuleLegacy)
+}
+
+// BuildRepoPageWithRule builds the repo page view model using rule.
+func BuildRepoPageWithRule(ctx context.Context, pool *pgxpool.Pool, site SiteInfo, repoSlug string, limit, offset int, branchFilter string, rule teststatus.Rule) (RepoPage, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -37,20 +43,20 @@ func BuildRepoPage(ctx context.Context, pool *pgxpool.Pool, site SiteInfo, repoS
 		return RepoPage{}, err
 	}
 	branchFilter = reports.ResolveBranchFilter(branchFilter, branchOptions)
-	data, err := reports.LoadHomePageData(ctx, pool, limit, offset, repoSlug, branchFilter)
+	data, err := reports.LoadHomePageDataWithRule(ctx, pool, limit, offset, repoSlug, branchFilter, rule)
 	if err != nil {
 		return RepoPage{}, err
 	}
 
 	liveRuns := make([]HomeRunRow, 0, len(data.Live))
 	for i, r := range data.Live {
-		row := mapLiveRun(r)
+		row := mapLiveRun(r, rule)
 		row.RowNum = i + 1
 		liveRuns = append(liveRuns, row)
 	}
 	staticRuns := make([]HomeRunRow, 0, len(data.Static))
 	for i, r := range data.Static {
-		row := mapStaticRun(r)
+		row := mapStaticRun(r, rule)
 		row.RowNum = data.Offset + i + 1
 		staticRuns = append(staticRuns, row)
 	}

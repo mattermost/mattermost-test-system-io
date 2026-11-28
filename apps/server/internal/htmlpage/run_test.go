@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/orchestration"
+	"github.com/mattermost/mattermost-test-system-io/apps/server/internal/teststatus"
 )
 
 func TestRenderRunDispatch(t *testing.T) {
@@ -138,6 +139,18 @@ func TestPassRateDisplayRun(t *testing.T) {
 	if got := passRateDisplay(10, 0, 0); got != "100" {
 		t.Fatalf("got %q", got)
 	}
+	if got := passRateDisplayWithRule(8, 1, 1, 5, teststatus.RuleLegacy); got != "60" {
+		t.Fatalf("legacy passRateDisplayWithRule = %q, want 60", got)
+	}
+	if got := passRateDisplayWithRule(8, 1, 1, 5, teststatus.RuleShared); got != "90" {
+		t.Fatalf("shared passRateDisplayWithRule = %q, want 90", got)
+	}
+	if got := passRateDisplayWithRule(0, 0, 0, 4, teststatus.RuleLegacy); got != "0" {
+		t.Fatalf("legacy all-skipped = %q, want 0", got)
+	}
+	if got := passRateDisplayWithRule(0, 0, 0, 4, teststatus.RuleShared); got != "" {
+		t.Fatalf("shared all-skipped = %q, want empty", got)
+	}
 }
 
 func TestApplyRunSummaryAndAggregateUnitTests_CanonicalRules(t *testing.T) {
@@ -158,15 +171,21 @@ func TestApplyRunSummaryAndAggregateUnitTests_CanonicalRules(t *testing.T) {
 			{Attempt: orchestration.Attempt{TestCases: raw}},
 		},
 	}
-	got := aggregateUnitTests(unit)
-	if got["spec > pass"] != statusPassed || got["spec > flaky"] != statusFlaky ||
-		got["spec > pend"] != statusSkipped || got["spec > unk"] != statusFailed || len(got) != 4 {
-		t.Fatalf("aggregateUnitTests = %v", got)
+	gotShared := aggregateUnitTests(unit, teststatus.RuleShared)
+	if gotShared["spec > pass"] != statusPassed || gotShared["spec > flaky"] != statusFlaky ||
+		gotShared["spec > pend"] != statusSkipped || gotShared["spec > unk"] != statusFailed || len(gotShared) != 4 {
+		t.Fatalf("shared aggregateUnitTests = %v", gotShared)
+	}
+
+	gotLegacy := aggregateUnitTests(unit, teststatus.RuleLegacy)
+	if gotLegacy["spec > pass"] != statusPassed || gotLegacy["spec > flaky"] != statusPassed ||
+		gotLegacy["spec > pend"] != statusFailed || gotLegacy["spec > unk"] != statusFailed ||
+		gotLegacy["   "] != statusPassed || gotLegacy["spec > nostatus"] != statusFailed || len(gotLegacy) != 6 {
+		t.Fatalf("legacy aggregateUnitTests = %v", gotLegacy)
 	}
 
 	// Empty-spec failure (spec-did-not-run) has zero test cases but CompletedFail > 0.
-	page := RunPage{}
-	applyRunSummary(&page, &orchestration.RunWithUnits{
+	emptyFailSnap := &orchestration.RunWithUnits{
 		Run: &orchestration.Run{
 			Status: orchestration.RunStatusCompleted,
 			Counts: orchestration.RunCounts{Total: 1, CompletedFail: 1},
@@ -174,8 +193,53 @@ func TestApplyRunSummaryAndAggregateUnitTests_CanonicalRules(t *testing.T) {
 		Units: []orchestration.UnitView{
 			{DispatchUnit: orchestration.DispatchUnit{State: orchestration.UnitStateCompletedFail}},
 		},
+	}
+	sharedPage := RunPage{}
+	applyRunSummary(&sharedPage, emptyFailSnap, teststatus.RuleShared)
+	if sharedPage.TestStatus != statusFailed {
+		t.Fatalf("shared empty-spec failed run TestStatus = %q, want failed", sharedPage.TestStatus)
+	}
+	legacyPage := RunPage{}
+	applyRunSummary(&legacyPage, emptyFailSnap, teststatus.RuleLegacy)
+	if legacyPage.TestStatus != statusPassed {
+		t.Fatalf("legacy empty-spec failed run TestStatus = %q, want passed", legacyPage.TestStatus)
+	}
+
+	pendingAttempt := buildTestAttempt(testCaseEntry{tc: orchTestCase{Status: "pending"}}, 1, teststatus.RuleShared)
+	if pendingAttempt.StatusIcon != statusSkipped {
+		t.Fatalf("shared pending attempt icon = %q, want skipped", pendingAttempt.StatusIcon)
+	}
+	legacyPendingAttempt := buildTestAttempt(testCaseEntry{tc: orchTestCase{Status: "pending"}}, 1, teststatus.RuleLegacy)
+	if legacyPendingAttempt.StatusIcon != iconFail {
+		t.Fatalf("legacy pending attempt icon = %q, want fail", legacyPendingAttempt.StatusIcon)
+	}
+
+	// Verify applyRunSummary pass rate switches between legacy (includes skipped) and shared (excludes skipped).
+	skippedRaw, err := json.Marshal([]orchTestCase{
+		{FullTitle: "s > p", Title: "p", Status: "passed"},
+		{FullTitle: "s > f", Title: "f", Status: "failed"},
+		{FullTitle: "s > sk1", Title: "sk1", Status: "skipped"},
+		{FullTitle: "s > sk2", Title: "sk2", Status: "skipped"},
 	})
-	if page.TestStatus != statusFailed {
-		t.Fatalf("empty-spec failed run TestStatus = %q, want failed", page.TestStatus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skippedSnap := &orchestration.RunWithUnits{
+		Run: &orchestration.Run{
+			Status: orchestration.RunStatusCompleted,
+			Counts: orchestration.RunCounts{Total: 1, CompletedFail: 1},
+		},
+		Units: []orchestration.UnitView{
+			{
+				DispatchUnit: orchestration.DispatchUnit{State: orchestration.UnitStateCompletedFail},
+				Attempts:     []orchestration.AttemptView{{Attempt: orchestration.Attempt{TestCases: skippedRaw}}},
+			},
+		},
+	}
+	var legSum, shrSum RunPage
+	applyRunSummary(&legSum, skippedSnap, teststatus.RuleLegacy)
+	applyRunSummary(&shrSum, skippedSnap, teststatus.RuleShared)
+	if legSum.PassRate != "25" || shrSum.PassRate != "50" {
+		t.Fatalf("applyRunSummary PassRate legacy=%q shared=%q, want 25 / 50", legSum.PassRate, shrSum.PassRate)
 	}
 }

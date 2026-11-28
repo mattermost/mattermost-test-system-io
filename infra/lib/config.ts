@@ -54,8 +54,8 @@ export const APP_CONFIG: AppConfig = {
 
   production: {
     subdomain: "test-io",
-    cpu: 1024,
-    memoryLimitMiB: 2048,
+    cpu: 2048,
+    memoryLimitMiB: 4096,
     desiredCount: 2,
     minimumHealthyPercent: 100,
     maximumPercent: 200,

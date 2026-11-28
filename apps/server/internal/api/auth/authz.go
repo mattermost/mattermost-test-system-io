@@ -39,6 +39,8 @@ var RouteMinRole = map[string]policy.Role{
 	"POST /api/v1/orchestration/no-work":     policy.RoleUploader,
 	"POST /api/v1/orchestration/screenshots": policy.RoleUploader,
 
+	"POST /api/v1/verdicts": policy.RoleUploader,
+
 	"DELETE /api/v1/reports/{id}": policy.RoleAdmin,
 }
 

@@ -31,6 +31,7 @@ tags:
       their GitHub Actions environment; no server-issued run_id is shared
       between the controller and worker jobs.
   - name: artifacts
+  - name: verdicts
   - name: health
   - name: system
 
@@ -1240,6 +1241,58 @@ paths:
       responses:
         '101': { description: Switching Protocols (WebSocket) }
 
+  /api/v1/verdicts:
+    post:
+      tags: [verdicts]
+      summary: Persist or supersede a batch of AI triage verdicts
+      description: |
+        Persist a batch of AI triage verdicts. When `report_group_id` is supplied,
+        active verdicts for the same `(report_group_id, test_id, signature_id)` target
+        are replayed idempotently if identical or superseded otherwise. When
+        `report_group_id` is omitted or `null`, each item inserts a new verdict.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerdictsBatchRequest' }
+      responses:
+        '200':
+          description: Verdicts persisted, superseded, or replayed idempotently (when report_group_id is supplied)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerdictsBatchResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+
+  /api/v1/verdicts/by-signature/{fingerprint}:
+    parameters:
+      - in: path
+        name: fingerprint
+        required: true
+        schema: { type: string, minLength: 1 }
+      - in: query
+        name: window_days
+        required: false
+        schema: { type: integer, minimum: 1, maximum: 365, default: 90 }
+      - in: query
+        name: repository
+        required: false
+        schema: { type: string, minLength: 1 }
+    get:
+      tags: [verdicts]
+      summary: Look up latest non-superseded verdict for a failure signature fingerprint
+      security: []
+      responses:
+        '200':
+          description: Latest non-superseded verdict in the lookup window
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Verdict' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     apiKey:
@@ -1640,6 +1693,9 @@ components:
           type: array
           items: { type: object }
         ordinal: { type: integer }
+        test_id: { type: string, format: uuid, nullable: true }
+        signature_id: { type: string, format: uuid, nullable: true }
+        signature_fingerprint: { type: string, nullable: true }
 
     TestSpec:
       type: object
@@ -2392,6 +2448,87 @@ components:
             previously returned by /api/v1/orchestration/screenshots so the
             dashboard can render failure screenshots inline via /files/{key}.
           items: { $ref: '#/components/schemas/SpecResultTestCase' }
+
+    VerdictCreateItem:
+      type: object
+      required: [label]
+      properties:
+        test_id: { type: string, format: uuid, nullable: true }
+        signature_id: { type: string, format: uuid, nullable: true }
+        fingerprint: { type: string, minLength: 1, nullable: true }
+        label: { type: string, minLength: 1 }
+        decided_by: { type: string, nullable: true }
+        rule: { type: string, nullable: true }
+        confidence: { type: number, minimum: 0, maximum: 1, nullable: true }
+        summary: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        triage_url: { type: string, nullable: true, description: "Optional HTTP/HTTPS link to the triage run (without credentials, query parameters, or secrets)" }
+        error_context:
+          type: object
+          additionalProperties: true
+          nullable: true
+        reused_from_id: { type: string, format: uuid, nullable: true }
+
+    VerdictsBatchRequest:
+      type: object
+      required: [repository, verdicts]
+      properties:
+        repository: { type: string, minLength: 1 }
+        report_group_id: { type: string, format: uuid, nullable: true, description: "Optional report group ID; enables idempotent replay/supersede per (report_group_id, test_id, signature_id)" }
+        verdicts:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/VerdictCreateItem' }
+
+    CreatedVerdict:
+      type: object
+      required: [id, repository, label, created_at, created]
+      properties:
+        id: { type: string, format: uuid }
+        report_group_id: { type: string, format: uuid, nullable: true }
+        repository: { type: string }
+        test_id: { type: string, format: uuid, nullable: true }
+        signature_id: { type: string, format: uuid, nullable: true }
+        label: { type: string }
+        decided_by: { type: string, nullable: true }
+        rule: { type: string, nullable: true }
+        confidence: { type: number, nullable: true }
+        summary: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        triage_url: { type: string, nullable: true, description: "Optional HTTP/HTTPS link to the triage run" }
+        reused_from_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        created: { type: boolean }
+        superseded_id: { type: string, format: uuid, nullable: true }
+
+    VerdictsBatchResponse:
+      type: object
+      required: [verdicts]
+      properties:
+        verdicts:
+          type: array
+          items: { $ref: '#/components/schemas/CreatedVerdict' }
+
+    Verdict:
+      type: object
+      required: [id, repository, signature_id, fingerprint, label, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        report_group_id: { type: string, format: uuid, nullable: true }
+        repository: { type: string }
+        test_id: { type: string, format: uuid, nullable: true }
+        signature_id: { type: string, format: uuid }
+        fingerprint: { type: string }
+        label: { type: string }
+        decided_by: { type: string, nullable: true }
+        rule: { type: string, nullable: true }
+        confidence: { type: number, nullable: true }
+        summary: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        triage_url: { type: string, nullable: true, description: "Optional HTTP/HTTPS link to the triage run" }
+        reused_from_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
 
     Error:
       type: object

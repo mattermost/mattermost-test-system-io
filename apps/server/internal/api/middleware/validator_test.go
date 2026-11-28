@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -87,5 +88,35 @@ func TestValidatorParamValidation(t *testing.T) {
 		if rec.Code != want {
 			t.Errorf("GET /api/v1/reports?%s: got %d, want %d", q, rec.Code, want)
 		}
+	}
+}
+
+func TestValidatorMaxBytesError(t *testing.T) {
+	v, err := NewOpenAPIValidator(testSpecPath)
+	if err != nil {
+		t.Fatalf("NewOpenAPIValidator: %v", err)
+	}
+	h := v.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	body := `{"repository":"mattermost/mattermost","verdicts":[{"label":"` + strings.Repeat("a", 128) + `"}]}`
+	req := httptest.NewRequest(http.MethodPost, testHost+"/api/v1/verdicts", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	req.Body = http.MaxBytesReader(rec, req.Body, 64)
+
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+	}
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode error response: %v (body=%s)", err, rec.Body.String())
+	}
+	if errResp.Error != "PAYLOAD_TOO_LARGE" {
+		t.Fatalf("error code = %q, want PAYLOAD_TOO_LARGE", errResp.Error)
 	}
 }

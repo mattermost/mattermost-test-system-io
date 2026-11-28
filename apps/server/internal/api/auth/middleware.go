@@ -50,10 +50,15 @@ func RequireAuth(
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			ctx := context.WithValue(r.Context(), subjectKey, sub)
+			ctx := WithSubject(r.Context(), sub)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// WithSubject attaches sub to ctx.
+func WithSubject(ctx context.Context, sub Subject) context.Context {
+	return context.WithValue(ctx, subjectKey, sub)
 }
 
 // SubjectFromContext retrieves the resolved subject, or returns ErrNotAuthenticated.
